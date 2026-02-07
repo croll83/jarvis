@@ -28,8 +28,9 @@ services:
     env_file: .env
     environment:
       - AI_BACKEND=api
-      # OpenClaw gira bare-metal sullo stesso host
-      - OPENCLAW_URL=http://localhost:18789
+      # OpenClaw gira bare-metal — se bind=tailnet, usa IP Tailscale (tailscale ip -4)
+      # Se bind=loopback, usa http://localhost:18789
+      - OPENCLAW_URL=${OPENCLAW_URL:-http://localhost:18789}
       - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
     restart: always
     healthcheck:

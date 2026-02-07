@@ -142,6 +142,42 @@ Il wizard interattivo configura:
 
 > **IMPORTANTE**: il `OPENCLAW_GATEWAY_TOKEN` nel `.env` DEVE essere lo stesso valore usato durante `openclaw onboard`.
 
+### STEP 4b — Configura bind OpenClaw su Tailscale
+
+OpenClaw di default ascolta solo su `localhost`. Per renderlo raggiungibile dall'orchestrator (che usa `network_mode: host`) tramite l'IP Tailscale, configura il bind:
+
+```bash
+# Verifica il tuo IP Tailscale
+tailscale ip -4
+# Output esempio: 100.100.74.71
+
+# Modifica il config di OpenClaw
+nano ~/.openclaw/config.json5
+```
+
+Imposta `bind` a `tailnet` (richiede che `auth.token` sia gia configurato dall'onboarding):
+
+```json5
+{
+  gateway: {
+    bind: "tailnet",
+    // ... auth e altro gia configurato dall'onboard
+  }
+}
+```
+
+Poi riavvia OpenClaw:
+
+```bash
+sudo systemctl restart openclaw
+
+# Verifica che ascolti sull'IP Tailscale
+ss -tlnp | grep 18789
+# Deve mostrare: 100.x.x.x:18789
+```
+
+> **Nota**: con `bind: "tailnet"`, OpenClaw NON ascolta su `localhost:18789` ma sull'IP Tailscale. L'orchestrator deve puntare a quell'IP nel `.env`.
+
 ### STEP 5 — Configura .env
 
 ```bash
@@ -150,10 +186,18 @@ cp .env.example .env
 nano .env
 ```
 
+Recupera prima l'IP Tailscale del VPS (serve per `OPENCLAW_URL`):
+
+```bash
+tailscale ip -4
+# Output esempio: 100.100.74.71
+```
+
 Variabili obbligatorie da compilare:
 
 | Variabile | Come ottenerla |
 |-----------|----------------|
+| `OPENCLAW_URL` | `http://<IP-TAILSCALE-VPS>:18789` (es: `http://100.100.74.71:18789`) — usa `tailscale ip -4` |
 | `GEMINI_API_KEY` | [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
 | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) |
 | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) |
@@ -175,8 +219,8 @@ tailscale status
 # 2. Avvia OpenClaw (systemd)
 sudo systemctl start openclaw
 
-# 3. Verifica che OpenClaw sia attivo
-curl http://localhost:18789/health
+# 3. Verifica che OpenClaw sia attivo (bind=tailnet → usa IP Tailscale)
+curl http://$(tailscale ip -4):18789/health
 
 # 4. Avvia lo stack Docker (solo orchestrator, con network_mode: host)
 cd /opt/jarvis/cloud
@@ -186,8 +230,8 @@ docker compose -f docker-compose.cloud.yml up -d
 ### STEP 7 — Verifica
 
 ```bash
-# OpenClaw healthy? (bare-metal, porta 18789)
-curl http://localhost:18789/health
+# OpenClaw healthy? (bare-metal, bind=tailnet → IP Tailscale)
+curl http://$(tailscale ip -4):18789/health
 
 # Tailscale connesso alla tailnet? (host-level)
 tailscale status
@@ -195,8 +239,8 @@ tailscale status
 # Orchestrator healthy?
 curl http://localhost:5000/health
 
-# L'orchestrator raggiunge OpenClaw via localhost? (network_mode: host)
-docker exec jarvis_orchestrator curl -s http://localhost:18789/health
+# L'orchestrator raggiunge OpenClaw? (network_mode: host, via IP Tailscale)
+curl -s http://$(tailscale ip -4):18789/health
 
 # HA raggiungibile?
 curl -s -H "Authorization: Bearer <HASS_TOKEN>" \
