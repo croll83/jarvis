@@ -85,16 +85,33 @@ echo "OpenClaw: $(openclaw --version 2>/dev/null || echo 'installed')"
 # =============================================================================
 # Install Tailscale (host-level)
 # =============================================================================
-echo -e "${YELLOW}[4/8] Installing Tailscale...${NC}"
+echo -e "${YELLOW}[4/8] Installing and connecting Tailscale...${NC}"
 if ! command -v tailscale &> /dev/null; then
     curl -fsSL https://tailscale.com/install.sh | sh
     echo "Tailscale installed"
-    echo ""
-    echo -e "${YELLOW}IMPORTANTE: dopo lo script, connetti Tailscale:${NC}"
-    echo "   tailscale up --hostname=jarvis-cloud"
+fi
+
+# Connetti Tailscale (se non già connesso)
+if ! tailscale status &>/dev/null; then
+    if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
+        echo "Connecting Tailscale with auth key (headless)..."
+        tailscale up --hostname=jarvis-cloud --authkey="$TAILSCALE_AUTHKEY"
+        echo "Tailscale connected as jarvis-cloud"
+    else
+        echo ""
+        echo -e "${YELLOW}IMPORTANTE: Tailscale non connesso.${NC}"
+        echo "Opzione 1 (headless — consigliata per script):"
+        echo "   export TAILSCALE_AUTHKEY=tskey-auth-xxxxx"
+        echo "   # Genera da: https://login.tailscale.com/admin/settings/keys"
+        echo "   # Poi rilancia questo script"
+        echo ""
+        echo "Opzione 2 (interattiva):"
+        echo "   tailscale up --hostname=jarvis-cloud"
+        echo "   # Apri il link nel browser per autenticare"
+    fi
 else
-    echo "Tailscale already installed"
-    tailscale version
+    echo "Tailscale already connected"
+    tailscale status | head -3
 fi
 
 # =============================================================================
@@ -127,6 +144,10 @@ else
         chmod 440 /etc/sudoers.d/jarvis
     fi
 fi
+
+# Abilita linger per jarvis: permette sessione D-Bus e systemd --user
+# senza login attivo (necessario per OpenClaw gateway)
+loginctl enable-linger jarvis 2>/dev/null || true
 
 # =============================================================================
 # Setup Directories
@@ -204,7 +225,13 @@ User=jarvis
 Group=jarvis
 Environment=NODE_ENV=production
 Environment=HOME=/home/jarvis
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 ExecStart=${OPENCLAW_BIN} gateway run
+ExecStop=/bin/kill -SIGINT $MAINPID
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=15
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -213,8 +240,7 @@ SyslogIdentifier=openclaw
 
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/home/jarvis/.openclaw
+ReadWritePaths=/home/jarvis/.openclaw /home/jarvis/.npm /home/jarvis/.config
 PrivateTmp=true
 
 [Install]
@@ -234,9 +260,9 @@ echo "==============================================${NC}"
 echo ""
 echo "Next steps:"
 echo ""
-echo -e "1. ${YELLOW}Connetti Tailscale:${NC}"
+echo -e "1. ${YELLOW}Verifica Tailscale (se non connesso nello step 4):${NC}"
+echo "   tailscale status   # se non connesso:"
 echo "   tailscale up --hostname=jarvis-cloud"
-echo "   tailscale status   # verifica connessione"
 echo ""
 echo -e "2. ${YELLOW}Clone repository:${NC}"
 echo "   su - jarvis"
