@@ -188,7 +188,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$USER
-ExecStart=$(which openclaw) serve
+ExecStart=$(which openclaw) gateway run
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production

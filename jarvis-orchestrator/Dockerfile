@@ -15,6 +15,7 @@ WORKDIR /app
 # Installa dipendenze di sistema (per websockets, audio, resemblyzer)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    python3-dev \
     libsndfile1 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
