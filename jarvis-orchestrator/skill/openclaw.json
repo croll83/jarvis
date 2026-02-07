@@ -24,7 +24,7 @@
   },
 
   "tools": {
-    "baseUrl": "http://orchestrator:5000/api/tools",
+    "baseUrl": "${JARVIS_ORCHESTRATOR_URL:-http://localhost:5000}/api/tools",
     "auth": {
       "type": "bearer",
       "token": "${OPENCLAW_GATEWAY_TOKEN}"

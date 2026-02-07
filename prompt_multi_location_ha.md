@@ -802,7 +802,8 @@ services:
       # HA URLs ora vengono dal database, non più da env
       # Ma manteniamo per backward compatibility / fallback
       - HASS_URL_DEFAULT=http://homeassistant:8123
-      - OPENCLAW_URL=http://openclaw:18789
+      # OpenClaw gira bare-metal su VM separata (non in Docker)
+      - OPENCLAW_URL=${OPENCLAW_URL:-http://jarvis-openclaw:18789}
     volumes:
       - ./data:/app/data
       - ./voice_models:/app/voice_models

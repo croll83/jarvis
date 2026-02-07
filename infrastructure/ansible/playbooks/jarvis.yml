@@ -142,11 +142,13 @@
         msg: "JARVIS Orchestrator raggiungibile su http://localhost:5000"
 
     # -----------------------------------------------------------------
-    # ATTESA OPENCLAW
+    # ATTESA OPENCLAW (bare-metal, su VM separata o stesso host)
     # -----------------------------------------------------------------
+    # Cloud: OpenClaw gira sullo stesso host (bare-metal, systemd)
+    # Locale: OpenClaw gira su una VM separata (raggiungibile via Tailscale o LAN)
     - name: Attendi che OpenClaw sia healthy
       ansible.builtin.uri:
-        url: "http://localhost:18789/health"
+        url: "{{ openclaw_url | default('http://localhost:18789') }}/health"
         method: GET
         status_code: 200
       register: openclaw_health
@@ -157,7 +159,7 @@
 
     - name: "OpenClaw online"
       ansible.builtin.debug:
-        msg: "OpenClaw raggiungibile su http://localhost:18789"
+        msg: "OpenClaw raggiungibile su {{ openclaw_url | default('http://localhost:18789') }}"
       when: (openclaw_health.status | default(0)) == 200
 
     - name: "OpenClaw non disponibile (opzionale)"
@@ -241,7 +243,7 @@
 
           Servizi attivi:
             - Orchestrator + Admin UI: http://localhost:5000/admin
-            - OpenClaw (Gemini):       http://localhost:18789
+            - OpenClaw (Gemini):       {{ openclaw_url | default('http://localhost:18789') }}
           {% if deploy_type == 'lxc_gpu' and ai_backend == 'local' %}
             - Ollama API:              http://localhost:11434
             - Whisper STT:             http://localhost:9000
@@ -253,5 +255,5 @@
             3. Configura location Home Assistant
             4. Importa entity map
             5. Registra profili vocali
-            6. Configura OpenClaw: Gemini API key + Telegram bot
+            6. Configura OpenClaw (VM separata): openclaw onboard + skill symlink
           ================================================================

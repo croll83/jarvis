@@ -3,6 +3,7 @@
 Guida completa per il deploy di JARVIS su un VPS. Nessuna GPU richiesta: AI via API esterne
 (Gemini 3 Pro via OpenClaw, Groq per STT, OpenRouter per routing).
 Tailscale gira come container Docker per raggiungere Home Assistant.
+**OpenClaw gira bare-metal** (Node.js, non in Docker) sulla stessa macchina.
 
 ---
 
@@ -21,13 +22,19 @@ Tailscale gira come container Docker per raggiungere Home Assistant.
               |  VPS (Hetzner / Contabo / simile)                  |
               |  2 vCPU, 4 GB RAM, 40 GB SSD                      |
               |                                                     |
+              |  OpenClaw (bare-metal, systemd)                     |
+              |  :18789 — Gemini 3 Pro — Telegram bot               |
+              |  ~/.openclaw/skills/jarvis-orchestrator -> skill/    |
+              |        ^                                            |
+              |        | http://host.docker.internal:18789           |
+              |        |                                            |
               |  docker-compose.cloud.yml                           |
               |  +-----------------------------------------------+ |
               |  |              jarvis_cloud                      | |
               |  |                                                | |
-              |  |  tailscale ──► orchestrator ──► openclaw       | |
-              |  |  (VPN mesh)    :5000 (FastAPI)   :18789        | |
-              |  |                AI_BACKEND=api    Gemini 3 Pro  | |
+              |  |  tailscale ──► orchestrator                    | |
+              |  |  (VPN mesh)    :5000 (FastAPI)                 | |
+              |  |                AI_BACKEND=api                  | |
               |  +-----------------------------------------------+ |
               +--------+-------------------------------------------+
                        | Tailscale (100.x.x.x)
@@ -38,15 +45,18 @@ Tailscale gira come container Docker per raggiungere Home Assistant.
               +-------------------+        +-------------------+
 ```
 
-### Ordine di boot dei container
+### Ordine di boot
 
 ```
-1. tailscale       → si connette alla tailnet, diventa healthy
-2. orchestrator    → aspetta tailscale healthy, poi parte
-3. openclaw        → aspetta orchestrator healthy, poi parte
+1. openclaw (systemd)  → servizio bare-metal, parte al boot del VPS
+2. tailscale (Docker)  → si connette alla tailnet, diventa healthy
+3. orchestrator (Docker) → depends_on tailscale healthy, poi parte
+                           raggiunge OpenClaw via host.docker.internal:18789
 ```
 
-Docker Compose gestisce tutto automaticamente con `depends_on` + `service_healthy`.
+OpenClaw e un processo systemd che parte prima di Docker.
+Docker Compose gestisce la dipendenza tailscale → orchestrator con `depends_on` + `service_healthy`.
+L'orchestrator raggiunge OpenClaw tramite `host.docker.internal` (mappato via `extra_hosts` nel compose).
 
 ---
 
@@ -67,9 +77,18 @@ ssh root@<vps-ip>
 curl -fsSL https://raw.githubusercontent.com/croll83/jarvis/main/cloud/scripts/setup-vps.sh | bash
 ```
 
-Lo script installa: Docker + Compose, Nginx + Certbot, utente `jarvis`, firewall (SSH/HTTP/HTTPS/Tailscale UDP), 2GB swap, log rotation Docker.
+Lo script esegue 7 step:
+
+1. Aggiornamento sistema
+2. Installazione Docker + Compose
+3. Installazione Node.js 22 + OpenClaw (`npm install -g openclaw`)
+4. Installazione Nginx + Certbot
+5. Creazione utente `jarvis` (con gruppo docker)
+6. Creazione directory (`/opt/jarvis`, `~/.openclaw/skills`, ecc.) + tool utili
+7. Configurazione firewall (SSH/HTTP/HTTPS/Tailscale UDP), swap 2GB, log rotation Docker, **servizio systemd OpenClaw**
 
 > **Tailscale NON viene installato sull'host** — gira come container Docker.
+> **OpenClaw gira bare-metal** — installato globalmente via npm, gestito da systemd.
 
 ### STEP 2 — Clone repository
 
@@ -78,7 +97,30 @@ su - jarvis
 git clone https://github.com/croll83/jarvis.git /opt/jarvis
 ```
 
-### STEP 3 — Configura .env
+### STEP 3 — Symlink skill per OpenClaw
+
+```bash
+ln -s /opt/jarvis/jarvis-orchestrator/skill ~/.openclaw/skills/jarvis-orchestrator
+```
+
+Questo rende la skill JARVIS visibile a OpenClaw. La directory `~/.openclaw/skills/` contiene symlink alle skill installate.
+
+### STEP 4 — OpenClaw onboarding
+
+```bash
+openclaw onboard
+```
+
+Il wizard interattivo configura:
+- **Identita**: nome dell'istanza, descrizione
+- **API key Gemini**: la chiave per Gemini 3 Pro
+- **Gateway token**: il token per l'autenticazione skill (salvalo, servira nel `.env`)
+- **Telegram bot**: token del bot OpenClaw da @BotFather
+- **Skill discovery**: rileva automaticamente `jarvis-orchestrator` dal symlink
+
+> **IMPORTANTE**: il `OPENCLAW_GATEWAY_TOKEN` nel `.env` DEVE essere lo stesso valore usato durante `openclaw onboard`.
+
+### STEP 5 — Configura .env
 
 ```bash
 cd /opt/jarvis/cloud
@@ -93,7 +135,7 @@ Variabili obbligatorie da compilare:
 | `GEMINI_API_KEY` | [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
 | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) |
 | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) |
-| `OPENCLAW_GATEWAY_TOKEN` | `openssl rand -hex 32` |
+| `OPENCLAW_GATEWAY_TOKEN` | Stesso valore usato in `openclaw onboard` |
 | `OPENCLAW_TELEGRAM_BOT_TOKEN` | @BotFather su Telegram |
 | `JARVIS_APPROVAL_BOT_TOKEN` | @BotFather (secondo bot, separato) |
 | `JARVIS_APPROVAL_CHAT_ID` | Scrivi al bot, poi `curl https://api.telegram.org/bot<TOKEN>/getUpdates` |
@@ -101,23 +143,36 @@ Variabili obbligatorie da compilare:
 | `HASS_URL` | `http://100.x.x.x:8123` (IP Tailscale del tuo HA, senza `/api`) |
 | `JARVIS_HASS_TOKEN` | HA → Profilo → Token di lunga durata |
 
-### STEP 4 — Avvia lo stack
+> **Nota**: OpenClaw gira bare-metal, NON in Docker. Il `.env` viene letto solo dai container Docker (orchestrator). OpenClaw ha la sua configurazione in `~/.openclaw/`.
+
+### STEP 6 — Avvia OpenClaw + stack Docker
 
 ```bash
+# 1. Avvia OpenClaw (systemd)
+sudo systemctl start openclaw
+
+# 2. Verifica che OpenClaw sia attivo
+curl http://localhost:18789/health
+
+# 3. Avvia lo stack Docker (tailscale + orchestrator)
+cd /opt/jarvis/cloud
 docker compose -f docker-compose.cloud.yml up -d
 ```
 
-### STEP 5 — Verifica
+### STEP 7 — Verifica
 
 ```bash
+# OpenClaw healthy? (bare-metal, porta 18789)
+curl http://localhost:18789/health
+
 # Tailscale connesso alla tailnet?
 docker exec jarvis_tailscale tailscale status
 
 # Orchestrator healthy?
 curl http://localhost:5000/health
 
-# OpenClaw healthy?
-curl http://localhost:18789/health
+# L'orchestrator raggiunge OpenClaw via host.docker.internal?
+docker exec jarvis_orchestrator curl -s http://host.docker.internal:18789/health
 
 # HA raggiungibile dal container?
 docker exec jarvis_orchestrator curl -s \
@@ -125,19 +180,20 @@ docker exec jarvis_orchestrator curl -s \
   http://100.x.x.x:8123/api/ | head -c 100
 
 # Logs in tempo reale
-docker compose -f docker-compose.cloud.yml logs -f
+docker compose -f docker-compose.cloud.yml logs -f   # Docker (tailscale + orchestrator)
+journalctl -u openclaw -f                             # OpenClaw (systemd)
 ```
 
-### STEP 6 — Telegram webhook
+### STEP 8 — Telegram webhook
 
-Il webhook Telegram è gestito da **OpenClaw** (non dall'orchestrator).
+Il webhook Telegram e gestito da **OpenClaw** (non dall'orchestrator).
 Configura il webhook del bot OpenClaw puntando al tuo dominio:
 
 ```bash
 curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
 ```
 
-### STEP 7 — SSL con Nginx (dopo aver configurato il DNS)
+### STEP 9 — SSL con Nginx (dopo aver configurato il DNS)
 
 ```bash
 # Da root
@@ -163,7 +219,7 @@ I parametri LLM sono in `global_preferences` nel database. Modificabili dalla da
 
 ### Parametri restart-required (.env)
 
-Questi richiedono riavvio del container:
+Questi richiedono riavvio del container orchestrator (`docker compose restart orchestrator`):
 
 ```env
 # Timeouts (secondi)
@@ -205,6 +261,15 @@ Per ricaricare senza riavvio:
 curl -X POST http://localhost:5000/admin/prompts/reload
 ```
 
+### Dashboard OpenClaw
+
+OpenClaw espone una dashboard web accessibile su:
+
+- **Locale** (dal VPS): `http://localhost:18789`
+- **Via Tailscale** (da altri dispositivi sulla tailnet): `http://jarvis-cloud:18789` oppure `http://100.x.x.x:18789`
+
+La porta 18789 NON e esposta su internet (non e in Docker, e un processo locale). E raggiungibile solo da localhost o via Tailscale.
+
 ---
 
 ## Costi Stimati (uso personale)
@@ -224,30 +289,73 @@ curl -X POST http://localhost:5000/admin/prompts/reload
 | Porta | Servizio | Accesso |
 |-------|----------|---------|
 | 5000 | Orchestrator + Admin UI | Pubblico (dietro nginx) |
-| 18789 | OpenClaw | Solo interno (Docker) |
-| 41641/udp | Tailscale NAT traversal | WAN (gestito dal container) |
+| 18789 | OpenClaw (bare-metal) | Solo localhost + Tailscale (NO Docker, NO internet) |
+| 41641/udp | Tailscale NAT traversal | WAN (gestito dal container Docker) |
 
 ---
 
 ## Monitoring
 
 ```bash
-# Stato di tutti i container
+# Stato OpenClaw (systemd)
+systemctl status openclaw
+journalctl -u openclaw -f --no-pager
+
+# Stato container Docker
 docker compose -f docker-compose.cloud.yml ps
 
-# Logs di un servizio
+# Logs di un servizio Docker
 docker compose -f docker-compose.cloud.yml logs -f orchestrator
 
 # Health dei servizi interni
 curl http://localhost:5000/health/services
 
-# Risorse
+# Risorse container Docker
 docker stats
+
+# Risorse OpenClaw (bare-metal)
+ps aux | grep openclaw
 ```
 
 ---
 
 ## Troubleshooting
+
+### OpenClaw non parte
+
+```bash
+# Stato del servizio systemd
+systemctl status openclaw
+
+# Logs dettagliati
+journalctl -u openclaw -e --no-pager
+
+# Verifica che Node.js sia installato
+node -v  # deve essere >= 22
+
+# Verifica che openclaw sia installato globalmente
+openclaw --version
+
+# Verifica che la skill sia linkata
+ls -la ~/.openclaw/skills/
+# deve mostrare: jarvis-orchestrator -> /opt/jarvis/jarvis-orchestrator/skill
+
+# Riavvia il servizio
+sudo systemctl restart openclaw
+```
+
+### L'orchestrator non raggiunge OpenClaw
+
+```bash
+# Dal container orchestrator, testa la connessione
+docker exec jarvis_orchestrator curl -v http://host.docker.internal:18789/health
+
+# Verifica che OpenClaw sia attivo sulla porta 18789
+curl http://localhost:18789/health
+
+# Verifica che host.docker.internal sia mappato nel compose (extra_hosts)
+docker exec jarvis_orchestrator cat /etc/hosts | grep host.docker.internal
+```
 
 ### Tailscale non si connette
 
@@ -315,7 +423,15 @@ docker compose -f docker-compose.cloud.yml restart orchestrator
 
 ## Aggiornamenti
 
+OpenClaw e lo stack Docker si aggiornano separatamente:
+
 ```bash
+# 1. Aggiorna OpenClaw (bare-metal)
+sudo npm update -g openclaw
+sudo systemctl restart openclaw
+curl http://localhost:18789/health
+
+# 2. Aggiorna JARVIS (orchestrator + config)
 cd /opt/jarvis
 git pull
 cd cloud
@@ -323,6 +439,8 @@ docker compose -f docker-compose.cloud.yml down
 docker compose -f docker-compose.cloud.yml build --no-cache
 docker compose -f docker-compose.cloud.yml up -d
 ```
+
+> **Nota**: l'aggiornamento di OpenClaw non richiede rebuild Docker. L'aggiornamento Docker non tocca OpenClaw.
 
 ---
 

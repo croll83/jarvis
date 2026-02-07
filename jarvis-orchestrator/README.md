@@ -5,51 +5,47 @@ Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 
 ## Architettura
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                            JARVIS SYSTEM                                     │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │  BRAIN — OpenClaw + Gemini 3 Pro                                      │  │
-│  │  Reasoning, web search, Telegram, multi-turn conversations            │  │
-│  │  Chiama JARVIS Orchestrator come Skill per domotica/memoria/security  │  │
-│  └───────────────────────────────┬────────────────────────────────────────┘  │
-│                                  │ REST /api/tools/*                         │
-│                                  ▼                                           │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │  SKILL — JARVIS Orchestrator (FastAPI :5000)                          │  │
-│  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌─────────────┐  │  │
-│  │  │ Home Control │ │  Speaker ID  │ │   Security   │ │   Memory    │  │  │
-│  │  │ Multi-HA     │ │  Resemblyzer │ │   L1-L4      │ │ Stratificata│  │  │
-│  │  └──────────────┘ └──────────────┘ └──────────────┘ └─────────────┘  │  │
-│  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌─────────────┐  │  │
-│  │  │ Entity Resol │ │     TTS      │ │  Audit Log   │ │ Admin /admin│  │  │
-│  │  │ name→entity  │ │ Alexa/Speak  │ │  Trail       │ │  Dashboard  │  │  │
-│  │  └──────────────┘ └──────────────┘ └──────────────┘ └─────────────┘  │  │
-│  └────────────────────────────────┬───────────────────────────────────────┘  │
-│                                   │                                          │
-│          ┌────────────────────────┼────────────────────┐                     │
-│          ▼                        ▼                    ▼                     │
-│  ┌──────────────┐        ┌──────────────┐     ┌──────────────┐              │
-│  │   Ollama     │        │   Whisper    │     │Home Assistant│              │
-│  │  :11434      │        │   :9000      │     │   :8123      │              │
-│  │ Qwen 7B Q4  │        │ faster-whis  │     │ (N locations)│              │
-│  │ nomic-embed  │        │  GPU STT     │     │              │              │
-│  └──────────────┘        └──────────────┘     └──────────────┘              │
-│                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │  JARVIS Approval Bot — Telegram bot separato per conferme L3          │  │
-│  │  (locks, alarm, cameras) — canale isolato da OpenClaw                 │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  OpenClaw (VM separata / bare-metal)                         │
+│  Gemini 3 Pro — Reasoning, web search, Telegram, multi-turn │
+│  Chiama JARVIS Orchestrator come Skill via REST              │
+│  :18789 (raggiungibile via Tailscale o LAN)                  │
+└──────────────────────────┬───────────────────────────────────┘
+                           │ REST /api/tools/*
+                           ▼
+┌──────────────────────────────────────────────────────────────┐
+│  JARVIS Docker Stack (VM GPU / VPS)                          │
+│                                                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │  SKILL — JARVIS Orchestrator (FastAPI :5000)           │  │
+│  │  ┌─────────────┐ ┌─────────────┐ ┌──────────────┐     │  │
+│  │  │ Home Control│ │ Speaker ID  │ │  Security    │     │  │
+│  │  │ Multi-HA    │ │ Resemblyzer │ │  L1-L4       │     │  │
+│  │  └─────────────┘ └─────────────┘ └──────────────┘     │  │
+│  │  ┌─────────────┐ ┌─────────────┐ ┌──────────────┐     │  │
+│  │  │ Memory      │ │ TTS/Entity  │ │ Admin /admin │     │  │
+│  │  │ Stratificata│ │ Resolve     │ │ Dashboard    │     │  │
+│  │  └─────────────┘ └─────────────┘ └──────────────┘     │  │
+│  └───────────────────────┬────────────────────────────────┘  │
+│                          │                                    │
+│      ┌───────────────────┼──────────────────┐                │
+│      ▼                   ▼                  ▼                │
+│  ┌──────────┐    ┌──────────────┐   ┌──────────────┐        │
+│  │ Ollama   │    │   Whisper    │   │Home Assistant │        │
+│  │ :11434   │    │   :9000      │   │   :8123       │        │
+│  │ Qwen 7B  │    │ faster-whis  │   │ (N locations) │        │
+│  └──────────┘    └──────────────┘   └──────────────┘        │
+│                                                               │
+│  JARVIS Approval Bot — Telegram bot separato per conferme L3 │
+│  (locks, alarm, cameras) — canale isolato da OpenClaw        │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 **Ruoli:**
 
 | Componente | Ruolo | Modello |
 |------------|-------|---------|
-| **OpenClaw** | Brain: reasoning, web search, Telegram, multi-turn | Gemini 3 Pro |
+| **OpenClaw** | Brain: reasoning, web search, Telegram, multi-turn (VM separata, bare-metal) | Gemini 3 Pro |
 | **JARVIS Orchestrator** | Skill/Executor: domotica, voice, speaker ID, security | FastAPI |
 | **Qwen 7B Q4** | Pre-routing locale per domotica fast path + offline fallback | Ollama |
 
@@ -232,7 +228,7 @@ GEMINI_API_KEY=AIza_xxx             # Reasoning + immagini
 # ============================
 # OPENCLAW
 # ============================
-OPENCLAW_URL=http://openclaw:18789
+OPENCLAW_URL=http://jarvis-openclaw:18789  # VM separata via Tailscale/LAN
 OPENCLAW_GATEWAY_TOKEN=xxx          # Token condiviso OpenClaw <-> Orchestrator
 
 # ============================
@@ -281,9 +277,11 @@ Definiti in `docker-compose.yml` nella root del progetto:
 | `ollama` | ollama/ollama | 11434 | Qwen 7B Q4 + nomic-embed-text (GPU) |
 | `whisper` | faster-whisper-server | 9000 | Speech-to-text (GPU) |
 | `orchestrator` | build locale | 5000 | JARVIS Skill (questo progetto) |
-| `openclaw` | openclaw/openclaw | 18789 | Brain (Gemini 3 Pro) |
+| `tailscale` | tailscale/tailscale | - | VPN mesh per HA remoti |
 | `postgres` | postgres:16-alpine | 5432 | Database principale |
 | `mongo` | mongo:7 | 27017 | Database side-projects |
+
+**OpenClaw** gira bare-metal su VM separata (non in Docker) per isolamento di sicurezza. Porta 18789.
 
 Profilo opzionale `tools` per Adminer (DB web UI) sulla porta 8080.
 
