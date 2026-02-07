@@ -23,8 +23,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copia requirements prima (per cache Docker)
 COPY requirements.txt .
 
-# Installa dipendenze Python
-RUN pip install --no-cache-dir -r requirements.txt
+# Installa PyTorch CPU-only PRIMA delle altre dipendenze
+# Evita che resemblyzer/chromadb tirino dentro nvidia-cuda (~15 GB)
+RUN pip install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir onnxruntime && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copia il codice
 COPY . .
