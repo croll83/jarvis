@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="it" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="/assets/favicon.png">
+    <title>JARVIS - Login</title>
+    <style>
+        :root {
+            --bg-primary: #0a0a12;
+            --bg-secondary: #12121f;
+            --bg-card: #1a1a2e;
+            --bg-input: #0d0d18;
+            --border-color: rgba(255,255,255,0.08);
+            --text-primary: #f5f5f7;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent: #e94560;
+            --accent-hover: #f43f5e;
+            --accent-glow: rgba(233,69,96,0.3);
+            --success: #22c55e;
+            --error: #ef4444;
+            --shadow-lg: 0 8px 24px rgba(0,0,0,0.6);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .login-container {
+            width: 100%;
+            max-width: 420px;
+            padding: 2rem;
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .logo-icon {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, var(--accent), #ff6b6b);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 2.5rem;
+            box-shadow: 0 0 40px var(--accent-glow);
+        }
+
+        .logo h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            letter-spacing: 2px;
+        }
+
+        .logo p {
+            color: var(--text-secondary);
+            margin-top: 0.5rem;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 2rem;
+            box-shadow: var(--shadow-lg);
+            border: 1px solid var(--border-color);
+        }
+
+        .card-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.875rem 1rem;
+            font-size: 1rem;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            color: var(--text-primary);
+            transition: all 0.2s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .form-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 0.875rem 1.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px var(--accent-glow);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            margin-top: 0.75rem;
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-input);
+        }
+
+        .divider {
+            display: flex;
+            align-items: center;
+            margin: 1.5rem 0;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .divider::before,
+        .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border-color);
+        }
+
+        .divider span {
+            padding: 0 1rem;
+        }
+
+        .alert {
+            padding: 0.875rem 1rem;
+            border-radius: 10px;
+            margin-bottom: 1.25rem;
+            font-size: 0.875rem;
+        }
+
+        .alert-error {
+            background: rgba(239,68,68,0.1);
+            border: 1px solid rgba(239,68,68,0.2);
+            color: var(--error);
+        }
+
+        .alert-success {
+            background: rgba(34,197,94,0.1);
+            border: 1px solid rgba(34,197,94,0.2);
+            color: var(--success);
+        }
+
+        .alert-info {
+            background: rgba(59,130,246,0.1);
+            border: 1px solid rgba(59,130,246,0.2);
+            color: #60a5fa;
+        }
+
+        .link {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 0.875rem;
+        }
+
+        .link:hover {
+            text-decoration: underline;
+        }
+
+        .text-center {
+            text-align: center;
+        }
+
+        .mt-1 { margin-top: 1rem; }
+        .hidden { display: none !important; }
+
+        .setup-steps {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .step {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--border-color);
+            transition: all 0.3s;
+        }
+
+        .step.active {
+            background: var(--accent);
+            width: 24px;
+            border-radius: 4px;
+        }
+
+        .step.completed {
+            background: var(--success);
+        }
+
+        .passkey-btn {
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .passkey-btn:hover {
+            border-color: var(--accent);
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .otp-inputs {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+        }
+
+        .otp-input {
+            width: 48px;
+            height: 56px;
+            text-align: center;
+            font-size: 1.5rem;
+            font-weight: 600;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            color: var(--text-primary);
+        }
+
+        .otp-input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">
+            <div class="logo-icon">J</div>
+            <h1>JARVIS</h1>
+            <p id="logoSubtitle">Just A Rather Very Intelligent System</p>
+        </div>
+
+        <!-- LOGIN FORM -->
+        <div id="loginForm" class="card">
+            <h2 class="card-title">Accedi</h2>
+
+            <div id="loginError" class="alert alert-error hidden"></div>
+
+            <form onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label class="form-label" for="email">Email</label>
+                    <input type="email" id="email" class="form-input" placeholder="nome@esempio.com" required>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="password">Password</label>
+                    <input type="password" id="password" class="form-input" placeholder="La tua password" required>
+                </div>
+
+                <button type="submit" class="btn btn-primary" id="loginBtn">
+                    Accedi
+                </button>
+            </form>
+
+            <div id="passkeySection">
+                <div class="divider"><span>oppure</span></div>
+                <button type="button" class="btn passkey-btn" onclick="handlePasskeyLogin()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 10v4m0 0v4m0-4h4m-4 0H8"/>
+                        <rect x="3" y="11" width="18" height="11" rx="2"/>
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                    </svg>
+                    Accedi con Passkey
+                </button>
+            </div>
+
+            <div class="text-center mt-1">
+                <a href="#" class="link" onclick="showForgotPassword()">Password dimenticata?</a>
+            </div>
+        </div>
+
+        <!-- SETUP FORM (First time) -->
+        <div id="setupForm" class="card hidden">
+            <div class="setup-steps">
+                <div class="step active" id="step1"></div>
+                <div class="step" id="step2"></div>
+            </div>
+
+            <h2 class="card-title">Benvenuto in JARVIS</h2>
+            <p class="text-center" style="color: var(--text-secondary); margin-bottom: 1.5rem;">
+                Crea il tuo account amministratore
+            </p>
+
+            <div id="setupError" class="alert alert-error hidden"></div>
+
+            <form onsubmit="handleSetup(event)">
+                <div class="form-group">
+                    <label class="form-label" for="setupName">Nome</label>
+                    <input type="text" id="setupName" class="form-input" placeholder="Come ti chiami?" required>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="setupEmail">Email</label>
+                    <input type="email" id="setupEmail" class="form-input" placeholder="nome@esempio.com" required>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="setupPassword">Password</label>
+                    <input type="password" id="setupPassword" class="form-input" placeholder="Minimo 8 caratteri" minlength="8" required>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="setupPasswordConfirm">Conferma Password</label>
+                    <input type="password" id="setupPasswordConfirm" class="form-input" placeholder="Ripeti la password" required>
+                </div>
+
+                <button type="submit" class="btn btn-primary" id="setupBtn">
+                    Crea Account Admin
+                </button>
+            </form>
+        </div>
+
+        <!-- FORGOT PASSWORD -->
+        <div id="forgotForm" class="card hidden">
+            <h2 class="card-title">Reset Password</h2>
+            <p class="text-center" style="color: var(--text-secondary); margin-bottom: 1.5rem;">
+                Inserisci la tua email per ricevere un codice di reset
+            </p>
+
+            <div id="forgotError" class="alert alert-error hidden"></div>
+            <div id="forgotSuccess" class="alert alert-success hidden"></div>
+
+            <form onsubmit="handleForgotPassword(event)">
+                <div class="form-group">
+                    <label class="form-label" for="forgotEmail">Email</label>
+                    <input type="email" id="forgotEmail" class="form-input" placeholder="nome@esempio.com" required>
+                </div>
+
+                <button type="submit" class="btn btn-primary" id="forgotBtn">
+                    Invia Codice Reset
+                </button>
+            </form>
+
+            <div class="text-center mt-1">
+                <a href="#" class="link" onclick="showLogin()">Torna al login</a>
+            </div>
+        </div>
+
+        <!-- RESET PASSWORD WITH OTP -->
+        <div id="resetForm" class="card hidden">
+            <h2 class="card-title">Nuova Password</h2>
+            <p class="text-center" style="color: var(--text-secondary); margin-bottom: 1.5rem;">
+                Inserisci il codice ricevuto via email
+            </p>
+
+            <div id="resetError" class="alert alert-error hidden"></div>
+
+            <form onsubmit="handleResetPassword(event)">
+                <div class="form-group">
+                    <label class="form-label">Codice OTP</label>
+                    <input type="text" id="resetToken" class="form-input" placeholder="Incolla il codice ricevuto" required>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="newPassword">Nuova Password</label>
+                    <input type="password" id="newPassword" class="form-input" placeholder="Minimo 8 caratteri" minlength="8" required>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="newPasswordConfirm">Conferma Password</label>
+                    <input type="password" id="newPasswordConfirm" class="form-input" placeholder="Ripeti la password" required>
+                </div>
+
+                <button type="submit" class="btn btn-primary" id="resetBtn">
+                    Imposta Nuova Password
+                </button>
+            </form>
+
+            <div class="text-center mt-1">
+                <a href="#" class="link" onclick="showLogin()">Torna al login</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentEmail = '';
+        let passkeysAvailable = false;
+
+        // =======================
+        // INIT
+        // =======================
+        async function init() {
+            try {
+                // Check setup status
+                const res = await fetch('/api/auth/setup-status');
+                const data = await res.json();
+
+                if (data.needs_setup) {
+                    showSetup();
+                } else {
+                    showLogin();
+
+                    // Check passkeys availability
+                    const pkRes = await fetch('/api/auth/passkeys/available');
+                    const pkData = await pkRes.json();
+                    passkeysAvailable = pkData.available && window.PublicKeyCredential;
+
+                    if (!passkeysAvailable) {
+                        document.getElementById('passkeySection').classList.add('hidden');
+                    }
+                }
+            } catch (e) {
+                console.error('Init error:', e);
+                showLogin();
+            }
+        }
+
+        // =======================
+        // VIEW SWITCHING
+        // =======================
+        function hideAll() {
+            ['loginForm', 'setupForm', 'forgotForm', 'resetForm'].forEach(id => {
+                document.getElementById(id).classList.add('hidden');
+            });
+        }
+
+        function showLogin() {
+            hideAll();
+            document.getElementById('loginForm').classList.remove('hidden');
+            document.getElementById('logoSubtitle').textContent = 'Just A Rather Very Intelligent System';
+        }
+
+        function showSetup() {
+            hideAll();
+            document.getElementById('setupForm').classList.remove('hidden');
+            document.getElementById('logoSubtitle').textContent = 'Setup Iniziale';
+        }
+
+        function showForgotPassword() {
+            hideAll();
+            document.getElementById('forgotForm').classList.remove('hidden');
+            document.getElementById('logoSubtitle').textContent = 'Reset Password';
+        }
+
+        function showResetPassword() {
+            hideAll();
+            document.getElementById('resetForm').classList.remove('hidden');
+            document.getElementById('logoSubtitle').textContent = 'Nuova Password';
+        }
+
+        // =======================
+        // ERROR HANDLING
+        // =======================
+        function showError(formId, message) {
+            const el = document.getElementById(formId + 'Error');
+            el.textContent = message;
+            el.classList.remove('hidden');
+        }
+
+        function hideError(formId) {
+            document.getElementById(formId + 'Error').classList.add('hidden');
+        }
+
+        function setLoading(btnId, loading) {
+            const btn = document.getElementById(btnId);
+            if (loading) {
+                btn.disabled = true;
+                btn.innerHTML = '<div class="spinner"></div> Attendere...';
+            } else {
+                btn.disabled = false;
+            }
+        }
+
+        // =======================
+        // SETUP
+        // =======================
+        async function handleSetup(e) {
+            e.preventDefault();
+            hideError('setup');
+
+            const name = document.getElementById('setupName').value;
+            const email = document.getElementById('setupEmail').value;
+            const password = document.getElementById('setupPassword').value;
+            const passwordConfirm = document.getElementById('setupPasswordConfirm').value;
+
+            if (password !== passwordConfirm) {
+                showError('setup', 'Le password non coincidono');
+                return;
+            }
+
+            if (password.length < 8) {
+                showError('setup', 'La password deve essere di almeno 8 caratteri');
+                return;
+            }
+
+            setLoading('setupBtn', true);
+
+            try {
+                const res = await fetch('/api/auth/setup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, email, password })
+                });
+
+                if (res.ok) {
+                    window.location.href = '/admin';
+                } else {
+                    const data = await res.json();
+                    showError('setup', data.detail || 'Errore durante il setup');
+                }
+            } catch (e) {
+                showError('setup', 'Errore di connessione');
+            }
+
+            setLoading('setupBtn', false);
+            document.getElementById('setupBtn').textContent = 'Crea Account Admin';
+        }
+
+        // =======================
+        // LOGIN
+        // =======================
+        async function handleLogin(e) {
+            e.preventDefault();
+            hideError('login');
+
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+
+            setLoading('loginBtn', true);
+
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+
+                if (res.ok) {
+                    window.location.href = '/admin';
+                } else {
+                    const data = await res.json();
+                    showError('login', data.detail || 'Credenziali non valide');
+                }
+            } catch (e) {
+                showError('login', 'Errore di connessione');
+            }
+
+            setLoading('loginBtn', false);
+            document.getElementById('loginBtn').textContent = 'Accedi';
+        }
+
+        // =======================
+        // PASSKEY LOGIN
+        // =======================
+        async function handlePasskeyLogin() {
+            if (!passkeysAvailable) {
+                showError('login', 'Passkeys non disponibili su questo dispositivo');
+                return;
+            }
+
+            hideError('login');
+
+            try {
+                // Start authentication
+                const startRes = await fetch('/api/auth/passkeys/login/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+
+                if (!startRes.ok) {
+                    throw new Error('Failed to start passkey auth');
+                }
+
+                const options = await startRes.json();
+
+                // Convert base64 to ArrayBuffer
+                options.challenge = base64ToArrayBuffer(options.challenge);
+                if (options.allowCredentials) {
+                    options.allowCredentials = options.allowCredentials.map(c => ({
+                        ...c,
+                        id: base64ToArrayBuffer(c.id)
+                    }));
+                }
+
+                // Get credential
+                const credential = await navigator.credentials.get({
+                    publicKey: options
+                });
+
+                // Finish authentication
+                const finishRes = await fetch('/api/auth/passkeys/login/finish', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        credential: {
+                            id: credential.id,
+                            rawId: arrayBufferToBase64(credential.rawId),
+                            type: credential.type,
+                            response: {
+                                authenticatorData: arrayBufferToBase64(credential.response.authenticatorData),
+                                clientDataJSON: arrayBufferToBase64(credential.response.clientDataJSON),
+                                signature: arrayBufferToBase64(credential.response.signature)
+                            }
+                        }
+                    })
+                });
+
+                if (finishRes.ok) {
+                    window.location.href = '/admin';
+                } else {
+                    const data = await finishRes.json();
+                    showError('login', data.detail || 'Autenticazione passkey fallita');
+                }
+            } catch (e) {
+                console.error('Passkey error:', e);
+                if (e.name === 'NotAllowedError') {
+                    showError('login', 'Autenticazione annullata');
+                } else {
+                    showError('login', 'Errore durante autenticazione passkey');
+                }
+            }
+        }
+
+        // =======================
+        // FORGOT PASSWORD
+        // =======================
+        async function handleForgotPassword(e) {
+            e.preventDefault();
+            hideError('forgot');
+
+            const email = document.getElementById('forgotEmail').value;
+            currentEmail = email;
+
+            setLoading('forgotBtn', true);
+
+            try {
+                const res = await fetch('/api/auth/request-otp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, purpose: 'reset_password' })
+                });
+
+                if (res.ok) {
+                    document.getElementById('forgotSuccess').textContent =
+                        'Se l\'email esiste, riceverai un codice di reset.';
+                    document.getElementById('forgotSuccess').classList.remove('hidden');
+                    setTimeout(() => showResetPassword(), 2000);
+                } else {
+                    showError('forgot', 'Errore durante l\'invio');
+                }
+            } catch (e) {
+                showError('forgot', 'Errore di connessione');
+            }
+
+            setLoading('forgotBtn', false);
+            document.getElementById('forgotBtn').textContent = 'Invia Codice Reset';
+        }
+
+        // =======================
+        // RESET PASSWORD
+        // =======================
+        async function handleResetPassword(e) {
+            e.preventDefault();
+            hideError('reset');
+
+            const token = document.getElementById('resetToken').value;
+            const newPassword = document.getElementById('newPassword').value;
+            const newPasswordConfirm = document.getElementById('newPasswordConfirm').value;
+
+            if (newPassword !== newPasswordConfirm) {
+                showError('reset', 'Le password non coincidono');
+                return;
+            }
+
+            if (newPassword.length < 8) {
+                showError('reset', 'La password deve essere di almeno 8 caratteri');
+                return;
+            }
+
+            setLoading('resetBtn', true);
+
+            try {
+                const res = await fetch('/api/auth/reset-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: currentEmail,
+                        token,
+                        new_password: newPassword
+                    })
+                });
+
+                if (res.ok) {
+                    alert('Password aggiornata! Ora puoi accedere.');
+                    showLogin();
+                } else {
+                    const data = await res.json();
+                    showError('reset', data.detail || 'Codice non valido o scaduto');
+                }
+            } catch (e) {
+                showError('reset', 'Errore di connessione');
+            }
+
+            setLoading('resetBtn', false);
+            document.getElementById('resetBtn').textContent = 'Imposta Nuova Password';
+        }
+
+        // =======================
+        // UTILS
+        // =======================
+        function base64ToArrayBuffer(base64) {
+            const binary = atob(base64.replace(/-/g, '+').replace(/_/g, '/'));
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        function arrayBufferToBase64(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        }
+
+        // Init on load
+        init();
+    </script>
+</body>
+</html>

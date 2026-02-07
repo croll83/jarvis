@@ -1,0 +1,131 @@
+---
+# =============================================================================
+# JARVIS — NVIDIA Container Toolkit per LXC
+# =============================================================================
+# Eseguito SOLO per deploy_type == "lxc_gpu"
+#
+# NOTA: Il driver NVIDIA è installato sull'HOST Proxmox, NON dentro l'LXC.
+# L'LXC ha accesso ai device /dev/nvidia* via cgroup mount (configurato da Terraform).
+# Questo playbook installa solo il NVIDIA Container Toolkit dentro l'LXC,
+# che permette a Docker di usare la GPU.
+
+- name: Setup NVIDIA Container Toolkit (LXC)
+  hosts: all
+  become: true
+  tags: [nvidia]
+
+  tasks:
+    # -----------------------------------------------------------------
+    # SKIP per deploy non-GPU
+    # -----------------------------------------------------------------
+    - name: "⏩ Skip — deploy_type non è lxc_gpu"
+      ansible.builtin.debug:
+        msg: "NVIDIA Container Toolkit non necessario per deploy_type={{ deploy_type }}. Skipping."
+      when: deploy_type != "lxc_gpu"
+
+    - name: Configurazione NVIDIA Container Toolkit
+      when: deploy_type == "lxc_gpu"
+      block:
+        # -----------------------------------------------------------------
+        # VERIFICA DEVICE GPU
+        # -----------------------------------------------------------------
+        - name: Verifica che /dev/nvidia0 sia accessibile
+          ansible.builtin.stat:
+            path: /dev/nvidia0
+          register: nvidia_device
+
+        - name: "❌ GPU non accessibile!"
+          ansible.builtin.fail:
+            msg: |
+              /dev/nvidia0 non trovato dentro il container LXC!
+
+              Verifica:
+                1. Driver NVIDIA installato sull'HOST Proxmox (nvidia-smi)
+                2. Script configure-gpu.sh eseguito sull'host
+                3. Container riavviato dopo la configurazione cgroup
+
+              Esegui sull'host Proxmox:
+                bash infrastructure/terraform/configure-gpu.sh
+          when: not nvidia_device.stat.exists
+
+        - name: Verifica tutti i device NVIDIA
+          ansible.builtin.command: ls -la /dev/nvidia*
+          register: nvidia_devices
+          changed_when: false
+
+        - name: Mostra device NVIDIA disponibili
+          ansible.builtin.debug:
+            msg: "{{ nvidia_devices.stdout_lines }}"
+
+        # -----------------------------------------------------------------
+        # NVIDIA CONTAINER TOOLKIT
+        # -----------------------------------------------------------------
+        - name: Aggiungi GPG key NVIDIA Container Toolkit
+          ansible.builtin.shell: |
+            curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+              gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+          args:
+            creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+        - name: Aggiungi repository NVIDIA Container Toolkit
+          ansible.builtin.shell: |
+            curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+              sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+              tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+          args:
+            creates: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+        - name: Installa NVIDIA Container Toolkit
+          ansible.builtin.apt:
+            name: nvidia-container-toolkit
+            state: present
+            update_cache: true
+
+        - name: Configura Docker NVIDIA runtime
+          ansible.builtin.command: nvidia-ctk runtime configure --runtime=docker
+          register: nvidia_ctk_config
+          changed_when: true
+          notify: Riavvia Docker per NVIDIA
+
+        # -----------------------------------------------------------------
+        # CONFIGURAZIONE CRITICA PER LXC
+        # -----------------------------------------------------------------
+        # In un LXC, il NVIDIA Container Toolkit deve avere no-cgroups=true
+        # perché il container non ha accesso diretto ai cgroup del device.
+        # Senza questa modifica, Docker non riesce ad accedere alla GPU.
+        - name: Configura no-cgroups=true per LXC
+          ansible.builtin.lineinfile:
+            path: /etc/nvidia-container-runtime/config.toml
+            regexp: '^#?\s*no-cgroups\s*='
+            line: "no-cgroups = true"
+            state: present
+          notify: Riavvia Docker per NVIDIA
+
+        # -----------------------------------------------------------------
+        # VERIFICA
+        # -----------------------------------------------------------------
+        - name: Flush handlers (riavvia Docker se necessario)
+          ansible.builtin.meta: flush_handlers
+
+        - name: Verifica GPU accessibile da Docker
+          ansible.builtin.command: >
+            docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
+          register: docker_gpu_test
+          changed_when: false
+          retries: 3
+          delay: 15
+
+        - name: "✅ GPU verificata in Docker"
+          ansible.builtin.debug:
+            msg: |
+              NVIDIA GPU accessibile da Docker dentro l'LXC!
+              {{ docker_gpu_test.stdout_lines[:5] | default([]) }}
+
+  # -----------------------------------------------------------------
+  # HANDLERS
+  # -----------------------------------------------------------------
+  handlers:
+    - name: Riavvia Docker per NVIDIA
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted

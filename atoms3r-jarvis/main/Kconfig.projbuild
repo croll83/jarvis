@@ -1,0 +1,31 @@
+menu "JARVIS Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "YOUR_WIFI_SSID"
+        help
+            SSID della rete WiFi
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "YOUR_WIFI_PASSWORD"
+        help
+            Password della rete WiFi
+
+    config JARVIS_SERVER_HOST
+        string "JARVIS Server Host"
+        default "jarvis.local"
+        help
+            Hostname o IP del server JARVIS Orchestrator
+
+    config JARVIS_SERVER_PORT
+        int "JARVIS Server Port"
+        default 5000
+        help
+            Porta del server JARVIS Orchestrator
+
+    # NOTA: DEVICE_ROOM e DEVICE_ID sono stati rimossi.
+    # Il device_id è ora il MAC address (letto a runtime).
+    # La configurazione viene recuperata dinamicamente dal server.
+
+endmenu

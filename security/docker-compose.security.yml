@@ -1,0 +1,87 @@
+version: '3.8'
+
+# =============================================================================
+# JARVIS Security Stack
+# Frigate + DoubleTake per object detection e facial recognition
+# =============================================================================
+# Deploy su server locale (Proxmox Milano o Minisforum)
+#
+# Requisiti:
+# - CPU con AVX2
+# - Almeno 4GB RAM dedicati
+# - (Opzionale) Google Coral USB per accelerazione
+
+services:
+  # ---------------------------------------------------------------------------
+  # Frigate - Object Detection
+  # ---------------------------------------------------------------------------
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:stable
+    container_name: jarvis_frigate
+    privileged: true
+    shm_size: "256mb"
+    volumes:
+      - ./frigate/config.yml:/config/config.yml:ro
+      - ./frigate/storage:/media/frigate
+      - /etc/localtime:/etc/localtime:ro
+      # Uncomment for Coral USB
+      # - /dev/bus/usb:/dev/bus/usb
+    ports:
+      - "5001:5000"   # Web UI
+      - "8554:8554"   # RTSP restream
+      - "8555:8555"   # WebRTC
+    environment:
+      - FRIGATE_RTSP_PASSWORD=${FRIGATE_RTSP_PASSWORD:-}
+    networks:
+      - security_net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  # ---------------------------------------------------------------------------
+  # DoubleTake - Facial Recognition
+  # ---------------------------------------------------------------------------
+  doubletake:
+    image: jakowenko/double-take:latest
+    container_name: jarvis_doubletake
+    depends_on:
+      - frigate
+    volumes:
+      - ./doubletake:/.storage
+    ports:
+      - "3000:3000"
+    environment:
+      - FRIGATE_URL=http://frigate:5000
+    networks:
+      - security_net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # ---------------------------------------------------------------------------
+  # MQTT Broker (for Frigate events)
+  # ---------------------------------------------------------------------------
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: jarvis_mqtt
+    volumes:
+      - ./mqtt/config:/mosquitto/config
+      - ./mqtt/data:/mosquitto/data
+      - ./mqtt/log:/mosquitto/log
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    networks:
+      - security_net
+    restart: unless-stopped
+
+networks:
+  security_net:
+    name: jarvis_security
+    driver: bridge

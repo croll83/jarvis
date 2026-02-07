@@ -1,0 +1,20 @@
+# ESP-IDF Partition Table for JARVIS AtomS3R
+# Flash: 8MB (0x800000 = 8388608 bytes)
+#
+# Layout ottimizzato:
+# - nvs:     24KB  (NVS storage)
+# - phy:     4KB   (PHY calibration)
+# - factory: 2MB   (Solo codice applicazione, modello ESTERNO)
+# - model:   2.5MB (ESP-SR WakeNet wn9_jarvis - index + data files)
+# - icons:   1MB   (Icone Lucide + font personalizzati)
+# - storage: 2MB   (Dati di sistema, config, cache)
+#
+# Totale: 24K + 4K + 2M + 2.5M + 1M + 2M = ~7.5MB (con margine su 8MB)
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     ,         0x6000,
+phy_init,   data, phy,     ,         0x1000,
+factory,    app,  factory, ,         0x200000,
+model,      data, spiffs,  ,         0x280000,
+icons,      data, spiffs,  ,         0x100000,
+storage,    data, spiffs,  ,         0x200000,

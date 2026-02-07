@@ -1,0 +1,109 @@
+---
+# =============================================================================
+# JARVIS — Security Stack (Frigate + DoubleTake + MQTT)
+# =============================================================================
+# Installato SOLO se install_security_stack == true
+# Componenti: Frigate (object detection), DoubleTake (facial recognition), MQTT
+
+- name: Deploy Security Stack
+  hosts: all
+  become: true
+  tags: [security]
+
+  tasks:
+    # -----------------------------------------------------------------
+    # SKIP se non richiesto
+    # -----------------------------------------------------------------
+    - name: "⏩ Security stack non richiesto"
+      ansible.builtin.debug:
+        msg: "install_security_stack={{ install_security_stack | default(false) }}. Skipping."
+      when: not (install_security_stack | default(false))
+
+    - name: Installazione Security Stack
+      when: install_security_stack | default(false)
+      block:
+        # -----------------------------------------------------------------
+        # DIRECTORY
+        # -----------------------------------------------------------------
+        - name: Crea directory security stack
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            owner: "{{ jarvis_user }}"
+            group: "{{ jarvis_user }}"
+            mode: "0755"
+          loop:
+            - "{{ jarvis_dir }}/security/mqtt/config"
+            - "{{ jarvis_dir }}/security/mqtt/data"
+            - "{{ jarvis_dir }}/security/mqtt/log"
+            - "{{ jarvis_dir }}/security/frigate/storage"
+            - "{{ jarvis_dir }}/security/doubletake"
+
+        # -----------------------------------------------------------------
+        # MOSQUITTO CONFIG
+        # -----------------------------------------------------------------
+        - name: Deploy configurazione Mosquitto
+          ansible.builtin.copy:
+            src: ../files/mosquitto.conf
+            dest: "{{ jarvis_dir }}/security/mqtt/config/mosquitto.conf"
+            owner: "{{ jarvis_user }}"
+            group: "{{ jarvis_user }}"
+            mode: "0644"
+
+        # -----------------------------------------------------------------
+        # AVVIO STACK
+        # -----------------------------------------------------------------
+        - name: "🚀 Avvio Security stack"
+          ansible.builtin.shell: |
+            cd {{ jarvis_dir }}/security && \
+            docker compose -f docker-compose.security.yml up -d
+          become_user: "{{ jarvis_user }}"
+          environment:
+            FRIGATE_RTSP_PASSWORD: "{{ frigate_rtsp_password | default('') }}"
+
+        # -----------------------------------------------------------------
+        # ATTESA SERVIZI
+        # -----------------------------------------------------------------
+        - name: Attendi che MQTT sia pronto
+          ansible.builtin.wait_for:
+            port: 1883
+            host: localhost
+            timeout: 60
+
+        - name: Attendi che Frigate sia pronto
+          ansible.builtin.uri:
+            url: "http://localhost:5001"
+            method: GET
+            status_code: 200
+          register: frigate_health
+          retries: 15
+          delay: 10
+          until: frigate_health.status == 200
+          ignore_errors: true
+
+        - name: Attendi che DoubleTake sia pronto
+          ansible.builtin.uri:
+            url: "http://localhost:3000"
+            method: GET
+            status_code: 200
+          register: doubletake_health
+          retries: 10
+          delay: 10
+          until: doubletake_health.status == 200
+          ignore_errors: true
+
+        # -----------------------------------------------------------------
+        # RISULTATO
+        # -----------------------------------------------------------------
+        - name: "📋 Security Stack status"
+          ansible.builtin.debug:
+            msg: |
+              Security Stack:
+                MQTT:       {{ '✅ porta 1883 attiva' }}
+                Frigate:    {{ '✅ OK' if (frigate_health.status | default(0)) == 200 else '⚠️ Non raggiungibile (configurare le camere)' }}
+                DoubleTake: {{ '✅ OK' if (doubletake_health.status | default(0)) == 200 else '⚠️ Non raggiungibile' }}
+
+              Prossimi passi:
+                1. Configura frigate/config.yml con le tue camere RTSP
+                2. Registra i volti in DoubleTake: http://localhost:3000
+                3. Configura le zone nell'entity map JARVIS

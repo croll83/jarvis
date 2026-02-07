@@ -1,0 +1,49 @@
+# =============================================================================
+# JARVIS AtomS3R - ESP-IDF Project
+# =============================================================================
+#
+# Hardware: M5Stack AtomS3R (ESP32-S3 + PSRAM)
+# Features:
+#   - Wake Word Detection (ESP-SR WakeNet "jarvis")
+#   - Streaming Audio with VAD
+#   - Display TFT 128x128 (ST7789)
+#   - WiFi connectivity to JARVIS Orchestrator
+#
+# Build: idf.py build
+# Flash: idf.py -p /dev/ttyUSB0 flash monitor
+# =============================================================================
+
+cmake_minimum_required(VERSION 3.16)
+
+# Imposta il target a ESP32-S3
+set(IDF_TARGET "esp32s3")
+
+# Include le componenti custom
+set(EXTRA_COMPONENT_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/components
+)
+
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+project(jarvis_atoms3r)
+
+# =============================================================================
+# Fix esp-dsp C++26 compatibility
+# =============================================================================
+# esp-dsp uses std::cos/std::sin without #include <cmath>, which worked in C++20
+# but fails in C++26 (ESP-IDF 6.x default). This applies the fix only to C++ files.
+#
+# We use cmake_language(DEFER) to run after all components are registered.
+cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL _fix_esp_dsp_cxx26)
+
+function(_fix_esp_dsp_cxx26)
+    # Check if esp-dsp component exists
+    if(TARGET __idf_espressif__esp-dsp)
+        # Apply -include cmath only to C++ files via generator expression
+        target_compile_options(__idf_espressif__esp-dsp PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-include$<SEMICOLON>cmath>
+        )
+        message(STATUS "Applied esp-dsp C++26 fix (-include cmath for CXX only)")
+    endif()
+endfunction()
+

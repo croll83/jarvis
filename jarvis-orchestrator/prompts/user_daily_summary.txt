@@ -1,0 +1,14 @@
+Analizza queste conversazioni giornaliere ed estrai:
+1. Pattern comportamentali (orari attivita', argomenti ricorrenti)
+2. Preferenze emerse (come vuole le risposte, cosa gli interessa)
+3. Fatti nuovi da ricordare long-term
+
+Summaries orari:
+{hourly_summaries}
+
+Rispondi in JSON:
+{{
+  "summary": "riassunto giornata in 30 parole",
+  "patterns": {{"key": "value"}},
+  "new_facts": ["fatto 1", "fatto 2"]
+}}

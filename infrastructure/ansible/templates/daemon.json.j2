@@ -1,0 +1,15 @@
+{
+{% if deploy_type == "lxc_gpu" %}
+    "runtimes": {
+        "nvidia": {
+            "args": [],
+            "path": "nvidia-container-runtime"
+        }
+    },
+{% endif %}
+    "log-driver": "json-file",
+    "log-opts": {
+        "max-size": "{{ docker_log_max_size | default('10m') }}",
+        "max-file": "{{ docker_log_max_file | default('3') }}"
+    }
+}

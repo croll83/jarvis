@@ -1,0 +1,19 @@
+Analizza l'attivita' giornaliera di questa casa.
+Location: {location_id}
+
+Summaries orari:
+{hourly_summaries}
+
+Estrai:
+1. Pattern giornalieri (orari sveglia, rientro, sonno)
+2. Utilizzo dispositivi (quali usati di piu', quando)
+3. Anomalie o eventi insoliti
+4. Fatti da memorizzare long-term (es: "la domenica l'attivita' inizia piu' tardi")
+
+Rispondi in JSON:
+{{
+  "summary": "riassunto giornata in 50 parole",
+  "patterns": {{"wake_time": "HH:MM", "sleep_time": "HH:MM"}},
+  "anomalies": ["anomalia 1"],
+  "new_facts": ["fatto 1", "fatto 2"]
+}}

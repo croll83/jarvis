@@ -1,0 +1,3619 @@
+<!DOCTYPE html>
+<html lang="it" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="/assets/favicon.png">
+    <title>JARVIS - Admin Dashboard</title>
+    <style>
+        /* ============================================
+           THEME VARIABLES
+           ============================================ */
+        :root {
+            /* Dark Theme (default) */
+            --bg-primary: #0a0a12;
+            --bg-secondary: #12121f;
+            --bg-card: #1a1a2e;
+            --bg-card-hover: #22223a;
+            --bg-input: #0d0d18;
+            --border-color: rgba(255,255,255,0.08);
+            --border-light: rgba(255,255,255,0.04);
+            --text-primary: #f5f5f7;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent: #e94560;
+            --accent-hover: #f43f5e;
+            --accent-glow: rgba(233,69,96,0.3);
+            --success: #22c55e;
+            --success-bg: rgba(34,197,94,0.1);
+            --warning: #f59e0b;
+            --warning-bg: rgba(245,158,11,0.1);
+            --error: #ef4444;
+            --error-bg: rgba(239,68,68,0.1);
+            --info: #3b82f6;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+            --shadow-md: 0 4px 12px rgba(0,0,0,0.5);
+            --shadow-lg: 0 8px 24px rgba(0,0,0,0.6);
+            --shadow-glow: 0 0 20px var(--accent-glow);
+        }
+
+        [data-theme="light"] {
+            --bg-primary: #f8fafc;
+            --bg-secondary: #ffffff;
+            --bg-card: #ffffff;
+            --bg-card-hover: #f1f5f9;
+            --bg-input: #f1f5f9;
+            --border-color: rgba(0,0,0,0.1);
+            --border-light: rgba(0,0,0,0.05);
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --text-muted: #94a3b8;
+            --accent: #dc2626;
+            --accent-hover: #b91c1c;
+            --accent-glow: rgba(220,38,38,0.2);
+            --success: #16a34a;
+            --success-bg: rgba(22,163,74,0.1);
+            --warning: #d97706;
+            --warning-bg: rgba(217,119,6,0.1);
+            --error: #dc2626;
+            --error-bg: rgba(220,38,38,0.1);
+            --info: #2563eb;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+            --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+            --shadow-lg: 0 8px 24px rgba(0,0,0,0.15);
+            --shadow-glow: 0 0 20px var(--accent-glow);
+        }
+
+        /* ============================================
+           BASE STYLES
+           ============================================ */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ============================================
+           NAVIGATION
+           ============================================ */
+        .nav {
+            background: var(--bg-secondary);
+            padding: 0 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: var(--shadow-md);
+        }
+
+        .nav-logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 0;
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            text-shadow: var(--shadow-sm);
+        }
+
+        .nav-logo img {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            box-shadow: var(--shadow-md);
+        }
+
+        .nav-tabs {
+            display: flex;
+            gap: 0.25rem;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            flex: 1;
+        }
+
+        .nav-tabs::-webkit-scrollbar { display: none; }
+
+        .nav-tab {
+            padding: 1rem 1.25rem;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .nav-tab:hover {
+            color: var(--text-primary);
+            background: var(--bg-card-hover);
+        }
+
+        .nav-tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+            text-shadow: 0 0 12px var(--accent-glow);
+        }
+
+        .nav-controls {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-left: auto;
+        }
+
+        .user-menu {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding-left: 0.75rem;
+            border-left: 1px solid var(--border-color);
+        }
+
+        /* Theme Toggle */
+        .theme-toggle {
+            position: relative;
+            width: 56px;
+            height: 28px;
+            background: var(--bg-input);
+            border-radius: 14px;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+        }
+
+        .theme-toggle::before {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 22px;
+            height: 22px;
+            background: var(--accent);
+            border-radius: 50%;
+            transition: transform 0.3s ease;
+            box-shadow: var(--shadow-sm);
+        }
+
+        [data-theme="light"] .theme-toggle::before {
+            transform: translateX(28px);
+        }
+
+        .theme-toggle-icons {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 100%;
+            padding: 0 6px;
+            font-size: 12px;
+        }
+
+        .auto-refresh {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .auto-refresh input {
+            accent-color: var(--accent);
+        }
+
+        /* ============================================
+           MAIN CONTENT
+           ============================================ */
+        .main {
+            padding: 1.5rem;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .page { display: none; }
+        .page.active { display: block; animation: fadeIn 0.3s ease; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .page-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+            color: var(--text-primary);
+            text-shadow: var(--shadow-sm);
+            letter-spacing: -0.02em;
+        }
+
+        /* ============================================
+           CARDS
+           ============================================ */
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 1.25rem;
+            margin-bottom: 1.25rem;
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow-md);
+            transition: box-shadow 0.2s ease;
+        }
+
+        .card:hover {
+            box-shadow: var(--shadow-lg);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .card-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            text-shadow: var(--shadow-sm);
+        }
+
+        /* ============================================
+           GRIDS
+           ============================================ */
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem; }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+
+        /* ============================================
+           STATUS INDICATORS
+           ============================================ */
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+
+        .status-dot.up {
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success), 0 0 16px rgba(34,197,94,0.3);
+            animation: pulse-success 2s infinite;
+        }
+
+        .status-dot.down {
+            background: var(--error);
+            box-shadow: 0 0 8px var(--error), 0 0 16px rgba(239,68,68,0.3);
+            animation: pulse-error 1s infinite;
+        }
+
+        .status-dot.degraded, .status-dot.timeout {
+            background: var(--warning);
+            box-shadow: 0 0 8px var(--warning);
+        }
+
+        @keyframes pulse-success {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        @keyframes pulse-error {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.8; transform: scale(1.1); }
+        }
+
+        /* Service Cards */
+        .service-card {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+        }
+
+        .service-card:hover {
+            border-color: var(--accent);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .service-info { flex: 1; min-width: 0; }
+        .service-name { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.15rem; }
+        .service-latency { font-size: 0.8rem; color: var(--text-muted); }
+
+        /* ============================================
+           METRICS
+           ============================================ */
+        .metric-card {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1.25rem;
+            text-align: center;
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent);
+            line-height: 1;
+            text-shadow: 0 0 20px var(--accent-glow);
+        }
+
+        .metric-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 0.5rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .metric-detail {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-top: 0.35rem;
+        }
+
+        /* ============================================
+           TABLES
+           ============================================ */
+        .table-wrapper { overflow-x: auto; }
+
+        table { width: 100%; border-collapse: collapse; }
+
+        th, td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        th {
+            font-weight: 600;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        tr:hover { background: var(--bg-card-hover); }
+
+        /* ============================================
+           BUTTONS
+           ============================================ */
+        button {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+            box-shadow: 0 2px 8px var(--accent-glow);
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            box-shadow: 0 4px 16px var(--accent-glow);
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: var(--bg-input);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--text-muted);
+        }
+
+        .btn-danger {
+            background: transparent;
+            color: var(--error);
+            border: 1px solid var(--error);
+        }
+
+        .btn-danger:hover {
+            background: var(--error);
+            color: white;
+        }
+
+        .btn-sm { padding: 0.35rem 0.75rem; font-size: 0.8rem; }
+
+        /* ============================================
+           FORMS
+           ============================================ */
+        .form-group { margin-bottom: 1rem; }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+
+        input, select, textarea {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-input);
+            color: var(--text-primary);
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        input:read-only { opacity: 0.6; cursor: not-allowed; }
+
+        /* ============================================
+           BADGES
+           ============================================ */
+        .badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .badge-success { background: var(--success-bg); color: var(--success); }
+        .badge-warning { background: var(--warning-bg); color: var(--warning); }
+        .badge-error { background: var(--error-bg); color: var(--error); }
+        .badge-info { background: rgba(59,130,246,0.1); color: var(--info); }
+
+        /* ============================================
+           SETUP PROGRESS
+           ============================================ */
+        .progress-bar-container {
+            height: 8px;
+            background: var(--bg-input);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--success));
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+
+        .setup-item {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 0.875rem 1rem;
+            border: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .setup-item-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            flex-shrink: 0;
+        }
+
+        .setup-item-icon.complete { background: var(--success-bg); color: var(--success); }
+        .setup-item-icon.partial { background: var(--warning-bg); color: var(--warning); }
+        .setup-item-icon.pending { background: var(--bg-input); color: var(--text-muted); }
+        .setup-item-icon.disabled { background: var(--bg-input); color: var(--text-muted); opacity: 0.5; }
+
+        .setup-item-content { flex: 1; min-width: 0; }
+        .setup-item-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.15rem; }
+        .setup-item-desc { font-size: 0.8rem; color: var(--text-muted); }
+
+        .setup-item-progress {
+            width: 48px;
+            text-align: right;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+
+        .setup-item-progress.complete { color: var(--success); }
+        .setup-item-progress.partial { color: var(--warning); }
+        .setup-item-progress.pending { color: var(--text-muted); }
+
+        /* ============================================
+           SPECIAL COMPONENTS
+           ============================================ */
+        .pending-action {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            border-left: 3px solid var(--warning);
+            border-right: 1px solid var(--border-color);
+            border-top: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .device-failure {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            border-left: 3px solid var(--error);
+            border-right: 1px solid var(--border-color);
+            border-top: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .cache-entry {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            border: 1px solid var(--border-color);
+        }
+
+        .config-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            background: var(--bg-secondary);
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            border: 1px solid var(--border-color);
+        }
+
+        .config-key {
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 0.85rem;
+            color: var(--text-primary);
+        }
+
+        .config-value {
+            color: var(--accent);
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 0.85rem;
+        }
+
+        .config-description {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+
+        /* User List */
+        .user-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            margin-bottom: 0.75rem;
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+        }
+
+        .user-item:hover {
+            border-color: var(--accent);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .user-avatar {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: white;
+            box-shadow: var(--shadow-sm);
+        }
+
+        /* ============================================
+           MODALS
+           ============================================ */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.85);
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+        }
+
+        .modal.active { display: flex; }
+
+        .modal-content {
+            background: var(--bg-card);
+            padding: 1.5rem;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 85vh;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.25rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .modal-header h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+
+        .modal-close:hover { color: var(--text-primary); }
+
+        /* Toast */
+        .toast-container {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            z-index: 1001;
+        }
+
+        .toast {
+            background: var(--bg-card);
+            padding: 0.875rem 1.25rem;
+            border-radius: 8px;
+            margin-top: 0.5rem;
+            box-shadow: var(--shadow-lg);
+            border: 1px solid var(--border-color);
+            animation: slideIn 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .toast.success { border-left: 3px solid var(--success); }
+        .toast.error { border-left: 3px solid var(--error); }
+        .toast.warning { border-left: 3px solid var(--warning); }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* Filters */
+        .filters {
+            display: flex;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .filters select, .filters input {
+            width: auto;
+            min-width: 140px;
+        }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 0.35rem;
+            margin-top: 1rem;
+        }
+
+        .pagination button { min-width: 36px; }
+        .pagination button.active { background: var(--accent); color: white; }
+
+        /* Voice Test */
+        .voice-test-result {
+            padding: 1rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+            border: 1px solid var(--border-color);
+        }
+
+        .voice-test-result.success {
+            background: var(--success-bg);
+            border-color: var(--success);
+        }
+
+        .voice-test-result.unknown {
+            background: var(--warning-bg);
+            border-color: var(--warning);
+        }
+
+        /* ============================================
+           RESPONSIVE - TABLET (iPad)
+           ============================================ */
+        @media (max-width: 1024px) {
+            .nav { padding: 0 1rem; gap: 0.75rem; }
+            .nav-logo { font-size: 1.1rem; }
+            .nav-logo img { width: 36px; height: 36px; }
+            .nav-tab { padding: 0.875rem 1rem; font-size: 0.8rem; }
+            .main { padding: 1rem; }
+            .grid-2 { grid-template-columns: 1fr; }
+            .grid-4 { grid-template-columns: repeat(2, 1fr); }
+            .auto-refresh span { display: none; }
+        }
+
+        /* ============================================
+           RESPONSIVE - MOBILE (iPhone/Galaxy)
+           ============================================ */
+        @media (max-width: 640px) {
+            .nav {
+                flex-wrap: wrap;
+                padding: 0.75rem 1rem;
+                gap: 0.5rem;
+            }
+
+            .nav-logo {
+                flex: 0 0 auto;
+                font-size: 1rem;
+            }
+
+            .nav-logo img { width: 32px; height: 32px; }
+
+            .nav-controls {
+                order: 2;
+                margin-left: auto;
+            }
+
+            .nav-tabs {
+                order: 3;
+                width: 100%;
+                flex: 0 0 100%;
+                justify-content: flex-start;
+                padding-bottom: 0.25rem;
+                margin-top: 0.25rem;
+            }
+
+            .nav-tab {
+                padding: 0.6rem 0.75rem;
+                font-size: 0.75rem;
+            }
+
+            .main { padding: 0.75rem; }
+            .page-title { font-size: 1.25rem; margin-bottom: 1rem; }
+
+            .card { padding: 1rem; margin-bottom: 1rem; border-radius: 10px; }
+            .card-title { font-size: 0.85rem; }
+
+            .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+
+            .service-card { padding: 0.75rem; }
+            .service-name { font-size: 0.8rem; }
+            .service-latency { font-size: 0.7rem; }
+
+            .metric-card { padding: 1rem; }
+            .metric-value { font-size: 1.5rem; }
+            .metric-label { font-size: 0.7rem; }
+            .metric-detail { font-size: 0.65rem; }
+
+            .user-item { flex-direction: column; gap: 0.75rem; text-align: center; }
+            .user-item > div:last-child { width: 100%; display: flex; gap: 0.5rem; justify-content: center; }
+
+            .config-item { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+            .config-item input { width: 100%; }
+
+            .filters { flex-direction: column; }
+            .filters select, .filters input { width: 100%; min-width: unset; }
+
+            table { font-size: 0.8rem; }
+            th, td { padding: 0.5rem 0.75rem; }
+
+            .modal-content { padding: 1.25rem; border-radius: 10px; }
+
+            .toast-container { left: 1rem; right: 1rem; bottom: 1rem; }
+            .toast { font-size: 0.85rem; }
+
+            .theme-toggle { width: 48px; height: 24px; }
+            .theme-toggle::before { width: 18px; height: 18px; }
+            [data-theme="light"] .theme-toggle::before { transform: translateX(24px); }
+        }
+
+        /* ============================================
+           LOADING STATE
+           ============================================ */
+        .loading {
+            opacity: 0.5;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 0.3; }
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-muted);
+        }
+
+        .empty-state-icon {
+            font-size: 2.5rem;
+            margin-bottom: 0.75rem;
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-logo">
+            <img src="/assets/jarvis-logo-small.png" alt="JARVIS">
+            <span>JARVIS</span>
+        </div>
+
+        <div class="nav-tabs">
+            <button class="nav-tab active" data-page="dashboard">Dashboard</button>
+            <button class="nav-tab" data-page="users">Utenti</button>
+            <button class="nav-tab" data-page="locations">Location</button>
+            <button class="nav-tab" data-page="voice-devices">Voice Devices</button>
+            <button class="nav-tab" data-page="system">Sistema</button>
+            <button class="nav-tab" data-page="audit">Audit Log</button>
+            <button class="nav-tab" data-page="devices">HA Devices</button>
+            <button class="nav-tab" data-page="cache">Cache</button>
+            <button class="nav-tab" data-page="memory">Memory</button>
+            <button class="nav-tab" data-page="access-log">Access Log</button>
+        </div>
+
+        <div class="nav-controls">
+            <div class="theme-toggle" onclick="toggleTheme()" title="Cambia tema">
+                <div class="theme-toggle-icons">
+                    <span>🌙</span>
+                    <span>☀️</span>
+                </div>
+            </div>
+            <div class="auto-refresh">
+                <input type="checkbox" id="autoRefresh" checked>
+                <span>Auto</span>
+            </div>
+            <div class="user-menu" id="userMenu">
+                <span id="currentUserName" style="font-size: 0.85rem; color: var(--text-secondary);"></span>
+                <button class="btn-secondary btn-sm" onclick="handleLogout()" title="Logout">
+                    Esci
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main">
+        <!-- DASHBOARD PAGE -->
+        <div id="page-dashboard" class="page active">
+            <h2 class="page-title">Dashboard</h2>
+
+            <!-- Setup Progress -->
+            <div class="card" id="setupProgressCard">
+                <div class="card-header">
+                    <span class="card-title">Setup Progress</span>
+                    <span id="setupProgressPercent" class="badge badge-info">0%</span>
+                </div>
+                <div class="progress-bar-container" style="margin-bottom: 1rem;">
+                    <div class="progress-bar" id="setupProgressBar" style="width: 0%"></div>
+                </div>
+                <div class="grid-2" id="setupProgressItems" style="gap: 0.75rem;">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <!-- Health Status -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Stato Servizi</span>
+                    <button class="btn-secondary btn-sm" onclick="refreshHealth()">Aggiorna</button>
+                </div>
+                <div class="grid-4" id="healthStatus">
+                    <div class="service-card loading">Caricamento...</div>
+                </div>
+            </div>
+
+            <!-- Metrics -->
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Latenze Medie</span>
+                    </div>
+                    <div class="grid-3" id="latencyMetrics">
+                        <div class="metric-card loading">...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Statistiche</span>
+                    </div>
+                    <div class="grid-3" id="statsMetrics">
+                        <div class="metric-card loading">...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pending Actions -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Azioni in Attesa</span>
+                </div>
+                <div id="pendingActions">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">✓</div>
+                        <p>Nessuna azione in attesa</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- USERS PAGE -->
+        <div id="page-users" class="page">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+                <h2 class="page-title" style="margin: 0;">Gestione Utenti</h2>
+                <button class="btn-primary" onclick="openModal('addUserModal')">Nuovo Utente</button>
+            </div>
+
+            <div class="card">
+                <div id="userList">Caricamento...</div>
+            </div>
+
+            <!-- Voice Test Section -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Test Riconoscimento Vocale</span>
+                </div>
+                <p style="color: var(--text-muted); margin-bottom: 1rem; font-size: 0.9rem;">
+                    Registra un campione audio per testare l'identificazione vocale senza salvare.
+                </p>
+                <button class="btn-secondary" id="voiceTestBtn" onclick="startVoiceTest()">Avvia Test</button>
+                <div id="voiceTestResult"></div>
+            </div>
+        </div>
+
+        <!-- LOCATIONS PAGE -->
+        <div id="page-locations" class="page">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+                <h2 class="page-title" style="margin: 0;">Location Home Assistant</h2>
+                <button class="btn-primary" onclick="openModal('addLocationModal')">Nuova Location</button>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Location Configurate</span>
+                    <button class="btn-secondary btn-sm" onclick="loadLocations()">Aggiorna</button>
+                </div>
+                <div id="locationList">Caricamento...</div>
+            </div>
+
+            <!-- Entity Map Management (shown when a location is selected) -->
+            <div class="card" id="entityMapCard" style="display: none;">
+                <div class="card-header">
+                    <span class="card-title">Entity Map - <span id="entityMapLocationName"></span></span>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button class="btn-secondary btn-sm" onclick="exportEntityMap()">Esporta JSON</button>
+                        <button class="btn-primary btn-sm" onclick="openModal('importEntityMapModal')">Importa JSON</button>
+                    </div>
+                </div>
+                <div id="entityMapStats">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📋</div>
+                        <p>Nessuna entity configurata</p>
+                        <p style="font-size: 0.8rem; color: var(--text-muted);">Importa un file JSON per configurare dispositivi e stanze</p>
+                    </div>
+                </div>
+                <div id="entityMapContent" style="display: none; margin-top: 1rem;">
+                    <div style="background: var(--bg-input); padding: 1rem; border-radius: 8px; max-height: 400px; overflow: auto;">
+                        <pre id="entityMapJson" style="margin: 0; font-size: 0.8rem; white-space: pre-wrap;"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SYSTEM PAGE -->
+        <div id="page-system" class="page">
+            <h2 class="page-title">Configurazione Sistema</h2>
+
+            <!-- Editable Preferences -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Preferenze Modificabili</span>
+                    <button class="btn-primary btn-sm" onclick="savePreferences()">Salva</button>
+                </div>
+                <div id="editablePrefs">Caricamento...</div>
+            </div>
+
+            <!-- Read-only Config -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Configurazione (Read-only)</span>
+                </div>
+                <div id="readonlyConfig">Caricamento...</div>
+            </div>
+
+            <!-- System State -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">System State</span>
+                    <button class="btn-secondary btn-sm" onclick="openModal('addStateModal')">Aggiungi</button>
+                </div>
+                <div id="systemState">Caricamento...</div>
+            </div>
+
+            <!-- Backup & Restore -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Backup & Restore</span>
+                </div>
+                <div id="backupSection">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; padding: 0.5rem 0;">
+                        <!-- Backup -->
+                        <div>
+                            <h4 style="margin: 0 0 0.5rem 0; color: var(--text);">Backup Completo</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 0.75rem 0;">
+                                Esporta database, ChromaDB e voice models in un archivio .tar.gz
+                            </p>
+                            <div id="backupInfo" style="margin-bottom: 0.75rem;">
+                                <div style="display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.8rem; color: var(--text-secondary);">
+                                    <span id="backupDbSize">DB: --</span>
+                                    <span id="backupChromaSize">ChromaDB: --</span>
+                                    <span id="backupVoiceSize">Voice: --</span>
+                                    <span id="backupTotalSize"><strong>Totale: --</strong></span>
+                                </div>
+                            </div>
+                            <button class="btn-primary" onclick="downloadBackup()" id="btnDownloadBackup">
+                                Scarica Backup
+                            </button>
+                            <div id="backupProgress" style="display: none; margin-top: 0.5rem;">
+                                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                    <div class="spinner" style="width: 16px; height: 16px;"></div>
+                                    <span style="font-size: 0.85rem; color: var(--text-secondary);">Creazione backup in corso...</span>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Restore -->
+                        <div>
+                            <h4 style="margin: 0 0 0.5rem 0; color: var(--text);">Ripristina da Backup</h4>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 0.75rem 0;">
+                                Carica un archivio .tar.gz per ripristinare il sistema. Viene creato automaticamente un safety backup.
+                            </p>
+                            <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                                <input type="file" id="restoreFileInput" accept=".tar.gz,.tgz" style="display: none;"
+                                       onchange="handleRestoreFileSelected(this)">
+                                <button class="btn-secondary" onclick="document.getElementById('restoreFileInput').click()">
+                                    Seleziona File
+                                </button>
+                                <span id="restoreFileName" style="font-size: 0.85rem; color: var(--text-secondary);">Nessun file selezionato</span>
+                            </div>
+                            <div id="restoreValidation" style="display: none; margin-top: 0.75rem;"></div>
+                            <div id="restoreActions" style="display: none; margin-top: 0.75rem;">
+                                <button class="btn-danger" onclick="executeRestore()" id="btnRestore">
+                                    Ripristina Backup
+                                </button>
+                            </div>
+                            <div id="restoreProgress" style="display: none; margin-top: 0.5rem;">
+                                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                    <div class="spinner" style="width: 16px; height: 16px;"></div>
+                                    <span style="font-size: 0.85rem; color: var(--text-secondary);">Ripristino in corso...</span>
+                                </div>
+                            </div>
+                            <div id="restoreResult" style="display: none; margin-top: 0.75rem;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- AUDIT LOG PAGE -->
+        <div id="page-audit" class="page">
+            <h2 class="page-title">Audit Log</h2>
+
+            <div class="card">
+                <div class="filters">
+                    <select id="auditCategory" onchange="loadAuditLog()">
+                        <option value="">Tutte le categorie</option>
+                    </select>
+                    <input type="text" id="auditSpeaker" placeholder="Filtra per speaker..." onkeyup="debounce(loadAuditLog, 300)()">
+                    <button class="btn-danger btn-sm" onclick="clearAuditLog()">Svuota Log</button>
+                </div>
+
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Data/Ora</th>
+                                <th>Categoria</th>
+                                <th>Messaggio</th>
+                                <th>Speaker</th>
+                            </tr>
+                        </thead>
+                        <tbody id="auditLogBody">
+                            <tr><td colspan="4">Caricamento...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="pagination" id="auditPagination"></div>
+            </div>
+        </div>
+
+        <!-- VOICE DEVICES PAGE -->
+        <div id="page-voice-devices" class="page">
+            <h2 class="page-title">Voice Devices (AtomS3R)</h2>
+
+            <!-- Voice Device Stats -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Statistiche</span>
+                    <button class="btn-secondary btn-sm" onclick="loadVoiceDevices()">Aggiorna</button>
+                </div>
+                <div class="grid-4" id="voiceDeviceStats">
+                    <div class="metric-card loading">...</div>
+                </div>
+            </div>
+
+            <!-- Unconfigured Devices Alert -->
+            <div class="card" id="unconfiguredDevicesCard" style="display: none; border-left: 4px solid var(--warning);">
+                <div class="card-header">
+                    <span class="card-title">⚠️ Device da Configurare</span>
+                </div>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Questi device sono stati rilevati ma non ancora configurati. Clicca su "Configura" per associarli a una stanza.
+                </p>
+                <div id="unconfiguredDevices"></div>
+            </div>
+
+            <!-- Configured Devices -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Device Configurati</span>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Nome</th>
+                                <th>Device ID</th>
+                                <th>Location</th>
+                                <th>Speaker</th>
+                                <th>Stato</th>
+                                <th>Ultimo Contatto</th>
+                                <th>Azioni</th>
+                            </tr>
+                        </thead>
+                        <tbody id="voiceDevicesTable">
+                            <tr><td colspan="7" class="loading">Caricamento...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- DEVICES PAGE (HA Failures) -->
+        <div id="page-devices" class="page">
+            <h2 class="page-title">HA Dispositivi</h2>
+
+            <!-- Device Failures -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Dispositivi in Errore</span>
+                    <button class="btn-danger btn-sm" onclick="resetAllDeviceFailures()">Reset Tutti</button>
+                </div>
+                <div id="deviceFailures">Caricamento...</div>
+            </div>
+        </div>
+
+        <!-- CACHE PAGE -->
+        <div id="page-cache" class="page">
+            <h2 class="page-title">Query Cache</h2>
+
+            <!-- Cache Stats -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Statistiche Cache</span>
+                </div>
+                <div class="grid-4" id="cacheStats">
+                    <div class="metric-card loading">...</div>
+                </div>
+            </div>
+
+            <!-- Cache Entries -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Voci Cache</span>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button class="btn-secondary btn-sm" onclick="openModal('addCacheModal')">Aggiungi</button>
+                        <button class="btn-danger btn-sm" onclick="clearCache()">Svuota</button>
+                    </div>
+                </div>
+                <div class="filters">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem;">
+                        <input type="checkbox" id="autoLearnedOnly" onchange="loadCache()">
+                        Solo auto-apprese
+                    </label>
+                </div>
+                <div id="cacheEntries">Caricamento...</div>
+            </div>
+        </div>
+
+        <!-- MEMORY PAGE -->
+        <div id="page-memory" class="page">
+            <h2 class="page-title">Memory System</h2>
+
+            <!-- Overview Cards -->
+            <div class="grid-4" id="memoryOverview">
+                <div class="metric-card loading">...</div>
+            </div>
+
+            <!-- Per-User Breakdown -->
+            <div class="card" style="margin-top: 1rem;">
+                <div class="card-header">
+                    <span class="card-title">Memoria per Utente</span>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Utente</th>
+                                <th>Chat Msgs</th>
+                                <th>Hourly</th>
+                                <th>Daily</th>
+                                <th>Long-term Facts</th>
+                            </tr>
+                        </thead>
+                        <tbody id="memoryUserBody">
+                            <tr><td colspan="5">Caricamento...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- HA Memory Services -->
+            <div class="card" style="margin-top: 1rem;">
+                <div class="card-header">
+                    <span class="card-title">HA Memory Services (per Location)</span>
+                </div>
+                <div class="grid-3" id="haMemoryGrid">
+                    <div class="metric-card loading">...</div>
+                </div>
+            </div>
+
+            <!-- Retention Policy -->
+            <div class="card" style="margin-top: 1rem;">
+                <div class="card-header">
+                    <span class="card-title">Politica di Retention</span>
+                </div>
+                <div id="retentionInfo" style="padding: 0.5rem 0;"></div>
+            </div>
+        </div>
+
+        <!-- ACCESS LOG PAGE -->
+        <div id="page-access-log" class="page">
+            <h2 class="page-title">Access Log</h2>
+
+            <!-- Stats Cards -->
+            <div class="grid-4" id="accessLogStats">
+                <div class="metric-card loading">...</div>
+            </div>
+
+            <!-- Filtri -->
+            <div class="card" style="margin-top: 1rem;">
+                <div class="card-header">
+                    <span class="card-title">Filtri</span>
+                    <button class="btn-secondary btn-sm" onclick="resetAccessLogFilters()">Reset</button>
+                </div>
+                <div class="filters" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: end;">
+                    <div>
+                        <label style="font-size: 0.8rem; display: block; margin-bottom: 0.25rem;">IP Address</label>
+                        <input type="text" id="alFilterIp" placeholder="es. 192.168.1.10" style="padding: 0.35rem 0.5rem; font-size: 0.85rem; width: 140px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 0.8rem; display: block; margin-bottom: 0.25rem;">Status Code</label>
+                        <select id="alFilterStatus" style="padding: 0.35rem 0.5rem; font-size: 0.85rem;">
+                            <option value="">Tutti</option>
+                            <option value="200">200 OK</option>
+                            <option value="401">401 Unauth</option>
+                            <option value="403">403 Forbidden</option>
+                            <option value="404">404 Not Found</option>
+                            <option value="500">500 Error</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="font-size: 0.8rem; display: block; margin-bottom: 0.25rem;">Path</label>
+                        <input type="text" id="alFilterPath" placeholder="es. /api/admin" style="padding: 0.35rem 0.5rem; font-size: 0.85rem; width: 160px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 0.8rem; display: block; margin-bottom: 0.25rem;">Metodo</label>
+                        <select id="alFilterMethod" style="padding: 0.35rem 0.5rem; font-size: 0.85rem;">
+                            <option value="">Tutti</option>
+                            <option value="GET">GET</option>
+                            <option value="POST">POST</option>
+                            <option value="PUT">PUT</option>
+                            <option value="DELETE">DELETE</option>
+                        </select>
+                    </div>
+                    <button class="btn-primary btn-sm" onclick="loadAccessLog()">Filtra</button>
+                </div>
+            </div>
+
+            <!-- Access Log Table -->
+            <div class="card" style="margin-top: 1rem;">
+                <div class="card-header">
+                    <span class="card-title">Richieste HTTP</span>
+                    <span id="accessLogCount" style="font-size: 0.8rem; opacity: 0.7;"></span>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table class="data-table" id="accessLogTable">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Method</th>
+                                <th>Path</th>
+                                <th>Status</th>
+                                <th>IP</th>
+                                <th>User</th>
+                                <th>Tempo</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accessLogBody">
+                            <tr><td colspan="7">Caricamento...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div style="display: flex; justify-content: center; gap: 0.5rem; margin-top: 0.75rem;">
+                    <button class="btn-secondary btn-sm" id="alPrevBtn" onclick="accessLogPrev()" disabled>Precedente</button>
+                    <span id="alPageInfo" style="font-size: 0.8rem; padding: 0.35rem; opacity: 0.7;"></span>
+                    <button class="btn-secondary btn-sm" id="alNextBtn" onclick="accessLogNext()">Successivo</button>
+                </div>
+            </div>
+
+            <!-- Auth Attempts -->
+            <div class="card" style="margin-top: 1rem;">
+                <div class="card-header">
+                    <span class="card-title">Tentativi di Autenticazione</span>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Email</th>
+                                <th>IP</th>
+                                <th>Esito</th>
+                                <th>Motivo</th>
+                            </tr>
+                        </thead>
+                        <tbody id="authAttemptsBody">
+                            <tr><td colspan="5">Caricamento...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- MODALS -->
+
+    <!-- Add User Modal -->
+    <div class="modal" id="addUserModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Aggiungi Utente</h2>
+                <button class="modal-close" onclick="closeModal('addUserModal')">&times;</button>
+            </div>
+            <form onsubmit="addUser(event)">
+                <div class="form-group">
+                    <label>Nome</label>
+                    <input type="text" id="newUserName" required placeholder="Es: Ada">
+                </div>
+                <div class="form-group">
+                    <label>Ruolo</label>
+                    <select id="newUserRole">
+                        <option value="user">Utente</option>
+                        <option value="admin">Amministratore</option>
+                        <option value="guest">Ospite</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn-primary" style="width: 100%">Crea Utente</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Add Cache Entry Modal -->
+    <div class="modal" id="addCacheModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Aggiungi Voce Cache</h2>
+                <button class="modal-close" onclick="closeModal('addCacheModal')">&times;</button>
+            </div>
+            <form onsubmit="addCacheEntry(event)">
+                <div class="form-group">
+                    <label>Query</label>
+                    <input type="text" id="newCacheQuery" required placeholder="Es: che ore sono">
+                </div>
+                <div class="form-group">
+                    <label>Risposta</label>
+                    <textarea id="newCacheResponse" rows="3" required placeholder="Es: Sono le 15:30"></textarea>
+                </div>
+                <button type="submit" class="btn-primary" style="width: 100%">Aggiungi</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Add System State Modal -->
+    <div class="modal" id="addStateModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Aggiungi System State</h2>
+                <button class="modal-close" onclick="closeModal('addStateModal')">&times;</button>
+            </div>
+            <form onsubmit="addSystemState(event)">
+                <div class="form-group">
+                    <label>Chiave</label>
+                    <input type="text" id="newStateKey" required placeholder="Es: custom_setting">
+                </div>
+                <div class="form-group">
+                    <label>Valore</label>
+                    <input type="text" id="newStateValue" required placeholder="Es: true">
+                </div>
+                <button type="submit" class="btn-primary" style="width: 100%">Aggiungi</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Cache Modal -->
+    <div class="modal" id="editCacheModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Modifica Risposta Cache</h2>
+                <button class="modal-close" onclick="closeModal('editCacheModal')">&times;</button>
+            </div>
+            <form onsubmit="updateCacheEntry(event)">
+                <div class="form-group">
+                    <label>Query (non modificabile)</label>
+                    <input type="text" id="editCacheQuery" readonly>
+                </div>
+                <div class="form-group">
+                    <label>Risposta</label>
+                    <textarea id="editCacheResponse" rows="3" required></textarea>
+                </div>
+                <input type="hidden" id="editCacheHash">
+                <button type="submit" class="btn-primary" style="width: 100%">Salva</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Voice Enrollment Modal -->
+    <div class="modal" id="enrollmentModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Registrazione Vocale</h2>
+                <button class="modal-close" onclick="cancelEnrollment()">&times;</button>
+            </div>
+            <p id="enrollmentUserName" style="color: var(--text-secondary); margin-bottom: 1rem;"></p>
+            <div id="enrollmentSteps"></div>
+            <div id="phraseDisplay" style="background: var(--bg-input); padding: 1rem; border-radius: 8px; text-align: center; font-size: 1rem; margin: 1rem 0; border: 1px solid var(--border-color);">
+                Premi "Inizia" per cominciare
+            </div>
+            <div id="recordingIndicator" style="display: none; text-align: center; margin: 1rem 0; color: var(--accent);">
+                <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); animation: pulse-error 1s infinite; margin-right: 0.5rem;"></span>
+                Registrazione in corso...
+            </div>
+            <div style="display: flex; gap: 0.75rem; margin-top: 1rem;">
+                <button class="btn-secondary" onclick="cancelEnrollment()" style="flex: 1;">Annulla</button>
+                <button class="btn-primary" id="enrollmentButton" onclick="startRecording()" style="flex: 1;">Inizia</button>
+            </div>
+            <div id="enrollmentStatus" style="margin-top: 1rem;"></div>
+        </div>
+    </div>
+
+    <!-- Add Location Modal -->
+    <div class="modal" id="addLocationModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Nuova Location</h2>
+                <button class="modal-close" onclick="closeModal('addLocationModal')">&times;</button>
+            </div>
+            <form onsubmit="addLocation(event)">
+                <div class="form-group">
+                    <label>ID (slug)</label>
+                    <input type="text" id="newLocationId" required placeholder="Es: albani" pattern="[a-z0-9]+" title="Solo lettere minuscole e numeri">
+                </div>
+                <div class="form-group">
+                    <label>Nome</label>
+                    <input type="text" id="newLocationName" required placeholder="Es: Albani20">
+                </div>
+                <div class="form-group">
+                    <label>Città</label>
+                    <input type="text" id="newLocationCity" placeholder="Es: Milano">
+                </div>
+                <div class="form-group">
+                    <label>URL Home Assistant</label>
+                    <input type="text" id="newLocationUrl" required placeholder="Es: http://100.x.x.x:8123">
+                </div>
+                <div class="form-group">
+                    <label>Token Home Assistant</label>
+                    <input type="password" id="newLocationToken" required placeholder="Long-lived access token">
+                </div>
+                <div class="form-group">
+                    <label>Keywords (separate da virgola)</label>
+                    <input type="text" id="newLocationKeywords" placeholder="Es: wagmi, villa, napoli">
+                    <small style="color: var(--text-muted);">Parole chiave per identificare la location nei comandi vocali</small>
+                </div>
+                <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem;">
+                    <input type="checkbox" id="newLocationSecurity">
+                    <label style="margin: 0;">Ha sistema di sicurezza</label>
+                </div>
+                <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem;">
+                    Dopo aver creato la location, potrai importare l'entity map dalla pagina Location.
+                </p>
+                <button type="submit" class="btn-primary" style="width: 100%">Crea Location</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Location Modal -->
+    <div class="modal" id="editLocationModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Modifica Location</h2>
+                <button class="modal-close" onclick="closeModal('editLocationModal')">&times;</button>
+            </div>
+            <form onsubmit="updateLocation(event)">
+                <input type="hidden" id="editLocationId">
+                <div class="form-group">
+                    <label>Nome</label>
+                    <input type="text" id="editLocationName" required>
+                </div>
+                <div class="form-group">
+                    <label>Città</label>
+                    <input type="text" id="editLocationCity">
+                </div>
+                <div class="form-group">
+                    <label>URL Home Assistant</label>
+                    <input type="text" id="editLocationUrl" required>
+                </div>
+                <div class="form-group">
+                    <label>Token Home Assistant (lascia vuoto per mantenere)</label>
+                    <input type="password" id="editLocationToken" placeholder="Nuovo token...">
+                </div>
+                <div class="form-group">
+                    <label>Keywords (separate da virgola)</label>
+                    <input type="text" id="editLocationKeywords" placeholder="Es: wagmi, villa, napoli">
+                    <small style="color: var(--text-muted);">Parole chiave per identificare la location nei comandi vocali</small>
+                </div>
+                <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem;">
+                    <input type="checkbox" id="editLocationSecurity">
+                    <label style="margin: 0;">Ha sistema di sicurezza</label>
+                </div>
+                <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem;">
+                    <input type="checkbox" id="editLocationEnabled" checked>
+                    <label style="margin: 0;">Abilitata</label>
+                </div>
+                <button type="submit" class="btn-primary" style="width: 100%">Salva</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Import Entity Map Modal -->
+    <div class="modal" id="importEntityMapModal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h2>Importa Entity Map</h2>
+                <button class="modal-close" onclick="closeModal('importEntityMapModal')">&times;</button>
+            </div>
+            <p style="color: var(--text-muted); margin-bottom: 1rem; font-size: 0.9rem;">
+                Incolla il JSON dell'entity map. La struttura deve essere gerarchica: Zone → Area → Room → EntityType → [Entities]
+            </p>
+            <div class="form-group">
+                <label>Carica da file</label>
+                <input type="file" id="entityMapFile" accept=".json" onchange="loadEntityMapFile(event)" style="padding: 0.5rem;">
+            </div>
+            <div class="form-group">
+                <label>Oppure incolla JSON</label>
+                <textarea id="entityMapJsonInput" rows="12" placeholder='{
+  "Interno": {
+    "Zona_Giorno": {
+      "Salotto": {
+        "light": ["Luci Salotto", "Lampada"],
+        "media_player": ["TV Salotto"]
+      }
+    }
+  }
+}' style="font-family: monospace; font-size: 0.8rem;"></textarea>
+            </div>
+            <div style="display: flex; gap: 0.75rem;">
+                <button class="btn-secondary" onclick="closeModal('importEntityMapModal')" style="flex: 1;">Annulla</button>
+                <button class="btn-primary" onclick="importEntityMap()" style="flex: 1;">Importa</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Voice Device Modal -->
+    <div class="modal" id="voiceDeviceModal">
+        <div class="modal-content" style="max-width: 550px;">
+            <div class="modal-header">
+                <h2 id="voiceDeviceModalTitle">Configura Voice Device</h2>
+                <button class="modal-close" onclick="closeModal('voiceDeviceModal')">&times;</button>
+            </div>
+            <form onsubmit="saveVoiceDevice(event)">
+                <input type="hidden" id="vdDeviceId">
+
+                <div class="form-group">
+                    <label>Device ID (MAC Address)</label>
+                    <input type="text" id="vdDeviceIdDisplay" readonly
+                           style="background: var(--bg-tertiary); font-family: monospace;">
+                </div>
+
+                <div class="form-group">
+                    <label>Nome Stanza *</label>
+                    <input type="text" id="vdFriendlyName" required placeholder="Es: Salotto, Cucina, Camera">
+                </div>
+
+                <div class="form-group">
+                    <label>Location *</label>
+                    <select id="vdLocationId" required onchange="loadMediaPlayersForLocation()">
+                        <option value="">Seleziona location...</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Speaker Principale *</label>
+                    <select id="vdOutputSpeaker" required>
+                        <option value="">Seleziona prima la location...</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Speaker Fallback</label>
+                    <select id="vdFallbackSpeaker">
+                        <option value="">Nessuno</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" id="vdFallbackTelegram" checked>
+                        Fallback su Telegram utente
+                    </label>
+                    <small style="color: var(--text-secondary);">
+                        Se gli speaker falliscono, invia la risposta su Telegram (se l'utente ha telegram configurato)
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" id="vdFallbackLocalSpeaker" checked>
+                        Fallback su speaker locale
+                    </label>
+                    <small style="color: var(--text-secondary);">
+                        Ultimo fallback: usa lo speaker integrato dell'AtomS3R
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" id="vdEnabled" checked>
+                        Device Abilitato
+                    </label>
+                </div>
+
+                <div class="form-group">
+                    <label>Note</label>
+                    <textarea id="vdNotes" rows="2" placeholder="Note opzionali..."></textarea>
+                </div>
+
+                <div style="display: flex; gap: 0.75rem;">
+                    <button type="button" class="btn-secondary" onclick="closeModal('voiceDeviceModal')" style="flex: 1;">Annulla</button>
+                    <button type="submit" class="btn-primary" style="flex: 1;">Salva</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script>
+        // ============================================
+        // STATE
+        // ============================================
+        let currentPage = 'dashboard';
+        let auditPage = 0;
+        let autoRefreshEnabled = true;
+        let refreshInterval = null;
+
+        // Voice enrollment
+        let currentEnrollmentUserId = null;
+        let enrollmentPhrases = [];
+        let currentPhraseIndex = 0;
+        let mediaRecorder = null;
+        let audioChunks = [];
+
+        // ============================================
+        // THEME
+        // ============================================
+        function toggleTheme() {
+            const html = document.documentElement;
+            const current = html.getAttribute('data-theme');
+            const next = current === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', next);
+            localStorage.setItem('jarvis-theme', next);
+        }
+
+        // Load saved theme
+        (function() {
+            const saved = localStorage.getItem('jarvis-theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+
+        // ============================================
+        // INIT
+        // ============================================
+        document.addEventListener('DOMContentLoaded', () => {
+            loadCurrentUser();
+            setupNavigation();
+            loadDashboard();
+            startAutoRefresh();
+        });
+
+        async function loadCurrentUser() {
+            try {
+                const res = await fetch('/api/auth/me');
+                if (res.ok) {
+                    const user = await res.json();
+                    document.getElementById('currentUserName').textContent = user.name;
+                } else if (res.status === 401) {
+                    window.location.href = '/login';
+                }
+            } catch (e) {
+                console.error('Failed to load current user:', e);
+            }
+        }
+
+        async function handleLogout() {
+            try {
+                await fetch('/api/auth/logout', { method: 'POST' });
+                window.location.href = '/login';
+            } catch (e) {
+                console.error('Logout failed:', e);
+                window.location.href = '/login';
+            }
+        }
+
+        // ============================================
+        // NAVIGATION
+        // ============================================
+        function setupNavigation() {
+            document.querySelectorAll('.nav-tab').forEach(tab => {
+                tab.addEventListener('click', () => switchPage(tab.dataset.page));
+            });
+
+            document.getElementById('autoRefresh').addEventListener('change', (e) => {
+                autoRefreshEnabled = e.target.checked;
+                autoRefreshEnabled ? startAutoRefresh() : stopAutoRefresh();
+            });
+        }
+
+        function switchPage(page) {
+            document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+            document.querySelector(`[data-page="${page}"]`).classList.add('active');
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.getElementById(`page-${page}`).classList.add('active');
+            currentPage = page;
+            loadPageData(page);
+        }
+
+        function loadPageData(page) {
+            const loaders = {
+                dashboard: loadDashboard,
+                users: loadUsers,
+                locations: loadLocations,
+                'voice-devices': loadVoiceDevices,
+                system: loadSystemConfig,
+                audit: loadAuditLog,
+                devices: loadDeviceFailures,
+                cache: loadCache,
+                memory: loadMemoryStats,
+                'access-log': loadAccessLog
+            };
+            if (loaders[page]) loaders[page]();
+        }
+
+        // ============================================
+        // SSE (Server-Sent Events) — Real-time updates
+        // ============================================
+        let eventSource = null;
+        let sseConnected = false;
+        let sseReconnectTimer = null;
+
+        function initSSE() {
+            if (eventSource) { eventSource.close(); eventSource = null; }
+
+            try {
+                eventSource = new EventSource('/api/admin/events');
+
+                eventSource.addEventListener('connected', (e) => {
+                    sseConnected = true;
+                    stopPollingFallback();
+                    console.log('SSE connesso', JSON.parse(e.data));
+                });
+
+                eventSource.addEventListener('metrics_update', (e) => {
+                    if (currentPage === 'dashboard') {
+                        try { updateMetricsFromSSE(JSON.parse(e.data)); } catch(err) {}
+                    }
+                });
+
+                eventSource.addEventListener('health_update', (e) => {
+                    if (currentPage === 'dashboard') {
+                        try { updateHealthFromSSE(JSON.parse(e.data)); } catch(err) {}
+                    }
+                });
+
+                eventSource.addEventListener('new_request', (e) => {
+                    // Aggiorna metriche in dashboard se visibile
+                    if (currentPage === 'dashboard') {
+                        try { loadDashboard(); } catch(err) {}
+                    }
+                });
+
+                eventSource.addEventListener('audit_event', (e) => {
+                    if (currentPage === 'audit') {
+                        try { loadAuditLog(); } catch(err) {}
+                    }
+                });
+
+                eventSource.addEventListener('pending_action', (e) => {
+                    if (currentPage === 'dashboard') {
+                        try { loadPendingActions(); } catch(err) {}
+                    }
+                });
+
+                eventSource.addEventListener('heartbeat', () => {
+                    // Connessione attiva
+                });
+
+                eventSource.onerror = () => {
+                    sseConnected = false;
+                    if (eventSource) eventSource.close();
+                    eventSource = null;
+                    console.warn('SSE disconnesso, fallback a polling');
+                    startPollingFallback();
+                    // Ritenta SSE dopo 10s
+                    if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+                    sseReconnectTimer = setTimeout(initSSE, 10000);
+                };
+            } catch (e) {
+                console.warn('SSE non disponibile, uso polling');
+                startPollingFallback();
+            }
+        }
+
+        function updateMetricsFromSSE(data) {
+            // Placeholder: SSE porta dati parziali, per ora refresh completo
+            // In futuro si possono aggiornare singoli DOM element
+        }
+
+        function updateHealthFromSSE(data) {
+            // Placeholder: aggiorna status servizi dalla SSE
+        }
+
+        function startAutoRefresh() {
+            initSSE();
+        }
+
+        function startPollingFallback() {
+            if (refreshInterval) return; // gia' attivo
+            refreshInterval = setInterval(() => autoRefreshEnabled && loadPageData(currentPage), 10000);
+        }
+
+        function stopPollingFallback() {
+            if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
+        }
+
+        function stopAutoRefresh() {
+            if (eventSource) { eventSource.close(); eventSource = null; }
+            if (sseReconnectTimer) { clearTimeout(sseReconnectTimer); sseReconnectTimer = null; }
+            stopPollingFallback();
+            sseConnected = false;
+        }
+
+        // ============================================
+        // UTILS
+        // ============================================
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = message;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 4000);
+        }
+
+        function openModal(id) { document.getElementById(id).classList.add('active'); }
+        function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+        function debounce(func, wait) {
+            let timeout;
+            return (...args) => {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func(...args), wait);
+            };
+        }
+
+        // ============================================
+        // DASHBOARD
+        // ============================================
+        async function loadDashboard() {
+            await Promise.all([loadSetupProgress(), refreshHealth(), loadMetrics(), loadPendingActions()]);
+        }
+
+        async function loadSetupProgress() {
+            try {
+                const response = await fetch('/api/auth/setup-status');
+                const data = await response.json();
+
+                // Update total progress
+                const progress = data.total_progress || 0;
+                document.getElementById('setupProgressBar').style.width = `${progress}%`;
+                document.getElementById('setupProgressPercent').textContent = `${progress}%`;
+
+                // Define items config
+                const items = [
+                    {
+                        key: 'core',
+                        title: 'Core System',
+                        icon: '⚙️',
+                        data: data.core,
+                        desc: items => {
+                            if (items.has_admin) return `${data.core.stats.total_users} utenti configurati`;
+                            return 'Crea un account admin';
+                        }
+                    },
+                    {
+                        key: 'home_assistant',
+                        title: 'Home Assistant',
+                        icon: '🏠',
+                        data: data.home_assistant,
+                        desc: items => {
+                            if (!data.home_assistant.enabled) return 'Nessuna location configurata';
+                            const stats = data.home_assistant.stats;
+                            return `${stats.locations_count} location, ${stats.total_entities} entità`;
+                        }
+                    },
+                    {
+                        key: 'security',
+                        title: 'Security System',
+                        icon: '🛡️',
+                        data: data.security,
+                        desc: items => {
+                            if (!data.security.enabled) return 'Non configurato';
+                            const stats = data.security.stats;
+                            return `${stats.perimetral_cameras} cam perimetrali, ${stats.internal_cameras} interne`;
+                        }
+                    },
+                    {
+                        key: 'voice',
+                        title: 'Voice Recognition',
+                        icon: '🎤',
+                        data: data.voice_recognition,
+                        desc: items => {
+                            if (!data.voice_recognition.enabled) return 'Nessun profilo vocale';
+                            const stats = data.voice_recognition.stats;
+                            return `${stats.enrolled_users}/${stats.total_users} utenti registrati`;
+                        }
+                    },
+                    {
+                        key: 'telegram',
+                        title: 'Telegram',
+                        icon: '📱',
+                        data: data.telegram,
+                        desc: items => {
+                            if (!data.telegram.enabled) return 'Non configurato';
+                            return 'Bot attivo';
+                        }
+                    }
+                ];
+
+                // Render items
+                const container = document.getElementById('setupProgressItems');
+                container.innerHTML = items.map(item => {
+                    const p = item.data.progress || 0;
+                    const enabled = item.data.enabled !== false;
+                    let iconClass = 'pending';
+                    let progressClass = 'pending';
+
+                    if (!enabled && item.key !== 'core') {
+                        iconClass = 'disabled';
+                    } else if (p >= 100) {
+                        iconClass = 'complete';
+                        progressClass = 'complete';
+                    } else if (p > 0) {
+                        iconClass = 'partial';
+                        progressClass = 'partial';
+                    }
+
+                    const icon = p >= 100 ? '✓' : (p > 0 ? '◐' : (!enabled ? '○' : '○'));
+
+                    return `
+                        <div class="setup-item">
+                            <div class="setup-item-icon ${iconClass}">${icon}</div>
+                            <div class="setup-item-content">
+                                <div class="setup-item-title">${item.icon} ${item.title}</div>
+                                <div class="setup-item-desc">${item.desc(item.data.items)}</div>
+                            </div>
+                            <div class="setup-item-progress ${progressClass}">${p}%</div>
+                        </div>
+                    `;
+                }).join('');
+
+            } catch (e) {
+                console.error('Setup progress failed:', e);
+                document.getElementById('setupProgressCard').classList.add('hidden');
+            }
+        }
+
+        async function refreshHealth() {
+            try {
+                const response = await fetch('/api/admin/health');
+                const data = await response.json();
+                const container = document.getElementById('healthStatus');
+                container.innerHTML = data.services.map(s => `
+                    <div class="service-card">
+                        <div class="status-dot ${s.status}"></div>
+                        <div class="service-info">
+                            <div class="service-name">${s.name}</div>
+                            <div class="service-latency">${s.status === 'up' ? s.latency_ms + 'ms' : s.error || s.status}</div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) { console.error('Health check failed:', e); }
+        }
+
+        async function loadMetrics() {
+            try {
+                const response = await fetch('/api/admin/metrics');
+                const data = await response.json();
+
+                document.getElementById('latencyMetrics').innerHTML = `
+                    <div class="metric-card">
+                        <div class="metric-value">${data.latencies.routing.avg || 0}</div>
+                        <div class="metric-label">Routing (ms)</div>
+                        <div class="metric-detail">min: ${data.latencies.routing.min} / max: ${data.latencies.routing.max}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">${data.latencies.stt.avg || 0}</div>
+                        <div class="metric-label">STT (ms)</div>
+                        <div class="metric-detail">min: ${data.latencies.stt.min} / max: ${data.latencies.stt.max}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">${Math.round((data.latencies.reasoning.avg || 0) / 1000 * 10) / 10}</div>
+                        <div class="metric-label">Reasoning (s)</div>
+                        <div class="metric-detail">${data.latencies.reasoning.count} chiamate</div>
+                    </div>
+                `;
+
+                document.getElementById('statsMetrics').innerHTML = `
+                    <div class="metric-card">
+                        <div class="metric-value">${data.requests.total}</div>
+                        <div class="metric-label">Richieste</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">${data.cache.hit_rate}%</div>
+                        <div class="metric-label">Cache Hit</div>
+                        <div class="metric-detail">${data.cache.hits} / ${data.cache.misses}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">${data.database.voice_enrolled}/${data.database.users}</div>
+                        <div class="metric-label">Voci</div>
+                    </div>
+                `;
+            } catch (e) { console.error('Metrics load failed:', e); }
+        }
+
+        async function loadPendingActions() {
+            try {
+                const response = await fetch('/api/admin/pending-actions');
+                const actions = await response.json();
+                const container = document.getElementById('pendingActions');
+
+                if (actions.length === 0) {
+                    container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">✓</div><p>Nessuna azione in attesa</p></div>';
+                    return;
+                }
+
+                container.innerHTML = actions.map(a => `
+                    <div class="pending-action">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
+                            <span style="font-family: monospace; color: var(--warning); font-weight: 600;">#${a.action_id}</span>
+                            <span style="color: var(--text-muted); font-size: 0.8rem;">${a.datetime}</span>
+                        </div>
+                        <div style="font-size: 0.9rem;"><strong>${a.payload.domain}.${a.payload.action}</strong> → ${a.payload.data?.entity_id || 'N/A'}</div>
+                        <div style="margin-top: 0.75rem;"><button class="btn-danger btn-sm" onclick="cancelAction('${a.action_id}')">Annulla</button></div>
+                    </div>
+                `).join('');
+            } catch (e) { console.error('Pending actions load failed:', e); }
+        }
+
+        async function cancelAction(actionId) {
+            try {
+                await fetch(`/api/admin/pending-actions/${actionId}`, { method: 'DELETE' });
+                showToast('Azione annullata');
+                loadPendingActions();
+            } catch (e) { showToast('Errore', 'error'); }
+        }
+
+        // ============================================
+        // USERS
+        // ============================================
+        async function loadUsers() {
+            try {
+                const response = await fetch('/api/users/');
+                const users = await response.json();
+                const container = document.getElementById('userList');
+
+                if (!users || users.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">👤</div>
+                            <p>Nessun utente configurato</p>
+                            <p style="font-size: 0.85rem; color: var(--text-muted);">Aggiungi utenti per abilitare il riconoscimento vocale</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = users.map(user => `
+                    <div class="user-item">
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <div class="user-avatar">${user.name.charAt(0).toUpperCase()}</div>
+                            <div>
+                                <div style="font-weight: 600;">${user.name}</div>
+                                <div style="font-size: 0.8rem; color: ${user.role === 'admin' ? 'var(--accent)' : 'var(--text-muted)'};">
+                                    ${user.role === 'admin' ? 'Amministratore' : user.role === 'user' ? 'Utente' : 'Ospite'}
+                                </div>
+                            </div>
+                            ${user.voice_enrolled ? '<span class="badge badge-success">Voce OK</span>' : '<span class="badge badge-warning">No voce</span>'}
+                        </div>
+                        <div style="display: flex; gap: 0.5rem;">
+                            ${!user.voice_enrolled ?
+                                `<button class="btn-primary btn-sm" onclick="startEnrollment(${user.id}, '${user.name}')">Registra</button>` :
+                                `<button class="btn-secondary btn-sm" onclick="deleteVoice(${user.id})">Rimuovi</button>`}
+                            <button class="btn-danger btn-sm" onclick="deleteUser(${user.id}, '${user.name}')">Elimina</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) { console.error('Users load failed:', e); }
+        }
+
+        async function addUser(event) {
+            event.preventDefault();
+            const name = document.getElementById('newUserName').value;
+            const role = document.getElementById('newUserRole').value;
+
+            try {
+                const response = await fetch('/api/users/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, role })
+                });
+
+                if (response.ok) {
+                    showToast('Utente creato');
+                    document.getElementById('newUserName').value = '';
+                    closeModal('addUserModal');
+                    loadUsers();
+                } else {
+                    const error = await response.json();
+                    showToast(error.detail || 'Errore', 'error');
+                }
+            } catch (e) { showToast('Errore di connessione', 'error'); }
+        }
+
+        async function deleteUser(userId, userName) {
+            if (!confirm(`Eliminare ${userName}?`)) return;
+            try {
+                const response = await fetch(`/api/users/${userId}`, { method: 'DELETE' });
+                response.ok ? (showToast('Utente eliminato'), loadUsers()) : showToast((await response.json()).detail || 'Errore', 'error');
+            } catch (e) { showToast('Errore', 'error'); }
+        }
+
+        async function deleteVoice(userId) {
+            if (!confirm('Eliminare registrazione vocale?')) return;
+            try { await fetch(`/api/users/${userId}/voice`, { method: 'DELETE' }); showToast('Voce eliminata'); loadUsers(); }
+            catch (e) { showToast('Errore', 'error'); }
+        }
+
+        // Voice Enrollment
+        async function startEnrollment(userId, userName) {
+            currentEnrollmentUserId = userId;
+            currentPhraseIndex = 0;
+            document.getElementById('enrollmentUserName').textContent = `Utente: ${userName}`;
+
+            try {
+                const response = await fetch(`/api/users/${userId}/voice/start`, { method: 'POST' });
+                const data = await response.json();
+                enrollmentPhrases = data.phrases;
+                updateEnrollmentSteps(0, enrollmentPhrases.length);
+                document.getElementById('phraseDisplay').textContent = 'Premi "Inizia" per cominciare';
+                document.getElementById('enrollmentButton').textContent = 'Inizia';
+                document.getElementById('enrollmentButton').onclick = startRecording;
+                document.getElementById('enrollmentStatus').innerHTML = '';
+                openModal('enrollmentModal');
+            } catch (e) { showToast('Errore avvio registrazione', 'error'); }
+        }
+
+        function updateEnrollmentSteps(current, total) {
+            const container = document.getElementById('enrollmentSteps');
+            let html = '';
+            for (let i = 0; i < total; i++) {
+                const isDone = i < current;
+                const isActive = i === current;
+                const bg = isDone ? 'var(--success)' : isActive ? 'var(--accent)' : 'var(--bg-input)';
+                const border = isDone ? 'var(--success-bg)' : isActive ? 'rgba(233,69,96,0.2)' : 'transparent';
+                html += `<div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem; border-radius: 6px; background: ${border}; margin-bottom: 0.35rem;">
+                    <div style="width: 24px; height: 24px; border-radius: 50%; background: ${bg}; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 0.75rem; color: white;">${isDone ? '✓' : i + 1}</div>
+                    <span style="font-size: 0.85rem; color: var(--text-secondary);">${isDone ? 'Completato' : isActive ? 'In corso' : 'In attesa'}</span>
+                </div>`;
+            }
+            container.innerHTML = html;
+        }
+
+        async function startRecording() {
+            if (currentPhraseIndex >= enrollmentPhrases.length) { await completeEnrollment(); return; }
+
+            document.getElementById('phraseDisplay').textContent = `"${enrollmentPhrases[currentPhraseIndex]}"`;
+            document.getElementById('recordingIndicator').style.display = 'block';
+            document.getElementById('enrollmentButton').disabled = true;
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    await uploadEnrollmentSample(audioBlob);
+                    stream.getTracks().forEach(t => t.stop());
+                };
+                mediaRecorder.start();
+                setTimeout(() => mediaRecorder?.state === 'recording' && mediaRecorder.stop(), 4000);
+            } catch (e) {
+                showToast('Errore microfono', 'error');
+                document.getElementById('recordingIndicator').style.display = 'none';
+                document.getElementById('enrollmentButton').disabled = false;
+            }
+        }
+
+        async function uploadEnrollmentSample(audioBlob) {
+            document.getElementById('recordingIndicator').style.display = 'none';
+            const formData = new FormData();
+            formData.append('audio', audioBlob, 'sample.wav');
+
+            try {
+                const response = await fetch(`/api/users/${currentEnrollmentUserId}/voice/sample`, { method: 'POST', body: formData });
+                const data = await response.json();
+                if (data.status === 'sample_added') {
+                    currentPhraseIndex++;
+                    updateEnrollmentSteps(currentPhraseIndex, enrollmentPhrases.length);
+                    if (data.ready_to_complete) {
+                        document.getElementById('phraseDisplay').textContent = 'Campioni raccolti!';
+                        document.getElementById('enrollmentButton').textContent = 'Completa';
+                        document.getElementById('enrollmentButton').onclick = completeEnrollment;
+                    } else {
+                        document.getElementById('phraseDisplay').textContent = 'Prossima frase...';
+                    }
+                    document.getElementById('enrollmentButton').disabled = false;
+                } else throw new Error(data.message || 'Errore');
+            } catch (e) {
+                document.getElementById('enrollmentStatus').innerHTML = `<div style="color: var(--error);">Errore. Riprova.</div>`;
+                document.getElementById('enrollmentButton').disabled = false;
+            }
+        }
+
+        async function completeEnrollment() {
+            try {
+                const response = await fetch(`/api/users/${currentEnrollmentUserId}/voice/complete`, { method: 'POST' });
+                const data = await response.json();
+                if (data.status === 'completed') {
+                    document.getElementById('enrollmentStatus').innerHTML = `<div style="color: var(--success);">Registrazione completata!</div>`;
+                    setTimeout(() => { closeModal('enrollmentModal'); loadUsers(); }, 1500);
+                } else throw new Error(data.message || 'Errore');
+            } catch (e) { document.getElementById('enrollmentStatus').innerHTML = `<div style="color: var(--error);">${e.message}</div>`; }
+        }
+
+        async function cancelEnrollment() {
+            if (currentEnrollmentUserId) await fetch(`/api/users/${currentEnrollmentUserId}/voice/cancel`, { method: 'POST' });
+            closeModal('enrollmentModal');
+        }
+
+        // Voice Test
+        async function startVoiceTest() {
+            const btn = document.getElementById('voiceTestBtn');
+            const resultDiv = document.getElementById('voiceTestResult');
+            btn.disabled = true; btn.textContent = 'Registrazione...'; resultDiv.innerHTML = '';
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const recorder = new MediaRecorder(stream);
+                const chunks = [];
+                recorder.ondataavailable = (e) => chunks.push(e.data);
+                recorder.onstop = async () => {
+                    btn.textContent = 'Analisi...';
+                    const blob = new Blob(chunks, { type: 'audio/wav' });
+                    const formData = new FormData();
+                    formData.append('audio', blob, 'test.wav');
+                    try {
+                        const response = await fetch('/api/users/voice/test', { method: 'POST', body: formData });
+                        const result = await response.json();
+                        resultDiv.innerHTML = result.identified ?
+                            `<div class="voice-test-result success"><strong>Identificato: ${result.speaker_name}</strong><div style="margin-top: 0.5rem; font-size: 0.85rem;">Confidenza: ${(result.confidence * 100).toFixed(1)}%</div></div>` :
+                            `<div class="voice-test-result unknown"><strong>Non riconosciuto</strong><div style="margin-top: 0.5rem; font-size: 0.85rem;">Confidenza max: ${(result.confidence * 100).toFixed(1)}%</div></div>`;
+                    } catch (e) { resultDiv.innerHTML = `<div style="color: var(--error);">Errore analisi</div>`; }
+                    stream.getTracks().forEach(t => t.stop());
+                    btn.disabled = false; btn.textContent = 'Avvia Test';
+                };
+                recorder.start();
+                setTimeout(() => recorder.stop(), 4000);
+            } catch (e) { showToast('Errore microfono', 'error'); btn.disabled = false; btn.textContent = 'Avvia Test'; }
+        }
+
+        // ============================================
+        // SYSTEM CONFIG
+        // ============================================
+        async function loadSystemConfig() {
+            try {
+                const [configRes, prefsRes, stateRes] = await Promise.all([
+                    fetch('/api/admin/config'), fetch('/api/admin/preferences'), fetch('/api/admin/system-state')
+                ]);
+                const config = await configRes.json();
+                const prefs = await prefsRes.json();
+                const state = await stateRes.json();
+
+                document.getElementById('editablePrefs').innerHTML = prefs.filter(p => p.editable).map(p => {
+                    let inputHtml;
+                    if (p.type === 'boolean') {
+                        inputHtml = `<input type="checkbox" id="pref_${p.key}" ${p.value === 'True' ? 'checked' : ''}>`;
+                    } else if (p.type === 'select') {
+                        const options = p.options || [];
+                        inputHtml = `<select id="pref_${p.key}" style="width: 140px;">
+                            ${options.map(opt => `<option value="${opt}" ${p.value === opt ? 'selected' : ''}>${opt || '(TTS Ok)'}</option>`).join('')}
+                        </select>`;
+                    } else if (p.type === 'float') {
+                        inputHtml = `<input type="number" id="pref_${p.key}" value="${p.value}" step="0.01" min="0" max="1" style="width: 120px;">`;
+                    } else if (p.type === 'integer') {
+                        inputHtml = `<input type="number" id="pref_${p.key}" value="${p.value}" min="0" max="23" style="width: 120px;">`;
+                    } else {
+                        // Campi testo: più larghi per sound IDs
+                        const isSound = p.key.startsWith('sound_');
+                        const width = isSound ? '320px' : '120px';
+                        const placeholder = isSound ? 'es: amzn_ui_sfx_gameshow_positive_response_01' : '';
+                        inputHtml = `<input type="text" id="pref_${p.key}" value="${p.value}" style="width: ${width};" placeholder="${placeholder}">`;
+                    }
+                    return `<div class="config-item">
+                        <div style="flex: 1;"><div class="config-key">${p.key}</div><div class="config-description">${p.description}</div></div>
+                        ${inputHtml}
+                    </div>`;
+                }).join('');
+
+                const readonlyItems = Object.entries(config.readonly).map(([key, value]) =>
+                    `<div class="config-item"><div class="config-key">${key}</div><div class="config-value">${typeof value === 'object' ? JSON.stringify(value) : value}</div></div>`
+                );
+                readonlyItems.push(`<div class="config-item"><div class="config-key">family_members</div><div class="config-value">${config.derived.family_members.join(', ')}</div></div>`);
+                document.getElementById('readonlyConfig').innerHTML = readonlyItems.join('');
+
+                document.getElementById('systemState').innerHTML = state.length === 0 ?
+                    '<div class="empty-state"><p>Nessun system state</p></div>' :
+                    state.map(s => `<div class="config-item"><div class="config-key">${s.key}</div><div style="display: flex; gap: 0.5rem; align-items: center;"><span class="config-value">${s.value}</span><button class="btn-danger btn-sm" onclick="deleteSystemState('${s.key}')">×</button></div></div>`).join('');
+
+                // Carica info backup
+                loadBackupInfo();
+            } catch (e) { console.error('Config load failed:', e); }
+        }
+
+        // ---- Backup & Restore Functions ----
+        function formatBytes(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        async function loadBackupInfo() {
+            try {
+                const res = await fetch('/api/admin/backup/info');
+                const info = await res.json();
+                document.getElementById('backupDbSize').textContent = 'DB: ' + formatBytes(info.database.size_bytes);
+                document.getElementById('backupChromaSize').textContent = 'ChromaDB: ' + (info.chromadb.exists ? formatBytes(info.chromadb.size_bytes) : 'N/A');
+                document.getElementById('backupVoiceSize').textContent = 'Voice: ' + (info.voice_models.exists ? formatBytes(info.voice_models.size_bytes) : 'N/A');
+                document.getElementById('backupTotalSize').innerHTML = '<strong>Totale stimato: ' + formatBytes(info.total_estimated_bytes) + '</strong>';
+            } catch (e) { console.error('Backup info load failed:', e); }
+        }
+
+        async function downloadBackup() {
+            const btn = document.getElementById('btnDownloadBackup');
+            const progress = document.getElementById('backupProgress');
+            btn.disabled = true;
+            progress.style.display = 'block';
+
+            try {
+                const res = await fetch('/api/admin/backup');
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Backup fallito');
+                }
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const filename = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1] || 'jarvis_backup.tar.gz';
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
+                showToast('Backup scaricato: ' + filename, 'success');
+            } catch (e) {
+                showToast('Errore backup: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                progress.style.display = 'none';
+            }
+        }
+
+        let restoreFile = null;
+
+        async function handleRestoreFileSelected(input) {
+            restoreFile = input.files[0];
+            if (!restoreFile) return;
+
+            document.getElementById('restoreFileName').textContent = restoreFile.name + ' (' + formatBytes(restoreFile.size) + ')';
+            document.getElementById('restoreValidation').style.display = 'block';
+            document.getElementById('restoreValidation').innerHTML = '<div style="display: flex; align-items: center; gap: 0.5rem;"><div class="spinner" style="width: 14px; height: 14px;"></div> Validazione in corso...</div>';
+            document.getElementById('restoreActions').style.display = 'none';
+            document.getElementById('restoreResult').style.display = 'none';
+
+            // Valida il file
+            const formData = new FormData();
+            formData.append('file', restoreFile);
+
+            try {
+                const res = await fetch('/api/admin/backup/validate', { method: 'POST', body: formData });
+                const validation = await res.json();
+
+                let html = '';
+                if (validation.valid) {
+                    html += '<div style="color: var(--success); font-weight: 600; margin-bottom: 0.5rem;">&#10003; Archivio valido</div>';
+                    if (validation.metadata) {
+                        const ts = new Date(validation.metadata.timestamp * 1000).toLocaleString();
+                        html += `<div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.25rem;">Data backup: ${ts}</div>`;
+                        const comps = validation.metadata.components || {};
+                        const compList = Object.entries(comps).map(([k, v]) =>
+                            `<span class="badge" style="margin-right: 0.25rem;">${k}: ${v.status}</span>`
+                        ).join('');
+                        html += `<div style="margin-bottom: 0.5rem;">${compList}</div>`;
+                    }
+                    if (validation.warnings && validation.warnings.length > 0) {
+                        html += '<div style="color: var(--warning); font-size: 0.85rem;">';
+                        validation.warnings.forEach(w => { html += `<div>&#9888; ${w}</div>`; });
+                        html += '</div>';
+                    }
+                    document.getElementById('restoreActions').style.display = 'block';
+                } else {
+                    html += '<div style="color: var(--danger); font-weight: 600; margin-bottom: 0.5rem;">&#10007; Archivio non valido</div>';
+                    validation.errors.forEach(e => { html += `<div style="color: var(--danger); font-size: 0.85rem;">&bull; ${e}</div>`; });
+                    document.getElementById('restoreActions').style.display = 'none';
+                }
+                document.getElementById('restoreValidation').innerHTML = html;
+            } catch (e) {
+                document.getElementById('restoreValidation').innerHTML = `<div style="color: var(--danger);">Errore validazione: ${e.message}</div>`;
+            }
+        }
+
+        async function executeRestore() {
+            if (!restoreFile) return;
+            if (!confirm('ATTENZIONE: Il ripristino sovrascriverà database, ChromaDB e voice models correnti.\n\nViene creato automaticamente un safety backup.\n\nContinuare?')) return;
+
+            const btn = document.getElementById('btnRestore');
+            const progress = document.getElementById('restoreProgress');
+            const resultDiv = document.getElementById('restoreResult');
+            btn.disabled = true;
+            progress.style.display = 'block';
+            resultDiv.style.display = 'none';
+
+            const formData = new FormData();
+            formData.append('file', restoreFile);
+
+            try {
+                const res = await fetch('/api/admin/restore', { method: 'POST', body: formData });
+                const result = await res.json();
+
+                resultDiv.style.display = 'block';
+                if (result.success) {
+                    let html = '<div style="color: var(--success); font-weight: 600; margin-bottom: 0.5rem;">&#10003; Ripristino completato</div>';
+                    html += '<div style="font-size: 0.85rem; color: var(--text-secondary);">';
+                    html += '<div>Step completati: ' + result.steps_completed.join(', ') + '</div>';
+                    if (result.safety_backup_path) {
+                        html += '<div>Safety backup: ' + result.safety_backup_path + '</div>';
+                    }
+                    if (result.errors && result.errors.length > 0) {
+                        html += '<div style="color: var(--warning); margin-top: 0.25rem;">Avvisi: ' + result.errors.join(', ') + '</div>';
+                    }
+                    html += '</div>';
+                    resultDiv.innerHTML = html;
+                    showToast('Ripristino completato con successo', 'success');
+                } else {
+                    let html = '<div style="color: var(--danger); font-weight: 600; margin-bottom: 0.5rem;">&#10007; Ripristino fallito</div>';
+                    html += '<div style="font-size: 0.85rem;">';
+                    if (result.detail) {
+                        const detail = typeof result.detail === 'object' ? result.detail : { message: result.detail };
+                        if (detail.errors) detail.errors.forEach(e => { html += `<div style="color: var(--danger);">&bull; ${e}</div>`; });
+                        if (detail.steps_completed) html += `<div style="color: var(--text-secondary);">Step completati: ${detail.steps_completed.join(', ')}</div>`;
+                        if (detail.safety_backup_path) html += `<div style="color: var(--text-secondary);">Safety backup disponibile: ${detail.safety_backup_path}</div>`;
+                    }
+                    html += '</div>';
+                    resultDiv.innerHTML = html;
+                    showToast('Ripristino fallito', 'error');
+                }
+            } catch (e) {
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = `<div style="color: var(--danger);">Errore: ${e.message}</div>`;
+                showToast('Errore ripristino: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                progress.style.display = 'none';
+            }
+        }
+
+        async function savePreferences() {
+            // Salva dinamicamente tutte le preferenze trovate nel DOM (elementi con id="pref_*")
+            const prefElements = document.querySelectorAll('[id^="pref_"]');
+            for (const el of prefElements) {
+                const key = el.id.replace('pref_', '');
+                const value = el.type === 'checkbox' ? (el.checked ? 'True' : 'False') : el.value;
+                try { await fetch(`/api/admin/preferences/${key}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value }) }); }
+                catch (e) { showToast(`Errore ${key}`, 'error'); return; }
+            }
+            showToast('Preferenze salvate');
+        }
+
+        async function addSystemState(event) {
+            event.preventDefault();
+            const key = document.getElementById('newStateKey').value;
+            const value = document.getElementById('newStateValue').value;
+            try {
+                await fetch(`/api/admin/system-state/${key}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value }) });
+                showToast('State aggiunto'); closeModal('addStateModal'); loadSystemConfig();
+            } catch (e) { showToast('Errore', 'error'); }
+        }
+
+        async function deleteSystemState(key) {
+            if (!confirm(`Eliminare "${key}"?`)) return;
+            try { await fetch(`/api/admin/system-state/${key}`, { method: 'DELETE' }); showToast('Eliminato'); loadSystemConfig(); }
+            catch (e) { showToast('Errore', 'error'); }
+        }
+
+        // ============================================
+        // AUDIT LOG
+        // ============================================
+        async function loadAuditLog() {
+            const category = document.getElementById('auditCategory').value;
+            const speaker = document.getElementById('auditSpeaker').value;
+
+            try {
+                let url = `/api/admin/audit-log?limit=50&offset=${auditPage * 50}`;
+                if (category) url += `&category=${category}`;
+                if (speaker) url += `&speaker_name=${speaker}`;
+
+                const response = await fetch(url);
+                const data = await response.json();
+
+                const categorySelect = document.getElementById('auditCategory');
+                const currentCategory = categorySelect.value;
+                categorySelect.innerHTML = '<option value="">Tutte</option>' + data.categories.map(c => `<option value="${c}" ${c === currentCategory ? 'selected' : ''}>${c}</option>`).join('');
+
+                const tbody = document.getElementById('auditLogBody');
+                tbody.innerHTML = data.entries.length === 0 ?
+                    '<tr><td colspan="4" style="color: var(--text-muted); text-align: center;">Nessun evento</td></tr>' :
+                    data.entries.map(e => `<tr><td style="white-space: nowrap; font-size: 0.8rem;">${e.datetime}</td><td><span class="badge badge-info">${e.category}</span></td><td style="font-size: 0.85rem;">${e.message}</td><td style="font-size: 0.85rem;">${e.speaker}</td></tr>`).join('');
+
+                const totalPages = Math.ceil(data.total / 50);
+                const pagination = document.getElementById('auditPagination');
+                pagination.innerHTML = '';
+                if (totalPages > 1) {
+                    for (let i = 0; i < Math.min(totalPages, 10); i++) {
+                        const btn = document.createElement('button');
+                        btn.className = `btn-secondary btn-sm ${i === auditPage ? 'active' : ''}`;
+                        btn.textContent = i + 1;
+                        btn.onclick = () => { auditPage = i; loadAuditLog(); };
+                        pagination.appendChild(btn);
+                    }
+                }
+            } catch (e) { console.error('Audit log load failed:', e); }
+        }
+
+        async function clearAuditLog() {
+            if (!confirm('Svuotare il log?')) return;
+            try { await fetch('/api/admin/audit-log', { method: 'DELETE' }); showToast('Log svuotato'); loadAuditLog(); }
+            catch (e) { showToast('Errore', 'error'); }
+        }
+
+        // ============================================
+        // DEVICES
+        // ============================================
+        async function loadDeviceFailures() {
+            try {
+                const response = await fetch('/api/admin/device-failures');
+                const failures = await response.json();
+                const container = document.getElementById('deviceFailures');
+
+                container.innerHTML = failures.length === 0 ?
+                    '<div class="empty-state"><div class="empty-state-icon">✓</div><p>Nessun dispositivo in errore</p></div>' :
+                    failures.map(f => `
+                        <div class="device-failure">
+                            <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 0.5rem;">
+                                <div>
+                                    <div style="font-weight: 600;">${f.entity_id}</div>
+                                    <div style="font-size: 0.8rem; color: var(--text-muted);">${f.failure_count} errori - ${f.last_failure_datetime}</div>
+                                    <div style="font-size: 0.8rem; color: var(--error); margin-top: 0.25rem;">${f.last_error}</div>
+                                </div>
+                                <button class="btn-secondary btn-sm" onclick="resetDeviceFailure('${f.entity_id}')">Reset</button>
+                            </div>
+                        </div>
+                    `).join('');
+            } catch (e) { console.error('Device failures load failed:', e); }
+        }
+
+        async function resetDeviceFailure(entityId) {
+            try { await fetch(`/api/admin/device-failures/${encodeURIComponent(entityId)}`, { method: 'DELETE' }); showToast('Resettato'); loadDeviceFailures(); }
+            catch (e) { showToast('Errore', 'error'); }
+        }
+
+        async function resetAllDeviceFailures() {
+            if (!confirm('Resettare tutti?')) return;
+            try { await fetch('/api/admin/device-failures', { method: 'DELETE' }); showToast('Tutti resettati'); loadDeviceFailures(); }
+            catch (e) { showToast('Errore', 'error'); }
+        }
+
+        // ============================================
+        // VOICE DEVICES
+        // ============================================
+        let voiceDevicesLocations = [];
+
+        async function loadVoiceDevices() {
+            try {
+                const response = await fetch('/api/admin/voice-devices');
+                const data = await response.json();
+
+                // Stats
+                const stats = data.stats || {};
+                document.getElementById('voiceDeviceStats').innerHTML = `
+                    <div class="metric-card"><div class="metric-value">${stats.total || 0}</div><div class="metric-label">Totali</div></div>
+                    <div class="metric-card"><div class="metric-value">${stats.configured || 0}</div><div class="metric-label">Configurati</div></div>
+                    <div class="metric-card"><div class="metric-value" style="color: var(--success);">${stats.online || 0}</div><div class="metric-label">Online</div></div>
+                    <div class="metric-card"><div class="metric-value" style="color: var(--text-muted);">${stats.offline || 0}</div><div class="metric-label">Offline</div></div>
+                `;
+
+                // Separate configured from unconfigured
+                const configured = data.devices.filter(d => d.is_configured);
+                const unconfigured = data.devices.filter(d => !d.is_configured);
+
+                // Unconfigured alert
+                const unconfiguredCard = document.getElementById('unconfiguredDevicesCard');
+                if (unconfigured.length > 0) {
+                    unconfiguredCard.style.display = 'block';
+                    document.getElementById('unconfiguredDevices').innerHTML = unconfigured.map(d => `
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background: var(--bg-tertiary); border-radius: 8px; margin-bottom: 0.5rem;">
+                            <div>
+                                <div style="font-family: monospace; font-weight: 600;">${d.device_id}</div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">
+                                    IP: ${d.ip_address || 'N/A'} | FW: ${d.firmware_version || 'N/A'} |
+                                    Visto: ${d.last_seen_at ? formatTimestamp(d.last_seen_at) : 'Mai'}
+                                </div>
+                            </div>
+                            <button class="btn-primary btn-sm" onclick="openVoiceDeviceModal('${d.device_id}')">Configura</button>
+                        </div>
+                    `).join('');
+                } else {
+                    unconfiguredCard.style.display = 'none';
+                }
+
+                // Configured table
+                const tbody = document.getElementById('voiceDevicesTable');
+                tbody.innerHTML = configured.length === 0 ?
+                    '<tr><td colspan="7" class="empty-state"><p>Nessun device configurato</p></td></tr>' :
+                    configured.map(d => `
+                        <tr>
+                            <td><strong>${d.friendly_name}</strong></td>
+                            <td style="font-family: monospace; font-size: 0.8rem;">${d.device_id}</td>
+                            <td>${d.location_id || '-'}</td>
+                            <td style="font-size: 0.85rem;">${d.output_speaker || '-'}</td>
+                            <td>
+                                <span class="badge ${d.is_online ? 'badge-success' : 'badge-secondary'}" style="display: inline-flex; align-items: center; gap: 4px;">
+                                    <span style="width: 8px; height: 8px; border-radius: 50%; background: ${d.is_online ? 'var(--success)' : 'var(--text-muted)'}; ${d.is_online ? 'animation: pulse 2s infinite;' : ''}"></span>
+                                    ${d.is_online ? 'Online' : 'Offline'}
+                                </span>
+                                ${!d.enabled ? '<span class="badge badge-warning" style="margin-left: 4px;">Disabilitato</span>' : ''}
+                            </td>
+                            <td style="font-size: 0.8rem; color: var(--text-muted);">${d.last_seen_at ? formatTimestamp(d.last_seen_at) : 'Mai'}</td>
+                            <td>
+                                <button class="btn-secondary btn-sm" onclick="openVoiceDeviceModal('${d.device_id}', true)">Modifica</button>
+                                <button class="btn-danger btn-sm" onclick="deleteVoiceDevice('${d.device_id}', '${d.friendly_name}')">Elimina</button>
+                            </td>
+                        </tr>
+                    `).join('');
+
+            } catch (e) {
+                console.error('Voice devices load failed:', e);
+                showToast('Errore caricamento voice devices', 'error');
+            }
+        }
+
+        async function openVoiceDeviceModal(deviceId, isEdit = false) {
+            // Load locations if not cached
+            if (voiceDevicesLocations.length === 0) {
+                try {
+                    const locResp = await fetch('/api/admin/locations');
+                    voiceDevicesLocations = await locResp.json();
+                } catch (e) {
+                    showToast('Errore caricamento locations', 'error');
+                    return;
+                }
+            }
+
+            // Populate location dropdown
+            const locSelect = document.getElementById('vdLocationId');
+            locSelect.innerHTML = '<option value="">Seleziona location...</option>' +
+                voiceDevicesLocations.filter(l => l.enabled).map(l => `<option value="${l.id}">${l.name} (${l.id})</option>`).join('');
+
+            // Reset form
+            document.getElementById('vdDeviceId').value = deviceId;
+            document.getElementById('vdDeviceIdDisplay').value = deviceId;
+            document.getElementById('vdFriendlyName').value = '';
+            document.getElementById('vdOutputSpeaker').innerHTML = '<option value="">Seleziona prima la location...</option>';
+            document.getElementById('vdFallbackSpeaker').innerHTML = '<option value="">Nessuno</option>';
+            document.getElementById('vdFallbackTelegram').checked = true;
+            document.getElementById('vdFallbackLocalSpeaker').checked = true;
+            document.getElementById('vdEnabled').checked = true;
+            document.getElementById('vdNotes').value = '';
+
+            // If editing, load device data
+            if (isEdit) {
+                try {
+                    const devResp = await fetch(`/api/admin/voice-devices/${deviceId}`);
+                    const device = await devResp.json();
+
+                    document.getElementById('vdFriendlyName').value = device.friendly_name || '';
+                    document.getElementById('vdLocationId').value = device.location_id || '';
+                    document.getElementById('vdFallbackTelegram').checked = device.fallback_telegram;
+                    document.getElementById('vdFallbackLocalSpeaker').checked = device.fallback_local_speaker;
+                    document.getElementById('vdEnabled').checked = device.enabled;
+                    document.getElementById('vdNotes').value = device.notes || '';
+
+                    // Load media players for this location
+                    if (device.location_id) {
+                        await loadMediaPlayersForLocation();
+                        document.getElementById('vdOutputSpeaker').value = device.output_speaker || '';
+                        document.getElementById('vdFallbackSpeaker').value = device.fallback_speaker || '';
+                    }
+
+                    document.getElementById('voiceDeviceModalTitle').textContent = 'Modifica Voice Device';
+                } catch (e) {
+                    showToast('Errore caricamento device', 'error');
+                    return;
+                }
+            } else {
+                document.getElementById('voiceDeviceModalTitle').textContent = 'Configura Voice Device';
+            }
+
+            openModal('voiceDeviceModal');
+        }
+
+        async function loadMediaPlayersForLocation() {
+            const locationId = document.getElementById('vdLocationId').value;
+            const outputSelect = document.getElementById('vdOutputSpeaker');
+            const fallbackSelect = document.getElementById('vdFallbackSpeaker');
+
+            if (!locationId) {
+                outputSelect.innerHTML = '<option value="">Seleziona prima la location...</option>';
+                fallbackSelect.innerHTML = '<option value="">Nessuno</option>';
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/ha-media-players?location_id=${locationId}`);
+                const data = await response.json();
+
+                if (data.error) {
+                    outputSelect.innerHTML = `<option value="">Errore: ${data.error}</option>`;
+                    return;
+                }
+
+                const options = data.media_players.map(mp =>
+                    `<option value="${mp.entity_id}">${mp.friendly_name} (${mp.state})</option>`
+                ).join('');
+
+                outputSelect.innerHTML = '<option value="">Seleziona speaker...</option>' + options;
+                fallbackSelect.innerHTML = '<option value="">Nessuno</option>' + options;
+
+            } catch (e) {
+                console.error('Failed to load media players:', e);
+                outputSelect.innerHTML = '<option value="">Errore connessione</option>';
+            }
+        }
+
+        async function saveVoiceDevice(event) {
+            event.preventDefault();
+
+            const deviceId = document.getElementById('vdDeviceId').value;
+            const data = {
+                device_id: deviceId,
+                friendly_name: document.getElementById('vdFriendlyName').value,
+                location_id: document.getElementById('vdLocationId').value,
+                output_speaker: document.getElementById('vdOutputSpeaker').value,
+                fallback_speaker: document.getElementById('vdFallbackSpeaker').value || null,
+                fallback_telegram: document.getElementById('vdFallbackTelegram').checked,
+                fallback_local_speaker: document.getElementById('vdFallbackLocalSpeaker').checked,
+                enabled: document.getElementById('vdEnabled').checked,
+                notes: document.getElementById('vdNotes').value || null
+            };
+
+            try {
+                const response = await fetch('/api/admin/voice-devices', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    closeModal('voiceDeviceModal');
+                    showToast('Voice device salvato!', 'success');
+                    loadVoiceDevices();
+                } else {
+                    const error = await response.json();
+                    showToast(`Errore: ${error.detail || 'Salvataggio fallito'}`, 'error');
+                }
+            } catch (e) {
+                console.error('Save voice device failed:', e);
+                showToast('Errore salvataggio', 'error');
+            }
+        }
+
+        async function deleteVoiceDevice(deviceId, friendlyName) {
+            if (!confirm(`Eliminare il device "${friendlyName}" (${deviceId})?`)) return;
+
+            try {
+                const response = await fetch(`/api/admin/voice-devices/${deviceId}`, { method: 'DELETE' });
+                if (response.ok) {
+                    showToast('Device eliminato');
+                    loadVoiceDevices();
+                } else {
+                    showToast('Errore eliminazione', 'error');
+                }
+            } catch (e) {
+                showToast('Errore', 'error');
+            }
+        }
+
+        function formatTimestamp(timestamp) {
+            if (!timestamp) return 'Mai';
+            const date = new Date(timestamp * 1000);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMins = Math.floor(diffMs / 60000);
+
+            if (diffMins < 1) return 'Adesso';
+            if (diffMins < 60) return `${diffMins} min fa`;
+            if (diffMins < 1440) return `${Math.floor(diffMins / 60)} ore fa`;
+            return date.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        }
+
+        // ============================================
+        // CACHE
+        // ============================================
+        async function loadCache() {
+            const autoLearnedOnly = document.getElementById('autoLearnedOnly').checked;
+
+            try {
+                const response = await fetch(`/api/admin/cache?limit=50&auto_learned_only=${autoLearnedOnly}`);
+                const data = await response.json();
+
+                document.getElementById('cacheStats').innerHTML = `
+                    <div class="metric-card"><div class="metric-value">${data.total_entries}</div><div class="metric-label">Voci</div></div>
+                    <div class="metric-card"><div class="metric-value">${data.total_hits}</div><div class="metric-label">Hit Totali</div></div>
+                `;
+
+                const container = document.getElementById('cacheEntries');
+                container.innerHTML = data.entries.length === 0 ?
+                    '<div class="empty-state"><p>Cache vuota</p></div>' :
+                    data.entries.map(e => `
+                        <div class="cache-entry">
+                            <div style="font-weight: 600; margin-bottom: 0.35rem;">"${e.query}"</div>
+                            <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem; max-height: 50px; overflow: hidden;">${e.response}</div>
+                            <div style="display: flex; gap: 1rem; font-size: 0.75rem; color: var(--text-muted); flex-wrap: wrap;">
+                                <span>Hit: ${e.hit_count}</span><span>${e.last_used}</span>
+                                ${e.auto_learned ? '<span class="badge badge-info">Auto</span>' : ''}
+                            </div>
+                            <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem;">
+                                <button class="btn-secondary btn-sm" onclick="editCacheEntry('${e.hash}', \`${e.query.replace(/`/g, '\\`')}\`, \`${e.response.replace(/`/g, '\\`')}\`)">Modifica</button>
+                                <button class="btn-danger btn-sm" onclick="deleteCacheEntry('${e.hash}')">Elimina</button>
+                            </div>
+                        </div>
+                    `).join('');
+            } catch (e) { console.error('Cache load failed:', e); }
+        }
+
+        async function addCacheEntry(event) {
+            event.preventDefault();
+            const query = document.getElementById('newCacheQuery').value;
+            const response = document.getElementById('newCacheResponse').value;
+            try {
+                await fetch('/api/admin/cache', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query_text: query, response }) });
+                showToast('Aggiunto'); closeModal('addCacheModal'); loadCache();
+            } catch (e) { showToast('Errore', 'error'); }
+        }
+
+        function editCacheEntry(hash, query, response) {
+            document.getElementById('editCacheHash').value = hash;
+            document.getElementById('editCacheQuery').value = query;
+            document.getElementById('editCacheResponse').value = response;
+            openModal('editCacheModal');
+        }
+
+        async function updateCacheEntry(event) {
+            event.preventDefault();
+            const hash = document.getElementById('editCacheHash').value;
+            const response = document.getElementById('editCacheResponse').value;
+            try {
+                await fetch(`/api/admin/cache/${hash}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ response }) });
+                showToast('Aggiornato'); closeModal('editCacheModal'); loadCache();
+            } catch (e) { showToast('Errore', 'error'); }
+        }
+
+        async function deleteCacheEntry(hash) {
+            if (!confirm('Eliminare?')) return;
+            try { await fetch(`/api/admin/cache/${hash}`, { method: 'DELETE' }); showToast('Eliminato'); loadCache(); }
+            catch (e) { showToast('Errore', 'error'); }
+        }
+
+        async function clearCache() {
+            if (!confirm('Svuotare la cache?')) return;
+            try { await fetch('/api/admin/cache', { method: 'DELETE' }); showToast('Cache svuotata'); loadCache(); }
+            catch (e) { showToast('Errore', 'error'); }
+        }
+
+        // ============================================
+        // LOCATIONS
+        // ============================================
+        let selectedLocationId = null;
+
+        async function loadLocations() {
+            try {
+                const response = await fetch('/api/admin/locations');
+                const locations = await response.json();
+                const container = document.getElementById('locationList');
+
+                if (locations.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">🏠</div>
+                            <p style="font-weight: 600; margin-bottom: 0.5rem;">Nessuna casa Home Assistant configurata</p>
+                            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+                                JARVIS funziona in modalità assistente AI.<br>
+                                Aggiungi una location per controllare dispositivi smart home.
+                            </p>
+                            <button class="btn-primary" onclick="openModal('addLocationModal')">Aggiungi Location</button>
+                        </div>
+                    `;
+                    document.getElementById('entityMapCard').style.display = 'none';
+                    return;
+                }
+
+                container.innerHTML = locations.map(loc => {
+                    const healthState = loc.health?.state || 'unknown';
+                    const healthClass = healthState === 'online' ? 'up' : healthState === 'offline' ? 'down' : 'degraded';
+                    const healthText = healthState === 'online' ? `${loc.health.latency_ms}ms` : loc.health.last_error || healthState;
+                    const hasEntityMap = loc.entity_map_path === '[database]';
+
+                    return `
+                        <div class="user-item" style="border-left: 3px solid ${loc.enabled ? 'var(--success)' : 'var(--text-muted)'}; cursor: pointer;" onclick="selectLocation('${loc.id}', '${loc.name}')">
+                            <div style="display: flex; align-items: center; gap: 1rem; flex: 1;">
+                                <div class="user-avatar" style="background: ${loc.enabled ? 'linear-gradient(135deg, var(--accent), var(--accent-hover))' : 'var(--bg-input)'};">🏠</div>
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 600;">${loc.name}</div>
+                                    <div style="font-size: 0.8rem; color: var(--text-muted);">${loc.city || ''} - ${loc.hass_url}</div>
+                                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+                                        ID: <code>${loc.id}</code> | Token: ${loc.hass_token}
+                                        ${hasEntityMap ? ' | <span style="color: var(--success);">Entity Map ✓</span>' : ' | <span style="color: var(--warning);">No Entity Map</span>'}
+                                    </div>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                    <div class="status-dot ${healthClass}"></div>
+                                    <span style="font-size: 0.8rem; color: var(--text-muted);">${healthText}</span>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem; margin-left: 1rem;" onclick="event.stopPropagation();">
+                                <button class="btn-secondary btn-sm" onclick="testLocation('${loc.id}')">Test</button>
+                                <button class="btn-secondary btn-sm" onclick="openEditLocation('${loc.id}')">Modifica</button>
+                                ${loc.enabled ?
+                                    `<button class="btn-danger btn-sm" onclick="disableLocation('${loc.id}')">Disabilita</button>` :
+                                    `<button class="btn-primary btn-sm" onclick="enableLocation('${loc.id}')">Abilita</button>`}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                // Auto-select first location if none selected
+                if (!selectedLocationId && locations.length > 0) {
+                    selectLocation(locations[0].id, locations[0].name);
+                }
+            } catch (e) {
+                console.error('Locations load failed:', e);
+                document.getElementById('locationList').innerHTML = '<div style="color: var(--error);">Errore caricamento</div>';
+            }
+        }
+
+        async function selectLocation(locationId, locationName) {
+            selectedLocationId = locationId;
+            document.getElementById('entityMapLocationName').textContent = locationName;
+            document.getElementById('entityMapCard').style.display = 'block';
+            await loadEntityMap(locationId);
+        }
+
+        async function loadEntityMap(locationId) {
+            try {
+                const response = await fetch(`/api/admin/locations/${locationId}/entity-map`);
+                const data = await response.json();
+
+                const statsContainer = document.getElementById('entityMapStats');
+                const contentContainer = document.getElementById('entityMapContent');
+                const jsonContainer = document.getElementById('entityMapJson');
+
+                if (data.stats.total_entities === 0) {
+                    statsContainer.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📋</div>
+                            <p>Nessuna entity configurata</p>
+                            <p style="font-size: 0.8rem; color: var(--text-muted);">Importa un file JSON per configurare dispositivi e stanze</p>
+                        </div>
+                    `;
+                    contentContainer.style.display = 'none';
+                    return;
+                }
+
+                // Show stats
+                const typesList = Object.entries(data.stats.by_type)
+                    .map(([type, count]) => `<span style="background: var(--bg-input); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">${type}: ${count}</span>`)
+                    .join(' ');
+
+                statsContainer.innerHTML = `
+                    <div class="grid-4" style="margin-bottom: 1rem;">
+                        <div class="metric-card">
+                            <div class="metric-value">${data.stats.total_entities}</div>
+                            <div class="metric-label">Entity Totali</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value">${data.stats.rooms}</div>
+                            <div class="metric-label">Stanze</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value">${data.stats.entity_types}</div>
+                            <div class="metric-label">Tipi Entity</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value">${data.rooms.length}</div>
+                            <div class="metric-label">Aree</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                        ${typesList}
+                    </div>
+                `;
+
+                // Show JSON preview
+                jsonContainer.textContent = JSON.stringify(data.entity_map, null, 2);
+                contentContainer.style.display = 'block';
+
+            } catch (e) {
+                console.error('Entity map load failed:', e);
+                document.getElementById('entityMapStats').innerHTML = '<div style="color: var(--error);">Errore caricamento entity map</div>';
+            }
+        }
+
+        function loadEntityMapFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                document.getElementById('entityMapJsonInput').value = e.target.result;
+            };
+            reader.readAsText(file);
+        }
+
+        async function importEntityMap() {
+            if (!selectedLocationId) {
+                showToast('Seleziona prima una location', 'error');
+                return;
+            }
+
+            const jsonInput = document.getElementById('entityMapJsonInput').value.trim();
+            if (!jsonInput) {
+                showToast('Inserisci il JSON dell\'entity map', 'error');
+                return;
+            }
+
+            let entityMap;
+            try {
+                entityMap = JSON.parse(jsonInput);
+            } catch (e) {
+                showToast('JSON non valido: ' + e.message, 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/locations/${selectedLocationId}/entity-map/import`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ entity_map: entityMap })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    showToast(`Importate ${result.entities_imported} entity`, 'success');
+                    closeModal('importEntityMapModal');
+                    document.getElementById('entityMapJsonInput').value = '';
+                    document.getElementById('entityMapFile').value = '';
+                    loadLocations();
+                    loadEntityMap(selectedLocationId);
+                } else {
+                    const error = await response.json();
+                    showToast(error.detail || 'Errore import', 'error');
+                }
+            } catch (e) {
+                showToast('Errore di connessione', 'error');
+            }
+        }
+
+        async function exportEntityMap() {
+            if (!selectedLocationId) {
+                showToast('Seleziona prima una location', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/locations/${selectedLocationId}/entity-map/export`);
+                const data = await response.json();
+
+                const blob = new Blob([JSON.stringify(data.entity_map, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${selectedLocationId}_ha_entities.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+
+                showToast('Entity map esportata', 'success');
+            } catch (e) {
+                showToast('Errore export', 'error');
+            }
+        }
+
+        async function addLocation(event) {
+            event.preventDefault();
+            const keywordsStr = document.getElementById('newLocationKeywords').value;
+            const keywords = keywordsStr ? keywordsStr.split(',').map(k => k.trim().toLowerCase()).filter(k => k) : null;
+
+            const data = {
+                id: document.getElementById('newLocationId').value.toLowerCase(),
+                name: document.getElementById('newLocationName').value,
+                city: document.getElementById('newLocationCity').value || null,
+                hass_url: document.getElementById('newLocationUrl').value,
+                hass_token: document.getElementById('newLocationToken').value,
+                has_security: document.getElementById('newLocationSecurity').checked,
+                keywords: keywords
+            };
+
+            try {
+                const response = await fetch('/api/admin/locations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    showToast('Location creata');
+                    closeModal('addLocationModal');
+                    // Reset form
+                    document.getElementById('newLocationId').value = '';
+                    document.getElementById('newLocationName').value = '';
+                    document.getElementById('newLocationCity').value = '';
+                    document.getElementById('newLocationUrl').value = '';
+                    document.getElementById('newLocationToken').value = '';
+                    document.getElementById('newLocationKeywords').value = '';
+                    document.getElementById('newLocationSecurity').checked = false;
+                    loadLocations();
+                } else {
+                    const error = await response.json();
+                    showToast(error.detail || 'Errore', 'error');
+                }
+            } catch (e) {
+                showToast('Errore di connessione', 'error');
+            }
+        }
+
+        async function openEditLocation(locationId) {
+            try {
+                const response = await fetch(`/api/admin/locations/${locationId}`);
+                const loc = await response.json();
+
+                document.getElementById('editLocationId').value = loc.id;
+                document.getElementById('editLocationName').value = loc.name;
+                document.getElementById('editLocationCity').value = loc.city || '';
+                document.getElementById('editLocationUrl').value = loc.hass_url;
+                document.getElementById('editLocationToken').value = '';  // Non mostrare token esistente
+                document.getElementById('editLocationKeywords').value = (loc.keywords || []).join(', ');
+                document.getElementById('editLocationSecurity').checked = loc.has_security;
+                document.getElementById('editLocationEnabled').checked = loc.enabled;
+
+                openModal('editLocationModal');
+            } catch (e) {
+                showToast('Errore caricamento', 'error');
+            }
+        }
+
+        async function updateLocation(event) {
+            event.preventDefault();
+            const locationId = document.getElementById('editLocationId').value;
+            const keywordsStr = document.getElementById('editLocationKeywords').value;
+            const keywords = keywordsStr ? keywordsStr.split(',').map(k => k.trim().toLowerCase()).filter(k => k) : [];
+
+            const data = {
+                name: document.getElementById('editLocationName').value,
+                city: document.getElementById('editLocationCity').value || null,
+                hass_url: document.getElementById('editLocationUrl').value,
+                has_security: document.getElementById('editLocationSecurity').checked,
+                enabled: document.getElementById('editLocationEnabled').checked,
+                keywords: keywords
+            };
+
+            // Aggiungi token solo se inserito
+            const newToken = document.getElementById('editLocationToken').value;
+            if (newToken) {
+                data.hass_token = newToken;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/locations/${locationId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    showToast('Location aggiornata');
+                    closeModal('editLocationModal');
+                    loadLocations();
+                } else {
+                    const error = await response.json();
+                    showToast(error.detail || 'Errore', 'error');
+                }
+            } catch (e) {
+                showToast('Errore di connessione', 'error');
+            }
+        }
+
+        async function testLocation(locationId) {
+            showToast('Test connessione...', 'warning');
+            try {
+                const response = await fetch(`/api/admin/locations/${locationId}/test`, { method: 'POST' });
+                const result = await response.json();
+
+                if (result.healthy) {
+                    showToast(`Connessione OK (${result.latency_ms}ms)`, 'success');
+                } else {
+                    showToast(`Connessione fallita: ${result.message}`, 'error');
+                }
+                loadLocations();
+            } catch (e) {
+                showToast('Errore test', 'error');
+            }
+        }
+
+        async function disableLocation(locationId) {
+            if (!confirm('Disabilitare questa location?')) return;
+            try {
+                await fetch(`/api/admin/locations/${locationId}`, { method: 'DELETE' });
+                showToast('Location disabilitata');
+                if (selectedLocationId === locationId) {
+                    selectedLocationId = null;
+                    document.getElementById('entityMapCard').style.display = 'none';
+                }
+                loadLocations();
+            } catch (e) {
+                showToast('Errore', 'error');
+            }
+        }
+
+        async function enableLocation(locationId) {
+            try {
+                await fetch(`/api/admin/locations/${locationId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: true })
+                });
+                showToast('Location abilitata');
+                loadLocations();
+            } catch (e) {
+                showToast('Errore', 'error');
+            }
+        }
+
+        // ============================================
+        // MEMORY STATS
+        // ============================================
+        async function loadMemoryStats() {
+            try {
+                const res = await fetch('/api/admin/memory-stats');
+                const data = await res.json();
+
+                // Overview cards
+                const chroma = data.chromadb;
+                const sql = data.sql_memory;
+                document.getElementById('memoryOverview').innerHTML = `
+                    <div class="metric-card">
+                        <div class="metric-value">${chroma.total_vectors}</div>
+                        <div class="metric-label">ChromaDB Vectors</div>
+                        <div style="font-size:0.75rem;opacity:0.6;margin-top:0.25rem">
+                            ${chroma.user_messages_count} msgs + ${chroma.user_facts_count} facts
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">${sql.hourly_summaries + sql.daily_summaries}</div>
+                        <div class="metric-label">SQL Summaries</div>
+                        <div style="font-size:0.75rem;opacity:0.6;margin-top:0.25rem">
+                            ${sql.hourly_summaries} hourly + ${sql.daily_summaries} daily
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">${sql.chat_messages_total}</div>
+                        <div class="metric-label">Chat Messages</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">${sql.longterm_facts}</div>
+                        <div class="metric-label">Long-term Facts</div>
+                    </div>`;
+
+                // Per-user table
+                const userBody = document.getElementById('memoryUserBody');
+                if (!data.per_user_memory.length) {
+                    userBody.innerHTML = '<tr><td colspan="5" style="text-align:center;opacity:0.6;">Nessun utente</td></tr>';
+                } else {
+                    userBody.innerHTML = data.per_user_memory.map(u => `
+                        <tr>
+                            <td><strong>${u.name}</strong></td>
+                            <td>${u.chat_count}</td>
+                            <td>${u.hourly_count}</td>
+                            <td>${u.daily_count}</td>
+                            <td>${u.longterm_count}</td>
+                        </tr>
+                    `).join('');
+                }
+
+                // HA Memory Services
+                const haGrid = document.getElementById('haMemoryGrid');
+                const haEntries = Object.entries(data.ha_memory_services);
+                if (!haEntries.length) {
+                    haGrid.innerHTML = '<div style="opacity:0.6;padding:1rem;">Nessun HA Memory Service configurato</div>';
+                } else {
+                    haGrid.innerHTML = haEntries.map(([locId, info]) => {
+                        const statusIcon = info.status === 'online' ? '<span style="color:var(--success)">&#9679;</span>' : '<span style="color:var(--error)">&#9679;</span>';
+                        const details = info.status === 'online' && info.warm_summaries !== undefined ?
+                            `<div style="font-size:0.8rem;margin-top:0.5rem;">
+                                <div>Hot events: ${info.hot_events || 0}</div>
+                                <div>Warm: ${info.warm_summaries || 0}</div>
+                                <div>Cold: ${info.cold_summaries || 0}</div>
+                                <div>Long-term: ${info.longterm_facts || 0}</div>
+                            </div>` : '';
+                        return `<div class="metric-card">
+                            <div class="metric-label" style="margin-bottom:0.5rem;">${statusIcon} ${locId}</div>
+                            <div style="font-size:0.85rem;font-weight:600">${info.status}</div>
+                            ${details}
+                        </div>`;
+                    }).join('');
+                }
+
+                // Retention info
+                const ret = data.retention;
+                document.getElementById('retentionInfo').innerHTML = `
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0.75rem;">
+                        <div><strong>Chat Memory:</strong> ${ret.chat_memory_max_age_hours}h</div>
+                        <div><strong>Hourly Summaries:</strong> ${ret.hourly_max_age_hours}h</div>
+                        <div><strong>Daily Summaries:</strong> ${ret.daily_max_age_days} giorni</div>
+                        <div><strong>Vector Store:</strong> ${ret.vector_retention_days} giorni</div>
+                        <div><strong>Compaction oraria:</strong> :${String(ret.scheduler_hourly_minute).padStart(2,'0')}</div>
+                        <div><strong>Compaction giornaliera:</strong> ${ret.scheduler_daily_hour}:00</div>
+                    </div>`;
+
+            } catch (e) {
+                console.error('Errore caricamento memory stats:', e);
+                document.getElementById('memoryOverview').innerHTML = '<div class="metric-card" style="color:var(--error)">Errore caricamento dati</div>';
+            }
+        }
+
+        // ============================================
+        // ACCESS LOG
+        // ============================================
+        let alCurrentOffset = 0;
+        const alPageSize = 100;
+
+        async function loadAccessLog() {
+            await Promise.all([loadAccessLogStats(), loadAccessLogTable(), loadAuthAttempts()]);
+        }
+
+        async function loadAccessLogStats() {
+            try {
+                const res = await fetch('/api/admin/access-log/stats');
+                const data = await res.json();
+                document.getElementById('accessLogStats').innerHTML = `
+                    <div class="metric-card">
+                        <div class="metric-value">${data.requests_last_hour}</div>
+                        <div class="metric-label">Richieste (1h)</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">${data.requests_last_24h}</div>
+                        <div class="metric-label">Richieste (24h)</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" style="color: ${data.errors_last_24h > 0 ? 'var(--error)' : 'var(--success)'}">${data.errors_last_24h}</div>
+                        <div class="metric-label">Errori 4xx/5xx (24h)</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">${data.avg_response_ms}ms</div>
+                        <div class="metric-label">Tempo Medio</div>
+                    </div>`;
+            } catch (e) {
+                console.error('Errore stats access log:', e);
+            }
+        }
+
+        async function loadAccessLogTable() {
+            try {
+                const ip = document.getElementById('alFilterIp')?.value || '';
+                const status = document.getElementById('alFilterStatus')?.value || '';
+                const path = document.getElementById('alFilterPath')?.value || '';
+                const method = document.getElementById('alFilterMethod')?.value || '';
+
+                let url = `/api/admin/access-log?limit=${alPageSize}&offset=${alCurrentOffset}`;
+                if (ip) url += `&ip=${encodeURIComponent(ip)}`;
+                if (status) url += `&status_code=${status}`;
+                if (path) url += `&path_pattern=${encodeURIComponent(path)}`;
+                if (method) url += `&method=${method}`;
+
+                const res = await fetch(url);
+                const data = await res.json();
+
+                const tbody = document.getElementById('accessLogBody');
+                if (!data.items.length) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; opacity:0.6;">Nessun risultato</td></tr>';
+                } else {
+                    tbody.innerHTML = data.items.map(r => {
+                        const ts = new Date(r.timestamp * 1000).toLocaleString('it-IT', {hour:'2-digit',minute:'2-digit',second:'2-digit',day:'2-digit',month:'2-digit'});
+                        const statusColor = r.status_code >= 500 ? 'var(--error)' : r.status_code >= 400 ? 'var(--warning)' : 'var(--success)';
+                        return `<tr>
+                            <td style="font-size:0.8rem;white-space:nowrap">${ts}</td>
+                            <td><code>${r.method}</code></td>
+                            <td style="font-size:0.8rem;max-width:250px;overflow:hidden;text-overflow:ellipsis" title="${r.path}">${r.path}</td>
+                            <td><span style="color:${statusColor};font-weight:600">${r.status_code || '-'}</span></td>
+                            <td style="font-size:0.8rem">${r.ip_address || '-'}</td>
+                            <td style="font-size:0.8rem">${r.user_id || '-'}</td>
+                            <td style="font-size:0.8rem">${r.response_time_ms ? r.response_time_ms + 'ms' : '-'}</td>
+                        </tr>`;
+                    }).join('');
+                }
+
+                document.getElementById('accessLogCount').textContent = `${data.total} totali`;
+                const totalPages = Math.ceil(data.total / alPageSize);
+                const currentPage = Math.floor(alCurrentOffset / alPageSize) + 1;
+                document.getElementById('alPageInfo').textContent = `Pagina ${currentPage} di ${totalPages || 1}`;
+                document.getElementById('alPrevBtn').disabled = alCurrentOffset === 0;
+                document.getElementById('alNextBtn').disabled = alCurrentOffset + alPageSize >= data.total;
+            } catch (e) {
+                console.error('Errore access log:', e);
+            }
+        }
+
+        function accessLogPrev() { alCurrentOffset = Math.max(0, alCurrentOffset - alPageSize); loadAccessLogTable(); }
+        function accessLogNext() { alCurrentOffset += alPageSize; loadAccessLogTable(); }
+        function resetAccessLogFilters() {
+            ['alFilterIp', 'alFilterPath'].forEach(id => { if(document.getElementById(id)) document.getElementById(id).value = ''; });
+            ['alFilterStatus', 'alFilterMethod'].forEach(id => { if(document.getElementById(id)) document.getElementById(id).value = ''; });
+            alCurrentOffset = 0;
+            loadAccessLog();
+        }
+
+        async function loadAuthAttempts() {
+            try {
+                const res = await fetch('/api/admin/auth-attempts?limit=50');
+                const data = await res.json();
+                const tbody = document.getElementById('authAttemptsBody');
+                if (!data.items.length) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;opacity:0.6;">Nessun tentativo registrato</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.items.map(r => {
+                    const ts = new Date(r.timestamp * 1000).toLocaleString('it-IT', {hour:'2-digit',minute:'2-digit',second:'2-digit',day:'2-digit',month:'2-digit'});
+                    const icon = r.success ? '<span style="color:var(--success)">&#10004;</span>' : '<span style="color:var(--error)">&#10008;</span>';
+                    const rowStyle = r.success ? '' : 'background: rgba(255,0,0,0.05);';
+                    return `<tr style="${rowStyle}">
+                        <td style="font-size:0.8rem;white-space:nowrap">${ts}</td>
+                        <td style="font-size:0.85rem">${r.email || '-'}</td>
+                        <td style="font-size:0.8rem">${r.ip_address || '-'}</td>
+                        <td>${icon} ${r.success ? 'OK' : 'FAIL'}</td>
+                        <td style="font-size:0.8rem;opacity:0.7">${r.failure_reason || '-'}</td>
+                    </tr>`;
+                }).join('');
+            } catch (e) {
+                console.error('Errore auth attempts:', e);
+            }
+        }
+    </script>
+</body>
+</html>

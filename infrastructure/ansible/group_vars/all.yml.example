@@ -1,0 +1,130 @@
+---
+# =============================================================================
+# JARVIS — Variabili Ansible
+# =============================================================================
+# Copia questo file in all.yml e compila i valori:
+#   cp all.yml.example all.yml
+#   nano all.yml
+#
+# Per cifrare i segreti con Ansible Vault:
+#   ansible-vault encrypt all.yml
+#
+# NON committare all.yml nel repository!
+
+# =============================================================================
+# DEPLOYMENT
+# =============================================================================
+# Deve corrispondere a deploy_type in Terraform
+deploy_type: "lxc_gpu"         # "lxc_gpu" o "lxc"
+ai_backend: "local"            # "local" (GPU + Ollama/Whisper) o "api" (cloud APIs)
+
+# =============================================================================
+# REPOSITORY
+# =============================================================================
+jarvis_repo: "https://github.com/croll83/jarvis.git"
+jarvis_branch: "main"
+jarvis_dir: "/opt/jarvis"
+jarvis_user: "jarvis"
+
+# =============================================================================
+# DOCKER
+# =============================================================================
+docker_log_max_size: "10m"
+docker_log_max_file: "3"
+
+# =============================================================================
+# NVIDIA (solo per deploy_type: lxc_gpu)
+# =============================================================================
+# Il driver è installato sull'HOST Proxmox, non nel container.
+# GPU VRAM budget: Qwen 7B Q4 (~4.5GB) + Whisper (~1GB) + Frigate (~0.5GB)
+ollama_gpu_layers: 15           # 6GB->10, 8GB->15, 12GB->25, 16GB+->40
+ollama_num_ctx: 4096
+
+# =============================================================================
+# AI API KEYS
+# =============================================================================
+# Groq — STT via Whisper API — https://console.groq.com/keys
+groq_api_key: ""
+
+# OpenRouter — Routing fallback — https://openrouter.ai/keys
+openrouter_api_key: ""
+
+# Gemini — OpenClaw brain — https://aistudio.google.com/app/apikey
+gemini_api_key: ""
+
+# =============================================================================
+# OPENCLAW (Brain - Gemini 3 Pro)
+# =============================================================================
+# Gateway token — genera con: openssl rand -hex 32
+openclaw_gateway_token: ""
+
+# OpenClaw Telegram bot — Crea con @BotFather su Telegram
+openclaw_telegram_bot_token: ""
+
+# =============================================================================
+# JARVIS APPROVAL BOT (L3 critical actions)
+# =============================================================================
+# Separate Telegram bot for security confirmations (locks, alarm, cameras)
+# Prevents prompt injection via OpenClaw channel
+jarvis_approval_bot_token: ""
+jarvis_approval_chat_id: ""
+
+# =============================================================================
+# HOME ASSISTANT
+# =============================================================================
+# URL dell'istanza HA (Tailscale per remote, IP locale per same-network)
+hass_url: "http://192.168.1.20:8123"
+
+# Long-lived access token — Crea da: HA > Profilo > Token accesso
+hass_token: "il_tuo_long_lived_access_token"
+
+# =============================================================================
+# EMAIL (OTP Authentication)
+# =============================================================================
+smtp_host: "smtp.gmail.com"
+smtp_port: 587
+smtp_user: ""
+smtp_password: ""               # Per Gmail: usa "App Password"
+smtp_from: "jarvis@yourdomain.com"
+smtp_tls: true
+
+# =============================================================================
+# SICUREZZA & LOGGING
+# =============================================================================
+log_level: "INFO"               # DEBUG, INFO, WARNING, ERROR
+jwt_secret: ""                  # Genera con: openssl rand -hex 32
+
+# =============================================================================
+# TIMEOUTS API (secondi)
+# =============================================================================
+api_timeout_stt: 30
+api_timeout_routing: 30
+
+# =============================================================================
+# DATABASE (docker-compose.yml)
+# =============================================================================
+postgres_user: "jarvis"
+postgres_password: ""           # Password PostgreSQL
+postgres_db: "main"
+mongo_user: "jarvis"
+mongo_password: ""              # Password MongoDB
+
+# =============================================================================
+# OPZIONALI
+# =============================================================================
+
+# Security Stack (Frigate + DoubleTake + MQTT)
+install_security_stack: false
+frigate_rtsp_password: ""
+
+# Tailscale — gira come container Docker (non sull'host)
+# La TAILSCALE_AUTHKEY va nel .env, non qui
+# install_tailscale: rimosso — il container e gia nel docker-compose.yml
+
+# Nginx + SSL — per accesso pubblico HTTPS
+install_nginx: false
+nginx_domain: "jarvis.yourdomain.com"
+
+# Backup automatico DB — cron giornaliero alle 3:00
+setup_backup_cron: false
+backup_retention_days: 30

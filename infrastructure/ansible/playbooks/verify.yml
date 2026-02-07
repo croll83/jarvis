@@ -1,0 +1,179 @@
+---
+# =============================================================================
+# JARVIS — Post-Deployment Verification
+# =============================================================================
+# Esegue health check su tutti i servizi e mostra un report finale.
+#
+# Utilizzo standalone:
+#   ansible-playbook playbooks/verify.yml
+
+- name: Verifica Deploy JARVIS
+  hosts: all
+  become: false
+  tags: [verify]
+
+  tasks:
+    # -----------------------------------------------------------------
+    # INFRASTRUTTURA
+    # -----------------------------------------------------------------
+    - name: "Verifica infrastruttura..."
+      ansible.builtin.debug:
+        msg: "Avvio verifiche post-deploy"
+
+    - name: Check Docker running
+      ansible.builtin.command: docker ps --format "{{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}"
+      register: docker_ps
+      changed_when: false
+
+    - name: Mostra container attivi
+      ansible.builtin.debug:
+        msg: "{{ docker_ps.stdout_lines }}"
+
+    - name: Check GPU (solo LXC GPU)
+      ansible.builtin.command: nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv,noheader
+      register: gpu_check
+      changed_when: false
+      failed_when: false
+      when: deploy_type == "lxc_gpu"
+
+    - name: Check spazio disco
+      ansible.builtin.command: df -h /
+      register: disk_check
+      changed_when: false
+
+    - name: Check RAM
+      ansible.builtin.command: free -h
+      register: ram_check
+      changed_when: false
+
+    # -----------------------------------------------------------------
+    # SERVIZI JARVIS
+    # -----------------------------------------------------------------
+    - name: "Verifica servizi JARVIS..."
+      ansible.builtin.debug:
+        msg: "Health check servizi"
+
+    - name: Check Ollama API (solo GPU)
+      ansible.builtin.uri:
+        url: "http://localhost:11434/api/tags"
+        method: GET
+        return_content: true
+        timeout: 10
+      register: ollama_check
+      failed_when: false
+      when: deploy_type == "lxc_gpu" and ai_backend == "local"
+
+    - name: Check Whisper health (solo GPU)
+      ansible.builtin.uri:
+        url: "http://localhost:9000/health"
+        method: GET
+        timeout: 10
+      register: whisper_check
+      failed_when: false
+      when: deploy_type == "lxc_gpu" and ai_backend == "local"
+
+    - name: Check Orchestrator health
+      ansible.builtin.uri:
+        url: "http://localhost:5000/health"
+        method: GET
+        return_content: true
+        timeout: 10
+      register: orchestrator_check
+      failed_when: false
+
+    - name: Check OpenClaw health
+      ansible.builtin.uri:
+        url: "http://localhost:18789/health"
+        method: GET
+        timeout: 10
+      register: openclaw_check
+      failed_when: false
+
+    # -----------------------------------------------------------------
+    # MODELLI AI (solo GPU)
+    # -----------------------------------------------------------------
+    - name: Lista modelli Ollama (solo GPU)
+      ansible.builtin.command: >
+        docker exec jarvis_ollama ollama list
+      register: ollama_models
+      changed_when: false
+      failed_when: false
+      when: deploy_type == "lxc_gpu" and ai_backend == "local"
+
+    # -----------------------------------------------------------------
+    # SECURITY STACK (se installato)
+    # -----------------------------------------------------------------
+    - name: Check MQTT
+      ansible.builtin.wait_for:
+        port: 1883
+        host: localhost
+        timeout: 5
+      register: mqtt_check
+      failed_when: false
+      when: install_security_stack | default(false)
+
+    - name: Check Frigate
+      ansible.builtin.uri:
+        url: "http://localhost:5001"
+        method: GET
+        timeout: 10
+      register: frigate_check
+      failed_when: false
+      when: install_security_stack | default(false)
+
+    - name: Check DoubleTake
+      ansible.builtin.uri:
+        url: "http://localhost:3000"
+        method: GET
+        timeout: 10
+      register: doubletake_check
+      failed_when: false
+      when: install_security_stack | default(false)
+
+    # -----------------------------------------------------------------
+    # REPORT FINALE
+    # -----------------------------------------------------------------
+    - name: "Report Verifica JARVIS"
+      ansible.builtin.debug:
+        msg: |
+          ================================================================
+                    JARVIS — Report Verifica Deploy
+          ================================================================
+
+          CONFIGURAZIONE:
+            Deploy Type:     {{ deploy_type }}
+            AI Backend:      {{ ai_backend }}
+            JARVIS Dir:      {{ jarvis_dir }}
+
+          INFRASTRUTTURA:
+            Docker:          {{ docker_ps.stdout_lines | length }} container attivi
+            GPU:             {{ gpu_check.stdout | default('N/A') if deploy_type == 'lxc_gpu' else 'N/A (no GPU)' }}
+            Disco:           {{ disk_check.stdout_lines[1] | default('N/A') }}
+            RAM:             {{ ram_check.stdout_lines[1] | default('N/A') }}
+
+          SERVIZI CORE:
+            Orchestrator:    {{ 'OK (HTTP ' + (orchestrator_check.status | string) + ')' if (orchestrator_check.status | default(0)) == 200 else 'FAIL' }}
+            OpenClaw:        {{ 'OK (HTTP ' + (openclaw_check.status | string) + ')' if (openclaw_check.status | default(0)) == 200 else 'OFFLINE (domotica locale funziona)' }}
+
+          SERVIZI AI (solo deploy locale):
+            Ollama:          {{ 'OK' if (ollama_check.status | default(0)) == 200 else ('N/A (cloud)' if ai_backend == 'api' else 'FAIL') }}
+            Whisper:         {{ 'OK' if (whisper_check.status | default(0)) == 200 else ('N/A (cloud)' if ai_backend == 'api' else 'FAIL') }}
+          {% if deploy_type == 'lxc_gpu' and ai_backend == 'local' %}
+
+          MODELLI AI:
+          {{ ollama_models.stdout | default('  Nessun modello trovato') | indent(4) }}
+          {% endif %}
+          {% if install_security_stack | default(false) %}
+
+          SECURITY STACK:
+            MQTT:            {{ 'porta 1883 attiva' if (mqtt_check.state | default('')) == 'started' else 'FAIL' }}
+            Frigate:         {{ 'OK' if (frigate_check.status | default(0)) == 200 else 'FAIL' }}
+            DoubleTake:      {{ 'OK' if (doubletake_check.status | default(0)) == 200 else 'FAIL' }}
+          {% endif %}
+
+          ACCESSO:
+            Admin UI:        http://{{ ansible_host }}:5000/admin
+            API Health:      http://{{ ansible_host }}:5000/health
+            OpenClaw:        http://{{ ansible_host }}:18789
+
+          ================================================================

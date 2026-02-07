@@ -1,0 +1,5 @@
+## IDF Component Manager Manifest File
+
+dependencies:
+  espressif/esp-sr:
+    version: "^1.4.2"
