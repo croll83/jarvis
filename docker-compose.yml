@@ -14,6 +14,12 @@
 # per isolamento di sicurezza. L'orchestrator lo raggiunge via Tailscale
 # (es. http://jarvis-openclaw:18789). Vedi infrastructure/README.md.
 #
+# NOTA SU TAILSCALE:
+# Tailscale gira host-level (NON in Docker) su entrambe le VM (GPU e OpenClaw).
+# L'orchestrator usa network_mode: host per vedere l'interfaccia Tailscale
+# e raggiungere HA remoti, OpenClaw e MagicDNS direttamente.
+# Installazione: curl -fsSL https://tailscale.com/install.sh | sh
+#
 # NOTA SU RESEMBLYZER:
 # Resemblyzer e una libreria Python per speaker identification.
 # NON e un container separato - e inclusa in requirements.txt dell'orchestrator.
@@ -77,38 +83,14 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
-  # TAILSCALE - VPN Mesh per Multi-Location HA
-  # Permette all'orchestrator di raggiungere HA remoti (es. Milano)
-  # senza aprire porte. Ogni nodo si collega al tailnet e usa MagicDNS.
-  # ===========================================================================
-  tailscale:
-    image: tailscale/tailscale:latest
-    container_name: jarvis_tailscale
-    hostname: jarvis-${TAILSCALE_HOSTNAME:-wagmi}
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    volumes:
-      - tailscale_data:/var/lib/tailscale
-      - /dev/net/tun:/dev/net/tun
-    environment:
-      - TS_AUTHKEY=${TAILSCALE_AUTHKEY:-}
-      - TS_STATE_DIR=/var/lib/tailscale
-      - TS_USERSPACE=false
-      - TS_ACCEPT_DNS=true
-      - TS_EXTRA_ARGS=--advertise-routes=172.20.0.0/16 --accept-routes
-    healthcheck:
-      test: ["CMD", "tailscale", "status", "--json"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
-  # ===========================================================================
   # JARVIS ORCHESTRATOR - OpenClaw Skill (FastAPI)
   # Include: Qwen pre-routing, HA control, Memory, Speaker ID, Security L1-L4
   # Admin UI (/admin), Backup/Restore, SSE event bus
+  #
+  # network_mode: host permette all'orchestrator di:
+  #   - Raggiungere Ollama/Whisper su localhost (porte esposte sull'host)
+  #   - Raggiungere HA remoti via Tailscale (100.x.x.x, host-level)
+  #   - Raggiungere OpenClaw sulla VM separata via Tailscale MagicDNS
   # ===========================================================================
   orchestrator:
     build: ./jarvis-orchestrator
@@ -118,20 +100,16 @@ services:
         condition: service_healthy
       whisper:
         condition: service_started
-      tailscale:
-        condition: service_healthy
-    ports:
-      - "5000:5000"
+    network_mode: host
     volumes:
       - ./data:/app/data                    # SQLite + voice models
       - ./config:/app/config:ro             # Entity map, system prompt
     env_file: .env
     environment:
-      - AI_BACKEND=${AI_BACKEND:-local}  # "local" (Ollama/Whisper) or "api" (Groq/OpenRouter)
-      - OLLAMA_URL=http://ollama:11434
-      - WHISPER_URL=http://whisper:8000
-      - HASS_URL=http://homeassistant:8123
-      # OpenClaw gira su VM separata — raggiungibile via Tailscale o LAN
+      - AI_BACKEND=${AI_BACKEND:-local}
+      - OLLAMA_URL=http://localhost:11434
+      - WHISPER_URL=http://localhost:9000
+      # OpenClaw gira su VM separata — raggiungibile via Tailscale MagicDNS
       - OPENCLAW_URL=${OPENCLAW_URL:-http://jarvis-openclaw:18789}
       - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
       # JARVIS Approval Bot (L3 critical actions - separate from OpenClaw Telegram)
@@ -201,12 +179,7 @@ services:
     profiles:
       - tools
 
-networks:
-  default:
-    name: jarvis_network
-
 volumes:
   ollama_storage:
-  tailscale_data:
   postgres_data:
   mongo_data:

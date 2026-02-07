@@ -13,8 +13,8 @@ requests==2.31.0
 
 # Validation
 email-validator>=2.0.0
-# py-webauthn — opzionale, per passkey/FIDO2 login
-# Installa manualmente se serve: pip install py-webauthn
+# WebAuthn — passkey/FIDO2 login (import: from webauthn import ...)
+webauthn>=2.0.0
 
 # Voice Recognition (Speaker Identification)
 resemblyzer==0.1.3

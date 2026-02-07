@@ -587,11 +587,11 @@ Creare `albani_ha_entities.json` con struttura simile a WAGMI ma per l'appartame
 
 ## 9. Testing Checklist
 
-### Tailscale Network
-- [ ] Container Tailscale avviato e connesso
-- [ ] `docker exec jarvis-tailscale tailscale status` mostra nodi
-- [ ] `docker exec jarvis-tailscale tailscale ping ha-albani` funziona
-- [ ] Orchestrator può risolvere hostname Tailscale (MagicDNS)
+### Tailscale Network (host-level)
+- [ ] Tailscale installato e connesso sull'host (`tailscale status`)
+- [ ] `tailscale status` mostra nodi attivi
+- [ ] `tailscale ping ha-albani` funziona dall'host
+- [ ] Orchestrator (network_mode: host) può risolvere hostname Tailscale (MagicDNS)
 - [ ] Latenza accettabile (<200ms) verso HA remoto
 
 ### Voice (AtomS3R)
@@ -836,7 +836,7 @@ Aggiungere a `.env`:
 
 ```bash
 # Tailscale
-TAILSCALE_AUTHKEY=tskey-auth-xxxxx  # Genera da admin.tailscale.com
+# Tailscale gira host-level — autenticazione con: tailscale up --hostname=jarvis-wagmi
 
 # Tailscale hostnames per le location (MagicDNS)
 # Questi sono esempi - usa i tuoi hostname reali
@@ -1014,15 +1014,14 @@ JARVIS usa Tailscale per connettere location geograficamente distribuite senza a
 
 **Setup:**
 1. Crea account Tailscale (free per uso personale)
-2. Genera Auth Key (Settings → Keys → Generate auth key)
-3. Aggiungi a `.env`: `TAILSCALE_AUTHKEY=tskey-auth-xxx`
-4. `docker-compose up -d tailscale`
-5. Verifica: `docker exec jarvis-tailscale tailscale status`
+2. Installa host-level: `curl -fsSL https://tailscale.com/install.sh | sh`
+3. Connetti: `tailscale up --hostname=jarvis-wagmi`
+4. Verifica: `tailscale status`
 
 **Troubleshooting:**
 - `tailscale ping ha-albani` - Verifica raggiungibilità
 - `tailscale status` - Lista nodi connessi
-- Logs: `docker logs jarvis-tailscale`
+- `journalctl -u tailscaled -f` - Logs
 ```
 
 ---
