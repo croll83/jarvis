@@ -103,7 +103,13 @@ User=${JARVIS_USER}
 Group=${JARVIS_USER}
 Environment=NODE_ENV=production
 Environment=HOME=/home/${JARVIS_USER}
+Environment=XDG_RUNTIME_DIR=/run/user/$(id -u ${JARVIS_USER})
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u ${JARVIS_USER})/bus
 ExecStart=$(which openclaw) gateway run
+ExecStop=/bin/kill -SIGINT \$MAINPID
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=15
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -113,8 +119,7 @@ SyslogIdentifier=openclaw
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/home/${JARVIS_USER}/.openclaw
+ReadWritePaths=/home/${JARVIS_USER}/.openclaw /home/${JARVIS_USER}/.npm /home/${JARVIS_USER}/.config
 PrivateTmp=true
 
 [Install]

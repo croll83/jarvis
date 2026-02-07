@@ -72,38 +72,45 @@ L'orchestrator usa `network_mode: host`, quindi vede la rete dell'host direttame
 
 ### STEP 1 — Setup VPS (~3 minuti)
 
+Per setup **headless** (consigliato), genera prima un auth key Tailscale:
+
+1. Vai su [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
+2. Clicca **Generate auth key**
+3. Seleziona **Reusable** (opzionale), **NOT ephemeral**
+4. Copia la chiave (`tskey-auth-...`)
+
 ```bash
 ssh root@<vps-ip>
-curl -fsSL https://raw.githubusercontent.com/croll83/jarvis/main/cloud/scripts/setup-vps.sh | bash
+
+# Con auth key (headless — Tailscale si connette automaticamente)
+export TAILSCALE_AUTHKEY=tskey-auth-xxxxxxxxxxxx
+bash /opt/jarvis/cloud/scripts/setup-vps.sh
+
+# Oppure senza auth key (dovrai connettere Tailscale manualmente dopo)
+bash /opt/jarvis/cloud/scripts/setup-vps.sh
 ```
 
-Lo script esegue 7 step:
+Lo script esegue 8 step:
 
 1. Aggiornamento sistema
 2. Installazione Docker + Compose
 3. Installazione Node.js 22 + OpenClaw (`npm install -g openclaw`)
-4. Installazione Nginx + Certbot
-5. Creazione utente `jarvis` (con gruppo docker)
-6. Creazione directory (`/opt/jarvis`, `~/.openclaw/skills`, ecc.) + tool utili
-7. Configurazione firewall (SSH/HTTP/HTTPS/Tailscale UDP), swap 2GB, log rotation Docker, **servizio systemd OpenClaw**
+4. **Installazione e connessione Tailscale** (headless con auth key, o istruzioni per connessione manuale)
+5. Installazione Nginx + Certbot
+6. Creazione utente `jarvis` (con gruppo docker + sudo)
+7. Creazione directory (`/opt/jarvis`, `~/.openclaw/skills`, ecc.) + tool utili
+8. Configurazione firewall (SSH/HTTP/HTTPS/Tailscale UDP), swap 2GB, log rotation Docker, **servizio systemd OpenClaw**
 
-> **Tailscale gira host-level** — installato come servizio di sistema (systemd), non in Docker.
+> **Tailscale gira host-level** — installato come servizio di sistema (systemd), non in Docker. L'auth key serve solo la prima volta.
 > **OpenClaw gira bare-metal** — installato globalmente via npm, gestito da systemd.
 
-### STEP 1b — Installa e autentica Tailscale (host-level)
+Se non hai usato l'auth key, connetti Tailscale manualmente:
 
 ```bash
-# Installa Tailscale
-curl -fsSL https://tailscale.com/install.sh | sh
-
-# Autentica e imposta hostname
 sudo tailscale up --hostname=jarvis-cloud
-
-# Verifica connessione alla tailnet
-tailscale status
+# Apri il link stampato nel browser per autenticare
+tailscale status   # verifica connessione
 ```
-
-> **Nota**: l'autenticazione avviene interattivamente via browser (il comando stampa un URL da aprire). Non serve auth key nel `.env`.
 
 ### STEP 2 — Clone repository
 
