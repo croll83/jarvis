@@ -184,7 +184,7 @@ User=jarvis
 Group=jarvis
 Environment=NODE_ENV=production
 Environment=HOME=/home/jarvis
-ExecStart=/usr/bin/openclaw gateway start
+ExecStart=/usr/bin/openclaw gateway run
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

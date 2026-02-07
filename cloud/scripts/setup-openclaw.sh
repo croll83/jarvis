@@ -103,7 +103,7 @@ User=${JARVIS_USER}
 Group=${JARVIS_USER}
 Environment=NODE_ENV=production
 Environment=HOME=/home/${JARVIS_USER}
-ExecStart=$(which openclaw) gateway start
+ExecStart=$(which openclaw) gateway run
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
