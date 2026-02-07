@@ -13,7 +13,7 @@ requests==2.31.0
 
 # Validation
 email-validator>=2.0.0
-py_webauthn>=2.0.0
+py-webauthn>=2.0.0
 
 # Voice Recognition (Speaker Identification)
 resemblyzer==0.1.3
