@@ -65,11 +65,14 @@ class ServiceStatus:
             return
 
         self.services: Dict[str, ServiceHealth] = {
-            "ollama_router": ServiceHealth(),
-            "whisper": ServiceHealth(),
             "openclaw": ServiceHealth(),
             # HA services aggiunti dinamicamente da _load_ha_services()
         }
+
+        # Ollama e Whisper solo in modalita local (non in cloud/API)
+        if config.AI_BACKEND != "api":
+            self.services["ollama_router"] = ServiceHealth()
+            self.services["whisper"] = ServiceHealth()
 
         self._lock = asyncio.Lock()
         self._check_interval = 30  # secondi
@@ -78,7 +81,7 @@ class ServiceStatus:
         # Carica servizi HA dal database
         self._load_ha_services()
 
-        logger.info("ServiceStatus singleton initialized")
+        logger.info(f"ServiceStatus initialized (backend={config.AI_BACKEND}, services={list(self.services.keys())})")
 
     def _load_ha_services(self):
         """Carica servizi HA dal database."""
@@ -112,11 +115,13 @@ class ServiceStatus:
     async def check_all(self) -> Dict[str, ServiceState]:
         """Esegue health check su tutti i servizi."""
         async with self._lock:
-            tasks = [
-                self._check_ollama_router(),
-                self._check_whisper(),
-                self._check_openclaw(),
-            ]
+            tasks = [self._check_openclaw()]
+
+            # Ollama e Whisper solo in local mode
+            if "ollama_router" in self.services:
+                tasks.append(self._check_ollama_router())
+            if "whisper" in self.services:
+                tasks.append(self._check_whisper())
 
             # Aggiungi check per tutte le location HA
             try:
@@ -257,8 +262,10 @@ class ServiceStatus:
 
         try:
             async with aiohttp.ClientSession() as session:
+                # OPENCLAW_URL include gia http:// (es: http://localhost:18789)
+                openclaw_url = config.OPENCLAW_URL.rstrip("/")
                 async with session.get(
-                    f"http://{config.OPENCLAW_URL}/health",
+                    f"{openclaw_url}/health",
                     timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS.get("openclaw", 5))
                 ) as resp:
                     elapsed = (time.time() - start) * 1000
