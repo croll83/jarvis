@@ -53,9 +53,15 @@ openrouter_api_key: ""
 gemini_api_key: ""
 
 # =============================================================================
-# OPENCLAW (Brain - Gemini 3 Pro)
+# OPENCLAW (Brain - Gemini 3 Pro, bare-metal su VM separata)
 # =============================================================================
+# URL di OpenClaw — Tailscale MagicDNS o IP LAN della VM-OpenClaw
+# Cloud (stesso host): http://localhost:18789
+# Locale (VM separata): http://jarvis-openclaw:18789 (Tailscale) o http://192.168.x.x:18789
+openclaw_url: "http://jarvis-openclaw:18789"
+
 # Gateway token — genera con: openssl rand -hex 32
+# DEVE essere lo stesso valore usato in "openclaw onboard" sulla VM-OpenClaw
 openclaw_gateway_token: ""
 
 # OpenClaw Telegram bot — Crea con @BotFather su Telegram

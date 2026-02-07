@@ -197,7 +197,7 @@ Il file `daemon.json` deve contenere:
 
 ## Panoramica Rete Docker per JARVIS
 
-### Deploy Locale
+### Deploy Locale (VM-GPU)
 
 Il `docker-compose.yml` crea automaticamente la rete `jarvis_network`. Tutti i container JARVIS comunicano su questa rete:
 
@@ -206,15 +206,18 @@ jarvis_network (bridge)
 ├── jarvis_ollama       (ollama:11434)
 ├── jarvis_whisper      (whisper:8000)
 ├── jarvis_core         (orchestrator:5000)
-├── jarvis_openclaw     (openclaw)
-└── jarvis_postgres     (postgres:5432)
+├── jarvis_tailscale    (tailscale)
+├── jarvis_postgres     (postgres:5432)
+└── jarvis_mongo        (mongo:27017)
 ```
 
 I container si raggiungono per **nome del servizio** (non per IP):
 - `http://ollama:11434` dall'orchestrator
 - `http://whisper:8000` dall'orchestrator
-- `http://openclaw:<porta>` dall'orchestrator
-- `http://orchestrator:5000` da openclaw
+
+> **Nota**: OpenClaw gira bare-metal su una **VM separata** (non in Docker).
+> L'orchestrator lo raggiunge via Tailscale MagicDNS (`http://jarvis-openclaw:18789`)
+> o via LAN (`http://192.168.x.x:18789`), configurabile con la variabile `OPENCLAW_URL`.
 
 ### Deploy Cloud
 
@@ -223,9 +226,11 @@ Il `docker-compose.cloud.yml` crea la rete `jarvis_cloud`:
 ```
 jarvis_cloud (bridge)
 ├── jarvis_orchestrator  (orchestrator:5000)
-├── jarvis_openclaw      (openclaw)
-└── jarvis_postgres      (postgres:5432)
+└── jarvis_tailscale     (tailscale)
 ```
+
+> **Nota**: OpenClaw gira bare-metal sullo **stesso host** (non in Docker).
+> L'orchestrator lo raggiunge via `http://host.docker.internal:18789` (mappato con `extra_hosts` nel compose).
 
 ### Security Stack
 

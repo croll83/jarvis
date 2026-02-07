@@ -227,14 +227,14 @@
             rule: allow
             name: OpenSSH
 
-        - name: UFW — consenti porte JARVIS
+        - name: UFW — consenti porta Orchestrator
           community.general.ufw:
             rule: allow
-            port: "{{ item }}"
+            port: "5000"
             proto: tcp
-          loop:
-            - "5000"     # Orchestrator + Admin UI
-            - "18789"    # OpenClaw
+          # Nota: OpenClaw gira su VM separata (locale) o bare-metal (cloud).
+          # La porta 18789 NON va aperta su questa VM — è raggiungibile solo
+          # via Tailscale o LAN dalla VM-OpenClaw.
 
         - name: UFW — consenti HTTP/HTTPS (se Nginx)
           community.general.ufw:

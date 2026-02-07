@@ -4,7 +4,7 @@ Smart home control, memory, speaker identification, and security for a multi-loc
 
 ## Configuration
 
-- **Base URL**: `http://orchestrator:5000/api/tools`
+- **Base URL**: `${JARVIS_ORCHESTRATOR_URL:-http://localhost:5000}/api/tools`
 - **Auth**: Bearer token (OPENCLAW_GATEWAY_TOKEN)
 
 ## Tools
