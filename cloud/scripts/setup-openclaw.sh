@@ -103,12 +103,9 @@ User=${JARVIS_USER}
 Group=${JARVIS_USER}
 Environment=NODE_ENV=production
 Environment=HOME=/home/${JARVIS_USER}
-Environment=XDG_RUNTIME_DIR=/run/user/$(id -u ${JARVIS_USER})
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u ${JARVIS_USER})/bus
 ExecStart=$(which openclaw) gateway run
-ExecStop=/bin/kill -SIGINT \$MAINPID
-KillMode=mixed
 KillSignal=SIGINT
+KillMode=mixed
 TimeoutStopSec=15
 Restart=on-failure
 RestartSec=10
