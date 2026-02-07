@@ -225,12 +225,9 @@ User=jarvis
 Group=jarvis
 Environment=NODE_ENV=production
 Environment=HOME=/home/jarvis
-Environment=XDG_RUNTIME_DIR=/run/user/%U
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 ExecStart=${OPENCLAW_BIN} gateway run
-ExecStop=/bin/kill -SIGINT $MAINPID
-KillMode=mixed
 KillSignal=SIGINT
+KillMode=mixed
 TimeoutStopSec=15
 Restart=on-failure
 RestartSec=10
