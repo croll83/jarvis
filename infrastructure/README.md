@@ -136,9 +136,6 @@ Variabili obbligatorie:
 | `TAILSCALE_HOSTNAME` | `wagmi` (o il nome che preferisci nella tailnet) |
 | `HASS_URL` | `http://homeassistant:8123` (locale) o `http://100.x.x.x:8123` (via Tailscale) |
 | `JARVIS_HASS_TOKEN` | HA -> Profilo -> Token di lunga durata |
-| `JWT_SECRET` | `openssl rand -hex 32` |
-| `JARVIS_TELEGRAM_TOKEN` | @BotFather (bot principale notifiche) |
-| `JARVIS_TELEGRAM_CHAT_ID` | Il tuo chat ID Telegram |
 | `POSTGRES_PASSWORD` | Password forte a scelta |
 | `MONGO_PASSWORD` | Password forte a scelta |
 
@@ -211,10 +208,13 @@ Da qui puoi:
 - Configurare preferenze globali
 - Monitorare lo stato dei servizi
 
-### STEP 9 — Telegram webhook (opzionale)
+### STEP 9 — Telegram webhook
+
+Il webhook Telegram è gestito da **OpenClaw** (non dall'orchestrator).
+Configura il webhook del bot OpenClaw puntando al tuo dominio:
 
 ```bash
-curl "https://api.telegram.org/bot<JARVIS_TELEGRAM_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
+curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
 ```
 
 ---
