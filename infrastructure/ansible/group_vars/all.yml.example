@@ -89,10 +89,9 @@ smtp_from: "jarvis@yourdomain.com"
 smtp_tls: true
 
 # =============================================================================
-# SICUREZZA & LOGGING
+# LOGGING
 # =============================================================================
 log_level: "INFO"               # DEBUG, INFO, WARNING, ERROR
-jwt_secret: ""                  # Genera con: openssl rand -hex 32
 
 # =============================================================================
 # TIMEOUTS API (secondi)
