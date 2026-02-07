@@ -1,0 +1,23 @@
+# =============================================================================
+# JARVIS Cloud — Dev Override
+# =============================================================================
+# Monta il codice sorgente direttamente nel container.
+# Le modifiche ai file .py si applicano con un semplice restart (no rebuild).
+#
+# Uso:
+#   docker compose -f docker-compose.cloud.yml -f docker-compose.dev.yml up -d
+#
+# Dopo una modifica a .py:
+#   docker compose -f docker-compose.cloud.yml -f docker-compose.dev.yml restart orchestrator
+#
+# NOTA: serve rebuild SOLO se modifichi requirements.txt o Dockerfile.
+
+services:
+  orchestrator:
+    volumes:
+      - ../jarvis-orchestrator:/app
+      - ../data:/app/data
+      - ../config:/app/config:ro
+      - ../voice_models:/app/voice_models
+    environment:
+      - LOG_LEVEL=DEBUG
