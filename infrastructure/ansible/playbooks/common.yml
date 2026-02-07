@@ -169,11 +169,20 @@
       when: deploy_type == "lxc"
 
     # -----------------------------------------------------------------
-    # NOTA: TAILSCALE
-    # Tailscale NON viene installato sull'host.
-    # Gira come container Docker dentro il docker-compose.yml.
-    # La porta UDP 41641 viene aperta nel firewall per il container.
+    # TAILSCALE (host-level)
     # -----------------------------------------------------------------
+    - name: Installa Tailscale (host-level)
+      ansible.builtin.shell: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+      args:
+        creates: /usr/bin/tailscale
+
+    - name: Mostra istruzioni Tailscale
+      ansible.builtin.debug:
+        msg: |
+          Tailscale installato. Connetti manualmente:
+            tailscale up --hostname=jarvis-{{ tailscale_hostname | default('wagmi') }}
+          La porta UDP 41641 viene aperta nel firewall per NAT traversal.
 
     # -----------------------------------------------------------------
     # OPZIONALE: NGINX + CERTBOT

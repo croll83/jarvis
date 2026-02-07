@@ -122,9 +122,10 @@ mongo_password: ""              # Password MongoDB
 install_security_stack: false
 frigate_rtsp_password: ""
 
-# Tailscale — gira come container Docker (non sull'host)
-# La TAILSCALE_AUTHKEY va nel .env, non qui
-# install_tailscale: rimosso — il container e gia nel docker-compose.yml
+# Tailscale — gira host-level (non in Docker)
+# Installazione: curl -fsSL https://tailscale.com/install.sh | sh
+# Connessione:   tailscale up --hostname=jarvis-wagmi
+# Non serve auth key nell'env — si autentica con tailscale up
 
 # Nginx + SSL — per accesso pubblico HTTPS
 install_nginx: false

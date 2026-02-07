@@ -3,40 +3,15 @@
 # Deploy su VPS senza GPU - Usa API esterne per AI
 #
 # NOTA: OpenClaw gira bare-metal (non in Docker) sulla stessa macchina.
-#       Installazione: vedi cloud/README.md
-#       L'orchestrator lo raggiunge via http://localhost:18789
+# NOTA: Tailscale gira host-level (non in Docker) per connettere HA remoti,
+#       OpenClaw e la dashboard alla tailnet.
+#
+# Prerequisiti host-level (vedi cloud/README.md):
+#   - Tailscale installato e connesso (tailscale up --hostname=jarvis-cloud)
+#   - OpenClaw installato e attivo (systemctl start openclaw)
 # =============================================================================
 
 services:
-  # ---------------------------------------------------------------------------
-  # Tailscale - VPN Mesh per raggiungere HA remoti
-  # ---------------------------------------------------------------------------
-  tailscale:
-    image: tailscale/tailscale:latest
-    container_name: jarvis_tailscale
-    hostname: jarvis-${TAILSCALE_HOSTNAME:-cloud}
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    volumes:
-      - tailscale_data:/var/lib/tailscale
-      - /dev/net/tun:/dev/net/tun
-    environment:
-      - TS_AUTHKEY=${TAILSCALE_AUTHKEY:-}
-      - TS_STATE_DIR=/var/lib/tailscale
-      - TS_USERSPACE=false
-      - TS_ACCEPT_DNS=true
-      - TS_EXTRA_ARGS=--accept-routes
-    networks:
-      - jarvis_net
-    healthcheck:
-      test: ["CMD", "tailscale", "status", "--json"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
   # ---------------------------------------------------------------------------
   # Orchestrator - JARVIS Core (OpenClaw Skill)
   # ---------------------------------------------------------------------------
@@ -45,11 +20,7 @@ services:
       context: ../jarvis-orchestrator
       dockerfile: Dockerfile
     container_name: jarvis_orchestrator
-    depends_on:
-      tailscale:
-        condition: service_healthy
-    ports:
-      - "5000:5000"
+    network_mode: host
     volumes:
       - ../data:/app/data
       - ../config:/app/config:ro
@@ -58,12 +29,8 @@ services:
     environment:
       - AI_BACKEND=api
       # OpenClaw gira bare-metal sullo stesso host
-      - OPENCLAW_URL=http://host.docker.internal:18789
+      - OPENCLAW_URL=http://localhost:18789
       - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - jarvis_net
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
@@ -75,11 +42,3 @@ services:
       resources:
         limits:
           memory: 1G
-
-networks:
-  jarvis_net:
-    name: jarvis_cloud
-    driver: bridge
-
-volumes:
-  tailscale_data:

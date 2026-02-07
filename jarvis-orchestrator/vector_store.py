@@ -1,7 +1,7 @@
 """
 JARVIS Vector Store
 - ChromaDB per retrieval semantico
-- Embedding via Ollama (nomic-embed-text)
+- Embedding via Ollama (nomic-embed-text) in locale, Gemini in cloud
 - Hybrid search con recency boost
 """
 
@@ -38,22 +38,34 @@ MAX_RESULTS_DEFAULT = config.MAX_VECTOR_RESULTS_DEFAULT
 
 
 # ===========================================================================
-# EMBEDDING FUNCTION (Ollama)
+# EMBEDDING FUNCTIONS
+# ===========================================================================
+# AI_BACKEND=local → OllamaEmbeddingFunction (nomic-embed-text, GPU locale)
+# AI_BACKEND=api   → GeminiEmbeddingFunction (gemini-embedding-001, cloud)
 # ===========================================================================
 
+EMBEDDING_DIM = 768  # Dimensione comune a entrambi i provider
+
+
 class OllamaEmbeddingFunction:
-    """Custom embedding function using Ollama."""
+    """Embedding via Ollama locale (nomic-embed-text).
+    Usato quando AI_BACKEND=local.
+    """
 
     def __init__(self, model: str = EMBEDDING_MODEL, url: str = OLLAMA_URL):
         self.model = model
         self.url = f"{url}/api/embeddings"
 
+    def name(self) -> str:
+        """Required by ChromaDB >= 0.6 for embedding function identification."""
+        return f"ollama-{self.model}"
+
     def __call__(self, input: List[str]) -> List[List[float]]:
         """Sync embedding for ChromaDB."""
+        import requests
         embeddings = []
         for text in input:
             try:
-                import requests
                 response = requests.post(
                     self.url,
                     json={"model": self.model, "prompt": text},
@@ -63,12 +75,67 @@ class OllamaEmbeddingFunction:
                     embeddings.append(response.json()["embedding"])
                 else:
                     logger.error(f"Embedding error: {response.status_code}")
-                    # Fallback: zero vector (will have low similarity)
-                    embeddings.append([0.0] * 768)
+                    embeddings.append([0.0] * EMBEDDING_DIM)
             except Exception as e:
                 logger.error(f"Embedding exception: {e}")
-                embeddings.append([0.0] * 768)
+                embeddings.append([0.0] * EMBEDDING_DIM)
         return embeddings
+
+
+class GeminiEmbeddingFunction:
+    """Embedding via Gemini API (gemini-embedding-001).
+    Usato quando AI_BACKEND=api. Stessa dimensionalita (768) di nomic-embed-text.
+    """
+
+    GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
+
+    def __init__(self):
+        self.api_key = config.GEMINI_API_KEY
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY required for cloud embeddings")
+
+    def name(self) -> str:
+        """Required by ChromaDB >= 0.6."""
+        return "gemini-embedding-001"
+
+    def __call__(self, input: List[str]) -> List[List[float]]:
+        """Sync embedding for ChromaDB."""
+        import requests
+        embeddings = []
+        for text in input:
+            try:
+                response = requests.post(
+                    self.GEMINI_EMBED_URL,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-goog-api-key": self.api_key,
+                    },
+                    json={
+                        "content": {"parts": [{"text": text}]},
+                        "output_dimensionality": EMBEDDING_DIM,
+                    },
+                    timeout=config.TIMEOUTS.get("embedding", 30),
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    embeddings.append(data["embedding"]["values"])
+                else:
+                    logger.error(f"Gemini embedding error {response.status_code}: {response.text[:200]}")
+                    embeddings.append([0.0] * EMBEDDING_DIM)
+            except Exception as e:
+                logger.error(f"Gemini embedding exception: {e}")
+                embeddings.append([0.0] * EMBEDDING_DIM)
+        return embeddings
+
+
+def get_embedding_function():
+    """Factory: seleziona embedding function in base a AI_BACKEND."""
+    if config.AI_BACKEND == "api":
+        logger.info("🌐 Using Gemini embeddings (cloud mode)")
+        return GeminiEmbeddingFunction()
+    else:
+        logger.info("🖥️ Using Ollama embeddings (local mode)")
+        return OllamaEmbeddingFunction()
 
 
 # ===========================================================================
@@ -99,7 +166,7 @@ class UserVectorStore:
             )
         )
 
-        embedding_fn = OllamaEmbeddingFunction()
+        embedding_fn = get_embedding_function()
 
         # Collection per messaggi utente (conversazioni)
         self.collections[COLLECTION_USER_MESSAGES] = self.client.get_or_create_collection(
@@ -374,8 +441,14 @@ user_vector_store = UserVectorStore()
 # ===========================================================================
 
 def init_vector_store():
-    """Inizializza vector store. Chiamare in startup."""
-    user_vector_store.initialize()
+    """Inizializza vector store. Chiamare in startup.
+    Se Ollama non è raggiungibile (es. cloud mode), logga warning e continua.
+    """
+    try:
+        user_vector_store.initialize()
+    except Exception as e:
+        logger.warning(f"⚠️ Vector store init failed (embeddings disabled): {e}")
+        logger.warning("Memory search will be unavailable. This is normal in cloud/API mode without Ollama.")
 
 
 def search_user_context(

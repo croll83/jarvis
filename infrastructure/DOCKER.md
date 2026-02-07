@@ -199,38 +199,39 @@ Il file `daemon.json` deve contenere:
 
 ### Deploy Locale (VM-GPU)
 
-Il `docker-compose.yml` crea automaticamente la rete `jarvis_network`. Tutti i container JARVIS comunicano su questa rete:
+L'orchestrator usa `network_mode: host` — vede direttamente le porte dell'host.
+Ollama e Whisper espongono le porte sull'host, l'orchestrator li raggiunge su `localhost`.
 
 ```
-jarvis_network (bridge)
-├── jarvis_ollama       (ollama:11434)
-├── jarvis_whisper      (whisper:8000)
-├── jarvis_core         (orchestrator:5000)
-├── jarvis_tailscale    (tailscale)
-├── jarvis_postgres     (postgres:5432)
-└── jarvis_mongo        (mongo:27017)
+Host (VM-GPU)
+├── Tailscale (host-level)          — VPN mesh
+├── jarvis_ollama       (:11434)    — Docker
+├── jarvis_whisper      (:9000)     — Docker
+├── jarvis_core         (:5000)     — Docker (network_mode: host)
+├── jarvis_postgres     (:5432)     — Docker
+└── jarvis_mongo        (:27017)    — Docker
 ```
 
-I container si raggiungono per **nome del servizio** (non per IP):
-- `http://ollama:11434` dall'orchestrator
-- `http://whisper:8000` dall'orchestrator
+L'orchestrator raggiunge i servizi su `localhost`:
+- `http://localhost:11434` per Ollama
+- `http://localhost:9000` per Whisper
+- `http://jarvis-openclaw:18789` per OpenClaw (VM separata, via Tailscale MagicDNS)
 
 > **Nota**: OpenClaw gira bare-metal su una **VM separata** (non in Docker).
-> L'orchestrator lo raggiunge via Tailscale MagicDNS (`http://jarvis-openclaw:18789`)
-> o via LAN (`http://192.168.x.x:18789`), configurabile con la variabile `OPENCLAW_URL`.
+> Tailscale gira **host-level** (non in Docker) — l'orchestrator vede l'interfaccia Tailscale direttamente.
 
 ### Deploy Cloud
 
-Il `docker-compose.cloud.yml` crea la rete `jarvis_cloud`:
+L'orchestrator usa `network_mode: host` — unico container Docker.
 
 ```
-jarvis_cloud (bridge)
-├── jarvis_orchestrator  (orchestrator:5000)
-└── jarvis_tailscale     (tailscale)
+Host (VPS)
+├── Tailscale (host-level)          — VPN mesh
+├── OpenClaw  (bare-metal, systemd) — :18789
+└── jarvis_orchestrator (:5000)     — Docker (network_mode: host)
 ```
 
-> **Nota**: OpenClaw gira bare-metal sullo **stesso host** (non in Docker).
-> L'orchestrator lo raggiunge via `http://host.docker.internal:18789` (mappato con `extra_hosts` nel compose).
+> L'orchestrator raggiunge OpenClaw su `http://localhost:18789` e HA remoti via Tailscale `100.x.x.x`.
 
 ### Security Stack
 

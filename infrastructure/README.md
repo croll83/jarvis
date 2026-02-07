@@ -4,7 +4,7 @@ Guida completa per il deploy locale di JARVIS su Proxmox con GPU NVIDIA.
 I modelli locali (Qwen 7B router, Whisper STT) girano on-premise sulla VM-GPU;
 il reasoning e gestito da Gemini 3 Pro via OpenClaw che gira **bare-metal su una
 VM dedicata e separata** per isolamento di sicurezza.
-Tailscale gira come container Docker per raggiungere HA remoti e la VM OpenClaw.
+Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA remoti e la VM OpenClaw.
 
 ---
 
@@ -19,17 +19,18 @@ Tailscale gira come container Docker per raggiungere HA remoti e la VM OpenClaw.
 |                                                                      |
 |  VM-GPU (LXC Ubuntu 22.04) - GPU passthrough via cgroup             |
 |  NVIDIA Container Toolkit installato                                 |
+|  Tailscale host-level (100.x.x.x) - jarvis-wagmi                   |
 |                                                                      |
 |  docker-compose.yml                                                  |
 |  +----------------------------------------------------------------+ |
 |  |                     jarvis_network                              | |
 |  |                                                                 | |
-|  |  ollama:11434   whisper:9000    tailscale         postgres:5432 | |
-|  |  GPU: 4.7 GB    GPU: 0.4 GB    VPN gateway       (side proj)   | |
-|  |  Qwen 7B Q4     faster-whisper  (100.x.x.x)                    | |
-|  |  nomic-embed    base                              mongo:27017   | |
-|  |                                                    (side proj)  | |
-|  |  orchestrator:5000                                              | |
+|  |  ollama:11434   whisper:9000    postgres:5432                   | |
+|  |  GPU: 4.7 GB    GPU: 0.4 GB    (side proj)                     | |
+|  |  Qwen 7B Q4     faster-whisper                                 | |
+|  |  nomic-embed    base            mongo:27017                     | |
+|  |                                  (side proj)                    | |
+|  |  orchestrator:5000 (network_mode: host)                        | |
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
 |  |  SQLite + ChromaDB                                              | |
@@ -45,6 +46,7 @@ Tailscale gira come container Docker per raggiungere HA remoti e la VM OpenClaw.
 +---------------------------------------------------------------------+
 |  VM-OpenClaw (VM dedicata su Proxmox, NO Docker)                     |
 |  Node.js bare-metal | systemd service                                |
+|  Tailscale host-level - jarvis-openclaw                              |
 |                                                                      |
 |  openclaw gateway :18789                                             |
 |  Gemini 3 Pro (API cloud)                                            |
@@ -67,26 +69,26 @@ Le due VM sono indipendenti su Proxmox e si avviano in parallelo.
 
 **VM-OpenClaw** (boot autonomo):
 ```
-systemd -> openclaw.service (Node.js, porta 18789)
+systemd -> tailscaled.service -> openclaw.service (Node.js, porta 18789)
 ```
 
-**VM-GPU** (boot sequenziale dei container):
+**VM-GPU** (boot sequenziale):
 ```
-1. ollama          -> diventa healthy (modelli caricati)
-2. whisper         -> started
-3. tailscale       -> si connette alla tailnet, diventa healthy
-4. orchestrator    -> aspetta ollama + whisper + tailscale, poi parte
-                      raggiunge OpenClaw via OPENCLAW_URL
+1. tailscaled      -> host-level service, si connette alla tailnet
+2. ollama          -> diventa healthy (modelli caricati)
+3. whisper         -> started
+4. orchestrator    -> aspetta ollama + whisper, poi parte (network_mode: host)
+                      vede Tailscale direttamente, raggiunge OpenClaw via OPENCLAW_URL
 ```
 
 ### Cosa gira dove
 
 | Servizio | Dove gira | Container/Processo | CPU | RAM | GPU/VRAM | Funzione |
 |----------|-----------|-------------------|-----|-----|----------|----------|
+| **Tailscale** | VM-GPU | host-level (`tailscaled.service`) | - | 64 MB | - | VPN mesh per HA remoti + OpenClaw |
 | **Ollama** | VM-GPU | `jarvis_ollama` | - | - | 4.7 GB | Qwen 7B pre-routing + embeddings |
 | **Whisper** | VM-GPU | `jarvis_whisper` | - | - | 0.4 GB | Speech-to-text (faster-whisper) |
-| **Orchestrator** | VM-GPU | `jarvis_core` | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
-| **Tailscale** | VM-GPU | `jarvis_tailscale` | - | 64 MB | - | VPN mesh per HA remoti + OpenClaw |
+| **Orchestrator** | VM-GPU | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
 | **PostgreSQL** | VM-GPU | `jarvis_postgres` | 0.5 | 512 MB | - | Database side projects |
 | **MongoDB** | VM-GPU | `jarvis_mongo` | 0.5 | 512 MB | - | Database side projects |
 | **OpenClaw** | VM separata (bare-metal) | `openclaw.service` (systemd) | 0.5 | 512 MB | - | Gemini 3 Pro brain (API cloud) |
@@ -107,6 +109,7 @@ systemd -> openclaw.service (Node.js, porta 18789)
 | OS Container | Ubuntu 22.04+ | - |
 | Docker | 24.0+ | latest |
 | Docker Compose | 2.20+ | latest |
+| Tailscale | installato host-level | latest |
 
 ### VM-OpenClaw
 
@@ -118,6 +121,7 @@ systemd -> openclaw.service (Node.js, porta 18789)
 | OS | Ubuntu 22.04+ / Debian 12+ | - |
 | Node.js | 18+ | 20 LTS |
 | GPU | Non richiesta | - |
+| Tailscale | installato host-level | latest |
 
 ---
 
@@ -132,8 +136,7 @@ systemd -> openclaw.service (Node.js, porta 18789)
 - NVIDIA Container Toolkit installato sulla VM-GPU (vedi [DOCKER.md](DOCKER.md) Step 5)
 - Node.js 18+ installato sulla VM-OpenClaw
 - API keys pronte: Gemini, e opzionalmente Groq/OpenRouter come fallback
-- Tailscale installato su entrambe le VM (container Docker su VM-GPU, host-level su VM-OpenClaw)
-- Tailscale auth key: [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
+- Tailscale installato host-level su entrambe le VM (VM-GPU e VM-OpenClaw)
 
 ### STEP 1 — Infrastruttura (una tantum)
 
@@ -152,7 +155,21 @@ terraform init && terraform apply
 # Poi segui DOCKER.md per installare Docker + NVIDIA toolkit sulla VM-GPU
 ```
 
-### STEP 2 — Setup VM-OpenClaw (una tantum)
+### STEP 2 — Setup Tailscale (entrambe le VM)
+
+Tailscale gira host-level su entrambe le VM (non in Docker).
+
+```bash
+# === VM-GPU ===
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --hostname=jarvis-wagmi
+
+# === VM-OpenClaw ===
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --hostname=jarvis-openclaw
+```
+
+### STEP 3 — Setup VM-OpenClaw (una tantum)
 
 Sulla VM dedicata a OpenClaw:
 
@@ -164,9 +181,7 @@ sudo apt-get install -y nodejs
 # Installa OpenClaw globalmente
 npm install -g openclaw
 
-# Installa Tailscale (host-level)
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --hostname=jarvis-openclaw
+# (Tailscale gia installato nello STEP 2)
 
 # Configura OpenClaw con onboard
 openclaw onboard
@@ -182,7 +197,7 @@ ln -s /opt/jarvis/skill ~/.openclaw/skills/jarvis-orchestrator
 sudo tee /etc/systemd/system/openclaw.service > /dev/null <<EOF
 [Unit]
 Description=OpenClaw Gateway
-After=network-online.target
+After=network-online.target tailscaled.service
 Wants=network-online.target
 
 [Service]
@@ -201,14 +216,14 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now openclaw
 ```
 
-### STEP 3 — Clone repository (VM-GPU)
+### STEP 4 — Clone repository (VM-GPU)
 
 ```bash
 git clone https://github.com/croll83/jarvis.git
 cd jarvis
 ```
 
-### STEP 4 — Configura .env (VM-GPU)
+### STEP 5 — Configura .env (VM-GPU)
 
 ```bash
 cp .env.example .env
@@ -226,8 +241,6 @@ Variabili obbligatorie:
 | `OPENCLAW_TELEGRAM_BOT_TOKEN` | @BotFather su Telegram |
 | `JARVIS_APPROVAL_BOT_TOKEN` | @BotFather (secondo bot, separato) |
 | `JARVIS_APPROVAL_CHAT_ID` | Scrivi al bot, poi `curl https://api.telegram.org/bot<TOKEN>/getUpdates` |
-| `TAILSCALE_AUTHKEY` | [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys) - reusable + ephemeral |
-| `TAILSCALE_HOSTNAME` | `wagmi` (o il nome che preferisci nella tailnet) |
 | `HASS_URL` | `http://homeassistant:8123` (locale) o `http://100.x.x.x:8123` (via Tailscale) |
 | `JARVIS_HASS_TOKEN` | HA -> Profilo -> Token di lunga durata |
 | `POSTGRES_PASSWORD` | Password forte a scelta |
@@ -240,19 +253,19 @@ GROQ_API_KEY=gsk_...          # STT via Groq (fallback se Whisper locale down)
 OPENROUTER_API_KEY=sk-or-...  # Routing via OpenRouter (fallback se Ollama down)
 ```
 
-### STEP 5 — Configura system prompt (VM-GPU)
+### STEP 6 — Configura system prompt (VM-GPU)
 
 ```bash
 nano config/router_system_prompt.txt   # Regole di routing per Qwen
 ```
 
-### STEP 6 — Avvia lo stack (VM-GPU)
+### STEP 7 — Avvia lo stack (VM-GPU)
 
 ```bash
 docker compose up -d
 ```
 
-### STEP 7 — Scarica modelli Ollama (VM-GPU)
+### STEP 8 — Scarica modelli Ollama (VM-GPU)
 
 ```bash
 # Attendi che Ollama sia pronto, poi:
@@ -264,7 +277,7 @@ Lo script scarica:
 2. **nomic-embed-text** (~274 MB) - embeddings per memoria semantica
 3. Esegue warmup dei modelli
 
-### STEP 8 — Verifica
+### STEP 9 — Verifica
 
 ```bash
 # === VM-OpenClaw ===
@@ -281,7 +294,7 @@ tailscale status
 # === VM-GPU ===
 
 # Tailscale connesso?
-docker exec jarvis_tailscale tailscale status
+tailscale status
 
 # Orchestrator healthy?
 curl http://localhost:5000/health
@@ -299,7 +312,7 @@ curl http://localhost:11434/api/tags
 nvidia-smi
 
 # HA raggiungibile?
-docker exec jarvis_core curl -s \
+curl -s \
   -H "Authorization: Bearer <HASS_TOKEN>" \
   http://<HA_IP>:8123/api/ | head -c 100
 
@@ -307,7 +320,7 @@ docker exec jarvis_core curl -s \
 docker compose logs -f orchestrator
 ```
 
-### STEP 9 — Primo accesso alla dashboard
+### STEP 10 — Primo accesso alla dashboard
 
 Apri `http://localhost:5000/admin` nel browser (dalla VM-GPU o via Tailscale da qualsiasi dispositivo nella tailnet).
 
@@ -318,7 +331,7 @@ Da qui puoi:
 - Configurare preferenze globali
 - Monitorare lo stato dei servizi
 
-### STEP 10 — Dashboard OpenClaw
+### STEP 11 — Dashboard OpenClaw
 
 La dashboard di OpenClaw e accessibile direttamente dalla VM-OpenClaw:
 `http://jarvis-openclaw:18789` (via Tailscale MagicDNS da qualsiasi dispositivo nella tailnet)
@@ -326,7 +339,7 @@ oppure `http://192.168.x.x:18789` dalla LAN.
 
 Da qui puoi gestire le skill registrate, vedere i log delle conversazioni e monitorare lo stato del gateway.
 
-### STEP 11 — Telegram webhook
+### STEP 12 — Telegram webhook
 
 Il webhook Telegram e gestito da **OpenClaw** (non dall'orchestrator).
 Configura il webhook del bot OpenClaw puntando al tuo dominio:
@@ -342,7 +355,7 @@ curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=h
 Se preferisci automatizzare tutto, Ansible fa gli step di setup in un comando.
 
 **Nota:** Il playbook Ansible gestisce la **VM-GPU**. Il setup della VM-OpenClaw
-e un processo separato (vedi STEP 2 sopra) in quanto e una VM indipendente con
+e un processo separato (vedi STEP 3 sopra) in quanto e una VM indipendente con
 un'installazione bare-metal di Node.js e OpenClaw.
 
 ```bash
@@ -358,7 +371,7 @@ ansible-playbook playbooks/site.yml
 Il playbook esegue in sequenza (sulla VM-GPU):
 
 ```
-common.yml   -> Sistema base, Docker, firewall
+common.yml   -> Sistema base, Docker, firewall, Tailscale host-level
 nvidia.yml   -> NVIDIA Container Toolkit
 jarvis.yml   -> Clone repo, .env, docker-compose up, pull modelli
 security.yml -> Frigate + DoubleTake (opzionale)
@@ -457,15 +470,15 @@ curl -X POST http://localhost:5000/admin/prompts/reload
 
 ## Tailscale Multi-Location
 
-Tailscale gira come container Docker sulla VM-GPU (non sull'host).
-Sulla VM-OpenClaw gira host-level.
+Tailscale gira host-level su entrambe le VM (VM-GPU e VM-OpenClaw), non come container Docker.
+L'orchestrator usa `network_mode: host` e vede l'interfaccia Tailscale direttamente.
 Permette all'orchestrator di raggiungere HA remoti e la VM-OpenClaw senza aprire porte.
 
 ### Dove serve Tailscale
 
 | Nodo | Dove gira | Ruolo | Hostname |
 |------|-----------|-------|----------|
-| **Napoli (Wagmi)** | Container Docker nella VM-GPU | Gateway VPN per lo stack | `jarvis-wagmi` |
+| **Napoli (Wagmi)** | Host-level sulla VM-GPU | Gateway VPN per lo stack | `jarvis-wagmi` |
 | **VM-OpenClaw** | Host-level sulla VM dedicata | Espone OpenClaw sulla tailnet | `jarvis-openclaw` |
 | **Milano (Albani)** | Add-on HAOS o host-level | Espone HA sulla tailnet | `ha-albani` |
 
@@ -475,16 +488,19 @@ Permette all'orchestrator di raggiungere HA remoti e la VM-OpenClaw senza aprire
 +---------------------------------------------------------------+
 |                    TAILSCALE MESH (100.x.x.x)                  |
 |                                                                 |
-|   Napoli VM-GPU (LXC Docker)      VM-OpenClaw (bare-metal)    |
+|   Napoli VM-GPU (LXC)               VM-OpenClaw (bare-metal)  |
 |   +-------------------+           +-------------------+        |
 |   | jarvis-wagmi      |<--------->| jarvis-openclaw   |        |
+|   | Tailscale (host)  |           | Tailscale (host)  |        |
 |   |                   |           |                   |        |
-|   | Orchestrator      |           | OpenClaw Gateway  |        |
-|   | Ollama, Whisper   |           | Gemini 3 Pro      |        |
-|   | Tailscale (ctnr)  |           | Telegram bot      |        |
-|   | Postgres, Mongo   |           | JARVIS skill      |        |
-|   | HA Wagmi (locale) |           | Tailscale (host)  |        |
-|   +-------------------+           +-------------------+        |
+|   | Docker:           |           | OpenClaw Gateway  |        |
+|   |   Ollama, Whisper |           | Gemini 3 Pro      |        |
+|   |   Orchestrator    |           | Telegram bot      |        |
+|   |    (net: host)    |           | JARVIS skill      |        |
+|   |   Postgres, Mongo |           +-------------------+        |
+|   |                   |                                        |
+|   | HA Wagmi (locale) |                                        |
+|   +-------------------+                                        |
 |           |                                                     |
 |           v                                                     |
 |   Milano (Mini PC)                                             |
@@ -514,6 +530,7 @@ URL contiene "100." o ".ts.net"?
 Le location HA (URL + token) sono nel database SQLite, gestibili dalla dashboard admin.
 
 L'orchestrator raggiunge OpenClaw tramite la variabile `OPENCLAW_URL` (default: `http://jarvis-openclaw:18789` via Tailscale MagicDNS).
+Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale direttamente senza bisogno di un container dedicato.
 
 ---
 
@@ -528,7 +545,7 @@ L'orchestrator raggiunge OpenClaw tramite la variabile `OPENCLAW_URL` (default: 
 | 11434 | Ollama API | HTTP | Interno |
 | 5432 | PostgreSQL | TCP | Interno |
 | 27017 | MongoDB | TCP | Interno |
-| 41641/udp | Tailscale NAT traversal | UDP | WAN (container) |
+| 41641/udp | Tailscale NAT traversal | UDP | WAN (host-level) |
 
 ### VM-OpenClaw
 
@@ -566,6 +583,9 @@ Costo mensile:      ~0 (solo corrente)               ~4-8/mese VPS + API
 # Stato container
 docker compose ps
 
+# Tailscale status
+tailscale status
+
 # Logs orchestrator
 docker compose logs -f orchestrator
 
@@ -579,10 +599,16 @@ nvidia-smi
 # OpenClaw raggiungibile?
 curl http://jarvis-openclaw:18789/health
 
+# Tailscale ping test
+tailscale ping jarvis-openclaw
+
 # === VM-OpenClaw ===
 
 # Stato servizio
 sudo systemctl status openclaw
+
+# Tailscale status
+tailscale status
 
 # Logs OpenClaw
 sudo journalctl -u openclaw -f
@@ -622,9 +648,11 @@ nvidia-smi   # Verifica utilizzo VRAM
 ### Tailscale non si connette (VM-GPU)
 
 ```bash
-docker exec jarvis_tailscale tailscale status
-docker compose logs tailscale
-# Se la TAILSCALE_AUTHKEY e scaduta, generane una nuova
+tailscale status
+sudo systemctl status tailscaled
+sudo journalctl -u tailscaled --since '5 min ago'
+# Se serve ri-autenticare:
+sudo tailscale up --hostname=jarvis-wagmi
 ```
 
 ### OpenClaw non raggiungibile (dalla VM-GPU)
@@ -634,7 +662,7 @@ docker compose logs tailscale
 ssh user@jarvis-openclaw "sudo systemctl status openclaw"
 
 # Test connettivita Tailscale
-docker exec jarvis_tailscale tailscale ping jarvis-openclaw
+tailscale ping jarvis-openclaw
 
 # Test diretto via LAN (se sulla stessa rete)
 curl http://192.168.x.x:18789/health
@@ -669,12 +697,12 @@ sudo systemctl restart openclaw
 ### HA non raggiungibile
 
 ```bash
-# Test dal container orchestrator (VM-GPU)
-docker exec jarvis_core curl -H "Authorization: Bearer $TOKEN" \
+# Test diretto dall'host (VM-GPU) — orchestrator usa network_mode: host
+curl -H "Authorization: Bearer $TOKEN" \
   http://<HA_IP>:8123/api/
 
 # Se via Tailscale
-docker exec jarvis_tailscale tailscale ping 100.x.x.x
+tailscale ping 100.x.x.x
 ```
 
 ### Database corrotto (VM-GPU)
@@ -741,6 +769,6 @@ git pull   # oppure copia i file aggiornati
 | [WHISPER.md](WHISPER.md) | faster-whisper STT |
 | [terraform/](terraform/) | IaC per Proxmox LXC (VM-GPU) |
 | [ansible/](ansible/) | Playbook di configurazione (VM-GPU) |
-| [../docker-compose.yml](../docker-compose.yml) | Stack locale VM-GPU (NO OpenClaw) |
+| [../docker-compose.yml](../docker-compose.yml) | Stack locale VM-GPU (NO OpenClaw, NO Tailscale) |
 | [../cloud/](../cloud/) | Deploy cloud (VPS senza GPU) |
 | [../security/](../security/) | Stack security (Frigate + DoubleTake) |
