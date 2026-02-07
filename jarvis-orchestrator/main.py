@@ -87,8 +87,12 @@ device_dnd_status: dict = {}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestisce startup e shutdown dell'applicazione."""
+    global security
     logger.info("🚀 JARVIS Core starting...")
     init_db()
+
+    # Inizializza security manager (richiede DB pronto)
+    security = SecurityManager()
 
     # Inizializza vector store
     init_vector_store()
@@ -241,7 +245,7 @@ async def periodic_health_check():
 # INITIALIZATION
 # ===========================================================================
 
-security = SecurityManager()
+security: SecurityManager = None  # type: ignore — inizializzato in lifespan dopo init_db()
 
 # Mapping sinonimi preferenze
 CANONICAL_KEYS = {

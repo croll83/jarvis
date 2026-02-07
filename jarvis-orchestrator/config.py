@@ -29,7 +29,7 @@ from pathlib import Path
 # DIRECTORY PATHS
 # ===========================================================================
 BASE_DIR = Path(__file__).resolve().parent
-SYSTEM_RULES_PATH = BASE_DIR / "../config/router_system_prompt.txt"
+SYSTEM_RULES_PATH = BASE_DIR / "config/router_system_prompt.txt"
 
 # ===========================================================================
 # NETWORK & API ENDPOINTS (richiedono riavvio)
