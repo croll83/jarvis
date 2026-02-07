@@ -1,0 +1,89 @@
+{
+  "name": "jarvis-orchestrator",
+  "version": "2.0.0",
+  "description": "Smart home control, memory, speaker ID, and security for multi-location Home Assistant",
+
+  "agent": {
+    "model": "google/gemini-3-pro"
+  },
+
+  "gateway": {
+    "port": 18789,
+    "auth": {
+      "type": "bearer",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
+  },
+
+  "channels": {
+    "telegram": {
+      "botToken": "${OPENCLAW_TELEGRAM_BOT_TOKEN}",
+      "dmPolicy": "allowlist",
+      "allowFrom": []
+    }
+  },
+
+  "tools": {
+    "baseUrl": "http://orchestrator:5000/api/tools",
+    "auth": {
+      "type": "bearer",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "endpoints": [
+      {
+        "name": "jarvis_home_control",
+        "method": "POST",
+        "path": "/home_control",
+        "description": "Control Home Assistant entities with security enforcement"
+      },
+      {
+        "name": "jarvis_speaker_id",
+        "method": "POST",
+        "path": "/speaker_id",
+        "description": "Identify speaker from audio using Resemblyzer"
+      },
+      {
+        "name": "jarvis_get_user_context",
+        "method": "GET",
+        "path": "/user_context",
+        "description": "Get user profile, location, and preferences"
+      },
+      {
+        "name": "jarvis_security",
+        "method": "POST",
+        "path": "/security",
+        "description": "Security actions (privacy mode, alarm control)"
+      },
+      {
+        "name": "jarvis_memory_query",
+        "method": "POST",
+        "path": "/memory_query",
+        "description": "Query stratified memory system"
+      },
+      {
+        "name": "jarvis_entity_resolve",
+        "method": "POST",
+        "path": "/entity_resolve",
+        "description": "Resolve friendly entity name to entity_id"
+      },
+      {
+        "name": "jarvis_tts",
+        "method": "POST",
+        "path": "/tts",
+        "description": "Text-to-speech via Alexa/smart speakers"
+      },
+      {
+        "name": "jarvis_get_locations",
+        "method": "GET",
+        "path": "/locations",
+        "description": "List all locations with HA health status"
+      },
+      {
+        "name": "jarvis_audit_log",
+        "method": "POST",
+        "path": "/audit_log",
+        "description": "Log event to audit trail"
+      }
+    ]
+  }
+}

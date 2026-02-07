@@ -1,0 +1,11 @@
+L'utente ha chiesto: "{original_question}"
+
+Ho risposto: "{previous_response}"
+
+L'utente mi ha chiesto di verificare questa risposta con te.
+Per favore:
+1. Conferma se la risposta è corretta
+2. Aggiungi eventuali informazioni mancanti o correzioni
+3. Se la risposta è corretta, dillo brevemente
+
+Rispondi in modo conciso e naturale, come se stessi parlando direttamente all'utente.

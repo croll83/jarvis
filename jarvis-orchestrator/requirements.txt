@@ -1,0 +1,26 @@
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6  # Per upload file
+
+# HTTP Client
+aiohttp==3.9.1
+websockets==12.0
+
+# Environment
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Voice Recognition (Speaker Identification)
+resemblyzer==0.1.3
+librosa==0.10.1
+soundfile==0.12.1
+
+# Audio Processing (opzionale)
+numpy>=1.24.0
+
+# Google Gemini (for image generation)
+google-generativeai>=0.8.0
+
+# Vector Store (Semantic Search)
+chromadb>=0.4.0

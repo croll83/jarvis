@@ -1,0 +1,257 @@
+---
+# =============================================================================
+# JARVIS — Application Deployment
+# =============================================================================
+# Clone repository, configura .env, avvia docker-compose, scarica modelli AI
+# Adatta automaticamente il compose file e lo script in base a deploy_type
+
+- name: Deploy JARVIS
+  hosts: all
+  become: true
+  tags: [jarvis]
+
+  tasks:
+    - name: Mostra configurazione deploy
+      ansible.builtin.debug:
+        msg: |
+          Deploy type:  {{ deploy_type }}
+          AI backend:   {{ ai_backend }}
+          JARVIS dir:   {{ jarvis_dir }}
+          Compose file: {{ 'docker-compose.yml' if (deploy_type == 'lxc_gpu' and ai_backend == 'local') else 'cloud/docker-compose.cloud.yml' }}
+
+    # -----------------------------------------------------------------
+    # CLONE REPOSITORY
+    # -----------------------------------------------------------------
+    - name: Clone repository JARVIS
+      ansible.builtin.git:
+        repo: "{{ jarvis_repo }}"
+        dest: "{{ jarvis_dir }}"
+        version: "{{ jarvis_branch }}"
+        force: false
+        update: true
+      become_user: "{{ jarvis_user }}"
+
+    # -----------------------------------------------------------------
+    # DIRECTORY DATI
+    # -----------------------------------------------------------------
+    - name: Crea directory dati
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ jarvis_user }}"
+        group: "{{ jarvis_user }}"
+        mode: "0755"
+      loop:
+        - "{{ jarvis_dir }}/data"
+        - "{{ jarvis_dir }}/models"
+        - "{{ jarvis_dir }}/config"
+
+    # -----------------------------------------------------------------
+    # CONFIGURAZIONE .env
+    # -----------------------------------------------------------------
+    - name: Genera .env da template
+      ansible.builtin.template:
+        src: ../templates/env.j2
+        dest: "{{ jarvis_dir }}/.env"
+        owner: "{{ jarvis_user }}"
+        group: "{{ jarvis_user }}"
+        mode: "0600"
+
+    # Copia anche in cloud/ per il compose cloud
+    - name: Copia .env in cloud/ (per deploy cloud)
+      ansible.builtin.copy:
+        src: "{{ jarvis_dir }}/.env"
+        dest: "{{ jarvis_dir }}/cloud/.env"
+        remote_src: true
+        owner: "{{ jarvis_user }}"
+        group: "{{ jarvis_user }}"
+        mode: "0600"
+      when: deploy_type == "lxc" or ai_backend == "api"
+
+    # -----------------------------------------------------------------
+    # DOCKER COMPOSE — AVVIO SERVIZI
+    # -----------------------------------------------------------------
+    - name: "Avvio JARVIS stack (deploy locale con GPU)"
+      ansible.builtin.shell: |
+        cd {{ jarvis_dir }} && docker compose -f docker-compose.yml up -d --build
+      become_user: "{{ jarvis_user }}"
+      when: deploy_type == "lxc_gpu" and ai_backend == "local"
+      register: compose_local
+
+    - name: "Avvio JARVIS stack (deploy cloud / API)"
+      ansible.builtin.shell: |
+        cd {{ jarvis_dir }} && docker compose -f cloud/docker-compose.cloud.yml up -d --build
+      become_user: "{{ jarvis_user }}"
+      when: deploy_type == "lxc" or ai_backend == "api"
+      register: compose_cloud
+
+    # -----------------------------------------------------------------
+    # ATTESA SERVIZI
+    # -----------------------------------------------------------------
+    - name: Attendi che Ollama sia healthy (solo GPU)
+      ansible.builtin.uri:
+        url: "http://localhost:11434/api/tags"
+        method: GET
+        status_code: 200
+      register: ollama_health
+      retries: 30
+      delay: 10
+      until: ollama_health.status == 200
+      when: deploy_type == "lxc_gpu" and ai_backend == "local"
+
+    # -----------------------------------------------------------------
+    # DOWNLOAD MODELLI AI (solo GPU)
+    # -----------------------------------------------------------------
+    - name: "Esegui setup.sh (download modelli + warmup)"
+      ansible.builtin.shell: |
+        bash {{ jarvis_dir }}/setup.sh 2>&1
+      args:
+        chdir: "{{ jarvis_dir }}"
+      register: setup_result
+      timeout: 1800  # 30 minuti per download modelli
+      when: deploy_type == "lxc_gpu" and ai_backend == "local"
+
+    - name: Mostra output setup.sh
+      ansible.builtin.debug:
+        msg: "{{ setup_result.stdout_lines[-10:] | default([]) }}"
+      when: setup_result is defined and setup_result.stdout_lines is defined
+
+    - name: "Download nomic-embed-text (per HA Memory)"
+      ansible.builtin.command: >
+        docker exec jarvis_ollama ollama pull nomic-embed-text
+      register: embed_download
+      retries: 3
+      delay: 30
+      when: deploy_type == "lxc_gpu" and ai_backend == "local"
+
+    # -----------------------------------------------------------------
+    # ATTESA ORCHESTRATOR
+    # -----------------------------------------------------------------
+    - name: Attendi che l'Orchestrator sia healthy
+      ansible.builtin.uri:
+        url: "http://localhost:5000/health"
+        method: GET
+        status_code: 200
+      register: orchestrator_health
+      retries: 30
+      delay: 10
+      until: orchestrator_health.status == 200
+
+    - name: "Orchestrator online"
+      ansible.builtin.debug:
+        msg: "JARVIS Orchestrator raggiungibile su http://localhost:5000"
+
+    # -----------------------------------------------------------------
+    # ATTESA OPENCLAW
+    # -----------------------------------------------------------------
+    - name: Attendi che OpenClaw sia healthy
+      ansible.builtin.uri:
+        url: "http://localhost:18789/health"
+        method: GET
+        status_code: 200
+      register: openclaw_health
+      retries: 20
+      delay: 10
+      until: openclaw_health.status == 200
+      failed_when: false
+
+    - name: "OpenClaw online"
+      ansible.builtin.debug:
+        msg: "OpenClaw raggiungibile su http://localhost:18789"
+      when: (openclaw_health.status | default(0)) == 200
+
+    - name: "OpenClaw non disponibile (opzionale)"
+      ansible.builtin.debug:
+        msg: "OpenClaw non risponde — domotica locale funziona comunque via Qwen"
+      when: (openclaw_health.status | default(0)) != 200
+
+    # -----------------------------------------------------------------
+    # OPZIONALE: CRON BACKUP
+    # -----------------------------------------------------------------
+    - name: Setup backup giornaliero database
+      ansible.builtin.cron:
+        name: "JARVIS database backup"
+        minute: "0"
+        hour: "3"
+        job: "{{ jarvis_dir }}/cloud/scripts/backup-db.sh >> /var/log/jarvis-backup.log 2>&1"
+        user: "{{ jarvis_user }}"
+      when: setup_backup_cron | default(false)
+
+    - name: Rendi eseguibile lo script di backup
+      ansible.builtin.file:
+        path: "{{ jarvis_dir }}/cloud/scripts/backup-db.sh"
+        mode: "0755"
+      when: setup_backup_cron | default(false)
+
+    # -----------------------------------------------------------------
+    # OPZIONALE: NGINX CONFIG
+    # -----------------------------------------------------------------
+    - name: Deploy configurazione Nginx
+      when: install_nginx | default(false)
+      block:
+        - name: Copia config Nginx JARVIS
+          ansible.builtin.copy:
+            src: "{{ jarvis_dir }}/cloud/nginx/jarvis.conf"
+            dest: /etc/nginx/sites-available/jarvis.conf
+            remote_src: true
+            mode: "0644"
+
+        - name: Sostituisci dominio nel config Nginx
+          ansible.builtin.replace:
+            path: /etc/nginx/sites-available/jarvis.conf
+            regexp: "jarvis\\.yourdomain\\.com"
+            replace: "{{ nginx_domain }}"
+          when: nginx_domain != "jarvis.yourdomain.com"
+
+        - name: Abilita sito Nginx
+          ansible.builtin.file:
+            src: /etc/nginx/sites-available/jarvis.conf
+            dest: /etc/nginx/sites-enabled/jarvis.conf
+            state: link
+
+        - name: Rimuovi sito default Nginx
+          ansible.builtin.file:
+            path: /etc/nginx/sites-enabled/default
+            state: absent
+
+        - name: Testa configurazione Nginx
+          ansible.builtin.command: nginx -t
+
+        - name: Ricarica Nginx
+          ansible.builtin.systemd:
+            name: nginx
+            state: reloaded
+
+        - name: Mostra istruzioni SSL
+          ansible.builtin.debug:
+            msg: |
+              Nginx configurato per {{ nginx_domain }}.
+              Per attivare SSL:
+                sudo certbot --nginx -d {{ nginx_domain }}
+
+    # -----------------------------------------------------------------
+    # ISTRUZIONI FINALI
+    # -----------------------------------------------------------------
+    - name: "Prossimi passi"
+      ansible.builtin.debug:
+        msg: |
+          ================================================================
+          JARVIS Deploy completato!
+          ================================================================
+
+          Servizi attivi:
+            - Orchestrator + Admin UI: http://localhost:5000/admin
+            - OpenClaw (Gemini):       http://localhost:18789
+          {% if deploy_type == 'lxc_gpu' and ai_backend == 'local' %}
+            - Ollama API:              http://localhost:11434
+            - Whisper STT:             http://localhost:9000
+          {% endif %}
+
+          Prossimi passi manuali:
+            1. Apri Admin UI: http://{{ ansible_host }}:5000/admin
+            2. Crea account admin
+            3. Configura location Home Assistant
+            4. Importa entity map
+            5. Registra profili vocali
+            6. Configura OpenClaw: Gemini API key + Telegram bot
+          ================================================================

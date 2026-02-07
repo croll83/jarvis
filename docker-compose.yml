@@ -1,0 +1,231 @@
+version: '3.8'
+
+# =============================================================================
+# JARVIS DOCKER STACK
+# =============================================================================
+#
+# ARCHITECTURE (OpenClaw + Gemini 3 Pro):
+# - OpenClaw (Gemini 3 Pro): Brain — reasoning, web search, Telegram, multi-turn
+# - JARVIS Orchestrator: Skill — domotics, memory, speaker ID, security, TTS
+# - Qwen 7B Q4: Local pre-routing for domotics fast path + offline fallback
+# - Whisper: Speech-to-text (GPU accelerated)
+# - Ollama: Hosts Qwen 7B Q4 + nomic-embed-text
+#
+# NOTA SU RESEMBLYZER:
+# Resemblyzer è una libreria Python per speaker identification.
+# NON è un container separato - è inclusa in requirements.txt dell'orchestrator.
+# Gira DENTRO il container orchestrator.
+#
+# NOTA SU ADMIN UI:
+# L'interfaccia admin (/admin) è embedded nell'orchestrator FastAPI.
+# NON è un container separato.
+#
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # AI CORE - Ollama (Qwen 7B Q4 + nomic-embed-text)
+  # ===========================================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: jarvis_ollama
+    volumes:
+      - ollama_storage:/root/.ollama
+      - ./models:/models  # Per Modelfile custom
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_MAX_LOADED_MODELS=2
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ===========================================================================
+  # SPEECH-TO-TEXT - faster-whisper (GPU accelerated)
+  # ===========================================================================
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cuda
+    container_name: jarvis_whisper
+    ports:
+      - "9000:8000"
+    environment:
+      - WHISPER__MODEL=base
+      - WHISPER__DEVICE=cuda
+      - WHISPER__COMPUTE_TYPE=float16
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # ===========================================================================
+  # TAILSCALE - VPN Mesh per Multi-Location HA
+  # Permette all'orchestrator di raggiungere HA remoti (es. Milano)
+  # senza aprire porte. Ogni nodo si collega al tailnet e usa MagicDNS.
+  # ===========================================================================
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: jarvis_tailscale
+    hostname: jarvis-${TAILSCALE_HOSTNAME:-wagmi}
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - tailscale_data:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TS_AUTHKEY=${TAILSCALE_AUTHKEY:-}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+      - TS_ACCEPT_DNS=true
+      - TS_EXTRA_ARGS=--advertise-routes=172.20.0.0/16 --accept-routes
+    healthcheck:
+      test: ["CMD", "tailscale", "status", "--json"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # JARVIS ORCHESTRATOR - OpenClaw Skill (FastAPI)
+  # Include: Qwen pre-routing, HA control, Memory, Speaker ID, Security L1-L4
+  # Admin UI (/admin), Backup/Restore, SSE event bus
+  # ===========================================================================
+  orchestrator:
+    build: ./jarvis-orchestrator
+    container_name: jarvis_core
+    depends_on:
+      ollama:
+        condition: service_healthy
+      whisper:
+        condition: service_started
+      tailscale:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data                    # SQLite + voice models
+      - ./config:/app/config:ro             # Entity map, system prompt
+    env_file: .env
+    environment:
+      - AI_BACKEND=${AI_BACKEND:-local}  # "local" (Ollama/Whisper) or "api" (Groq/OpenRouter)
+      - OLLAMA_URL=http://ollama:11434
+      - WHISPER_URL=http://whisper:8000
+      - HASS_URL=http://homeassistant:8123
+      # OpenClaw integration
+      - OPENCLAW_URL=http://openclaw:18789
+      - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      # JARVIS Approval Bot (L3 critical actions - separate from OpenClaw Telegram)
+      - JARVIS_APPROVAL_BOT_TOKEN=${JARVIS_APPROVAL_BOT_TOKEN:-}
+      - JARVIS_APPROVAL_CHAT_ID=${JARVIS_APPROVAL_CHAT_ID:-}
+      # API keys (only needed if AI_BACKEND=api)
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: always
+
+  # ===========================================================================
+  # OPENCLAW - AI Brain (Gemini 3 Pro)
+  # Telegram, web search, reasoning, multi-turn conversations
+  # Calls JARVIS orchestrator as a skill for domotics/memory/security
+  # ===========================================================================
+  openclaw:
+    image: openclaw/openclaw:latest
+    container_name: jarvis_openclaw
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    ports:
+      - "18789:18789"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+    volumes:
+      - ./jarvis-orchestrator/skill:/home/node/.openclaw/skills/jarvis-orchestrator:ro
+      - openclaw_data:/home/node/.openclaw
+    restart: unless-stopped
+
+  # ===========================================================================
+  # SECURITY (Frigate + DoubleTake)
+  # =============================================================================
+  # Frigate e DoubleTake sono stati spostati in security/docker-compose.security.yml
+  # Questo permette di deployarli separatamente (es. su un server con accesso alle camere)
+  # Per avviare: cd security && docker compose -f docker-compose.security.yml up -d
+
+  # ===========================================================================
+  # DATABASES - Side Projects
+  # ===========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: jarvis_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jarvis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-main}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jarvis}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    container_name: jarvis_mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-jarvis}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    restart: unless-stopped
+
+  # ===========================================================================
+  # OPTIONAL: Adminer (DB Web UI)
+  # Avvia con: docker-compose --profile tools up adminer
+  # ===========================================================================
+  adminer:
+    image: adminer:latest
+    container_name: jarvis_adminer
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    profiles:
+      - tools
+
+networks:
+  default:
+    name: jarvis_network
+
+volumes:
+  ollama_storage:
+  tailscale_data:
+  openclaw_data:
+  postgres_data:
+  mongo_data:

@@ -1,0 +1,8 @@
+Riassumi questa conversazione in massimo 50 parole.
+Evidenzia: argomenti discussi, richieste fatte, decisioni prese.
+Ignora: saluti, conferme banali.
+
+Conversazione:
+{messages}
+
+Rispondi SOLO con il riassunto, niente altro.

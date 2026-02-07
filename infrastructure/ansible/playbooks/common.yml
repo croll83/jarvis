@@ -1,0 +1,266 @@
+---
+# =============================================================================
+# JARVIS — Common Setup: Sistema + Docker
+# =============================================================================
+# Installa: aggiornamenti sistema, pacchetti base, Docker Engine, Compose
+# Opzionale: Tailscale, Nginx + Certbot, UFW firewall
+
+- name: Setup Sistema e Docker
+  hosts: all
+  become: true
+  tags: [common]
+
+  tasks:
+    # -----------------------------------------------------------------
+    # SYSTEM UPDATE
+    # -----------------------------------------------------------------
+    - name: Aggiorna cache apt
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Aggiorna tutti i pacchetti
+      ansible.builtin.apt:
+        upgrade: dist
+
+    - name: Installa pacchetti base
+      ansible.builtin.apt:
+        name:
+          - curl
+          - wget
+          - git
+          - nano
+          - vim
+          - htop
+          - jq
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - python3-pip
+          - sqlite3
+          - ffmpeg
+          - unzip
+        state: present
+
+    # -----------------------------------------------------------------
+    # CREA UTENTE JARVIS (se non esiste)
+    # -----------------------------------------------------------------
+    - name: Crea utente {{ jarvis_user }}
+      ansible.builtin.user:
+        name: "{{ jarvis_user }}"
+        shell: /bin/bash
+        groups: [sudo]
+        append: true
+        create_home: true
+      when: jarvis_user != "root"
+
+    - name: Configura sudo senza password per {{ jarvis_user }}
+      ansible.builtin.lineinfile:
+        path: /etc/sudoers.d/{{ jarvis_user }}
+        line: "{{ jarvis_user }} ALL=(ALL) NOPASSWD:ALL"
+        create: true
+        mode: "0440"
+        validate: "visudo -cf %s"
+      when: jarvis_user != "root"
+
+    # -----------------------------------------------------------------
+    # DOCKER ENGINE
+    # -----------------------------------------------------------------
+    - name: Verifica se Docker è installato
+      ansible.builtin.command: docker --version
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Installa Docker via script ufficiale
+      ansible.builtin.shell: |
+        curl -fsSL https://get.docker.com | sh
+      args:
+        creates: /usr/bin/docker
+      when: docker_check.rc != 0
+
+    - name: Installa Docker Compose plugin
+      ansible.builtin.apt:
+        name: docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Abilita e avvia Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Abilita containerd
+      ansible.builtin.systemd:
+        name: containerd
+        enabled: true
+
+    - name: Aggiungi {{ jarvis_user }} al gruppo docker
+      ansible.builtin.user:
+        name: "{{ jarvis_user }}"
+        groups: docker
+        append: true
+
+    # -----------------------------------------------------------------
+    # DOCKER DAEMON CONFIG
+    # -----------------------------------------------------------------
+    - name: Configura Docker daemon (log rotation + NVIDIA condizionale)
+      ansible.builtin.template:
+        src: ../templates/daemon.json.j2
+        dest: /etc/docker/daemon.json
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Riavvia Docker
+
+    # -----------------------------------------------------------------
+    # DIRECTORY JARVIS
+    # -----------------------------------------------------------------
+    - name: Crea directory JARVIS
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ jarvis_user }}"
+        group: "{{ jarvis_user }}"
+        mode: "0755"
+      loop:
+        - "{{ jarvis_dir }}"
+        - "{{ jarvis_dir }}/data"
+        - "{{ jarvis_dir }}/config"
+        - "{{ jarvis_dir }}/backups"
+
+    # -----------------------------------------------------------------
+    # SWAP (per LXC con poca RAM)
+    # -----------------------------------------------------------------
+    - name: Crea swap file (2 GB)
+      block:
+        - name: Verifica se swap esiste
+          ansible.builtin.stat:
+            path: /swapfile
+          register: swap_file
+
+        - name: Crea swapfile
+          ansible.builtin.command: |
+            fallocate -l 2G /swapfile
+          when: not swap_file.stat.exists
+
+        - name: Imposta permessi swapfile
+          ansible.builtin.file:
+            path: /swapfile
+            mode: "0600"
+          when: not swap_file.stat.exists
+
+        - name: Formatta swap
+          ansible.builtin.command: mkswap /swapfile
+          when: not swap_file.stat.exists
+
+        - name: Attiva swap
+          ansible.builtin.command: swapon /swapfile
+          when: not swap_file.stat.exists
+          failed_when: false
+
+        - name: Aggiungi swap a fstab
+          ansible.builtin.lineinfile:
+            path: /etc/fstab
+            line: "/swapfile none swap sw 0 0"
+            state: present
+          when: not swap_file.stat.exists
+      when: deploy_type == "lxc"
+
+    # -----------------------------------------------------------------
+    # NOTA: TAILSCALE
+    # Tailscale NON viene installato sull'host.
+    # Gira come container Docker dentro il docker-compose.yml.
+    # La porta UDP 41641 viene aperta nel firewall per il container.
+    # -----------------------------------------------------------------
+
+    # -----------------------------------------------------------------
+    # OPZIONALE: NGINX + CERTBOT
+    # -----------------------------------------------------------------
+    - name: Installa Nginx e Certbot
+      ansible.builtin.apt:
+        name:
+          - nginx
+          - certbot
+          - python3-certbot-nginx
+        state: present
+      when: install_nginx | default(false)
+
+    - name: Abilita e avvia Nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+        enabled: true
+      when: install_nginx | default(false)
+
+    - name: Crea directory certbot
+      ansible.builtin.file:
+        path: /var/www/certbot
+        state: directory
+        mode: "0755"
+      when: install_nginx | default(false)
+
+    # -----------------------------------------------------------------
+    # OPZIONALE: UFW FIREWALL
+    # -----------------------------------------------------------------
+    - name: Configura UFW firewall
+      when: deploy_type == "lxc_gpu"
+      block:
+        - name: Installa UFW
+          ansible.builtin.apt:
+            name: ufw
+            state: present
+
+        - name: UFW — default deny incoming
+          community.general.ufw:
+            direction: incoming
+            policy: deny
+
+        - name: UFW — default allow outgoing
+          community.general.ufw:
+            direction: outgoing
+            policy: allow
+
+        - name: UFW — consenti SSH
+          community.general.ufw:
+            rule: allow
+            name: OpenSSH
+
+        - name: UFW — consenti porte JARVIS
+          community.general.ufw:
+            rule: allow
+            port: "{{ item }}"
+            proto: tcp
+          loop:
+            - "5000"     # Orchestrator + Admin UI
+            - "18789"    # OpenClaw
+
+        - name: UFW — consenti HTTP/HTTPS (se Nginx)
+          community.general.ufw:
+            rule: allow
+            port: "{{ item }}"
+            proto: tcp
+          loop:
+            - "80"
+            - "443"
+          when: install_nginx | default(false)
+
+        - name: UFW — consenti Tailscale UDP (usato dal container Docker)
+          community.general.ufw:
+            rule: allow
+            port: "41641"
+            proto: udp
+
+        - name: UFW — abilita firewall
+          community.general.ufw:
+            state: enabled
+
+  # -----------------------------------------------------------------
+  # HANDLERS
+  # -----------------------------------------------------------------
+  handlers:
+    - name: Riavvia Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted

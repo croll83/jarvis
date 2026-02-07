@@ -1,0 +1,91 @@
+# =============================================================================
+# JARVIS — Terraform Variables
+# =============================================================================
+# Copia questo file in terraform.tfvars e compila i valori
+# NON committare terraform.tfvars nel repository!
+#
+# cp terraform.tfvars.example terraform.tfvars
+# nano terraform.tfvars
+
+# -----------------------------------------------------------------------------
+# Tipo di deploy
+# -----------------------------------------------------------------------------
+# "lxc_gpu" = LXC con GPU NVIDIA (AI locale — Ollama/Whisper)
+# "lxc"     = LXC senza GPU (AI via API — Groq/OpenRouter/Gemini)
+deploy_type = "lxc_gpu"
+
+# -----------------------------------------------------------------------------
+# Connessione Proxmox
+# -----------------------------------------------------------------------------
+# URL dell'API Proxmox (include la porta 8006)
+proxmox_endpoint = "https://192.168.1.10:8006/"
+
+# API Token — crealo con:
+#   pveum user add terraform@pve
+#   pveum role add TerraformRole -privs "Datastore.AllocateSpace Datastore.Audit \
+#     Pool.Allocate Sys.Audit Sys.Console Sys.Modify SDN.Use VM.Allocate VM.Audit \
+#     VM.Clone VM.Config.CDROM VM.Config.Cloudinit VM.Config.CPU VM.Config.Disk \
+#     VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options \
+#     VM.Migrate VM.Monitor VM.PowerMgmt"
+#   pveum aclmod / -user terraform@pve -role TerraformRole
+#   pveum user token add terraform@pve provider --privsep=0
+proxmox_api_token = "terraform@pve!provider=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Ignora certificati self-signed (true per la maggior parte delle installazioni)
+proxmox_insecure = true
+
+# Nome del nodo Proxmox (vedi nella UI: Datacenter > nodo)
+proxmox_node = "pve"
+
+# -----------------------------------------------------------------------------
+# Container LXC
+# -----------------------------------------------------------------------------
+hostname       = "jarvis"
+ct_id          = 100                    # 0 per auto-assign
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5... user@host"
+lxc_password   = ""                     # Password root (opzionale)
+
+# Risorse — adatta in base al deploy_type:
+#   lxc_gpu: 6 core, 16 GB RAM, 100-200 GB disco (modelli AI ~12 GB)
+#   lxc:     2-4 core, 4 GB RAM, 50 GB disco
+lxc_cores     = 6
+lxc_memory    = 16384                   # MB
+lxc_swap      = 2048                    # MB
+lxc_disk_size = 200                     # GB
+
+# Template LXC Ubuntu — scaricalo da Proxmox UI:
+#   Storage > local > CT Templates > Templates > ubuntu-22.04-standard
+lxc_template_file_id = "local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+
+# -----------------------------------------------------------------------------
+# Rete
+# -----------------------------------------------------------------------------
+network_bridge = "vmbr0"
+ip_address     = "192.168.1.50/24"      # oppure "dhcp"
+gateway        = "192.168.1.1"          # necessario solo se IP statico
+dns_servers    = ["8.8.8.8", "1.1.1.1"]
+
+# -----------------------------------------------------------------------------
+# Storage
+# -----------------------------------------------------------------------------
+datastore_id = "local-lvm"
+
+# -----------------------------------------------------------------------------
+# GPU NVIDIA (solo se deploy_type = "lxc_gpu")
+# -----------------------------------------------------------------------------
+# Prerequisito: driver NVIDIA installato sull'HOST Proxmox
+# Verifica con: nvidia-smi (sull'host)
+#
+# Trova i device con: ls -la /dev/nvidia*
+gpu_devices = [
+  "/dev/nvidia0",
+  "/dev/nvidiactl",
+  "/dev/nvidia-uvm",
+  "/dev/nvidia-uvm-tools"
+]
+
+# Major number per cgroup — trova con:
+#   stat -c '%t' /dev/nvidia0 | xargs printf '%d\n'    (→ 195)
+#   stat -c '%t' /dev/nvidia-uvm | xargs printf '%d\n' (→ 234)
+# I default (195, 234, 509) funzionano nella maggior parte dei casi
+gpu_cgroup_device_majors = [195, 234, 509]

@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS Admin Dashboard - Preview</title>
+    <style>
+        :root {
+            --bg-dark: #0f0f1a;
+            --bg-card: #1a1a2e;
+            --bg-card-alt: #16213e;
+            --accent: #e94560;
+            --accent-hover: #ff6b6b;
+            --text: #eee;
+            --text-muted: #888;
+            --success: #4ade80;
+            --warning: #fbbf24;
+            --error: #ef4444;
+            --info: #3b82f6;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        .nav {
+            background: var(--bg-card);
+            padding: 0 2rem;
+            display: flex;
+            align-items: center;
+            gap: 2rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .nav-logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 1rem 0;
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .nav-logo span { font-size: 2rem; }
+
+        .nav-tabs { display: flex; gap: 0.5rem; }
+
+        .nav-tab {
+            padding: 1rem 1.5rem;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.95rem;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .nav-tab:hover { color: var(--text); }
+        .nav-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+        .main { padding: 2rem; max-width: 1400px; margin: 0 auto; }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.5rem; }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+
+        @media (max-width: 900px) {
+            .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-dot.up { background: var(--success); box-shadow: 0 0 8px var(--success); }
+        .status-dot.down { background: var(--error); box-shadow: 0 0 8px var(--error); }
+        .status-dot.degraded { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+
+        .service-card {
+            background: var(--bg-card-alt);
+            border-radius: 8px;
+            padding: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .service-info { flex: 1; }
+        .service-name { font-weight: 500; margin-bottom: 0.25rem; }
+        .service-latency { font-size: 0.85rem; color: var(--text-muted); }
+
+        .metric-card {
+            background: var(--bg-card-alt);
+            border-radius: 8px;
+            padding: 1.25rem;
+            text-align: center;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 600;
+            color: var(--accent);
+        }
+
+        .metric-label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+
+        .metric-detail {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.5rem;
+        }
+
+        .pending-action {
+            background: var(--bg-card-alt);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            border-left: 3px solid var(--warning);
+        }
+
+        .action-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+        }
+
+        .action-id { font-family: monospace; color: var(--warning); }
+        .action-details { font-size: 0.9rem; }
+
+        .btn-sm {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.8rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .btn-secondary { background: rgba(255,255,255,0.1); color: var(--text); }
+        .btn-danger { background: transparent; color: var(--error); border: 1px solid var(--error); }
+
+        .auto-refresh {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-left: auto;
+        }
+
+        .preview-badge {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            background: var(--accent);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div class="preview-badge">📸 PREVIEW - Dati di esempio</div>
+
+    <nav class="nav">
+        <div class="nav-logo">
+            <span>🤖</span>
+            JARVIS
+        </div>
+        <div class="nav-tabs">
+            <button class="nav-tab active">📊 Dashboard</button>
+            <button class="nav-tab">👥 Utenti</button>
+            <button class="nav-tab">⚙️ Sistema</button>
+            <button class="nav-tab">📋 Audit Log</button>
+            <button class="nav-tab">🔌 Dispositivi</button>
+            <button class="nav-tab">💾 Cache</button>
+        </div>
+        <div class="auto-refresh">
+            <input type="checkbox" checked>
+            <label>Auto-refresh</label>
+        </div>
+    </nav>
+
+    <main class="main">
+        <h2 style="margin-bottom: 1.5rem;">Dashboard</h2>
+
+        <!-- Health Status -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🔴 Stato Servizi</span>
+                <button class="btn-secondary btn-sm">🔄 Aggiorna</button>
+            </div>
+            <div class="grid-4">
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">Orchestrator</div>
+                        <div class="service-latency">0ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">Ollama</div>
+                        <div class="service-latency">45ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">Whisper</div>
+                        <div class="service-latency">12ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">Home Assistant</div>
+                        <div class="service-latency">89ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">OpenClaw</div>
+                        <div class="service-latency">156ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">Frigate</div>
+                        <div class="service-latency">23ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot degraded"></div>
+                    <div class="service-info">
+                        <div class="service-name">DoubleTake</div>
+                        <div class="service-latency">timeout</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Metrics Grid -->
+        <div class="grid-2">
+            <!-- Latencies -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">⚡ Latenze Medie</span>
+                </div>
+                <div class="grid-3">
+                    <div class="metric-card">
+                        <div class="metric-value">127</div>
+                        <div class="metric-label">Routing (ms)</div>
+                        <div class="metric-detail">min: 89 / max: 245</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">34</div>
+                        <div class="metric-label">STT (ms)</div>
+                        <div class="metric-detail">min: 28 / max: 52</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">18.4</div>
+                        <div class="metric-label">Reasoning (s)</div>
+                        <div class="metric-detail">12 chiamate</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">📈 Statistiche</span>
+                </div>
+                <div class="grid-3">
+                    <div class="metric-card">
+                        <div class="metric-value">1,247</div>
+                        <div class="metric-label">Richieste Totali</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">73.2%</div>
+                        <div class="metric-label">Cache Hit Rate</div>
+                        <div class="metric-detail">912 hits / 335 misses</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">4/6</div>
+                        <div class="metric-label">Voci Registrate</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pending Actions -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">⏳ Azioni in Attesa</span>
+            </div>
+            <div class="pending-action">
+                <div class="action-header">
+                    <span class="action-id">#a3f7b2c1</span>
+                    <span style="color: var(--text-muted);">2025-01-27 14:32:15 (5 min fa)</span>
+                </div>
+                <div class="action-details">
+                    <strong>cover.open_cover</strong> → cover.pergotenda_piscina
+                </div>
+                <div style="margin-top: 0.5rem;">
+                    <button class="btn-danger btn-sm">Annulla</button>
+                </div>
+            </div>
+            <div class="pending-action">
+                <div class="action-header">
+                    <span class="action-id">#b8e2d4f9</span>
+                    <span style="color: var(--text-muted);">2025-01-27 14:28:03 (9 min fa)</span>
+                </div>
+                <div class="action-details">
+                    <strong>lock.unlock</strong> → lock.porta_principale
+                </div>
+                <div style="margin-top: 0.5rem;">
+                    <button class="btn-danger btn-sm">Annulla</button>
+                </div>
+            </div>
+        </div>
+    </main>
+</body>
+</html>

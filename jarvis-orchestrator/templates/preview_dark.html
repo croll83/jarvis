@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="it" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS Admin - Dark Theme Preview</title>
+    <style>
+        :root {
+            --bg-primary: #0a0a12;
+            --bg-secondary: #12121f;
+            --bg-card: #1a1a2e;
+            --bg-card-hover: #22223a;
+            --bg-input: #0d0d18;
+            --border-color: rgba(255,255,255,0.08);
+            --border-light: rgba(255,255,255,0.04);
+            --text-primary: #f5f5f7;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent: #e94560;
+            --accent-hover: #f43f5e;
+            --accent-glow: rgba(233,69,96,0.3);
+            --success: #22c55e;
+            --success-bg: rgba(34,197,94,0.1);
+            --warning: #f59e0b;
+            --warning-bg: rgba(245,158,11,0.1);
+            --error: #ef4444;
+            --error-bg: rgba(239,68,68,0.1);
+            --info: #3b82f6;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+            --shadow-md: 0 4px 12px rgba(0,0,0,0.5);
+            --shadow-lg: 0 8px 24px rgba(0,0,0,0.6);
+            --shadow-glow: 0 0 20px var(--accent-glow);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .nav {
+            background: var(--bg-secondary);
+            padding: 0 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: var(--shadow-md);
+        }
+
+        .nav-logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 0;
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            text-shadow: var(--shadow-sm);
+        }
+
+        .nav-logo img {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            box-shadow: var(--shadow-md);
+        }
+
+        .nav-tabs { display: flex; gap: 0.25rem; flex: 1; }
+
+        .nav-tab {
+            padding: 1rem 1.25rem;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .nav-tab:hover { color: var(--text-primary); background: var(--bg-card-hover); }
+        .nav-tab.active { color: var(--accent); border-bottom-color: var(--accent); text-shadow: 0 0 12px var(--accent-glow); }
+
+        .nav-controls { display: flex; align-items: center; gap: 1rem; margin-left: auto; }
+
+        .theme-toggle {
+            position: relative;
+            width: 56px;
+            height: 28px;
+            background: var(--bg-input);
+            border-radius: 14px;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+        }
+
+        .theme-toggle::before {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 22px;
+            height: 22px;
+            background: var(--accent);
+            border-radius: 50%;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .theme-toggle-icons {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 100%;
+            padding: 0 6px;
+            font-size: 12px;
+        }
+
+        .auto-refresh {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .auto-refresh input { accent-color: var(--accent); }
+
+        .main { padding: 1.5rem; max-width: 1400px; margin: 0 auto; }
+
+        .page-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+            color: var(--text-primary);
+            text-shadow: var(--shadow-sm);
+            letter-spacing: -0.02em;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 1.25rem;
+            margin-bottom: 1.25rem;
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow-md);
+        }
+
+        .card:hover { box-shadow: var(--shadow-lg); }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .card-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            text-shadow: var(--shadow-sm);
+        }
+
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem; }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+
+        .status-dot.up {
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success), 0 0 16px rgba(34,197,94,0.3);
+            animation: pulse-success 2s infinite;
+        }
+
+        .status-dot.down {
+            background: var(--error);
+            box-shadow: 0 0 8px var(--error), 0 0 16px rgba(239,68,68,0.3);
+            animation: pulse-error 1s infinite;
+        }
+
+        .status-dot.degraded {
+            background: var(--warning);
+            box-shadow: 0 0 8px var(--warning);
+        }
+
+        @keyframes pulse-success {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        @keyframes pulse-error {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.8; transform: scale(1.1); }
+        }
+
+        .service-card {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+        }
+
+        .service-card:hover {
+            border-color: var(--accent);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .service-info { flex: 1; min-width: 0; }
+        .service-name { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.15rem; }
+        .service-latency { font-size: 0.8rem; color: var(--text-muted); }
+
+        .metric-card {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1.25rem;
+            text-align: center;
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent);
+            line-height: 1;
+            text-shadow: 0 0 20px var(--accent-glow);
+        }
+
+        .metric-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 0.5rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .metric-detail {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-top: 0.35rem;
+        }
+
+        .btn-secondary {
+            padding: 0.35rem 0.75rem;
+            font-size: 0.8rem;
+            background: var(--bg-input);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--text-muted);
+        }
+
+        .pending-action {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            border-left: 3px solid var(--warning);
+            border-right: 1px solid var(--border-color);
+            border-top: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .btn-danger {
+            padding: 0.35rem 0.75rem;
+            font-size: 0.8rem;
+            background: transparent;
+            color: var(--error);
+            border: 1px solid var(--error);
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .btn-danger:hover {
+            background: var(--error);
+            color: white;
+        }
+
+        .preview-badge {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            background: var(--accent);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            z-index: 1000;
+            box-shadow: var(--shadow-lg);
+        }
+
+        @media (max-width: 900px) {
+            .grid-2 { grid-template-columns: 1fr; }
+            .grid-4 { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+    <div class="preview-badge">DARK THEME PREVIEW</div>
+
+    <nav class="nav">
+        <div class="nav-logo">
+            <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHJ4PSI4IiBmaWxsPSIjMWExYTJlIi8+PGNpcmNsZSBjeD0iMjAiIGN5PSIxNiIgcj0iOCIgZmlsbD0iI2U5NDU2MCIvPjxwYXRoIGQ9Ik0xMiAyOGMwLTQuNDE4IDMuNTgyLTggOC04czggMy41ODIgOCA4IiBzdHJva2U9IiNlOTQ1NjAiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+" alt="JARVIS">
+            <span>JARVIS</span>
+        </div>
+
+        <div class="nav-tabs">
+            <button class="nav-tab active">Dashboard</button>
+            <button class="nav-tab">Utenti</button>
+            <button class="nav-tab">Sistema</button>
+            <button class="nav-tab">Audit Log</button>
+            <button class="nav-tab">Dispositivi</button>
+            <button class="nav-tab">Cache</button>
+        </div>
+
+        <div class="nav-controls">
+            <div class="theme-toggle">
+                <div class="theme-toggle-icons">
+                    <span>🌙</span>
+                    <span>☀️</span>
+                </div>
+            </div>
+            <div class="auto-refresh">
+                <input type="checkbox" checked>
+                <span>Auto</span>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main">
+        <h2 class="page-title">Dashboard</h2>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Stato Servizi</span>
+                <button class="btn-secondary">Aggiorna</button>
+            </div>
+            <div class="grid-4">
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">Orchestrator</div>
+                        <div class="service-latency">0ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">Ollama</div>
+                        <div class="service-latency">45ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">Whisper</div>
+                        <div class="service-latency">12ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">Home Assistant</div>
+                        <div class="service-latency">89ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">OpenClaw</div>
+                        <div class="service-latency">156ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot up"></div>
+                    <div class="service-info">
+                        <div class="service-name">Frigate</div>
+                        <div class="service-latency">23ms</div>
+                    </div>
+                </div>
+                <div class="service-card">
+                    <div class="status-dot degraded"></div>
+                    <div class="service-info">
+                        <div class="service-name">DoubleTake</div>
+                        <div class="service-latency">timeout</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Latenze Medie</span>
+                </div>
+                <div class="grid-3">
+                    <div class="metric-card">
+                        <div class="metric-value">127</div>
+                        <div class="metric-label">Routing (ms)</div>
+                        <div class="metric-detail">min: 89 / max: 245</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">34</div>
+                        <div class="metric-label">STT (ms)</div>
+                        <div class="metric-detail">min: 28 / max: 52</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">18.4</div>
+                        <div class="metric-label">Reasoning (s)</div>
+                        <div class="metric-detail">12 chiamate</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Statistiche</span>
+                </div>
+                <div class="grid-3">
+                    <div class="metric-card">
+                        <div class="metric-value">1,247</div>
+                        <div class="metric-label">Richieste</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">73.2%</div>
+                        <div class="metric-label">Cache Hit</div>
+                        <div class="metric-detail">912 / 335</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">4/6</div>
+                        <div class="metric-label">Voci</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Azioni in Attesa</span>
+            </div>
+            <div class="pending-action">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                    <span style="font-family: monospace; color: var(--warning); font-weight: 600;">#a3f7b2c1</span>
+                    <span style="color: var(--text-muted); font-size: 0.8rem;">2025-01-27 14:32:15 (5 min fa)</span>
+                </div>
+                <div style="font-size: 0.9rem;"><strong>cover.open_cover</strong> → cover.pergotenda_piscina</div>
+                <div style="margin-top: 0.75rem;"><button class="btn-danger">Annulla</button></div>
+            </div>
+            <div class="pending-action">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                    <span style="font-family: monospace; color: var(--warning); font-weight: 600;">#b8e2d4f9</span>
+                    <span style="color: var(--text-muted); font-size: 0.8rem;">2025-01-27 14:28:03 (9 min fa)</span>
+                </div>
+                <div style="font-size: 0.9rem;"><strong>lock.unlock</strong> → lock.porta_principale</div>
+                <div style="margin-top: 0.75rem;"><button class="btn-danger">Annulla</button></div>
+            </div>
+        </div>
+    </main>
+</body>
+</html>

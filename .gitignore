@@ -1,0 +1,48 @@
+# Python - l'equivalente di node_modules
+venv/
+env/
+ENV/
+bin/
+lib/
+develop-eggs/
+dist/
+eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+#ESPIF
+managed_components/
+build/
+
+# Bytecode (compilati) - come i file di build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Google Auth & Secrets (NON committare mai questi!)
+.env
+
+# Mac specifiche
+.DS_Store
+
+# Claude specifiche
+.claude
+
+# Terraform
+infrastructure/terraform/.terraform/
+infrastructure/terraform/*.tfstate
+infrastructure/terraform/*.tfstate.backup
+infrastructure/terraform/*.tfvars
+!infrastructure/terraform/*.tfvars.example
+infrastructure/terraform/.terraform.lock.hcl
+
+# Ansible (secrets)
+infrastructure/ansible/inventory/hosts.yml
+infrastructure/ansible/group_vars/all.yml

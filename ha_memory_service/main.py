@@ -1,0 +1,679 @@
+"""
+JARVIS HA Memory Service
+- Event ingestion da Home Assistant via WebSocket
+- Summarization locale con Qwen
+- Vector search con ChromaDB per retrieval semantico
+- API per orchestrator
+"""
+
+import os
+import asyncio
+import aiohttp
+import sqlite3
+import json
+import time
+import logging
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+import chromadb
+from chromadb.config import Settings
+
+# ===========================================================================
+# CONFIG
+# ===========================================================================
+
+LOCATION_ID = os.getenv("LOCATION_ID", "unknown")
+HA_URL = os.getenv("HA_URL", "http://supervisor/core")
+HA_TOKEN = os.getenv("HA_TOKEN", "")
+QWEN_URL = os.getenv("QWEN_URL", "http://localhost:11434")
+DB_PATH = os.getenv("DB_PATH", "/data/ha_memory.db")
+CHROMA_PATH = os.getenv("CHROMA_PATH", "/data/chroma")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen2.5:3b")
+SUMMARY_TEMPERATURE = float(os.getenv("SUMMARY_TEMPERATURE", "0.3"))
+SUMMARY_TIMEOUT = int(os.getenv("SUMMARY_TIMEOUT", "30"))
+EMBEDDING_TIMEOUT = int(os.getenv("EMBEDDING_TIMEOUT", "30"))
+SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8100"))
+WS_RETRY_DELAY = int(os.getenv("WS_RETRY_DELAY", "30"))
+WS_RECONNECT_DELAY = int(os.getenv("WS_RECONNECT_DELAY", "10"))
+SCHEDULER_INITIAL_DELAY = int(os.getenv("SCHEDULER_INITIAL_DELAY", "30"))
+SCHEDULER_INTERVAL = int(os.getenv("SCHEDULER_INTERVAL", "60"))
+COLLECTION_LOCATION_EVENTS = "location_events"
+SKIP_ENTITY_PREFIXES = os.getenv("SKIP_ENTITY_PREFIXES", "update.").split(",")
+SKIP_ENTITY_SUFFIXES = os.getenv("SKIP_ENTITY_SUFFIXES", "_battery,_linkquality,_signal").split(",")
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("HA_MEMORY")
+
+
+# ===========================================================================
+# DATABASE
+# ===========================================================================
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+
+    # Eventi raw (TTL 30 min, gestito da cleanup)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS events_raw (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id TEXT NOT NULL,
+            old_state TEXT,
+            new_state TEXT,
+            attributes TEXT,
+            timestamp REAL NOT NULL
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_events_time ON events_raw(timestamp)')
+
+    # Summaries orari
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS location_memory_hourly (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hour_start REAL NOT NULL,
+            hour_end REAL NOT NULL,
+            summary TEXT NOT NULL,
+            event_count INTEGER,
+            anomalies TEXT,
+            created_at REAL DEFAULT (unixepoch())
+        )
+    ''')
+
+    # Summaries giornalieri
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS location_memory_daily (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL UNIQUE,
+            summary TEXT NOT NULL,
+            patterns TEXT,
+            anomalies TEXT,
+            created_at REAL DEFAULT (unixepoch())
+        )
+    ''')
+
+    # Fatti long-term location
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS location_memory_longterm (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fact TEXT NOT NULL,
+            category TEXT,
+            confidence REAL DEFAULT 0.8,
+            created_at REAL DEFAULT (unixepoch()),
+            updated_at REAL
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
+    logger.info(f"Database initialized at {DB_PATH}")
+
+
+# ===========================================================================
+# VECTOR STORE (Location Events)
+# ===========================================================================
+
+class OllamaEmbeddingFunction:
+    """Custom embedding function using Ollama."""
+
+    def __init__(self, model: str = EMBEDDING_MODEL, url: str = QWEN_URL):
+        self.model = model
+        # Usa endpoint embeddings di Ollama
+        self.url = url.replace("/api/chat", "/api/embeddings")
+        if "/api/embeddings" not in self.url:
+            self.url = f"{url.rstrip('/')}/api/embeddings"
+
+    def __call__(self, input: list) -> list:
+        import requests
+        embeddings = []
+        for text in input:
+            try:
+                response = requests.post(
+                    self.url,
+                    json={"model": self.model, "prompt": text},
+                    timeout=EMBEDDING_TIMEOUT
+                )
+                if response.status_code == 200:
+                    embeddings.append(response.json()["embedding"])
+                else:
+                    embeddings.append([0.0] * 768)
+            except Exception:
+                embeddings.append([0.0] * 768)
+        return embeddings
+
+
+class LocationVectorStore:
+    """Vector store per eventi location."""
+
+    def __init__(self):
+        self.client = None
+        self.collection = None
+        self._initialized = False
+
+    def initialize(self):
+        if self._initialized:
+            return
+
+        self.client = chromadb.PersistentClient(
+            path=CHROMA_PATH,
+            settings=Settings(anonymized_telemetry=False)
+        )
+
+        self.collection = self.client.get_or_create_collection(
+            name=f"{COLLECTION_LOCATION_EVENTS}_{LOCATION_ID}",
+            embedding_function=OllamaEmbeddingFunction(),
+            metadata={"hnsw:space": "cosine"}
+        )
+
+        self._initialized = True
+        logger.info(f"Location vector store initialized for {LOCATION_ID}")
+
+    def add_event(
+        self,
+        entity_id: str,
+        old_state: str,
+        new_state: str,
+        timestamp: float
+    ):
+        """Aggiunge evento al vector store."""
+        if not self._initialized:
+            self.initialize()
+
+        doc_id = f"evt_{LOCATION_ID}_{int(timestamp * 1000)}"
+
+        # Testo descrittivo per embedding
+        text = f"{entity_id} changed from {old_state} to {new_state}"
+
+        try:
+            self.collection.add(
+                documents=[text],
+                metadatas=[{
+                    "entity_id": entity_id,
+                    "old_state": old_state or "",
+                    "new_state": new_state or "",
+                    "timestamp": timestamp,
+                    "location_id": LOCATION_ID
+                }],
+                ids=[doc_id]
+            )
+        except Exception as e:
+            if "already exists" not in str(e).lower():
+                logger.error(f"Vector add error: {e}")
+
+    def search_events(
+        self,
+        query: str,
+        n_results: int = 30,
+        min_timestamp: float = None
+    ) -> list:
+        """Cerca eventi semanticamente simili."""
+        if not self._initialized:
+            self.initialize()
+
+        if min_timestamp is None:
+            min_timestamp = time.time() - (7 * 86400)  # 7 giorni
+
+        try:
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                where={"timestamp": {"$gte": min_timestamp}},
+                include=["documents", "metadatas", "distances"]
+            )
+
+            # Format con recency boost
+            formatted = []
+            now = time.time()
+
+            docs = results['documents'][0] if results['documents'] else []
+            metas = results['metadatas'][0] if results['metadatas'] else []
+            distances = results['distances'][0] if results['distances'] else []
+
+            for doc, meta, dist in zip(docs, metas, distances):
+                similarity = 1 - dist
+                age_hours = (now - meta.get('timestamp', now)) / 3600
+                recency = 1 / (1 + age_hours * 0.05)
+
+                formatted.append({
+                    "content": doc,
+                    "metadata": meta,
+                    "similarity": similarity,
+                    "recency": recency,
+                    "final_score": similarity * recency
+                })
+
+            formatted.sort(key=lambda x: x['final_score'], reverse=True)
+            return formatted
+
+        except Exception as e:
+            logger.error(f"Vector search error: {e}")
+            return []
+
+    def cleanup_old(self, max_age_days: int = 7):
+        """Rimuove vettori vecchi."""
+        if not self._initialized:
+            return
+
+        cutoff = time.time() - (max_age_days * 86400)
+
+        try:
+            old = self.collection.get(
+                where={"timestamp": {"$lt": cutoff}},
+                include=[]
+            )
+            if old and old.get('ids'):
+                self.collection.delete(ids=old['ids'])
+                logger.info(f"Cleaned {len(old['ids'])} old event vectors")
+        except Exception as e:
+            logger.error(f"Vector cleanup error: {e}")
+
+
+# Istanza globale
+location_vector_store = LocationVectorStore()
+
+
+# ===========================================================================
+# EVENT INGESTION
+# ===========================================================================
+
+async def subscribe_ha_events():
+    """Sottoscrivi agli eventi state_changed di Home Assistant."""
+    ws_url = HA_URL.replace("http", "ws") + "/api/websocket"
+
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(ws_url) as ws:
+                    # Auth
+                    await ws.receive_json()
+                    await ws.send_json({"type": "auth", "access_token": HA_TOKEN})
+                    auth_result = await ws.receive_json()
+
+                    if auth_result.get("type") != "auth_ok":
+                        logger.error("HA WebSocket auth failed")
+                        await asyncio.sleep(WS_RETRY_DELAY)
+                        continue
+
+                    # Subscribe
+                    await ws.send_json({
+                        "id": 1,
+                        "type": "subscribe_events",
+                        "event_type": "state_changed"
+                    })
+
+                    logger.info(f"Subscribed to HA events for location {LOCATION_ID}")
+
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            if data.get("type") == "event":
+                                await process_state_change(data["event"]["data"])
+                        elif msg.type == aiohttp.WSMsgType.ERROR:
+                            break
+
+        except Exception as e:
+            logger.error(f"HA WebSocket error: {e}")
+            await asyncio.sleep(WS_RECONNECT_DELAY)
+
+
+async def process_state_change(data: dict):
+    """
+    Processa un evento state_changed.
+    Salva in SQLite + ChromaDB.
+    """
+    entity_id = data.get("entity_id", "")
+    old_state = data.get("old_state", {})
+    new_state = data.get("new_state", {})
+
+    if should_skip_entity(entity_id, old_state, new_state):
+        return
+
+    timestamp = time.time()
+    old_state_val = old_state.get("state") if old_state else None
+    new_state_val = new_state.get("state") if new_state else None
+
+    # Salva in SQLite
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO events_raw (entity_id, old_state, new_state, attributes, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (
+        entity_id,
+        old_state_val,
+        new_state_val,
+        json.dumps(new_state.get("attributes", {})) if new_state else None,
+        timestamp
+    ))
+    conn.commit()
+    conn.close()
+
+    # Salva in vector store
+    try:
+        location_vector_store.add_event(
+            entity_id=entity_id,
+            old_state=old_state_val,
+            new_state=new_state_val,
+            timestamp=timestamp
+        )
+    except Exception as e:
+        logger.warning(f"Vector write failed: {e}")
+
+
+def should_skip_entity(entity_id: str, old_state: dict, new_state: dict) -> bool:
+    """Skip SOLO noise puro. Nessuna logica smart qui."""
+    # Configurable prefix filter (e.g. "update.")
+    if any(entity_id.startswith(prefix) for prefix in SKIP_ENTITY_PREFIXES):
+        return True
+
+    # Configurable suffix filter (e.g. "_battery", "_linkquality", "_signal")
+    if any(suffix in entity_id for suffix in SKIP_ENTITY_SUFFIXES):
+        return True
+
+    # Stato non cambiato
+    if old_state and new_state:
+        if old_state.get("state") == new_state.get("state"):
+            return True
+
+    return False
+
+
+# ===========================================================================
+# SUMMARIZATION
+# ===========================================================================
+
+from prompts import load_prompt
+
+LOCATION_HOURLY_PROMPT = load_prompt("location_hourly")
+LOCATION_DAILY_PROMPT = load_prompt("location_daily")
+
+
+async def call_qwen(prompt: str, max_tokens: int = 150) -> str:
+    """Chiama Qwen per summarization."""
+    payload = {
+        "model": SUMMARY_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {"temperature": SUMMARY_TEMPERATURE, "num_predict": max_tokens}
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{QWEN_URL}/api/chat",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=SUMMARY_TIMEOUT)
+        ) as resp:
+            if resp.status == 200:
+                result = await resp.json()
+                return result.get("message", {}).get("content", "")
+            else:
+                raise Exception(f"Qwen error: {resp.status}")
+
+
+async def run_hourly_summary():
+    """Job orario per summarization eventi."""
+    conn = get_db()
+    c = conn.cursor()
+
+    now = time.time()
+    hour_start = now - 3600
+
+    c.execute('''
+        SELECT entity_id, old_state, new_state, timestamp
+        FROM events_raw
+        WHERE timestamp > ?
+        ORDER BY timestamp ASC
+    ''', (hour_start,))
+    events = c.fetchall()
+
+    if not events:
+        logger.info("No events in last hour, skipping summary")
+        conn.close()
+        return
+
+    events_text = "\n".join([
+        f"- {datetime.fromtimestamp(e['timestamp']).strftime('%H:%M')} | {e['entity_id']}: {e['old_state']} -> {e['new_state']}"
+        for e in events[:100]
+    ])
+
+    prompt = LOCATION_HOURLY_PROMPT.format(
+        location_id=LOCATION_ID,
+        events=events_text
+    )
+
+    try:
+        summary = await call_qwen(prompt, max_tokens=150)
+
+        c.execute('''
+            INSERT INTO location_memory_hourly (hour_start, hour_end, summary, event_count)
+            VALUES (?, ?, ?, ?)
+        ''', (hour_start, now, summary, len(events)))
+
+        # Cleanup eventi vecchi (> 30 min)
+        cleanup_cutoff = now - 1800
+        c.execute('DELETE FROM events_raw WHERE timestamp < ?', (cleanup_cutoff,))
+
+        conn.commit()
+        logger.info(f"Hourly summary: {len(events)} events -> {len(summary)} chars")
+
+    except Exception as e:
+        logger.error(f"Hourly summary failed: {e}")
+
+    conn.close()
+
+
+async def run_daily_summary():
+    """Job giornaliero per summary + pattern extraction."""
+    conn = get_db()
+    c = conn.cursor()
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    yesterday_start = time.time() - 86400
+
+    c.execute('''
+        SELECT hour_start, summary
+        FROM location_memory_hourly
+        WHERE hour_start > ?
+        ORDER BY hour_start ASC
+    ''', (yesterday_start,))
+    hourly = c.fetchall()
+
+    if not hourly:
+        logger.info("No hourly summaries, skipping daily")
+        conn.close()
+        return
+
+    hourly_text = "\n".join([
+        f"- {datetime.fromtimestamp(h['hour_start']).strftime('%H:%M')}: {h['summary']}"
+        for h in hourly
+    ])
+
+    prompt = LOCATION_DAILY_PROMPT.format(
+        location_id=LOCATION_ID,
+        hourly_summaries=hourly_text
+    )
+
+    try:
+        response = await call_qwen(prompt, max_tokens=400)
+        data = json.loads(response)
+
+        c.execute('''
+            INSERT OR REPLACE INTO location_memory_daily (date, summary, patterns, anomalies)
+            VALUES (?, ?, ?, ?)
+        ''', (
+            today,
+            data.get("summary", ""),
+            json.dumps(data.get("patterns", {})),
+            json.dumps(data.get("anomalies", []))
+        ))
+
+        for fact in data.get("new_facts", []):
+            c.execute('''
+                INSERT INTO location_memory_longterm (fact, category)
+                VALUES (?, 'pattern')
+            ''', (fact,))
+
+        conn.commit()
+        logger.info(f"Daily summary: {len(data.get('new_facts', []))} new facts")
+
+    except Exception as e:
+        logger.error(f"Daily summary failed: {e}")
+
+    conn.close()
+
+
+# ===========================================================================
+# SCHEDULER
+# ===========================================================================
+
+async def scheduler():
+    """Background scheduler per job periodici."""
+    await asyncio.sleep(SCHEDULER_INITIAL_DELAY)
+    logger.info("Scheduler started")
+
+    while True:
+        now = datetime.now()
+
+        try:
+            if now.minute == 5:
+                await run_hourly_summary()
+
+            if now.hour == 3 and now.minute == 0:
+                await run_daily_summary()
+
+                # Cleanup vector store
+                location_vector_store.cleanup_old(max_age_days=7)
+        except Exception as e:
+            logger.error(f"Scheduler error: {e}")
+
+        await asyncio.sleep(SCHEDULER_INTERVAL)
+
+
+# ===========================================================================
+# API
+# ===========================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    location_vector_store.initialize()
+    asyncio.create_task(subscribe_ha_events())
+    asyncio.create_task(scheduler())
+    yield
+
+app = FastAPI(title="JARVIS HA Memory Service", lifespan=lifespan)
+
+
+class MemoryResponse(BaseModel):
+    location_id: str
+    hot: List[Dict[str, Any]]
+    warm: List[Dict[str, Any]]
+    cold: List[Dict[str, Any]]
+    longterm: List[Dict[str, Any]]
+    token_estimate: int
+
+
+@app.get("/memory", response_model=MemoryResponse)
+async def get_location_memory_endpoint(
+    hot_minutes: int = 30,
+    warm_hours: int = 24,
+    cold_days: int = 7
+):
+    """Endpoint per orchestrator: recupera memoria location."""
+    conn = get_db()
+    c = conn.cursor()
+
+    now = time.time()
+
+    c.execute('''
+        SELECT entity_id, old_state, new_state, timestamp
+        FROM events_raw WHERE timestamp > ?
+        ORDER BY timestamp DESC LIMIT 50
+    ''', (now - hot_minutes * 60,))
+    hot = [dict(row) for row in c.fetchall()]
+
+    c.execute('''
+        SELECT hour_start, summary, anomalies
+        FROM location_memory_hourly WHERE hour_start > ?
+        ORDER BY hour_start DESC
+    ''', (now - warm_hours * 3600,))
+    warm = [dict(row) for row in c.fetchall()]
+
+    c.execute('''
+        SELECT date, summary, patterns
+        FROM location_memory_daily
+        ORDER BY date DESC LIMIT ?
+    ''', (cold_days,))
+    cold = [dict(row) for row in c.fetchall()]
+
+    c.execute('''
+        SELECT fact, category, confidence
+        FROM location_memory_longterm
+        ORDER BY confidence DESC, updated_at DESC LIMIT 30
+    ''')
+    longterm = [dict(row) for row in c.fetchall()]
+
+    conn.close()
+
+    total_chars = sum(len(str(item)) for layer in [hot, warm, cold, longterm] for item in layer)
+
+    return MemoryResponse(
+        location_id=LOCATION_ID,
+        hot=hot,
+        warm=warm,
+        cold=cold,
+        longterm=longterm,
+        token_estimate=total_chars // 4
+    )
+
+
+class VectorSearchRequest(BaseModel):
+    query: str
+    n_results: int = 30
+    min_timestamp: Optional[float] = None
+
+
+class VectorSearchResponse(BaseModel):
+    location_id: str
+    results: List[Dict[str, Any]]
+    count: int
+
+
+@app.post("/memory/search", response_model=VectorSearchResponse)
+async def search_location_memory(request: VectorSearchRequest):
+    """
+    Ricerca semantica negli eventi location.
+    Usato dall'orchestrator per query tipo "quando ho lasciato aperto X?"
+    """
+    results = location_vector_store.search_events(
+        query=request.query,
+        n_results=request.n_results,
+        min_timestamp=request.min_timestamp
+    )
+
+    return VectorSearchResponse(
+        location_id=LOCATION_ID,
+        results=results,
+        count=len(results)
+    )
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "location_id": LOCATION_ID}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=SERVICE_PORT)

@@ -1,0 +1,12 @@
+Analizza questi eventi domotici dell'ultima ora.
+Location: {location_id}
+
+Estrai:
+1. Cambi di stato significativi (accensioni, aperture, movimenti)
+2. Pattern di utilizzo (es: "luci accese in cucina dalle 19 alle 20")
+3. Anomalie potenziali (eventi insoliti per l'orario)
+
+Eventi:
+{events}
+
+Rispondi in max 100 parole. Se non ci sono eventi significativi, scrivi "Nessuna attivita' rilevante".
