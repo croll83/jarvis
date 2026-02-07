@@ -149,6 +149,17 @@ fi
 # senza login attivo (necessario per OpenClaw gateway)
 loginctl enable-linger jarvis 2>/dev/null || true
 
+# Crea /run/user/<uid> per jarvis (necessario per systemctl --user)
+# Normalmente creato da PAM al login, ma su VPS headless non avviene mai.
+# tmpfiles.d lo ricrea automaticamente ad ogni boot.
+JARVIS_UID=$(id -u jarvis)
+mkdir -p "/run/user/${JARVIS_UID}"
+chown jarvis:jarvis "/run/user/${JARVIS_UID}"
+chmod 700 "/run/user/${JARVIS_UID}"
+
+# Rendi persistente al reboot via tmpfiles.d
+echo "d /run/user/${JARVIS_UID} 0700 jarvis jarvis -" > /etc/tmpfiles.d/jarvis-runtime.conf
+
 # =============================================================================
 # Setup Directories
 # =============================================================================
