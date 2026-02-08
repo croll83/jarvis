@@ -177,11 +177,17 @@ def require_admin(request: Request) -> User:
 
 def set_session_cookie(response: Response, session_id: str):
     """Imposta il cookie di sessione."""
+    use_secure = os.getenv("JARVIS_SECURE_COOKIES", "auto")
+    if use_secure == "auto":
+        # Secure=True solo se c'è un dominio configurato (proxy SSL davanti)
+        is_secure = bool(os.getenv("JARVIS_WEBAUTHN_RP_ID", "")) and os.getenv("JARVIS_WEBAUTHN_RP_ID") != "localhost"
+    else:
+        is_secure = use_secure.lower() in ("true", "1", "yes")
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_id,
         httponly=True,
-        secure=True,  # Solo HTTPS in produzione
+        secure=is_secure,
         samesite="lax",
         max_age=config.SESSION_DURATION_SECONDS
     )
