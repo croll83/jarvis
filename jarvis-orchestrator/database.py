@@ -2014,20 +2014,22 @@ def get_entity_map(location_id: str, include_entity_ids: bool = False) -> dict:
         if room not in entity_map[zone][area]:
             entity_map[zone][area][room] = {}
 
-        if has_devices and device_name:
+        if has_devices:
             # Struttura con device: Room → Device → EntityType → [Entities]
-            if device_name not in entity_map[zone][area][room]:
-                entity_map[zone][area][room][device_name] = {}
-            if entity_type not in entity_map[zone][area][room][device_name]:
-                entity_map[zone][area][room][device_name][entity_type] = []
+            # Entity senza device vanno in un gruppo "Altro"
+            dev_key = device_name or f"Altro ({room})"
+            if dev_key not in entity_map[zone][area][room]:
+                entity_map[zone][area][room][dev_key] = {}
+            if entity_type not in entity_map[zone][area][room][dev_key]:
+                entity_map[zone][area][room][dev_key][entity_type] = []
 
             if include_entity_ids and entity_id:
-                entity_map[zone][area][room][device_name][entity_type].append({
+                entity_map[zone][area][room][dev_key][entity_type].append({
                     "name": entity_name,
                     "entity_id": entity_id
                 })
             else:
-                entity_map[zone][area][room][device_name][entity_type].append(entity_name)
+                entity_map[zone][area][room][dev_key][entity_type].append(entity_name)
         else:
             # Struttura legacy senza device: Room → EntityType → [Entities]
             if entity_type not in entity_map[zone][area][room]:
