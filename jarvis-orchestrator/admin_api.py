@@ -1617,7 +1617,7 @@ async def get_entity_by_entity_id(location_id: str, entity_id: str) -> Dict[str,
 class HASyncRequest(BaseModel):
     """Request per sync entity da HA."""
     entity_types: Optional[List[str]] = None  # None = tutti i tipi supportati
-    overwrite_existing: bool = False  # Se True, sovrascrive entity_id esistenti
+    overwrite_existing: bool = True  # Sovrascrivi sempre per default
 
 
 @router.get("/locations/{location_id}/ha-sync/preview")
@@ -1655,13 +1655,14 @@ async def sync_entities_from_ha(
     """
     Sincronizza entity da Home Assistant al database JARVIS.
 
-    - Fetch tutte le entity da HA via REST API
-    - Parse friendly_name, entity_id, area
+    - Cancella entity esistenti per un fresh start
+    - Fetch tutte le entity da HA via WebSocket + REST API
+    - Parse friendly_name, entity_id, area, device
     - Import nel database con mapping automatico
 
     Body (opzionale):
         entity_types: Lista domini da sincronizzare (default: tutti)
-        overwrite_existing: Se True, sovrascrive entity_id esistenti
+        overwrite_existing: Se True (default), cancella e reimporta tutto
     """
     from ha_sync import sync_entities_from_ha as _sync
 
@@ -1674,6 +1675,14 @@ async def sync_entities_from_ha(
 
     req = request or HASyncRequest()
 
+    # Se overwrite è True, cancella tutto per un fresh import
+    if req.overwrite_existing:
+        deleted = clear_entity_map(location_id)
+        import logging
+        logging.getLogger("JARVIS_HA_SYNC").info(
+            f"Cleared {deleted} existing entities for fresh sync"
+        )
+
     added, updated, errors = await _sync(
         location_id=location_id,
         hass_url=loc.hass_url,
@@ -1681,6 +1690,9 @@ async def sync_entities_from_ha(
         entity_types=req.entity_types,
         overwrite_existing=req.overwrite_existing
     )
+
+    # Aggiorna entity_map_path per indicare che è importata da HA
+    update_location(location_id, entity_map_path="[database]")
 
     return {
         "success": len(errors) == 0,
