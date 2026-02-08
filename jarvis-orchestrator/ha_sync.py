@@ -204,7 +204,7 @@ async def sync_entities_from_ha(
         Tuple[added, updated, errors]
     """
     from database import (
-        get_db_connection, resolve_entity_id, update_entity_id,
+        _get_conn, resolve_entity_id, update_entity_id,
         get_hierarchy_mapping
     )
 
@@ -278,7 +278,7 @@ async def sync_entities_from_ha(
     logger.info(f"Parsed {len(ha_entities)} relevant entities")
 
     # Import nel database
-    conn = get_db_connection()
+    conn = _get_conn()
     c = conn.cursor()
 
     for entity in ha_entities:
