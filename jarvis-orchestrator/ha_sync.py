@@ -206,13 +206,21 @@ async def sync_entities_from_ha(
         Tuple[added, updated, errors]
     """
     from database import (
-        get_db_connection, resolve_entity_id, update_entity_id
+        get_db_connection, resolve_entity_id, update_entity_id,
+        get_hierarchy_mapping
     )
 
     domains = entity_types or SUPPORTED_DOMAINS
     added = 0
     updated = 0
+    skipped = 0
     errors = []
+
+    # Carica gerarchia personalizzata (se importata)
+    hierarchy = get_hierarchy_mapping(location_id)
+    has_hierarchy = bool(hierarchy)
+    if has_hierarchy:
+        logger.info(f"Using custom hierarchy with {len(hierarchy)} area mappings")
 
     # Fetch dati da HA
     logger.info(f"Syncing entities from HA for location {location_id}")
@@ -277,11 +285,31 @@ async def sync_entities_from_ha(
 
     for entity in ha_entities:
         try:
-            # Determina room (usa area_name o "Sconosciuto")
+            # Determina room = area HA (area_id, che è lo slug)
+            ha_area_key = entity.area_id or ""
             room = entity.area_name or "Sconosciuto"
 
-            # Determina zone (basato su device_class o domain)
-            zone = _infer_zone(entity)
+            if has_hierarchy:
+                # Usa la gerarchia personalizzata per zone/area
+                hier = hierarchy.get(ha_area_key)
+                if not hier:
+                    # Prova match case-insensitive sulle chiavi
+                    for k, v in hierarchy.items():
+                        if k.lower() == ha_area_key.lower():
+                            hier = v
+                            break
+
+                if hier:
+                    zone = hier["zone"]    # floor_name (Piano 1, etc.)
+                    area = hier["area"]    # zone_name (Zona Giorno, etc.)
+                else:
+                    # Entity in un'area HA non presente nella gerarchia → skip o "Altri"
+                    zone = "Non classificato"
+                    area = "Non classificato"
+            else:
+                # Nessuna gerarchia → usa inferenza automatica
+                zone = _infer_zone(entity)
+                area = room
 
             # Controlla se esiste già
             c.execute("""
@@ -295,11 +323,10 @@ async def sync_entities_from_ha(
             if existing:
                 # Entity esiste già
                 if overwrite_existing or not existing['entity_id']:
-                    # Aggiorna entity_id
                     c.execute("""
-                        UPDATE entity_maps SET entity_id = ?, room = ?
+                        UPDATE entity_maps SET entity_id = ?, room = ?, zone = ?, area = ?
                         WHERE id = ?
-                    """, (entity.entity_id, room, existing['id']))
+                    """, (entity.entity_id, room, zone, area, existing['id']))
                     updated += 1
             else:
                 # Nuova entity
@@ -310,7 +337,7 @@ async def sync_entities_from_ha(
                 """, (
                     location_id,
                     zone,
-                    room,  # area = room per semplicità
+                    area,
                     room,
                     entity.domain,
                     entity.friendly_name,

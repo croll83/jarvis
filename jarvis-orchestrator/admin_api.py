@@ -32,6 +32,7 @@ from database import (
     get_all_users,
     get_all_locations, get_location, create_location, update_location, delete_location,
     get_entity_map, import_entity_map_json, export_entity_map_json,
+    import_hierarchy_json, get_hierarchy_mapping,
     get_entity_map_stats, clear_entity_map, get_rooms_for_location,
     # Voice devices functions
     get_all_voice_devices, get_voice_device, upsert_voice_device,
@@ -1314,6 +1315,62 @@ async def export_location_entity_map(location_id: str) -> Dict[str, Any]:
     return {
         "location_id": location_id,
         "entity_map": entity_map
+    }
+
+
+class HierarchyImport(BaseModel):
+    """Schema per import gerarchia personalizzata."""
+    hierarchy: Dict[str, Any]
+
+
+@router.post("/locations/{location_id}/hierarchy/import")
+async def import_location_hierarchy(location_id: str, data: HierarchyImport) -> Dict[str, Any]:
+    """
+    Importa gerarchia personalizzata (Piani -> Zone -> Aree HA).
+
+    Crea solo la struttura — le entity vengono poi popolate dal sync HA.
+
+    Formato:
+    {
+      "floors": [
+        {"floor_name": "Piano 1", "zones": [
+          {"zone_name": "Zona Giorno", "ha_areas": ["cucina", "soggiorno"]}
+        ]}
+      ]
+    }
+    """
+    loc = get_location(location_id)
+    if not loc:
+        raise HTTPException(404, f"Location '{location_id}' non trovata")
+
+    if not data.hierarchy or "floors" not in data.hierarchy:
+        raise HTTPException(400, "Formato gerarchia non valido (manca 'floors')")
+
+    try:
+        result = import_hierarchy_json(location_id, data.hierarchy)
+    except Exception as e:
+        raise HTTPException(500, f"Errore durante l'import: {str(e)}")
+
+    return {
+        "status": "imported",
+        "location_id": location_id,
+        **result
+    }
+
+
+@router.get("/locations/{location_id}/hierarchy")
+async def get_location_hierarchy(location_id: str) -> Dict[str, Any]:
+    """Ritorna la gerarchia importata per una location (se presente)."""
+    loc = get_location(location_id)
+    if not loc:
+        raise HTTPException(404, f"Location '{location_id}' non trovata")
+
+    mapping = get_hierarchy_mapping(location_id)
+
+    return {
+        "location_id": location_id,
+        "has_hierarchy": bool(mapping),
+        "ha_area_mapping": mapping
     }
 
 

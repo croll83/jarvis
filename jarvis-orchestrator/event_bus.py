@@ -22,6 +22,12 @@ class SSEClient:
     connected_at: float = field(default_factory=time.time)
     user_id: Optional[int] = None
 
+    def __hash__(self):
+        return id(self)
+
+    def __eq__(self, other):
+        return self is other
+
 
 class EventBus:
     """

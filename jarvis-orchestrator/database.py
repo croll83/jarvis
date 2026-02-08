@@ -2119,6 +2119,118 @@ def import_entity_map_json(location_id: str, entity_map_json: dict) -> int:
     return count
 
 
+def import_hierarchy_json(location_id: str, hierarchy_json: dict) -> dict:
+    """
+    Importa una gerarchia personalizzata (Piani -> Zone -> Aree/Stanze HA).
+    NON importa entity — crea solo la struttura. Le entity vengono poi
+    popolate dal sync con Home Assistant.
+
+    Formato atteso:
+    {
+      "floors": [
+        {
+          "floor_name": "Piano 1",
+          "zones": [
+            {
+              "zone_name": "Zona Giorno",      # opzionale, null = usa floor_name
+              "ha_areas": ["cucina", "soggiorno"]
+            }
+          ]
+        }
+      ]
+    }
+
+    Mapping al DB:
+    - floor_name → colonna 'zone'
+    - zone_name → colonna 'area' (se null, usa floor_name)
+    - ha_areas → colonna 'room'
+
+    Returns:
+        Dict con statistiche: floors, zones, rooms creati
+    """
+    conn = _get_conn()
+    c = conn.cursor()
+
+    floors_count = 0
+    zones_count = 0
+    rooms_count = 0
+    ha_area_to_hierarchy = {}  # mapping ha_area -> (zone, area)
+
+    floors = hierarchy_json.get("floors", [])
+
+    for floor in floors:
+        floor_name = floor.get("floor_name", "Sconosciuto")
+        floors_count += 1
+
+        for zone in floor.get("zones", []):
+            zone_name = zone.get("zone_name") or floor_name
+            zones_count += 1
+
+            for ha_area in zone.get("ha_areas", []):
+                rooms_count += 1
+                ha_area_to_hierarchy[ha_area] = (floor_name, zone_name)
+
+    # Salva il mapping come metadata nella location
+    # (usato poi dal sync HA per piazzare le entity nella gerarchia corretta)
+    import json
+    loc = get_location(location_id)
+    if loc:
+        c.execute("""
+            UPDATE locations SET entity_map_path = ? WHERE id = ?
+        """, (json.dumps({
+            "type": "hierarchy",
+            "ha_area_mapping": ha_area_to_hierarchy,
+            "source": hierarchy_json
+        }), location_id))
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"Hierarchy imported for {location_id}: "
+                f"{floors_count} floors, {zones_count} zones, {rooms_count} rooms")
+
+    return {
+        "floors": floors_count,
+        "zones": zones_count,
+        "rooms": rooms_count,
+        "ha_area_mapping": ha_area_to_hierarchy
+    }
+
+
+def get_hierarchy_mapping(location_id: str) -> dict:
+    """
+    Ritorna il mapping ha_area → (zone, area) salvato dalla gerarchia importata.
+    Usato da ha_sync per piazzare le entity nella posizione corretta.
+
+    Returns:
+        Dict ha_area_name → {"zone": floor_name, "area": zone_name}
+        oppure dict vuoto se nessuna gerarchia importata.
+    """
+    import json
+    conn = _get_conn()
+    c = conn.cursor()
+    c.execute("SELECT entity_map_path FROM locations WHERE id = ?", (location_id,))
+    row = c.fetchone()
+    conn.close()
+
+    if not row or not row['entity_map_path']:
+        return {}
+
+    try:
+        data = json.loads(row['entity_map_path'])
+        if data.get("type") == "hierarchy":
+            mapping = data.get("ha_area_mapping", {})
+            # Converti da {area: [floor, zone]} a {area: {"zone": floor, "area": zone}}
+            result = {}
+            for ha_area, (floor, zone) in mapping.items():
+                result[ha_area] = {"zone": floor, "area": zone}
+            return result
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+    return {}
+
+
 def export_entity_map_json(location_id: str) -> dict:
     """
     Esporta l'entity map di una location in formato JSON.
