@@ -57,6 +57,10 @@ OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://localhost:18789")
 OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "")
 OPENCLAW_TIMEOUT = int(os.getenv("OPENCLAW_TIMEOUT", "30"))
 
+# OpenClaw Gateway WebSocket (operator mode for exec approvals)
+OPENCLAW_WS_URL = os.getenv("OPENCLAW_WS_URL", "ws://localhost:18789")
+OPENCLAW_EXEC_APPROVAL_TIMEOUT = int(os.getenv("OPENCLAW_EXEC_APPROVAL_TIMEOUT", "120"))
+
 # JARVIS Approval Bot (L3 critical actions - separate from OpenClaw Telegram)
 JARVIS_APPROVAL_BOT_TOKEN = os.getenv("JARVIS_APPROVAL_BOT_TOKEN", "")
 JARVIS_APPROVAL_CHAT_ID = os.getenv("JARVIS_APPROVAL_CHAT_ID", "")

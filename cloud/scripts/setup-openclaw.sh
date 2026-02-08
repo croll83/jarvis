@@ -110,9 +110,9 @@ Group=${JARVIS_USER}
 Environment=NODE_ENV=production
 Environment=HOME=/home/${JARVIS_USER}
 ExecStart=$(which openclaw) gateway run
-KillSignal=SIGINT
-KillMode=mixed
-TimeoutStopSec=15
+KillSignal=SIGTERM
+KillMode=control-group
+TimeoutStopSec=30
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
