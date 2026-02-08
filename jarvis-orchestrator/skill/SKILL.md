@@ -6,220 +6,169 @@ user-invocable: true
 
 # JARVIS Orchestrator
 
-Smart home control, memory, speaker identification, and security for a multi-location Home Assistant setup.
+Control smart home devices, query memory, and manage security across multiple Home Assistant locations.
+All commands go through the JARVIS REST API.
 
 ## When to use
 
 - User wants to control smart home devices (lights, covers, climate, locks)
-- User asks about their home (temperatures, entity states, locations)
-- User asks about past conversations or personal facts (memory system)
+- User asks about temperatures, entity states, or locations
+- User asks about past conversations or personal facts
 - User needs security actions (privacy mode, alarm)
-- User sends a voice command that needs speaker identification
+- User asks "what can you do at home" or similar
 
-## Configuration
+## Steps
 
-- **Base URL**: `${JARVIS_ORCHESTRATOR_URL:-http://localhost:5000}/api/tools`
-- **Auth**: Bearer token (`$OPENCLAW_GATEWAY_TOKEN`)
+All API calls use the JARVIS orchestrator at `$JARVIS_ORCHESTRATOR_URL` (default: `http://localhost:5000`).
+Always include the auth header: `Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN`
 
-## Tools
+### 1. Control a device
 
-### jarvis_home_control
+Use this when the user says things like "accendi la luce", "chiudi le tapparelle", "alza il riscaldamento".
 
-Control Home Assistant entities (lights, covers, climate, locks, etc.) with security level enforcement.
-
-**POST** `/home_control`
-
-```json
-{
-  "entity_name": "luce soggiorno",
-  "action": "turn_on",
-  "parameters": {"brightness": 200},
-  "location_id": "wagmi",
-  "source_channel": "openclaw_telegram"
-}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/home_control" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "entity_name": "luce soggiorno",
+    "action": "turn_on",
+    "parameters": {"brightness": 200},
+    "location_id": "wagmi",
+    "source_channel": "openclaw_telegram"
+  }'
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Eseguito light.turn_on su light.soggiorno",
-  "entity_id": "light.soggiorno",
-  "security_level": "L1",
-  "approval_required": false
-}
-```
+- `entity_name`: friendly name ("luce soggiorno") or entity_id ("light.soggiorno") — auto-resolved
+- `action`: "turn_on", "turn_off", "toggle", "open_cover", "close_cover", "set_temperature", etc.
+- `parameters`: optional, depends on domain (brightness, temperature, position, etc.)
+- `location_id`: optional, auto-resolved from user context if omitted
+- `source_channel`: always use "openclaw_telegram" for Telegram messages
 
-**Security Levels:**
-- L1 (lights, sensors, switches): always allowed from Telegram
+Security levels are enforced automatically:
+- L1 (lights, sensors, switches): always allowed
 - L2 (covers, climate, fans): allowed with context check
-- L3 (locks, alarm, cameras): requires confirmation via JARVIS approval bot
-- L4 (email/unknown sources): always blocked
+- L3 (locks, alarm, cameras): requires confirmation via separate approval bot
+- L4 (email/unknown): always blocked
 
-**Entity names** can be friendly names ("luce soggiorno") or entity_ids ("light.soggiorno"). The system resolves them automatically based on the location's entity map.
+### 2. Resolve an entity name
 
-**Location** is auto-resolved if not provided. For voice commands, it comes from the AtomS3R device. For Telegram, from the user's last known location.
+Use this when you need to find the correct entity_id for a friendly name.
 
-### jarvis_speaker_id
-
-Identify a speaker from audio data using Resemblyzer voice embeddings.
-
-**POST** `/speaker_id`
-
-```json
-{
-  "audio_base64": "<base64 encoded float32 audio>",
-  "sample_rate": 16000
-}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/entity_resolve" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"friendly_name": "luce cucina", "location_id": "wagmi"}'
 ```
 
-### jarvis_get_user_context
+### 3. Get locations
 
-Get user profile, current location, and preferences.
+Use this to list all configured Home Assistant locations with health status.
 
-**GET** `/user_context?user_id=john`
-
-Returns user info, active location, role, and global preferences.
-
-### jarvis_security
-
-Execute security actions (privacy mode, alarm control).
-
-**POST** `/security`
-
-```json
-{
-  "action": "set_privacy_mode",
-  "parameters": {"enabled": true},
-  "source_channel": "openclaw_telegram"
-}
+```bash
+curl -s "$JARVIS_ORCHESTRATOR_URL/api/tools/locations" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
 ```
 
-### jarvis_memory_query
+### 4. Query user memory
 
-Query the stratified memory system (SQL hot/warm/cold + vector long-term).
+Use this when the user asks "cosa abbiamo detto ieri?", "ti ricordi di...?", or similar.
 
-**POST** `/memory_query`
-
-```json
-{
-  "user_id": "john",
-  "location_id": "wagmi",
-  "query": "cosa abbiamo detto ieri sera?",
-  "context_type": "routing"
-}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/memory_query" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "john",
+    "query": "cosa abbiamo detto ieri sera?",
+    "context_type": "reasoning"
+  }'
 ```
 
-`context_type` can be `"routing"` (compact, for quick decisions) or `"reasoning"` (full, for complex questions).
+- `context_type`: "routing" (compact, for quick decisions) or "reasoning" (full, for complex questions)
 
-### jarvis_entity_resolve
+### 5. Get user context
 
-Resolve a friendly entity name to its Home Assistant entity_id.
+Use this to fetch user profile, current location, and preferences.
 
-**POST** `/entity_resolve`
-
-```json
-{
-  "friendly_name": "luce cucina",
-  "location_id": "wagmi",
-  "domain_filter": "light"
-}
+```bash
+curl -s "$JARVIS_ORCHESTRATOR_URL/api/tools/user_context?user_id=john" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
 ```
 
-Returns the entity_id, domain, area, and alternatives if not found.
+### 6. Security actions
 
-### jarvis_tts
+Use this for privacy mode, alarm control, etc.
 
-Text-to-speech passthrough. Speaks text via Alexa/smart speaker.
-
-**POST** `/tts`
-
-```json
-{
-  "text": "Buongiorno, le luci sono accese",
-  "speaker_entity": "media_player.echo_salotto",
-  "location_id": "wagmi",
-  "sound": "positive"
-}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/security" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "set_privacy_mode",
+    "parameters": {"enabled": true},
+    "source_channel": "openclaw_telegram"
+  }'
 ```
 
-Sound options: `"positive"`, `"negative"`, `"neutral"`, or any Alexa sound ID.
+### 7. Text-to-speech
 
-### jarvis_get_locations
+Use this to make Alexa/smart speakers say something.
 
-List all configured locations with Home Assistant health status.
-
-**GET** `/locations`
-
-Returns array of locations with `location_id`, `name`, `hass_url`, `healthy`, `has_security`.
-
-### jarvis_audit_log
-
-Log an event to the audit trail for tracking and dashboard visibility.
-
-**POST** `/audit_log`
-
-```json
-{
-  "event_type": "home_control",
-  "details": "Accesa luce soggiorno via Telegram",
-  "user_id": "john",
-  "source": "openclaw",
-  "severity": "info"
-}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/tts" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Buongiorno!",
+    "speaker_entity": "media_player.echo_salotto",
+    "location_id": "wagmi"
+  }'
 ```
 
-## Location System
+### 8. Log an event
 
-JARVIS supports multiple Home Assistant instances across locations:
+Use this to log actions for audit trail visibility.
 
-- **wagmi** (primary): Local HA at 192.168.1.x
-- **napoli**: Remote HA via Tailscale VPN
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/audit_log" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "home_control",
+    "details": "Accesa luce soggiorno via Telegram",
+    "user_id": "john",
+    "source": "openclaw",
+    "severity": "info"
+  }'
+```
 
-Each location has its own entity map, HA URL/token, and security configuration.
+## Examples
 
-Location resolution priority:
-1. Explicit `location_id` in request
-2. Voice: device_id (MAC address) → DB lookup → location
-3. Telegram: user's sticky location from DB
-4. Fallback: default location from config
+User: "Accendi la luce del soggiorno"
+-> Call step 1 with entity_name="luce soggiorno", action="turn_on"
 
-**Override**: User can say "accendi luci a Napoli" to target a different location.
+User: "Che temperatura c'e in casa?"
+-> Call step 3 to get locations, then call step 5 for user context
 
-## Security Model
+User: "Chiudi tutte le tapparelle"
+-> Call step 1 with entity_name="tapparelle", action="close_cover"
 
-The L1-L4 security model prevents prompt injection attacks:
+User: "Ti ricordi cosa mi hai detto ieri?"
+-> Call step 4 with query="cosa mi hai detto ieri"
 
-| Level | Domains | Voice | Telegram | Email |
-|-------|---------|-------|----------|-------|
-| L1 | lights, sensors, switches | pass | pass | blocked |
-| L2 | covers, climate, fans | pass | context check | blocked |
-| L3 | locks, alarm, cameras | pass | approval bot | blocked |
-| L4 | — | — | — | always blocked |
+User: "Attiva la modalita privacy"
+-> Call step 6 with action="set_privacy_mode"
 
-**Voice** commands (certified by Resemblyzer speaker ID) are always trusted up to L3.
+User: "Dì buongiorno su Alexa"
+-> Call step 7 with text="Buongiorno!"
 
-**L3 confirmation** goes through a separate JARVIS Telegram bot (not OpenClaw) to prevent injection in the confirmation channel.
+## Constraints
 
-All security mappings are configurable via the admin dashboard.
-
-## Memory System
-
-Stratified memory with 4 tiers:
-
-- **Hot** (30 min): Raw recent messages
-- **Warm** (24 hours): Hourly summaries
-- **Cold** (7 days): Daily summaries
-- **Long-term**: Vector store (ChromaDB) for semantic search
-
-The `memory_query` tool retrieves context from all tiers, optimized by `context_type`.
-
-## Speaker Identification
-
-Uses Resemblyzer (deep speaker embeddings) for voice biometric identification:
-
-1. Audio → Whisper STT → text
-2. Audio → Resemblyzer → speaker embedding → cosine similarity → user_id
-3. User context loaded from DB (preferences, location, role)
-
-Minimum 3 enrollment samples required. Threshold: 0.75 similarity.
+- Always pass `source_channel: "openclaw_telegram"` when the request comes from Telegram
+- Do NOT try to control L3 devices (locks, alarm) without mentioning that confirmation will be required
+- Entity names are in Italian — pass them as-is, the API resolves them
+- If location_id is not specified by the user, omit it — the API auto-resolves it
+- Always log important actions via step 8 (audit_log)
+- Respond to the user in the same language they used (Italian or English)
