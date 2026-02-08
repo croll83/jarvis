@@ -25,6 +25,8 @@ services:
       - ../data:/app/data
       - ../config:/app/config:ro
       - ../voice_models:/app/voice_models
+      # Mount OpenClaw dir for exec-approvals Unix socket
+      - /home/jarvis/.openclaw:/home/jarvis/.openclaw
     env_file: .env
     environment:
       - AI_BACKEND=api
@@ -32,6 +34,10 @@ services:
       # Se bind=loopback, usa http://localhost:18789
       - OPENCLAW_URL=${OPENCLAW_URL:-http://localhost:18789}
       - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      # Exec approval socket (NDJSON protocol via Unix socket)
+      # Path dove il nostro server ascolta; OpenClaw si connette qui
+      - OPENCLAW_APPROVAL_SOCKET_PATH=${OPENCLAW_APPROVAL_SOCKET_PATH:-/home/jarvis/.openclaw/exec-approvals.sock}
+      - OPENCLAW_APPROVAL_SOCKET_TOKEN=${OPENCLAW_APPROVAL_SOCKET_TOKEN:-}
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
