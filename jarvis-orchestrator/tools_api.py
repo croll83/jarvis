@@ -305,19 +305,30 @@ async def tool_get_user_context(
 ):
     """Get user context: info, location, preferences."""
     try:
-        from database import get_user_by_id, get_user_location, get_global_preferences
+        from database import get_user_by_id, get_user_location, get_location, _get_conn
 
         user = get_user_by_id(user_id)
-        location = get_user_location(user_id)
-        prefs = get_global_preferences()
+        user_loc = get_user_location(user_id)
+        loc_id = user_loc.location_id if user_loc else config.DEFAULT_LOCATION_ID
+
+        # Recupera nome location
+        loc = get_location(loc_id)
+        loc_name = loc.name if loc else None
+
+        # Recupera tutte le global preferences come dict
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("SELECT pref_key, pref_value FROM global_preferences")
+        prefs = {row["pref_key"]: row["pref_value"] for row in c.fetchall()}
+        conn.close()
 
         return UserContextResponse(
             user_id=user_id,
-            user_name=user.get("name") if user else None,
-            location_id=location.get("location_id") if location else config.DEFAULT_LOCATION_ID,
-            location_name=location.get("name") if location else None,
+            user_name=user.name if user else None,
+            location_id=loc_id,
+            location_name=loc_name,
             preferences=prefs or {},
-            role=user.get("role") if user else None,
+            role=user.role if user else None,
         )
 
     except Exception as e:
@@ -636,14 +647,14 @@ async def _execute_ha_action(
     """Execute a Home Assistant action."""
     try:
         from integrations import call_hass_service
-        from database import get_location_by_id
+        from database import get_location
 
-        location = get_location_by_id(location_id)
+        location = get_location(location_id)
         if not location:
             return {"success": False, "message": f"Location {location_id} non trovata"}
 
-        hass_url = location.get("hass_url", config.HASS_URL_DEFAULT)
-        hass_token = location.get("hass_token", "")
+        hass_url = location.hass_url or config.HASS_URL_DEFAULT
+        hass_token = location.hass_token or ""
 
         service_data = {"entity_id": entity_id}
         if parameters:
