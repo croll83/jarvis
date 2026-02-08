@@ -283,6 +283,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Colonna già esistente
 
+    # Migration: aggiungi colonna device_name se non esiste
+    try:
+        c.execute("ALTER TABLE entity_maps ADD COLUMN device_name TEXT")
+    except sqlite3.OperationalError:
+        pass  # Colonna già esistente
+
     # 15. SESSIONS (Autenticazione web)
     c.execute('''CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -1964,7 +1970,12 @@ def clear_user_location(user_id: int) -> bool:
 def get_entity_map(location_id: str, include_entity_ids: bool = False) -> dict:
     """
     Recupera l'entity map per una location in formato gerarchico.
-    Ritorna un dizionario strutturato: Zone → Area → Room → EntityType → [Entities]
+
+    Se le entity hanno device_name popolato (da HA sync), usa la struttura:
+        Zone → Area → Room → Device → EntityType → [Entities]
+
+    Altrimenti fallback alla struttura legacy:
+        Zone → Area → Room → EntityType → [Entities]
 
     Args:
         location_id: ID della location
@@ -1974,13 +1985,16 @@ def get_entity_map(location_id: str, include_entity_ids: bool = False) -> dict:
     conn = _get_conn()
     c = conn.cursor()
     c.execute("""
-        SELECT zone, area, room, entity_type, entity_name, entity_id
+        SELECT zone, area, room, device_name, entity_type, entity_name, entity_id
         FROM entity_maps
         WHERE location_id = ?
-        ORDER BY zone, area, room, entity_type
+        ORDER BY zone, area, room, device_name, entity_type
     """, (location_id,))
     rows = c.fetchall()
     conn.close()
+
+    # Verifica se abbiamo device_name popolati
+    has_devices = any(row['device_name'] for row in rows)
 
     # Costruisci struttura gerarchica
     entity_map = {}
@@ -1988,6 +2002,7 @@ def get_entity_map(location_id: str, include_entity_ids: bool = False) -> dict:
         zone = row['zone']
         area = row['area']
         room = row['room']
+        device_name = row['device_name']
         entity_type = row['entity_type']
         entity_name = row['entity_name']
         entity_id = row['entity_id']
@@ -1998,17 +2013,33 @@ def get_entity_map(location_id: str, include_entity_ids: bool = False) -> dict:
             entity_map[zone][area] = {}
         if room not in entity_map[zone][area]:
             entity_map[zone][area][room] = {}
-        if entity_type not in entity_map[zone][area][room]:
-            entity_map[zone][area][room][entity_type] = []
 
-        # Formato output in base al flag
-        if include_entity_ids and entity_id:
-            entity_map[zone][area][room][entity_type].append({
-                "name": entity_name,
-                "entity_id": entity_id
-            })
+        if has_devices and device_name:
+            # Struttura con device: Room → Device → EntityType → [Entities]
+            if device_name not in entity_map[zone][area][room]:
+                entity_map[zone][area][room][device_name] = {}
+            if entity_type not in entity_map[zone][area][room][device_name]:
+                entity_map[zone][area][room][device_name][entity_type] = []
+
+            if include_entity_ids and entity_id:
+                entity_map[zone][area][room][device_name][entity_type].append({
+                    "name": entity_name,
+                    "entity_id": entity_id
+                })
+            else:
+                entity_map[zone][area][room][device_name][entity_type].append(entity_name)
         else:
-            entity_map[zone][area][room][entity_type].append(entity_name)
+            # Struttura legacy senza device: Room → EntityType → [Entities]
+            if entity_type not in entity_map[zone][area][room]:
+                entity_map[zone][area][room][entity_type] = []
+
+            if include_entity_ids and entity_id:
+                entity_map[zone][area][room][entity_type].append({
+                    "name": entity_name,
+                    "entity_id": entity_id
+                })
+            else:
+                entity_map[zone][area][room][entity_type].append(entity_name)
 
     return entity_map
 
