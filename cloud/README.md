@@ -24,7 +24,7 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
               |                                                     |
               |  OpenClaw (bare-metal, systemd)                     |
               |  :18789 — Gemini 3 Pro — Telegram bot               |
-              |  ~/.openclaw/skills/jarvis-orchestrator -> skill/    |
+              |  ~/.openclaw/workspace/skills/jarvis-orchestrator -> skill/    |
               |                                                     |
               |  Tailscale (host-level, systemd)                    |
               |  VPN mesh — 100.x.x.x                              |
@@ -98,7 +98,7 @@ Lo script esegue 8 step:
 4. **Installazione e connessione Tailscale** (headless con auth key, o istruzioni per connessione manuale)
 5. Installazione Nginx + Certbot
 6. Creazione utente `jarvis` (con gruppo docker + sudo)
-7. Creazione directory (`/opt/jarvis`, `~/.openclaw/skills`, ecc.) + tool utili
+7. Creazione directory (`/opt/jarvis`, `~/.openclaw/workspace/skills`, ecc.) + tool utili
 8. Configurazione firewall (SSH/HTTP/HTTPS/Tailscale UDP), swap 2GB, log rotation Docker, **servizio systemd OpenClaw**
 
 > **Tailscale gira host-level** — installato come servizio di sistema (systemd), non in Docker. L'auth key serve solo la prima volta.
@@ -122,10 +122,10 @@ git clone https://github.com/croll83/jarvis.git /opt/jarvis
 ### STEP 3 — Symlink skill per OpenClaw
 
 ```bash
-ln -s /opt/jarvis/jarvis-orchestrator/skill ~/.openclaw/skills/jarvis-orchestrator
+ln -s /opt/jarvis/jarvis-orchestrator/skill ~/.openclaw/workspace/skills/jarvis-orchestrator
 ```
 
-Questo rende la skill JARVIS visibile a OpenClaw. La directory `~/.openclaw/skills/` contiene symlink alle skill installate.
+Questo rende la skill JARVIS visibile a OpenClaw. La directory `~/.openclaw/workspace/skills/` contiene symlink alle skill installate.
 
 ### STEP 4 — OpenClaw onboarding
 
@@ -410,7 +410,7 @@ node -v  # deve essere >= 22
 openclaw --version
 
 # Verifica che la skill sia linkata
-ls -la ~/.openclaw/skills/
+ls -la ~/.openclaw/workspace/skills/
 # deve mostrare: jarvis-orchestrator -> /opt/jarvis/jarvis-orchestrator/skill
 
 # Riavvia il servizio

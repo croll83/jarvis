@@ -144,7 +144,7 @@ OpenClaw ──▶ jarvis_home_control (L3 action)
 | 8 | `/api/tools/locations` | GET | Lista location con stato health HA |
 | 9 | `/api/tools/audit_log` | POST | Registra evento nel trail di audit |
 
-La definizione completa della skill e dei parametri e in `skill/openclaw.json`.
+La definizione completa della skill e dei parametri e in `skill/SKILL.md` e `skill/skill.json`.
 
 ---
 
