@@ -53,7 +53,7 @@ Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA r
 |  Telegram bot integrato                                              |
 |                                                                      |
 |  Skill symlink:                                                      |
-|  ~/.openclaw/skills/jarvis-orchestrator -> /opt/jarvis/skill         |
+|  ~/.openclaw/workspace/skills/jarvis-orchestrator -> /opt/jarvis/skill         |
 |                                                                      |
 |  Raggiungibile via:                                                  |
 |  - Tailscale MagicDNS: http://jarvis-openclaw:18789                  |
@@ -190,8 +190,8 @@ openclaw onboard
 # Crea la directory skill e il symlink
 sudo mkdir -p /opt/jarvis/skill
 # (copia o clona i file della skill JARVIS in /opt/jarvis/skill)
-mkdir -p ~/.openclaw/skills
-ln -s /opt/jarvis/skill ~/.openclaw/skills/jarvis-orchestrator
+mkdir -p ~/.openclaw/workspace/skills
+ln -s /opt/jarvis/skill ~/.openclaw/workspace/skills/jarvis-orchestrator
 
 # Crea il servizio systemd
 sudo tee /etc/systemd/system/openclaw.service > /dev/null <<EOF

@@ -70,12 +70,11 @@ echo -e "${YELLOW}[3/5] Setting up directories...${NC}"
 
 # OpenClaw config dir (owned by jarvis user)
 OPENCLAW_HOME="/home/${JARVIS_USER}/.openclaw"
-mkdir -p "${OPENCLAW_HOME}/skills"
-mkdir -p "${OPENCLAW_HOME}/workspace"
+mkdir -p "${OPENCLAW_HOME}/workspace/skills"
 
 # Symlink JARVIS skill into OpenClaw skills directory
 SKILL_SOURCE="${JARVIS_DIR}/jarvis-orchestrator/skill"
-SKILL_LINK="${OPENCLAW_HOME}/skills/jarvis-orchestrator"
+SKILL_LINK="${OPENCLAW_HOME}/workspace/skills/jarvis-orchestrator"
 
 if [ -L "$SKILL_LINK" ]; then
     rm "$SKILL_LINK"
@@ -144,7 +143,7 @@ echo "   su - ${JARVIS_USER}"
 echo "   openclaw onboard"
 echo ""
 echo -e "2. ${YELLOW}Verifica la skill JARVIS:${NC}"
-echo "   ls -la ~/.openclaw/skills/jarvis-orchestrator/"
+echo "   ls -la ~/.openclaw/workspace/skills/jarvis-orchestrator/"
 echo ""
 echo -e "3. ${YELLOW}Avvia OpenClaw:${NC}"
 echo "   sudo systemctl start openclaw"

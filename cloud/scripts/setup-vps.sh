@@ -171,8 +171,7 @@ mkdir -p /opt/jarvis/voice_models
 mkdir -p /var/www/certbot
 
 # OpenClaw directories
-mkdir -p /home/jarvis/.openclaw/skills
-mkdir -p /home/jarvis/.openclaw/workspace
+mkdir -p /home/jarvis/.openclaw/workspace/skills
 
 chown -R jarvis:jarvis /opt/jarvis
 chown -R jarvis:jarvis /home/jarvis/.openclaw
@@ -277,7 +276,7 @@ echo "   su - jarvis"
 echo "   git clone https://github.com/croll83/jarvis.git /opt/jarvis"
 echo ""
 echo -e "3. ${YELLOW}Symlink JARVIS skill per OpenClaw:${NC}"
-echo "   ln -s /opt/jarvis/jarvis-orchestrator/skill ~/.openclaw/skills/jarvis-orchestrator"
+echo "   ln -s /opt/jarvis/jarvis-orchestrator/skill ~/.openclaw/workspace/skills/jarvis-orchestrator"
 echo ""
 echo -e "4. ${YELLOW}OpenClaw onboarding (identita, API key, Telegram):${NC}"
 echo "   openclaw onboard"

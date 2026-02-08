@@ -1,11 +1,25 @@
-# JARVIS Orchestrator — OpenClaw Skill
+---
+name: jarvis-orchestrator
+description: Smart home control, memory, speaker ID, and security for multi-location Home Assistant
+user-invocable: true
+---
+
+# JARVIS Orchestrator
 
 Smart home control, memory, speaker identification, and security for a multi-location Home Assistant setup.
+
+## When to use
+
+- User wants to control smart home devices (lights, covers, climate, locks)
+- User asks about their home (temperatures, entity states, locations)
+- User asks about past conversations or personal facts (memory system)
+- User needs security actions (privacy mode, alarm)
+- User sends a voice command that needs speaker identification
 
 ## Configuration
 
 - **Base URL**: `${JARVIS_ORCHESTRATOR_URL:-http://localhost:5000}/api/tools`
-- **Auth**: Bearer token (OPENCLAW_GATEWAY_TOKEN)
+- **Auth**: Bearer token (`$OPENCLAW_GATEWAY_TOKEN`)
 
 ## Tools
 

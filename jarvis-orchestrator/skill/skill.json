@@ -1,0 +1,10 @@
+{
+  "name": "jarvis-orchestrator",
+  "description": "Smart home control, memory, speaker ID, and security for multi-location Home Assistant",
+  "version": "2.0.0",
+  "env": {
+    "JARVIS_ORCHESTRATOR_URL": "http://localhost:5000",
+    "OPENCLAW_GATEWAY_TOKEN": ""
+  },
+  "dependencies": ["curl"]
+}
