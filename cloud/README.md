@@ -144,7 +144,18 @@ Il wizard interattivo configura:
 - **Telegram bot**: token del bot OpenClaw da @BotFather
 - **Skill discovery**: rileva automaticamente `jarvis-orchestrator` dalla directory copiata
 
-> **IMPORTANTE**: il `OPENCLAW_GATEWAY_TOKEN` nel `.env` DEVE essere lo stesso valore usato durante `openclaw onboard`.
+### STEP 4a — Configura env vars della skill JARVIS
+
+Dopo l'onboarding, esegui lo script che legge il gateway token dal config e lo inietta nella configurazione della skill:
+
+```bash
+bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
+```
+
+Lo script configura automaticamente `OPENCLAW_GATEWAY_TOKEN` e `JARVIS_ORCHESTRATOR_URL` in `openclaw.json`.
+
+> **IMPORTANTE**: il `OPENCLAW_GATEWAY_TOKEN` nel `.env` dell'orchestratore DEVE essere lo stesso valore. Lo trovi con:
+> `jq -r '.gateway.auth.token' ~/.openclaw/openclaw.json`
 
 ### STEP 4b — Configura bind OpenClaw su Tailscale
 
@@ -265,14 +276,29 @@ Configura il webhook del bot OpenClaw puntando al tuo dominio:
 curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
 ```
 
-### STEP 9 — SSL con Nginx (dopo aver configurato il DNS)
+### STEP 9 — Nginx + SSL (certbot DNS Cloudflare)
+
+Prerequisiti:
+1. Crea un **API Token** su [Cloudflare](https://dash.cloudflare.com/profile/api-tokens) con permesso `Zone:DNS:Edit`
+2. Crea due **record A** su Cloudflare che puntano all'IP Tailscale del VPS:
+   - `jarvis.mintwork.it` -> `$(tailscale ip -4)`
+   - `openclaw.mintwork.it` -> `$(tailscale ip -4)`
 
 ```bash
-# Da root
-sudo cp /opt/jarvis/cloud/nginx/jarvis.conf /etc/nginx/sites-available/
-sudo ln -s /etc/nginx/sites-available/jarvis.conf /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d jarvis.tuodominio.it
+# Esegui lo script (da root)
+sudo CLOUDFLARE_API_TOKEN=<il-tuo-token> bash /opt/jarvis/cloud/scripts/setup-nginx.sh
+```
+
+Lo script:
+- Installa Nginx + certbot + plugin Cloudflare
+- Configura i vhost per `jarvis.mintwork.it` (orchestratore) e `openclaw.mintwork.it` (dashboard)
+- Genera i certificati SSL via DNS challenge (non serve esporre porte pubbliche)
+- Configura auto-renewal
+
+Verifica:
+```bash
+curl -k https://jarvis.mintwork.it/health
+curl -k https://openclaw.mintwork.it/health
 ```
 
 ---

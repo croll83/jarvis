@@ -1001,7 +1001,7 @@ def _verify_telegram_config() -> Dict[str, Any]:
     }
 
     # Verifica bot token
-    token = _cfg_tg.TELEGRAM_BOT_TOKEN
+    token = _cfg_tg.JARVIS_APPROVAL_BOT_TOKEN
     if token:
         try:
             resp = requests.get(
