@@ -120,7 +120,7 @@ async def openclaw_approval_server():
 
     async def handle_approval_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """Handle a single approval request connection from OpenClaw."""
-        peer_info = "unix-socket"
+        logger.info("Exec approval: new socket connection received")
         try:
             # Read the request line (NDJSON - one JSON per line)
             line = await asyncio.wait_for(reader.readline(), timeout=5.0)
@@ -206,6 +206,7 @@ async def openclaw_approval_server():
                     del pending_exec_approvals[rid]
                     break
 
+    server = None
     try:
         server = await asyncio.start_unix_server(
             handle_approval_connection,
@@ -217,14 +218,17 @@ async def openclaw_approval_server():
 
         logger.info(f"✅ OpenClaw exec approval server listening on {socket_path}")
 
-        async with server:
-            await server.serve_forever()
+        # Keep the server running forever
+        await server.serve_forever()
 
     except asyncio.CancelledError:
         logger.info("OpenClaw approval server cancelled")
     except Exception as e:
         logger.error(f"OpenClaw approval server error: {e}")
     finally:
+        if server:
+            server.close()
+            await server.wait_closed()
         # Cleanup socket file
         try:
             if os.path.exists(socket_path):
