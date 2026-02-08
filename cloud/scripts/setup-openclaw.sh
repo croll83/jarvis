@@ -72,15 +72,22 @@ echo -e "${YELLOW}[3/5] Setting up directories...${NC}"
 OPENCLAW_HOME="/home/${JARVIS_USER}/.openclaw"
 mkdir -p "${OPENCLAW_HOME}/workspace/skills"
 
-# Symlink JARVIS skill into OpenClaw skills directory
+# Copy JARVIS skill into OpenClaw skills directory
+# (we copy instead of symlink to avoid ELOOP issues with OpenClaw's file watcher)
 SKILL_SOURCE="${JARVIS_DIR}/jarvis-orchestrator/skill"
-SKILL_LINK="${OPENCLAW_HOME}/workspace/skills/jarvis-orchestrator"
+SKILL_DEST="${OPENCLAW_HOME}/workspace/skills/jarvis-orchestrator"
 
-if [ -L "$SKILL_LINK" ]; then
-    rm "$SKILL_LINK"
+# Remove old symlink or directory
+if [ -L "$SKILL_DEST" ]; then
+    rm "$SKILL_DEST"
+elif [ -d "$SKILL_DEST" ]; then
+    rm -rf "$SKILL_DEST"
 fi
-ln -s "$SKILL_SOURCE" "$SKILL_LINK"
-echo "Skill symlinked: ${SKILL_LINK} -> ${SKILL_SOURCE}"
+
+mkdir -p "$SKILL_DEST"
+cp "${SKILL_SOURCE}/SKILL.md" "$SKILL_DEST/"
+cp "${SKILL_SOURCE}/skill.json" "$SKILL_DEST/"
+echo "Skill copied: ${SKILL_SOURCE} -> ${SKILL_DEST}"
 
 # Fix ownership
 chown -R "${JARVIS_USER}:${JARVIS_USER}" "${OPENCLAW_HOME}"

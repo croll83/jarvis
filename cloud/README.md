@@ -24,7 +24,7 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
               |                                                     |
               |  OpenClaw (bare-metal, systemd)                     |
               |  :18789 — Gemini 3 Pro — Telegram bot               |
-              |  ~/.openclaw/workspace/skills/jarvis-orchestrator -> skill/    |
+              |  ~/.openclaw/workspace/skills/jarvis-orchestrator/ (copied)    |
               |                                                     |
               |  Tailscale (host-level, systemd)                    |
               |  VPN mesh — 100.x.x.x                              |
@@ -119,13 +119,17 @@ su - jarvis
 git clone https://github.com/croll83/jarvis.git /opt/jarvis
 ```
 
-### STEP 3 — Symlink skill per OpenClaw
+### STEP 3 — Copia skill per OpenClaw
 
 ```bash
-ln -s /opt/jarvis/jarvis-orchestrator/skill ~/.openclaw/workspace/skills/jarvis-orchestrator
+mkdir -p ~/.openclaw/workspace/skills/jarvis-orchestrator
+cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
+cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
 ```
 
-Questo rende la skill JARVIS visibile a OpenClaw. La directory `~/.openclaw/workspace/skills/` contiene symlink alle skill installate.
+Questo rende la skill JARVIS visibile a OpenClaw. Dopo ogni `git pull` che modifica la skill, riesegui i `cp`.
+
+> **Nota**: non usare symlink — il file watcher di OpenClaw va in ELOOP con i link simbolici.
 
 ### STEP 4 — OpenClaw onboarding
 
@@ -138,7 +142,7 @@ Il wizard interattivo configura:
 - **API key Gemini**: la chiave per Gemini 3 Pro
 - **Gateway token**: il token per l'autenticazione skill (salvalo, servira nel `.env`)
 - **Telegram bot**: token del bot OpenClaw da @BotFather
-- **Skill discovery**: rileva automaticamente `jarvis-orchestrator` dal symlink
+- **Skill discovery**: rileva automaticamente `jarvis-orchestrator` dalla directory copiata
 
 > **IMPORTANTE**: il `OPENCLAW_GATEWAY_TOKEN` nel `.env` DEVE essere lo stesso valore usato durante `openclaw onboard`.
 
@@ -409,9 +413,9 @@ node -v  # deve essere >= 22
 # Verifica che openclaw sia installato globalmente
 openclaw --version
 
-# Verifica che la skill sia linkata
-ls -la ~/.openclaw/workspace/skills/
-# deve mostrare: jarvis-orchestrator -> /opt/jarvis/jarvis-orchestrator/skill
+# Verifica che la skill sia copiata
+ls -la ~/.openclaw/workspace/skills/jarvis-orchestrator/
+# deve mostrare: SKILL.md e skill.json
 
 # Riavvia il servizio
 sudo systemctl restart openclaw

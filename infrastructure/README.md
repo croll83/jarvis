@@ -52,8 +52,8 @@ Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA r
 |  Gemini 3 Pro (API cloud)                                            |
 |  Telegram bot integrato                                              |
 |                                                                      |
-|  Skill symlink:                                                      |
-|  ~/.openclaw/workspace/skills/jarvis-orchestrator -> /opt/jarvis/skill         |
+|  Skill (copiata):                                                    |
+|  ~/.openclaw/workspace/skills/jarvis-orchestrator/ (SKILL.md + skill.json)     |
 |                                                                      |
 |  Raggiungibile via:                                                  |
 |  - Tailscale MagicDNS: http://jarvis-openclaw:18789                  |
@@ -187,11 +187,12 @@ npm install -g openclaw
 openclaw onboard
 # Inserisci: GEMINI_API_KEY, OPENCLAW_GATEWAY_TOKEN (stesso del .env sulla VM-GPU)
 
-# Crea la directory skill e il symlink
-sudo mkdir -p /opt/jarvis/skill
-# (copia o clona i file della skill JARVIS in /opt/jarvis/skill)
-mkdir -p ~/.openclaw/workspace/skills
-ln -s /opt/jarvis/skill ~/.openclaw/workspace/skills/jarvis-orchestrator
+# Copia la skill JARVIS nella directory OpenClaw
+sudo mkdir -p /opt/jarvis/jarvis-orchestrator/skill
+# (copia o clona i file della skill JARVIS in /opt/jarvis/jarvis-orchestrator/skill)
+mkdir -p ~/.openclaw/workspace/skills/jarvis-orchestrator
+cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
+cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
 
 # Crea il servizio systemd
 sudo tee /etc/systemd/system/openclaw.service > /dev/null <<EOF
@@ -752,8 +753,11 @@ Per aggiornare la skill JARVIS sulla VM-OpenClaw:
 
 ```bash
 # Sulla VM-OpenClaw
-cd /opt/jarvis/skill
-git pull   # oppure copia i file aggiornati
+cd /opt/jarvis
+git pull
+# Ricopia la skill aggiornata
+cp jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
+cp jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
 # Non serve riavvio — OpenClaw ricarica le skill automaticamente
 ```
 
