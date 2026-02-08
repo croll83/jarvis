@@ -1,12 +1,13 @@
 """
 JARVIS Home Assistant Entity Sync
 - Sincronizza entity da Home Assistant al database JARVIS
-- Fetch via HA REST API
+- Fetch via HA REST API (states) + WebSocket API (registries)
 - Parse friendly_name, entity_id, area, device_class
 - Import nel database con mapping automatico
 """
 
 import logging
+import json
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -88,101 +89,98 @@ async def fetch_ha_states(hass_url: str, hass_token: str) -> List[dict]:
         return []
 
 
-async def fetch_ha_areas(hass_url: str, hass_token: str) -> Dict[str, str]:
+async def _ha_ws_command(ws, msg_id: int, msg_type: str) -> Optional[list]:
     """
-    Fetch le aree da Home Assistant.
+    Invia un comando WebSocket a HA e ritorna il risultato.
+
+    Args:
+        ws: WebSocket connection aiohttp
+        msg_id: ID messaggio incrementale
+        msg_type: Tipo comando (es. "config/area_registry/list")
 
     Returns:
-        Dict area_id → area_name
+        Lista risultati o None in caso di errore
     """
-    url = f"{hass_url.rstrip('/')}/api/config/area_registry/list"
-    headers = {
-        "Authorization": f"Bearer {hass_token}",
-        "Content-Type": "application/json"
-    }
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json={}, timeout=10) as resp:
-                if resp.status == 200:
-                    areas = await resp.json()
-                    return {area["area_id"]: area["name"] for area in areas}
-                else:
-                    # Prova con GET per versioni HA più vecchie
-                    pass
-    except Exception as e:
-        logger.warning(f"Could not fetch areas via registry: {e}")
-
-    # Fallback: usa template API
-    try:
-        url = f"{hass_url.rstrip('/')}/api/template"
-        template = '{{ areas() | map("area_name") | list | to_json }}'
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, headers=headers,
-                json={"template": template},
-                timeout=10
-            ) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    # Questo ritorna solo i nomi, non gli ID
-                    # Per ora ritorniamo dict vuoto e usiamo solo gli attributi delle entity
-                    return {}
-    except Exception as e:
-        logger.warning(f"Could not fetch areas via template: {e}")
-
-    return {}
+    await ws.send_json({"id": msg_id, "type": msg_type})
+    resp = await ws.receive_json()
+    if resp.get("success"):
+        return resp.get("result", [])
+    else:
+        logger.warning(f"WS command '{msg_type}' failed: {resp.get('error', {}).get('message', 'unknown')}")
+        return None
 
 
-async def fetch_ha_entity_registry(hass_url: str, hass_token: str) -> Dict[str, dict]:
+async def fetch_ha_registries(
+    hass_url: str, hass_token: str
+) -> Tuple[Dict[str, str], Dict[str, dict], Dict[str, dict]]:
     """
-    Fetch l'entity registry per ottenere area_id per ogni entity.
+    Fetch area, entity e device registry da HA via WebSocket API.
+
+    Le registry REST API (/api/config/*/list) non esistono nella maggior
+    parte delle versioni HA. L'unico modo per accedere a queste info è
+    il WebSocket API.
 
     Returns:
-        Dict entity_id → {area_id, device_id, ...}
+        Tuple di (areas, entity_registry, device_registry):
+        - areas: Dict area_id → area_name
+        - entity_registry: Dict entity_id → {area_id, device_id, ...}
+        - device_registry: Dict device_id → {area_id, name, ...}
     """
-    url = f"{hass_url.rstrip('/')}/api/config/entity_registry/list"
-    headers = {
-        "Authorization": f"Bearer {hass_token}",
-        "Content-Type": "application/json"
-    }
+    areas: Dict[str, str] = {}
+    entity_registry: Dict[str, dict] = {}
+    device_registry: Dict[str, dict] = {}
+
+    # Costruisci URL WebSocket da URL HTTP
+    ws_url = hass_url.rstrip("/")
+    ws_url = ws_url.replace("https://", "wss://").replace("http://", "ws://")
+    ws_url += "/api/websocket"
 
     try:
         async with aiohttp.ClientSession() as session:
-            # Entity registry usa POST con body vuoto
-            async with session.post(url, headers=headers, json={}, timeout=30) as resp:
-                if resp.status == 200:
-                    entities = await resp.json()
-                    return {e["entity_id"]: e for e in entities}
+            async with session.ws_connect(ws_url, timeout=30) as ws:
+                # Step 1: Ricevi auth_required
+                auth_req = await ws.receive_json()
+                if auth_req.get("type") != "auth_required":
+                    logger.error(f"Unexpected WS message: {auth_req}")
+                    return areas, entity_registry, device_registry
+
+                # Step 2: Autenticazione
+                await ws.send_json({
+                    "type": "auth",
+                    "access_token": hass_token
+                })
+
+                auth_resp = await ws.receive_json()
+                if auth_resp.get("type") != "auth_ok":
+                    logger.error(f"WS auth failed: {auth_resp}")
+                    return areas, entity_registry, device_registry
+
+                logger.info(f"WS connected to HA v{auth_resp.get('ha_version', '?')}")
+
+                # Step 3: Fetch area registry
+                area_list = await _ha_ws_command(ws, 1, "config/area_registry/list")
+                if area_list:
+                    areas = {a["area_id"]: a["name"] for a in area_list}
+                    logger.info(f"WS: fetched {len(areas)} areas")
+
+                # Step 4: Fetch entity registry
+                entity_list = await _ha_ws_command(ws, 2, "config/entity_registry/list")
+                if entity_list:
+                    entity_registry = {e["entity_id"]: e for e in entity_list}
+                    logger.info(f"WS: fetched {len(entity_registry)} entity registry entries")
+
+                # Step 5: Fetch device registry
+                device_list = await _ha_ws_command(ws, 3, "config/device_registry/list")
+                if device_list:
+                    device_registry = {d["id"]: d for d in device_list}
+                    logger.info(f"WS: fetched {len(device_registry)} device registry entries")
+
+    except aiohttp.WSServerHandshakeError as e:
+        logger.error(f"WS handshake failed (check SSL/URL): {e}")
     except Exception as e:
-        logger.warning(f"Could not fetch entity registry: {e}")
+        logger.error(f"Failed to fetch HA registries via WebSocket: {e}")
 
-    return {}
-
-
-async def fetch_ha_device_registry(hass_url: str, hass_token: str) -> Dict[str, dict]:
-    """
-    Fetch il device registry per ottenere area_id dai devices.
-
-    Returns:
-        Dict device_id → {area_id, name, ...}
-    """
-    url = f"{hass_url.rstrip('/')}/api/config/device_registry/list"
-    headers = {
-        "Authorization": f"Bearer {hass_token}",
-        "Content-Type": "application/json"
-    }
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json={}, timeout=30) as resp:
-                if resp.status == 200:
-                    devices = await resp.json()
-                    return {d["id"]: d for d in devices}
-    except Exception as e:
-        logger.warning(f"Could not fetch device registry: {e}")
-
-    return {}
+    return areas, entity_registry, device_registry
 
 
 async def sync_entities_from_ha(
@@ -229,12 +227,12 @@ async def sync_entities_from_ha(
     if not states:
         return 0, 0, ["Failed to fetch states from Home Assistant"]
 
-    areas = await fetch_ha_areas(hass_url, hass_token)
-    entity_registry = await fetch_ha_entity_registry(hass_url, hass_token)
-    device_registry = await fetch_ha_device_registry(hass_url, hass_token)
+    # Fetch registries via WebSocket (REST API non disponibile)
+    areas, entity_registry, device_registry = await fetch_ha_registries(hass_url, hass_token)
 
     logger.info(f"Fetched {len(states)} states, {len(areas)} areas, "
-                f"{len(entity_registry)} entity registry entries")
+                f"{len(entity_registry)} entity registry entries, "
+                f"{len(device_registry)} device registry entries")
 
     # Parse entities
     ha_entities = []
@@ -414,9 +412,8 @@ async def preview_ha_sync(
     if not states:
         return {"error": "Failed to fetch states from Home Assistant", "entities": []}
 
-    areas = await fetch_ha_areas(hass_url, hass_token)
-    entity_registry = await fetch_ha_entity_registry(hass_url, hass_token)
-    device_registry = await fetch_ha_device_registry(hass_url, hass_token)
+    # Fetch registries via WebSocket (REST API non disponibile)
+    areas, entity_registry, device_registry = await fetch_ha_registries(hass_url, hass_token)
 
     entities_by_domain = {}
     entities_by_area = {}
