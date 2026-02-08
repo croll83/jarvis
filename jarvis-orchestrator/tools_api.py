@@ -186,7 +186,7 @@ async def tool_home_control(
     based on domain and source channel, then executes the action.
     """
     try:
-        from database import get_entity_map_for_location, get_user_location
+        from database import get_entity_map, get_user_location
         from integrations import call_hass_service_by_name
 
         # Resolve location
@@ -202,7 +202,7 @@ async def tool_home_control(
             entity_id = req.entity_name
         else:
             # Try to resolve friendly name
-            entity_map = get_entity_map_for_location(location_id)
+            entity_map = get_entity_map(location_id, include_entity_ids=True)
             if entity_map:
                 resolved = _resolve_from_entity_map(req.entity_name, entity_map)
                 if resolved:
@@ -392,10 +392,10 @@ async def tool_entity_resolve(
 ):
     """Resolve a friendly name to an entity_id."""
     try:
-        from database import get_entity_map_for_location
+        from database import get_entity_map
 
         location_id = req.location_id or config.DEFAULT_LOCATION_ID
-        entity_map = get_entity_map_for_location(location_id)
+        entity_map = get_entity_map(location_id, include_entity_ids=True)
 
         if not entity_map:
             return EntityResolveResponse(
@@ -474,25 +474,26 @@ async def tool_get_locations(
     """List all configured locations with health status."""
     try:
         from database import get_all_locations
-        from multi_ha import check_ha_health
+        from multi_ha import multi_ha
 
         locations = get_all_locations()
         result = []
 
         for loc in locations:
             health = False
-            if loc.get("hass_url"):
+            if loc.hass_url:
                 try:
-                    health = await check_ha_health(loc["hass_url"], loc.get("hass_token", ""))
+                    healthy, _ = await multi_ha.health_check(loc.id)
+                    health = healthy
                 except Exception:
                     health = False
 
             result.append(LocationInfo(
-                location_id=loc["location_id"],
-                name=loc.get("name", loc["location_id"]),
-                hass_url=loc.get("hass_url"),
+                location_id=loc.id,
+                name=loc.name or loc.id,
+                hass_url=loc.hass_url,
                 healthy=health,
-                has_security=loc.get("has_security", False),
+                has_security=loc.has_security,
             ))
 
         return result
@@ -529,6 +530,44 @@ async def tool_audit_log(
 # INTERNAL HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _collect_entities_from_map(entity_map: Dict, path: str = "") -> List[Dict[str, str]]:
+    """
+    Raccoglie ricorsivamente tutte le entity dalla entity_map gerarchica.
+
+    Supporta qualsiasi profondità:
+    - Zone → Area → Room → EntityType → [entities]
+    - Zone → Area → Room → Device → EntityType → [entities]
+
+    Ritorna una lista flat di dict con: entity_id, name, domain, path.
+    """
+    results = []
+    for key, value in entity_map.items():
+        current_path = f"{path} > {key}" if path else key
+        if isinstance(value, dict):
+            # Livello intermedio — ricorsione
+            results.extend(_collect_entities_from_map(value, current_path))
+        elif isinstance(value, list):
+            # Foglia — lista di entity (strings o dicts)
+            # 'key' è il domain/entity_type (es. "light", "sensor")
+            domain = key
+            for entity in value:
+                if isinstance(entity, dict):
+                    results.append({
+                        "entity_id": entity.get("entity_id", ""),
+                        "name": entity.get("name", entity.get("friendly_name", "")),
+                        "domain": domain,
+                        "path": current_path,
+                    })
+                elif isinstance(entity, str):
+                    results.append({
+                        "entity_id": "",
+                        "name": entity,
+                        "domain": domain,
+                        "path": current_path,
+                    })
+    return results
+
+
 def _resolve_from_entity_map(
     friendly_name: str,
     entity_map: Dict,
@@ -536,42 +575,23 @@ def _resolve_from_entity_map(
 ) -> Optional[Dict[str, str]]:
     """
     Resolve a friendly name from the entity map.
-
-    entity_map format varies — typically organized by room/area with lists of entities.
+    Supporta strutture gerarchiche di qualsiasi profondità.
     """
     friendly_lower = friendly_name.lower().strip()
+    all_entities = _collect_entities_from_map(entity_map)
 
-    # Search through the entity map structure
-    for area_key, area_data in entity_map.items():
-        if isinstance(area_data, dict):
-            for category, entities in area_data.items():
-                if isinstance(entities, list):
-                    for entity in entities:
-                        if isinstance(entity, dict):
-                            eid = entity.get("entity_id", "")
-                            fname = entity.get("friendly_name", "").lower()
-                            domain = eid.split(".")[0] if "." in eid else ""
+    for ent in all_entities:
+        if domain_filter and ent["domain"] != domain_filter:
+            continue
 
-                            if domain_filter and domain != domain_filter:
-                                continue
-
-                            if friendly_lower in fname or fname in friendly_lower:
-                                return {
-                                    "entity_id": eid,
-                                    "domain": domain,
-                                    "friendly_name": entity.get("friendly_name", ""),
-                                    "area": area_key,
-                                }
-                        elif isinstance(entity, str) and friendly_lower in entity.lower():
-                            domain = entity.split(".")[0] if "." in entity else ""
-                            if domain_filter and domain != domain_filter:
-                                continue
-                            return {
-                                "entity_id": entity,
-                                "domain": domain,
-                                "friendly_name": entity,
-                                "area": area_key,
-                            }
+        ent_name_lower = ent["name"].lower().strip()
+        if friendly_lower == ent_name_lower or friendly_lower in ent_name_lower or ent_name_lower in friendly_lower:
+            return {
+                "entity_id": ent["entity_id"],
+                "domain": ent["domain"],
+                "friendly_name": ent["name"],
+                "area": ent["path"],
+            }
 
     return None
 
@@ -583,27 +603,23 @@ def _find_alternatives(
 ) -> List[Dict[str, str]]:
     """Find similar entity names for suggestions."""
     friendly_lower = friendly_name.lower().strip()
+    words = set(friendly_lower.split())
     candidates = []
 
-    for area_key, area_data in entity_map.items():
-        if isinstance(area_data, dict):
-            for category, entities in area_data.items():
-                if isinstance(entities, list):
-                    for entity in entities:
-                        if isinstance(entity, dict):
-                            fname = entity.get("friendly_name", "")
-                            eid = entity.get("entity_id", "")
-                            # Simple word overlap scoring
-                            words = set(friendly_lower.split())
-                            entity_words = set(fname.lower().split())
-                            overlap = len(words & entity_words)
-                            if overlap > 0:
-                                candidates.append({
-                                    "entity_id": eid,
-                                    "friendly_name": fname,
-                                    "area": area_key,
-                                    "score": overlap,
-                                })
+    all_entities = _collect_entities_from_map(entity_map)
+
+    for ent in all_entities:
+        if not ent["name"]:
+            continue
+        entity_words = set(ent["name"].lower().split())
+        overlap = len(words & entity_words)
+        if overlap > 0:
+            candidates.append({
+                "entity_id": ent["entity_id"],
+                "friendly_name": ent["name"],
+                "area": ent["path"],
+                "score": overlap,
+            })
 
     candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
     return [{"entity_id": c["entity_id"], "friendly_name": c["friendly_name"], "area": c["area"]}

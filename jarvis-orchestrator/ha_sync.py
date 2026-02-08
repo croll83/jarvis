@@ -25,6 +25,7 @@ class HAEntity:
     area_id: Optional[str] = None
     area_name: Optional[str] = None
     device_class: Optional[str] = None
+    device_name: Optional[str] = None
     state: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -35,6 +36,7 @@ class HAEntity:
             "area_id": self.area_id,
             "area_name": self.area_name,
             "device_class": self.device_class,
+            "device_name": self.device_name,
             "state": self.state
         }
 
@@ -236,6 +238,7 @@ async def sync_entities_from_ha(
 
     # Parse entities
     ha_entities = []
+    disabled_count = 0
     for state in states:
         entity_id = state.get("entity_id", "")
         domain = entity_id.split(".")[0] if "." in entity_id else ""
@@ -246,20 +249,29 @@ async def sync_entities_from_ha(
         attributes = state.get("attributes", {})
         friendly_name = attributes.get("friendly_name", entity_id)
 
-        # Trova area_id
+        # Trova area_id e device_name
         area_id = None
         area_name = None
+        device_name = None
 
         # Prima prova dall'entity registry
         if entity_id in entity_registry:
             reg_entry = entity_registry[entity_id]
-            area_id = reg_entry.get("area_id")
 
-            # Se non ha area_id, prova dal device
-            if not area_id and reg_entry.get("device_id"):
-                device_id = reg_entry["device_id"]
-                if device_id in device_registry:
-                    area_id = device_registry[device_id].get("area_id")
+            # Salta entity disabilitate
+            if reg_entry.get("disabled_by"):
+                disabled_count += 1
+                continue
+
+            area_id = reg_entry.get("area_id")
+            device_id_ref = reg_entry.get("device_id")
+
+            # Se ha un device, recupera device_name e area_id (se mancante)
+            if device_id_ref and device_id_ref in device_registry:
+                device = device_registry[device_id_ref]
+                device_name = device.get("name_by_user") or device.get("name")
+                if not area_id:
+                    area_id = device.get("area_id")
 
         # Converti area_id in area_name
         if area_id and area_id in areas:
@@ -272,10 +284,11 @@ async def sync_entities_from_ha(
             area_id=area_id,
             area_name=area_name,
             device_class=attributes.get("device_class"),
+            device_name=device_name,
             state=state.get("state")
         ))
 
-    logger.info(f"Parsed {len(ha_entities)} relevant entities")
+    logger.info(f"Parsed {len(ha_entities)} relevant entities ({disabled_count} disabled skipped)")
 
     # Import nel database
     conn = _get_conn()
@@ -283,7 +296,7 @@ async def sync_entities_from_ha(
 
     for entity in ha_entities:
         try:
-            # Determina room = area HA (area_id, che è lo slug)
+            # Determina room = area HA (area_name)
             ha_area_key = entity.area_id or ""
             room = entity.area_name or "Sconosciuto"
 
@@ -322,21 +335,25 @@ async def sync_entities_from_ha(
                 # Entity esiste già
                 if overwrite_existing or not existing['entity_id']:
                     c.execute("""
-                        UPDATE entity_maps SET entity_id = ?, room = ?, zone = ?, area = ?
+                        UPDATE entity_maps
+                        SET entity_id = ?, room = ?, zone = ?, area = ?, device_name = ?
                         WHERE id = ?
-                    """, (entity.entity_id, room, zone, area, existing['id']))
+                    """, (entity.entity_id, room, zone, area,
+                          entity.device_name, existing['id']))
                     updated += 1
             else:
                 # Nuova entity
                 c.execute("""
                     INSERT INTO entity_maps
-                    (location_id, zone, area, room, entity_type, entity_name, entity_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (location_id, zone, area, room, device_name,
+                     entity_type, entity_name, entity_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     location_id,
                     zone,
                     area,
                     room,
+                    entity.device_name,
                     entity.domain,
                     entity.friendly_name,
                     entity.entity_id
@@ -418,6 +435,7 @@ async def preview_ha_sync(
     entities_by_domain = {}
     entities_by_area = {}
     entities_list = []
+    disabled_count = 0
 
     for state in states:
         entity_id = state.get("entity_id", "")
@@ -429,17 +447,27 @@ async def preview_ha_sync(
         attributes = state.get("attributes", {})
         friendly_name = attributes.get("friendly_name", entity_id)
 
-        # Trova area
+        # Trova area e device
         area_id = None
         area_name = "Sconosciuto"
+        device_name = None
 
         if entity_id in entity_registry:
             reg_entry = entity_registry[entity_id]
+
+            # Salta entity disabilitate
+            if reg_entry.get("disabled_by"):
+                disabled_count += 1
+                continue
+
             area_id = reg_entry.get("area_id")
-            if not area_id and reg_entry.get("device_id"):
-                device_id = reg_entry["device_id"]
-                if device_id in device_registry:
-                    area_id = device_registry[device_id].get("area_id")
+            device_id_ref = reg_entry.get("device_id")
+
+            if device_id_ref and device_id_ref in device_registry:
+                device = device_registry[device_id_ref]
+                device_name = device.get("name_by_user") or device.get("name")
+                if not area_id:
+                    area_id = device.get("area_id")
 
         if area_id and area_id in areas:
             area_name = areas[area_id]
@@ -453,11 +481,13 @@ async def preview_ha_sync(
             "friendly_name": friendly_name,
             "domain": domain,
             "area": area_name,
+            "device": device_name,
             "state": state.get("state")
         })
 
     return {
         "total": len(entities_list),
+        "disabled_skipped": disabled_count,
         "by_domain": entities_by_domain,
         "by_area": entities_by_area,
         "areas_found": list(set(a for a in entities_by_area.keys() if a != "Sconosciuto")),

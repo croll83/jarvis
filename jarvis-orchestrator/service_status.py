@@ -373,7 +373,10 @@ class ServiceStatus:
 
     def is_critical_online(self) -> bool:
         """Verifica se i servizi critici (almeno router) sono online."""
-        router = self.services["ollama_router"]
+        router = self.services.get("ollama_router")
+        if not router:
+            # In modalità API, il router Ollama non è presente → servizio critico = OK
+            return True
         return router.state in [ServiceState.ONLINE, ServiceState.DEGRADED]
 
     def can_do_home_control(self, location_id: str = None) -> bool:
