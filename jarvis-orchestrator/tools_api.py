@@ -647,28 +647,19 @@ async def _execute_ha_action(
     """Execute a Home Assistant action."""
     try:
         from integrations import call_hass_service
-        from database import get_location
-
-        location = get_location(location_id)
-        if not location:
-            return {"success": False, "message": f"Location {location_id} non trovata"}
-
-        hass_url = location.hass_url or config.HASS_URL_DEFAULT
-        hass_token = location.hass_token or ""
 
         service_data = {"entity_id": entity_id}
         if parameters:
             service_data.update(parameters)
 
-        result = await call_hass_service(
-            hass_url=hass_url,
-            hass_token=hass_token,
+        success, message = await call_hass_service(
+            location_id=location_id,
             domain=domain,
             service=action,
-            data=service_data,
+            service_data=service_data,
         )
 
-        return {"success": True, "message": f"Eseguito {domain}.{action} su {entity_id}"}
+        return {"success": success, "message": message if not success else f"Eseguito {domain}.{action} su {entity_id}"}
 
     except Exception as e:
         return {"success": False, "message": str(e)}
