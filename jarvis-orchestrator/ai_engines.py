@@ -65,35 +65,110 @@ except FileNotFoundError:
     SYSTEM_RULES = "You are Jarvis, a home assistant."
 
 
-def _get_entity_map_for_prompt(location_id: Optional[str] = None) -> str:
+def _get_entity_map_for_prompt(location_id: Optional[str] = None, user_id: Optional[int] = None) -> str:
     """
     Recupera entity map dal database per il prompt del router.
-    Se location_id è specificato, restituisce solo quella location.
-    Altrimenti restituisce tutte le location abilitate.
+
+    Ottimizzazioni:
+    - Compact JSON (no indent) per risparmiare ~40% char
+    - Se location_id noto → solo quella location
+    - Se location_id unknown → cerca location dell'utente, poi fallback a tutte
+    - Cap a MAX_ENTITY_MAP_CHARS per evitare di saturare il context
+    - Formato compatto: rimuove livelli gerarchici inutili per il routing
     """
+    MAX_ENTITY_MAP_CHARS = 8000  # ~2000 token, cap di sicurezza
+
     try:
-        from database import get_entity_map_for_llm, get_all_locations
+        from database import get_entity_map_for_llm, get_all_locations, get_user_location
+
+        target_locations = []
 
         if location_id and location_id != "unknown":
-            entity_map = get_entity_map_for_llm(location_id)
-            if entity_map:
-                return json.dumps({location_id: entity_map}, ensure_ascii=False, indent=2)
+            target_locations = [location_id]
+        elif user_id:
+            # Telegram: location unknown → usa la location dell'utente
+            user_loc = get_user_location(user_id)
+            if user_loc and user_loc.location_id:
+                target_locations = [user_loc.location_id]
 
-        # Fallback: carica tutte le location
+        # Fallback: tutte le location
+        if not target_locations:
+            locations = get_all_locations(enabled_only=True)
+            target_locations = [loc.id for loc in locations]
+
         all_maps = {}
-        locations = get_all_locations(enabled_only=True)
-        for loc in locations:
-            em = get_entity_map_for_llm(loc.id)
+        for loc_id in target_locations:
+            em = get_entity_map_for_llm(loc_id)
             if em:
-                all_maps[loc.id] = em
+                all_maps[loc_id] = em
 
-        if all_maps:
-            return json.dumps(all_maps, ensure_ascii=False, indent=2)
+        if not all_maps:
+            return "{}"
 
-        return "{}"
+        # Compact JSON (no indent)
+        result = json.dumps(all_maps, ensure_ascii=False, separators=(',', ':'))
+
+        # Cap di sicurezza
+        if len(result) > MAX_ENTITY_MAP_CHARS:
+            # Prova a ridurre: flatten a Room → [entity_names] senza device layer
+            result = _compact_entity_map(all_maps)
+            if len(result) > MAX_ENTITY_MAP_CHARS:
+                result = result[:MAX_ENTITY_MAP_CHARS - 20] + '..."TRONCATO"}'
+                logger.warning(f"Entity map truncated to {MAX_ENTITY_MAP_CHARS} chars")
+
+        return result
+
     except Exception as e:
         logger.warning(f"Could not load entity maps from DB: {e}")
         return "{}"
+
+
+def _compact_entity_map(all_maps: dict) -> str:
+    """
+    Formato ultra-compatto dell'entity map quando supera il budget.
+    Flatten: location → room → [entity_names] (rimuove zone/area/device nesting).
+    """
+    compact = {}
+    for loc_id, loc_map in all_maps.items():
+        rooms = {}
+        _flatten_to_rooms(loc_map, rooms)
+        compact[loc_id] = rooms
+    return json.dumps(compact, ensure_ascii=False, separators=(',', ':'))
+
+
+def _flatten_to_rooms(node: dict, rooms: dict, depth: int = 0):
+    """Ricorsivamente flatten fino al livello room → entity type → [names]."""
+    for key, value in node.items():
+        if isinstance(value, dict):
+            # Check se siamo al livello entity_type (value contiene liste)
+            has_lists = any(isinstance(v, list) for v in value.values())
+            if has_lists:
+                # Questo è un room o device level con entity_type → [names]
+                if key not in rooms:
+                    rooms[key] = {}
+                for etype, elist in value.items():
+                    if isinstance(elist, list):
+                        if etype not in rooms[key]:
+                            rooms[key][etype] = []
+                        rooms[key][etype].extend(
+                            [e if isinstance(e, str) else e.get("name", str(e)) for e in elist]
+                        )
+                    elif isinstance(elist, dict):
+                        # Device level sotto room: flatten le entity
+                        for sub_etype, sub_elist in elist.items():
+                            if isinstance(sub_elist, list):
+                                if sub_etype not in rooms[key]:
+                                    rooms[key][sub_etype] = []
+                                rooms[key][sub_etype].extend(
+                                    [e if isinstance(e, str) else e.get("name", str(e)) for e in sub_elist]
+                                )
+            else:
+                # Vai più in profondità
+                _flatten_to_rooms(value, rooms, depth + 1)
+        elif isinstance(value, list):
+            # Direttamente lista di entità
+            if key not in rooms:
+                rooms[key] = value
 
 
 # ===========================================================================
@@ -403,18 +478,28 @@ def _build_routing_prompt(text: str, context: dict) -> str:
     if context.pop("gemini_available", False):
         gemini_section = "\n\n[GEMINI DISPONIBILE]: Puoi usare intent GEMINI o VERIFY_WITH_GEMINI se appropriato."
 
-    # Carica entity map dal DB (per-location)
+    # Carica entity map dal DB (per-location, con fallback a user location)
     location_id = context.get("location")
-    entity_map_str = _get_entity_map_for_prompt(location_id)
+    user_id = context.get("speaker_id")
+    entity_map_str = _get_entity_map_for_prompt(location_id, user_id=user_id)
 
-    return f"""[MAPPA ENTITÀ]:
+    full_prompt = f"""[MAPPA ENTITÀ]:
 {entity_map_str}
 
 [CONTESTO]:
-{json.dumps(context, ensure_ascii=False)}{service_status_section}{gemini_section}
+{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{gemini_section}
 
 [COMANDO UTENTE]:
 {text}"""
+
+    # Log dimensioni per monitoring
+    sys_chars = len(SYSTEM_RULES)
+    map_chars = len(entity_map_str)
+    total_chars = sys_chars + len(full_prompt)
+    est_tokens = total_chars // 4
+    logger.info(f"Router prompt: {total_chars} chars (~{est_tokens} tok) | system={sys_chars} map={map_chars} user_prompt={len(full_prompt) - map_chars}")
+
+    return full_prompt
 
 
 async def _qwen_routing_call(text: str, context: dict) -> dict:

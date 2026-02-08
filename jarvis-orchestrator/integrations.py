@@ -359,6 +359,57 @@ async def send_telegram_approval(text: str, action_id: str) -> bool:
         return False
 
 
+async def send_exec_approval(approval_id: str, command: str, cwd: str = "", agent: str = "") -> bool:
+    """
+    Invia un messaggio con pulsanti Inline per approvazione exec OpenClaw.
+    3 bottoni: Allow Once, Allow Always, Deny.
+    """
+    if not config.JARVIS_APPROVAL_BOT_TOKEN or not config.JARVIS_APPROVAL_CHAT_ID:
+        logger.error("JARVIS Approval Bot not configured (missing token or chat_id)")
+        return False
+
+    # Tronca comando se troppo lungo per callback_data (max 64 bytes)
+    slug = approval_id[:8] if len(approval_id) > 8 else approval_id
+    display_cmd = command if len(command) <= 200 else command[:200] + "..."
+
+    text = (
+        f"\U0001f510 *EXEC APPROVAL*\n\n"
+        f"`{display_cmd}`\n"
+    )
+    if cwd:
+        text += f"\n\U0001f4c2 `{cwd}`"
+    if agent:
+        text += f"\n\U0001f916 Agent: {agent}"
+
+    url = f"{_approval_bot_api_url()}/sendMessage"
+    payload = {
+        "chat_id": config.JARVIS_APPROVAL_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown",
+        "reply_markup": {
+            "inline_keyboard": [[
+                {"text": "\u2705 Once", "callback_data": f"execonce_{slug}"},
+                {"text": "\U0001f513 Always", "callback_data": f"execalways_{slug}"},
+                {"text": "\u274c Deny", "callback_data": f"execdeny_{slug}"}
+            ]]
+        }
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=config.TIMEOUTS["telegram"]) as resp:
+                if resp.status == 200:
+                    logger.info(f"Exec approval sent for {slug}: {command[:50]}")
+                    return True
+                else:
+                    error = await resp.text()
+                    logger.error(f"Exec approval send error: {resp.status} - {error}")
+                    return False
+    except Exception as e:
+        logger.error(f"Exec Approval Exception: {e}")
+        return False
+
+
 # ===========================================================================
 # AUDIO PREPROCESSING (RNNoise)
 # ===========================================================================

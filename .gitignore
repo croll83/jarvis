@@ -46,3 +46,6 @@ infrastructure/terraform/.terraform.lock.hcl
 # Ansible (secrets)
 infrastructure/ansible/inventory/hosts.yml
 infrastructure/ansible/group_vars/all.yml
+
+# OpenClaw config (contiene API keys, bot tokens, gateway secrets)
+cloud/openclaw.json

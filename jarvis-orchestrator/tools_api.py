@@ -380,7 +380,7 @@ async def tool_home_control(
         if not allowed:
             if domain_level == SecurityLevel.L3_PROTECTED:
                 # Send approval request via JARVIS approval bot
-                _send_approval_request(entity_id, req.action, req.source_channel)
+                await _send_approval_request(entity_id, req.action, req.source_channel, service_data=req.parameters)
                 return HomeControlResponse(
                     success=False,
                     message=reason,
@@ -941,22 +941,33 @@ async def _execute_ha_action(
         return {"success": False, "message": str(e)}
 
 
-def _send_approval_request(entity_id: str, action: str, source_channel: str):
+async def _send_approval_request(entity_id: str, action: str, source_channel: str, service_data: dict = None):
     """Send L3 approval request via JARVIS approval bot (separate from OpenClaw)."""
     try:
+        import uuid
         from integrations import send_telegram_approval
+        from database import save_action
+
+        action_id = str(uuid.uuid4())[:8]
+
+        # Save pending action so it can be executed after approval
+        save_action(action_id, {
+            "domain": entity_id.split(".")[0] if "." in entity_id else "unknown",
+            "action": action,
+            "entity_id": entity_id,
+            "data": service_data or {},
+            "source_channel": source_channel,
+        })
 
         message = (
-            f"JARVIS Security - Richiesta L3\n\n"
             f"Azione: {action}\n"
             f"Entita: {entity_id}\n"
             f"Canale: {source_channel}\n"
-            f"Timestamp: {time.strftime('%H:%M:%S')}\n\n"
-            f"Rispondi /approve_{entity_id.replace('.', '_')} per autorizzare"
+            f"Timestamp: {time.strftime('%H:%M:%S')}"
         )
 
-        send_telegram_approval(message)
-        logger.info(f"L3 approval request sent for {entity_id}")
+        await send_telegram_approval(message, action_id)
+        logger.info(f"L3 approval request sent for {entity_id} (action_id={action_id})")
 
     except Exception as e:
         logger.error(f"Failed to send approval request: {e}")
