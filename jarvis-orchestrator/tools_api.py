@@ -134,7 +134,157 @@ class EntityResolveResponse(BaseModel):
     friendly_name: Optional[str] = None
     area: Optional[str] = None
     location_id: Optional[str] = None
+    state: Optional[str] = None
+    available_services: Optional[List[str]] = None
+    service_params: Optional[Dict[str, Any]] = None
+    device_class: Optional[str] = None
     alternatives: List[Dict[str, str]] = []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DOMAIN CAPABILITIES — Servizi disponibili per ogni tipo di dispositivo
+# ═══════════════════════════════════════════════════════════════════════════════
+
+DOMAIN_SERVICES: Dict[str, Dict[str, Any]] = {
+    "light": {
+        "services": ["turn_on", "turn_off", "toggle"],
+        "params": {
+            "turn_on": {
+                "brightness": "0-255 (luminosità)",
+                "color_temp_kelvin": "2000-6500 (temperatura colore)",
+                "rgb_color": "[R, G, B] (colore RGB)",
+                "transition": "secondi di transizione",
+            }
+        }
+    },
+    "switch": {
+        "services": ["turn_on", "turn_off", "toggle"],
+        "params": {}
+    },
+    "cover": {
+        "services": ["open_cover", "close_cover", "stop_cover", "set_cover_position", "toggle"],
+        "params": {
+            "set_cover_position": {"position": "0-100 (0=chiuso, 100=aperto)"}
+        }
+    },
+    "climate": {
+        "services": ["set_temperature", "set_hvac_mode", "turn_on", "turn_off"],
+        "params": {
+            "set_temperature": {"temperature": "gradi Celsius"},
+            "set_hvac_mode": {"hvac_mode": "heat | cool | auto | off | fan_only | dry"}
+        }
+    },
+    "media_player": {
+        "services": ["turn_on", "turn_off", "toggle", "volume_up", "volume_down",
+                      "volume_set", "volume_mute", "media_play", "media_pause",
+                      "media_stop", "media_next_track", "media_previous_track",
+                      "play_media", "select_source"],
+        "params": {
+            "volume_set": {"volume_level": "0.0-1.0"},
+            "volume_mute": {"is_volume_muted": "true/false"},
+            "play_media": {"media_content_id": "URL o ID media", "media_content_type": "music | video | playlist"},
+            "select_source": {"source": "nome input/sorgente"}
+        }
+    },
+    "fan": {
+        "services": ["turn_on", "turn_off", "toggle", "set_percentage", "set_preset_mode"],
+        "params": {
+            "set_percentage": {"percentage": "0-100"},
+            "set_preset_mode": {"preset_mode": "dipende dal dispositivo"}
+        }
+    },
+    "lock": {
+        "services": ["lock", "unlock", "open"],
+        "params": {}
+    },
+    "vacuum": {
+        "services": ["start", "stop", "pause", "return_to_base", "locate",
+                      "set_fan_speed", "send_command"],
+        "params": {
+            "set_fan_speed": {"fan_speed": "silent | standard | medium | turbo"}
+        }
+    },
+    "alarm_control_panel": {
+        "services": ["alarm_arm_away", "alarm_arm_home", "alarm_arm_night",
+                      "alarm_disarm", "alarm_trigger"],
+        "params": {
+            "alarm_disarm": {"code": "codice di disarmo (se richiesto)"}
+        }
+    },
+    "camera": {
+        "services": ["turn_on", "turn_off"],
+        "params": {}
+    },
+    "scene": {
+        "services": ["turn_on"],
+        "params": {}
+    },
+    "script": {
+        "services": ["turn_on", "turn_off", "toggle"],
+        "params": {}
+    },
+    "automation": {
+        "services": ["turn_on", "turn_off", "toggle", "trigger"],
+        "params": {}
+    },
+    "input_boolean": {
+        "services": ["turn_on", "turn_off", "toggle"],
+        "params": {}
+    },
+    "input_number": {
+        "services": ["set_value"],
+        "params": {
+            "set_value": {"value": "numero (dipende da min/max configurato)"}
+        }
+    },
+    "input_select": {
+        "services": ["select_option"],
+        "params": {
+            "select_option": {"option": "valore dall'elenco opzioni"}
+        }
+    },
+    "sensor": {
+        "services": [],
+        "params": {},
+        "note": "I sensori sono read-only, puoi solo leggere lo stato"
+    },
+    "binary_sensor": {
+        "services": [],
+        "params": {},
+        "note": "I sensori binari sono read-only (on/off)"
+    },
+}
+
+
+class EntityDiscoveryRequest(BaseModel):
+    """Search entities by area, domain, or text pattern."""
+    location_id: Optional[str] = None
+    room: Optional[str] = Field(default=None, description="Filter by room/area name (e.g., 'soggiorno', 'cucina')")
+    zone: Optional[str] = Field(default=None, description="Filter by zone (e.g., 'Zona Giorno', 'Zona Notte')")
+    floor: Optional[str] = Field(default=None, description="Filter by floor/piano (e.g., 'Piano 1')")
+    domain: Optional[str] = Field(default=None, description="Filter by entity domain (e.g., 'camera', 'light', 'media_player')")
+    search: Optional[str] = Field(default=None, description="Free text search in entity names (e.g., 'cam', 'temperatura')")
+    limit: int = Field(default=50, description="Max results")
+
+
+class EntityDiscoveryItem(BaseModel):
+    entity_id: str
+    friendly_name: str
+    domain: str
+    room: Optional[str] = None
+    device_name: Optional[str] = None
+    area: Optional[str] = None
+    zone: Optional[str] = None
+    state: Optional[str] = None
+    available_services: Optional[List[str]] = None
+
+
+class EntityDiscoveryResponse(BaseModel):
+    location_id: str
+    count: int
+    entities: List[EntityDiscoveryItem] = []
+    rooms_found: List[str] = []
+    domains_found: List[str] = []
 
 
 class TtsRequest(BaseModel):
@@ -401,7 +551,7 @@ async def tool_entity_resolve(
     req: EntityResolveRequest,
     _: None = Depends(verify_openclaw_token)
 ):
-    """Resolve a friendly name to an entity_id."""
+    """Resolve a friendly name to an entity_id, with capabilities and live state."""
     try:
         from database import get_entity_map
 
@@ -417,13 +567,44 @@ async def tool_entity_resolve(
         resolved = _resolve_from_entity_map(req.friendly_name, entity_map, req.domain_filter)
 
         if resolved:
+            domain = resolved.get("domain", "")
+            entity_id = resolved["entity_id"]
+
+            # Capabilities per questo dominio
+            caps = DOMAIN_SERVICES.get(domain, {})
+            available_services = caps.get("services", [])
+            service_params = caps.get("params", {})
+
+            # Stato live da HA (best effort, singola entity)
+            state = None
+            device_class = None
+            try:
+                from database import get_location as _get_loc
+                import aiohttp
+                loc = _get_loc(location_id)
+                if loc and loc.hass_url and loc.hass_token:
+                    url = f"{loc.hass_url.rstrip('/')}/api/states/{entity_id}"
+                    headers = {"Authorization": f"Bearer {loc.hass_token}"}
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                            if resp.status == 200:
+                                s = await resp.json()
+                                state = s.get("state")
+                                device_class = s.get("attributes", {}).get("device_class")
+            except Exception:
+                pass  # Non bloccare se HA non risponde
+
             return EntityResolveResponse(
                 found=True,
-                entity_id=resolved["entity_id"],
-                domain=resolved.get("domain"),
+                entity_id=entity_id,
+                domain=domain,
                 friendly_name=resolved.get("friendly_name"),
                 area=resolved.get("area"),
                 location_id=location_id,
+                state=state,
+                available_services=available_services if available_services else None,
+                service_params=service_params if service_params else None,
+                device_class=device_class,
             )
 
         # Try to find alternatives
@@ -437,6 +618,101 @@ async def tool_entity_resolve(
     except Exception as e:
         logger.error(f"entity_resolve error: {e}")
         return EntityResolveResponse(found=False)
+
+
+@router.post("/entity_discover", response_model=EntityDiscoveryResponse)
+async def tool_entity_discover(
+    req: EntityDiscoveryRequest,
+    _: None = Depends(verify_openclaw_token)
+):
+    """
+    Discover entities by room, domain, floor, zone, or text search.
+
+    Use this when you need to:
+    - List all devices in a room ("cosa c'è in soggiorno?")
+    - Find all cameras/lights/etc. ("quali telecamere ci sono?")
+    - Search by partial name ("tutto quello che contiene 'cam'")
+    - Browse a floor or zone ("dispositivi al Piano 1")
+    """
+    try:
+        from database import _get_conn
+
+        location_id = req.location_id or config.DEFAULT_LOCATION_ID
+
+        conn = _get_conn()
+        c = conn.cursor()
+
+        # Costruisci query con filtri
+        query = """
+            SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
+            FROM entity_maps
+            WHERE location_id = ?
+        """
+        params: list = [location_id]
+
+        if req.room:
+            query += " AND LOWER(room) LIKE LOWER(?)"
+            params.append(f"%{req.room}%")
+
+        if req.zone:
+            query += " AND LOWER(area) LIKE LOWER(?)"
+            params.append(f"%{req.zone}%")
+
+        if req.floor:
+            query += " AND LOWER(zone) LIKE LOWER(?)"
+            params.append(f"%{req.floor}%")
+
+        if req.domain:
+            query += " AND entity_type = ?"
+            params.append(req.domain)
+
+        if req.search:
+            query += " AND (LOWER(entity_name) LIKE LOWER(?) OR LOWER(entity_id) LIKE LOWER(?))"
+            params.append(f"%{req.search}%")
+            params.append(f"%{req.search}%")
+
+        query += " ORDER BY room, device_name, entity_type LIMIT ?"
+        params.append(req.limit)
+
+        c.execute(query, params)
+        rows = c.fetchall()
+        conn.close()
+
+        # Costruisci risultati
+        entities = []
+        rooms_set = set()
+        domains_set = set()
+
+        for row in rows:
+            domain = row["entity_type"]
+            caps = DOMAIN_SERVICES.get(domain, {})
+
+            entities.append(EntityDiscoveryItem(
+                entity_id=row["entity_id"] or "",
+                friendly_name=row["entity_name"],
+                domain=domain,
+                room=row["room"],
+                device_name=row["device_name"],
+                area=row["area"],
+                zone=row["zone"],
+                available_services=caps.get("services") if caps.get("services") else None,
+            ))
+
+            if row["room"]:
+                rooms_set.add(row["room"])
+            domains_set.add(domain)
+
+        return EntityDiscoveryResponse(
+            location_id=location_id,
+            count=len(entities),
+            entities=entities,
+            rooms_found=sorted(rooms_set),
+            domains_found=sorted(domains_set),
+        )
+
+    except Exception as e:
+        logger.error(f"entity_discover error: {e}")
+        return EntityDiscoveryResponse(location_id=req.location_id or "", count=0)
 
 
 @router.post("/tts", response_model=TtsResponse)
