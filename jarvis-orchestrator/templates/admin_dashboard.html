@@ -1046,15 +1046,24 @@
                 <div class="card-header">
                     <span class="card-title">Entity Map - <span id="entityMapLocationName"></span></span>
                     <div style="display: flex; gap: 0.5rem;">
+                        <button class="btn-primary btn-sm" onclick="syncEntitiesFromHA()" id="btnSyncHA" style="display: none;">🔄 Sync da HA</button>
+                        <button class="btn-secondary btn-sm" onclick="openModal('importHierarchyModal')" id="btnImportHierarchy">📐 Importa Gerarchia</button>
                         <button class="btn-secondary btn-sm" onclick="exportEntityMap()">Esporta JSON</button>
-                        <button class="btn-primary btn-sm" onclick="openModal('importEntityMapModal')">Importa JSON</button>
+                        <button class="btn-secondary btn-sm" onclick="openModal('importEntityMapModal')">Importa JSON</button>
                     </div>
+                </div>
+                <!-- Hierarchy status banner -->
+                <div id="hierarchyBanner" style="display: none; background: var(--bg-input); border-left: 3px solid var(--accent); padding: 0.75rem 1rem; margin-bottom: 0.5rem; border-radius: 4px; font-size: 0.85rem;">
+                    <span>📐 <strong>Gerarchia caricata</strong>: <span id="hierarchyInfo"></span></span>
                 </div>
                 <div id="entityMapStats">
                     <div class="empty-state">
                         <div class="empty-state-icon">📋</div>
                         <p>Nessuna entity configurata</p>
-                        <p style="font-size: 0.8rem; color: var(--text-muted);">Importa un file JSON per configurare dispositivi e stanze</p>
+                        <p style="font-size: 0.8rem; color: var(--text-muted);">
+                            1. Clicca "📐 Importa Gerarchia" per definire piani, zone e stanze<br>
+                            2. Poi "🔄 Sync da HA" per popolare i dispositivi da Home Assistant
+                        </p>
                     </div>
                 </div>
                 <div id="entityMapContent" style="display: none; margin-top: 1rem;">
@@ -1680,6 +1689,47 @@
             <div style="display: flex; gap: 0.75rem;">
                 <button class="btn-secondary" onclick="closeModal('importEntityMapModal')" style="flex: 1;">Annulla</button>
                 <button class="btn-primary" onclick="importEntityMap()" style="flex: 1;">Importa</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Import Hierarchy Modal -->
+    <div class="modal" id="importHierarchyModal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h2>📐 Importa Gerarchia</h2>
+                <button class="modal-close" onclick="closeModal('importHierarchyModal')">&times;</button>
+            </div>
+            <p style="color: var(--text-muted); margin-bottom: 1rem; font-size: 0.9rem;">
+                Definisci la gerarchia Piani → Zone → Stanze HA. Le entity verranno poi populate dal sync con Home Assistant.
+            </p>
+            <div class="form-group">
+                <label>Carica da file</label>
+                <input type="file" id="hierarchyFile" accept=".json" onchange="loadHierarchyFile(event)" style="padding: 0.5rem;">
+            </div>
+            <div class="form-group">
+                <label>Oppure incolla JSON</label>
+                <textarea id="hierarchyJsonInput" rows="16" placeholder='{
+  "floors": [
+    {
+      "floor_name": "Piano 1",
+      "zones": [
+        {
+          "zone_name": "Zona Giorno",
+          "ha_areas": ["cucina", "soggiorno", "ingresso"]
+        },
+        {
+          "zone_name": "Zona Notte",
+          "ha_areas": ["camera", "bagno_grande"]
+        }
+      ]
+    }
+  ]
+}' style="font-family: monospace; font-size: 0.8rem;"></textarea>
+            </div>
+            <div style="display: flex; gap: 0.75rem;">
+                <button class="btn-secondary" onclick="closeModal('importHierarchyModal')" style="flex: 1;">Annulla</button>
+                <button class="btn-primary" onclick="importHierarchy()" style="flex: 1;">Importa Gerarchia</button>
             </div>
         </div>
     </div>
@@ -3118,6 +3168,9 @@
         }
 
         async function loadEntityMap(locationId) {
+            // Check hierarchy status (controlla se mostrare Sync da HA)
+            checkHierarchyStatus(locationId);
+
             try {
                 const response = await fetch(`/api/admin/locations/${locationId}/entity-map`);
                 const data = await response.json();
@@ -3131,7 +3184,10 @@
                         <div class="empty-state">
                             <div class="empty-state-icon">📋</div>
                             <p>Nessuna entity configurata</p>
-                            <p style="font-size: 0.8rem; color: var(--text-muted);">Importa un file JSON per configurare dispositivi e stanze</p>
+                            <p style="font-size: 0.8rem; color: var(--text-muted);">
+                                1. Clicca "📐 Importa Gerarchia" per definire piani, zone e stanze<br>
+                                2. Poi "🔄 Sync da HA" per popolare i dispositivi
+                            </p>
                         </div>
                     `;
                     contentContainer.style.display = 'none';
@@ -3186,6 +3242,149 @@
                 document.getElementById('entityMapJsonInput').value = e.target.result;
             };
             reader.readAsText(file);
+        }
+
+        function loadHierarchyFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                document.getElementById('hierarchyJsonInput').value = e.target.result;
+            };
+            reader.readAsText(file);
+        }
+
+        async function importHierarchy() {
+            if (!selectedLocationId) {
+                showToast('Seleziona prima una location', 'error');
+                return;
+            }
+
+            const jsonInput = document.getElementById('hierarchyJsonInput').value.trim();
+            if (!jsonInput) {
+                showToast('Inserisci il JSON della gerarchia', 'error');
+                return;
+            }
+
+            let hierarchy;
+            try {
+                hierarchy = JSON.parse(jsonInput);
+            } catch (e) {
+                showToast('JSON non valido: ' + e.message, 'error');
+                return;
+            }
+
+            if (!hierarchy.floors) {
+                showToast('Formato non valido: manca il campo "floors"', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/locations/${selectedLocationId}/hierarchy/import`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hierarchy })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    showToast(`Gerarchia importata: ${result.floors} piani, ${result.zones} zone, ${result.rooms} stanze`, 'success');
+                    closeModal('importHierarchyModal');
+                    document.getElementById('hierarchyJsonInput').value = '';
+                    document.getElementById('hierarchyFile').value = '';
+                    loadEntityMap(selectedLocationId);
+                } else {
+                    const error = await response.json();
+                    showToast(error.detail || 'Errore import gerarchia', 'error');
+                }
+            } catch (e) {
+                showToast('Errore: ' + e.message, 'error');
+            }
+        }
+
+        async function checkHierarchyStatus(locationId) {
+            try {
+                const res = await fetch(`/api/admin/locations/${locationId}/hierarchy`);
+                if (res.ok) {
+                    const data = await res.json();
+                    const btnSync = document.getElementById('btnSyncHA');
+                    const btnHierarchy = document.getElementById('btnImportHierarchy');
+                    const banner = document.getElementById('hierarchyBanner');
+                    const infoSpan = document.getElementById('hierarchyInfo');
+
+                    if (data.has_hierarchy) {
+                        // Gerarchia presente → mostra sync, mostra banner
+                        btnSync.style.display = '';
+                        btnHierarchy.innerHTML = '📐 Aggiorna Gerarchia';
+                        banner.style.display = '';
+                        const areaCount = Object.keys(data.ha_area_mapping).length;
+                        infoSpan.textContent = `${areaCount} stanze HA mappate`;
+                    } else {
+                        // Nessuna gerarchia → nascondi sync
+                        btnSync.style.display = 'none';
+                        btnHierarchy.innerHTML = '📐 Importa Gerarchia';
+                        banner.style.display = 'none';
+                    }
+                }
+            } catch (e) {
+                console.error('Error checking hierarchy:', e);
+            }
+        }
+
+        async function syncEntitiesFromHA() {
+            if (!selectedLocationId) {
+                showToast('Seleziona prima una location', 'error');
+                return;
+            }
+
+            const btn = document.getElementById('btnSyncHA');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '⏳ Sync in corso...';
+            btn.disabled = true;
+
+            try {
+                // Prima preview
+                const previewRes = await fetch(`/api/admin/locations/${selectedLocationId}/ha-sync/preview`);
+                if (!previewRes.ok) {
+                    const err = await previewRes.json();
+                    showToast(err.detail || 'Errore preview HA sync', 'error');
+                    return;
+                }
+                const preview = await previewRes.json();
+                const total = preview.preview?.total || 0;
+                const areas = preview.preview?.areas_found || [];
+
+                if (total === 0) {
+                    showToast('Nessuna entity trovata su Home Assistant', 'warning');
+                    return;
+                }
+
+                if (!confirm(`Trovate ${total} entity in ${areas.length} aree (${areas.join(', ')}).\n\nVuoi importarle?`)) {
+                    return;
+                }
+
+                // Sync effettivo
+                const syncRes = await fetch(`/api/admin/locations/${selectedLocationId}/ha-sync`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ overwrite_existing: false })
+                });
+
+                if (syncRes.ok) {
+                    const result = await syncRes.json();
+                    showToast(`Sync completato: ${result.added} aggiunte, ${result.updated} aggiornate`, 'success');
+                    loadLocations();
+                    loadEntityMap(selectedLocationId);
+                } else {
+                    const error = await syncRes.json();
+                    showToast(error.detail || 'Errore sync HA', 'error');
+                }
+            } catch (e) {
+                showToast('Errore: ' + e.message, 'error');
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
         }
 
         async function importEntityMap() {
