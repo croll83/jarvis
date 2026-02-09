@@ -122,7 +122,7 @@ async def openclaw_operator_loop():
             logger.info(f"Connecting to OpenClaw gateway WS: {ws_url}")
             async with websockets.connect(
                 ws_url,
-                additional_headers={"Authorization": f"Bearer {token}"},
+                extra_headers={"Authorization": f"Bearer {token}"},
                 ping_interval=30,
                 ping_timeout=10,
                 close_timeout=5
