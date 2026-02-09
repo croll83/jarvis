@@ -408,32 +408,38 @@ async def approval_bot_polling_loop():
                     msg_chat_id = message.get("chat", {}).get("id")
                     from_user_msg = message.get("from", {})
                     tg_id_msg = from_user_msg.get("id")
+                    logger.info(f"Approval bot message: '{text_msg}' from tg_id={tg_id_msg}")
 
-                    if text_msg.lower() == "/location" and msg_chat_id:
+                    # /location or /location@botname
+                    cmd = text_msg.lower().split("@")[0]
+                    if cmd == "/location" and msg_chat_id:
                         user_msg = get_user_by_telegram_id(tg_id_msg) if tg_id_msg else None
-                        if user_msg:
-                            locations = get_all_locations(enabled_only=True)
-                            user_loc = get_user_location(user_msg.id)
-                            current_loc = user_loc.location_id if user_loc else None
+                        if not user_msg:
+                            logger.warning(f"Approval bot /location: tg_id {tg_id_msg} not linked to any user")
+                            continue
 
-                            buttons = []
-                            for loc in locations:
-                                prefix = "✅ " if loc.id == current_loc else "🏠 "
-                                buttons.append({"text": f"{prefix}{loc.name}", "callback_data": f"setloc_{loc.id}"})
+                        locations = get_all_locations(enabled_only=True)
+                        user_loc = get_user_location(user_msg.id)
+                        current_loc = user_loc.location_id if user_loc else None
 
-                            keyboard = {"inline_keyboard": [buttons]}
-                            send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                            try:
-                                async with aiohttp.ClientSession() as session:
-                                    async with session.post(send_url, json={
-                                        "chat_id": msg_chat_id,
-                                        "text": f"📍 Location attuale: *{current_loc or 'non impostata'}*\nSeleziona la tua posizione:",
-                                        "parse_mode": "Markdown",
-                                        "reply_markup": keyboard
-                                    }) as _:
-                                        pass
-                            except Exception as e:
-                                logger.error(f"Send location keyboard error: {e}")
+                        buttons = []
+                        for loc in locations:
+                            prefix = "✅ " if loc.id == current_loc else "🏠 "
+                            buttons.append({"text": f"{prefix}{loc.name}", "callback_data": f"setloc_{loc.id}"})
+
+                        keyboard = {"inline_keyboard": [buttons]}
+                        send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.post(send_url, json={
+                                    "chat_id": msg_chat_id,
+                                    "text": f"📍 Location attuale: *{current_loc or 'non impostata'}*\nSeleziona la tua posizione:",
+                                    "parse_mode": "Markdown",
+                                    "reply_markup": keyboard
+                                }) as _:
+                                    pass
+                        except Exception as e:
+                            logger.error(f"Send location keyboard error: {e}")
                     continue
 
                 # ── Handle callback queries ──
