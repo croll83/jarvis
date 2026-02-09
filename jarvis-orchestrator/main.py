@@ -122,13 +122,35 @@ async def openclaw_operator_loop():
             logger.info(f"Connecting to OpenClaw gateway WS: {ws_url}")
             async with websockets.connect(
                 ws_url,
-                extra_headers={"Authorization": f"Bearer {token}"},
                 ping_interval=30,
                 ping_timeout=10,
                 close_timeout=5
             ) as ws:
+                # Send connect handshake (gateway requires this within ~10s)
+                connect_id = str(uuid.uuid4())
+                connect_msg = _json.dumps({
+                    "type": "req",
+                    "id": connect_id,
+                    "method": "connect",
+                    "params": {
+                        "role": "operator",
+                        "token": token,
+                        "scopes": ["operator.approvals"]
+                    }
+                })
+                await ws.send(connect_msg)
+
+                # Wait for HelloOk response
+                hello_raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                hello = _json.loads(hello_raw)
+                if hello.get("type") == "res" and hello.get("ok"):
+                    logger.info(f"✅ OpenClaw operator WS connected (proto={hello.get('payload', {}).get('version', '?')})")
+                else:
+                    logger.error(f"OpenClaw WS handshake failed: {hello}")
+                    await asyncio.sleep(reconnect_delay)
+                    continue
+
                 _operator_ws = ws
-                logger.info("✅ OpenClaw operator WS connected")
                 reconnect_delay = 5
 
                 # Listen for events
