@@ -32,6 +32,31 @@ router = APIRouter(prefix="/api/tools", tags=["OpenClaw Tools"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# LOCATION RESOLUTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_admin_location() -> str:
+    """Recupera la last known location dell'admin, fallback a default."""
+    try:
+        from database import _get_conn
+        conn = _get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT ul.location_id FROM user_locations ul
+            JOIN users u ON u.id = ul.user_id
+            WHERE u.role = 'admin'
+            ORDER BY ul.updated_at DESC LIMIT 1
+        """)
+        row = c.fetchone()
+        conn.close()
+        if row and row['location_id']:
+            return row['location_id']
+    except Exception:
+        pass
+    return config.DEFAULT_LOCATION_ID
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # AUTH
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -376,7 +401,7 @@ async def tool_home_control(
         from integrations import call_hass_service_by_name
 
         # Resolve location
-        location_id = req.location_id or config.DEFAULT_LOCATION_ID
+        location_id = req.location_id or _get_admin_location()
 
         # Resolve entity
         entity_id = req.entity_name
@@ -591,7 +616,7 @@ async def tool_entity_resolve(
     try:
         from database import get_entity_map
 
-        location_id = req.location_id or config.DEFAULT_LOCATION_ID
+        location_id = req.location_id or _get_admin_location()
         entity_map = get_entity_map(location_id, include_entity_ids=True)
 
         if not entity_map:
@@ -673,7 +698,7 @@ async def tool_entity_discover(
     try:
         from database import _get_conn
 
-        location_id = req.location_id or config.DEFAULT_LOCATION_ID
+        location_id = req.location_id or _get_admin_location()
 
         conn = _get_conn()
         c = conn.cursor()
@@ -784,7 +809,7 @@ async def tool_entity_bulk(
         from database import _get_conn
         from multi_ha import multi_ha
 
-        location_id = req.location_id or config.DEFAULT_LOCATION_ID
+        location_id = req.location_id or _get_admin_location()
         errors: List[str] = []
 
         # ── 1. DISCOVERY: find matching entities ─────────────────────────

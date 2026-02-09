@@ -1933,7 +1933,7 @@ async def get_ha_media_players(location_id: str) -> Dict[str, Any]:
 
     Usato dalla dashboard per popolare il dropdown degli speaker.
     """
-    from integrations import get_hass_states
+    from integrations import get_hass_states_bulk
 
     location = get_location(location_id)
     if not location:
@@ -1941,15 +1941,14 @@ async def get_ha_media_players(location_id: str) -> Dict[str, Any]:
 
     try:
         # Recupera tutti gli stati da Home Assistant
-        states = await get_hass_states(location_id)
+        states = await get_hass_states_bulk(location_id)
 
         # Filtra solo i media_player
         media_players = []
-        for entity in states:
-            if entity.get("entity_id", "").startswith("media_player."):
-                entity_id = entity["entity_id"]
-                friendly_name = entity.get("attributes", {}).get("friendly_name", entity_id)
-                state = entity.get("state", "unknown")
+        for entity_id, entity_data in states.items():
+            if entity_id.startswith("media_player."):
+                friendly_name = entity_data.get("attributes", {}).get("friendly_name", entity_id)
+                state = entity_data.get("state", "unknown")
 
                 media_players.append({
                     "entity_id": entity_id,
