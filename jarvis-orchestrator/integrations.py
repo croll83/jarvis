@@ -581,6 +581,21 @@ async def send_telegram_photo(
         return None
 
 
+def _wrap_pcm_as_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1, bits: int = 16) -> bytes:
+    """Aggiunge un WAV header a raw PCM int16 bytes."""
+    import struct
+    data_size = len(pcm_bytes)
+    byte_rate = sample_rate * channels * (bits // 8)
+    block_align = channels * (bits // 8)
+    header = struct.pack(
+        '<4sI4s4sIHHIIHH4sI',
+        b'RIFF', 36 + data_size, b'WAVE',
+        b'fmt ', 16, 1, channels, sample_rate, byte_rate, block_align, bits,
+        b'data', data_size
+    )
+    return header + pcm_bytes
+
+
 async def _transcribe_groq(audio_bytes: bytes) -> Optional[str]:
     """
     Trascrizione via Groq API (whisper-large-v3-turbo).
@@ -589,6 +604,10 @@ async def _transcribe_groq(audio_bytes: bytes) -> Optional[str]:
     if not config.GROQ_API_KEY:
         logger.error("GROQ_API_KEY not configured, falling back to local")
         return await _transcribe_local(audio_bytes)
+
+    # Wrap raw PCM in WAV header se non ha già un RIFF header
+    if not audio_bytes[:4] == b'RIFF':
+        audio_bytes = _wrap_pcm_as_wav(audio_bytes)
 
     try:
         async with aiohttp.ClientSession() as session:
