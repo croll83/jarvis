@@ -1967,7 +1967,8 @@ def clear_user_location(user_id: int) -> bool:
 # ENTITY MAPS (Struttura stanze/dispositivi per location)
 # ===========================================================================
 
-def get_entity_map(location_id: str, include_entity_ids: bool = False) -> dict:
+def get_entity_map(location_id: str, include_entity_ids: bool = False,
+                    exclude_unassigned: bool = False) -> dict:
     """
     Recupera l'entity map per una location in formato gerarchico.
 
@@ -1981,15 +1982,28 @@ def get_entity_map(location_id: str, include_entity_ids: bool = False) -> dict:
         location_id: ID della location
         include_entity_ids: Se True, include entity_id nell'output (per export completo)
                            Se False, ritorna solo friendly names (per LLM/prompt)
+        exclude_unassigned: Se True, esclude entity senza area assegnata su HA
+                           (room = "Sconosciuto" / zone|area = "Non classificato")
     """
     conn = _get_conn()
     c = conn.cursor()
-    c.execute("""
-        SELECT zone, area, room, device_name, entity_type, entity_name, entity_id
-        FROM entity_maps
-        WHERE location_id = ?
-        ORDER BY zone, area, room, device_name, entity_type
-    """, (location_id,))
+
+    if exclude_unassigned:
+        c.execute("""
+            SELECT zone, area, room, device_name, entity_type, entity_name, entity_id
+            FROM entity_maps
+            WHERE location_id = ?
+              AND LOWER(room) != 'sconosciuto'
+              AND LOWER(zone) != 'non classificato'
+            ORDER BY zone, area, room, device_name, entity_type
+        """, (location_id,))
+    else:
+        c.execute("""
+            SELECT zone, area, room, device_name, entity_type, entity_name, entity_id
+            FROM entity_maps
+            WHERE location_id = ?
+            ORDER BY zone, area, room, device_name, entity_type
+        """, (location_id,))
     rows = c.fetchall()
     conn.close()
 
@@ -2049,9 +2063,9 @@ def get_entity_map(location_id: str, include_entity_ids: bool = False) -> dict:
 def get_entity_map_for_llm(location_id: str) -> dict:
     """
     Versione semplificata dell'entity map per il LLM (solo friendly names).
-    Alias di get_entity_map(include_entity_ids=False).
+    Esclude entity senza area assegnata su HA (room = "Sconosciuto").
     """
-    return get_entity_map(location_id, include_entity_ids=False)
+    return get_entity_map(location_id, include_entity_ids=False, exclude_unassigned=True)
 
 
 def import_entity_map_json(location_id: str, entity_map_json: dict) -> int:
