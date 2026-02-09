@@ -10,7 +10,7 @@ import aiohttp
 import asyncio
 import json
 import logging
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any
 
 import websockets
 
@@ -166,6 +166,106 @@ class HomeAssistantClient:
         except Exception:
             return False, 0
 
+    async def get_states_bulk(self, entity_ids: List[str] = None) -> Dict[str, dict]:
+        """
+        Fetch all entity states from HA via GET /api/states in a single call.
+        Optionally filter locally by entity_ids list.
+
+        Returns:
+            {entity_id: {"state": str, "attributes": dict, "last_changed": str}}
+        """
+        if not self.hass_token:
+            logger.warning(f"[{self.location_id}] No token for bulk state fetch")
+            return {}
+
+        url = f"{self.hass_url}/api/states"
+        headers = {"Authorization": f"Bearer {self.hass_token}"}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[{self.location_id}] GET /api/states returned {resp.status}")
+                        return {}
+
+                    all_states = await resp.json()
+
+            # Build lookup dict
+            entity_id_set = set(entity_ids) if entity_ids else None
+            result = {}
+            for s in all_states:
+                eid = s.get("entity_id", "")
+                if entity_id_set and eid not in entity_id_set:
+                    continue
+                result[eid] = {
+                    "state": s.get("state"),
+                    "attributes": s.get("attributes", {}),
+                    "last_changed": s.get("last_changed"),
+                }
+
+            logger.info(f"[{self.location_id}] Bulk state fetch: {len(result)} entities"
+                        f" (filtered from {len(all_states)} total)")
+            return result
+
+        except Exception as e:
+            logger.error(f"[{self.location_id}] Bulk state fetch error: {e}")
+            return {}
+
+    async def call_service_bulk(
+        self, domain: str, service: str, entity_ids: List[str],
+        service_data: dict = None
+    ) -> Tuple[bool, str]:
+        """
+        Execute a service on multiple entities in a single HA call.
+        HA natively supports entity_id as a list in service_data.
+
+        Returns:
+            (success, message)
+        """
+        data = dict(service_data) if service_data else {}
+        data["entity_id"] = entity_ids
+
+        async with self._lock:
+            try:
+                if not await self.connect():
+                    return await self._call_service_rest(domain, service, data)
+
+                self.msg_id += 1
+                await self.ws.send(json.dumps({
+                    "id": self.msg_id,
+                    "type": "call_service",
+                    "domain": domain,
+                    "service": service,
+                    "service_data": data
+                }))
+
+                result = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=self.timeout))
+
+                if result.get("success"):
+                    log_event("HASS",
+                              f"[{self.location_id}] Bulk {domain}.{service} su {len(entity_ids)} entity")
+                    for eid in entity_ids:
+                        reset_device_failure(eid)
+                    return True, f"OK — {len(entity_ids)} entities"
+                else:
+                    error_msg = result.get("error", {}).get("message", "Unknown error")
+                    log_event("HARDWARE_ERROR",
+                              f"[{self.location_id}] Bulk {domain}.{service} fallito: {error_msg}")
+                    return False, error_msg
+
+            except asyncio.TimeoutError:
+                log_event("HARDWARE_ERROR",
+                          f"[{self.location_id}] Bulk {domain}.{service} timeout")
+                self.ws = None
+                return False, "Timeout"
+
+            except Exception as e:
+                log_event("HARDWARE_ERROR",
+                          f"[{self.location_id}] Bulk {domain}.{service} errore: {e}")
+                self.ws = None
+                return False, str(e)
+
     async def close(self):
         """Chiude la connessione WebSocket."""
         if self.ws:
@@ -264,6 +364,26 @@ class MultiHomeAssistant:
         """Restituisce tutte le entity maps (per il router)."""
         self.ensure_loaded()
         return self.entity_maps
+
+    async def get_states_bulk(self, location_id: str,
+                              entity_ids: List[str] = None) -> Dict[str, dict]:
+        """Fetch bulk entity states for a location."""
+        self.ensure_loaded()
+        client = self.clients.get(location_id)
+        if not client:
+            return {}
+        return await client.get_states_bulk(entity_ids)
+
+    async def call_service_bulk(
+        self, location_id: str, domain: str, service: str,
+        entity_ids: List[str], service_data: dict = None
+    ) -> Tuple[bool, str]:
+        """Execute a service on multiple entities for a location."""
+        self.ensure_loaded()
+        client = self.clients.get(location_id)
+        if not client:
+            return False, f"Location '{location_id}' non configurata o disabilitata"
+        return await client.call_service_bulk(domain, service, entity_ids, service_data)
 
     async def health_check_all(self) -> Dict[str, dict]:
         """Esegue health check su tutte le location."""

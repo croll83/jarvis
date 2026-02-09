@@ -134,6 +134,8 @@ cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills
 
 Questo rende la skill JARVIS visibile a OpenClaw. Dopo ogni `git pull` che modifica la skill, riesegui i `cp`.
 
+La skill espone 11 tool REST, tra cui `entity_bulk` per query/azioni di gruppo su entita HA (elimina il problema N+1 delle query multi-entita).
+
 > **Nota**: non usare symlink — il file watcher di OpenClaw va in ELOOP con i link simbolici.
 
 ### STEP 4 — OpenClaw onboarding
@@ -303,9 +305,18 @@ messaggio Telegram con bottoni inline (✅ Once, 🔓 Always, ❌ Deny) sul **JA
 }
 ```
 
+**Exec Approvals Allowlist** (`~/.openclaw/exec-approvals.json`):
+```bash
+# Copia il file di default (auto-approva comandi sicuri, chiede per quelli pericolosi)
+cp /opt/jarvis/cloud/exec-approvals.json ~/.openclaw/
+```
+
+Il file configura `security: "allowlist"` + `ask: "on-miss"` con glob patterns per comandi sicuri
+(curl, bash, node, ls, cat, ecc.) e chiede approvazione Telegram per comandi pericolosi (rm, chmod, ecc.).
+
 > **Nota**: Il bot Approval usa **long-polling** (getUpdates) per ricevere i callback
-> dai bottoni inline. Non richiede URL pubblico o webhook. Verrà migrato a webhook
-> quando sarà configurato un DNS pubblico (jarvis-pub.mintwork.it).
+> dai bottoni inline. Non richiede URL pubblico o webhook. Verra migrato a webhook
+> quando sara configurato un DNS pubblico (jarvis-pub.mintwork.it).
 
 ### STEP 9 — Nginx + SSL (certbot DNS Cloudflare)
 
@@ -570,16 +581,25 @@ sudo npm update -g openclaw
 sudo systemctl restart openclaw
 curl http://localhost:18789/health
 
-# 3. Aggiorna JARVIS (orchestrator + config)
+# 3. Aggiorna JARVIS (orchestrator + config + skill)
 cd /opt/jarvis
 git pull
 cd cloud
 docker compose -f docker-compose.cloud.yml down
 docker compose -f docker-compose.cloud.yml build --no-cache
 docker compose -f docker-compose.cloud.yml up -d
+
+# 4. Se SKILL.md o skill.json sono cambiati, ricopiali per OpenClaw
+cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
+cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
+sudo systemctl restart openclaw
+
+# 5. Se exec-approvals.json e cambiato
+cp /opt/jarvis/cloud/exec-approvals.json ~/.openclaw/
+sudo systemctl restart openclaw
 ```
 
-> **Nota**: l'aggiornamento di OpenClaw non richiede rebuild Docker. L'aggiornamento Docker non tocca OpenClaw. L'aggiornamento di Tailscale non tocca ne Docker ne OpenClaw.
+> **Nota**: l'aggiornamento di OpenClaw non richiede rebuild Docker. L'aggiornamento Docker non tocca OpenClaw. L'aggiornamento di Tailscale non tocca ne Docker ne OpenClaw. Se cambiano solo file Python dell'orchestrator, basta rebuild Docker. Se cambia la skill definition, serve anche la copia + restart OpenClaw.
 
 ---
 

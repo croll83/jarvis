@@ -320,6 +320,42 @@ class AuditLogResponse(BaseModel):
     log_id: Optional[int] = None
 
 
+class EntityBulkRequest(BaseModel):
+    """Bulk query or action on multiple entities with group filtering."""
+    mode: str = Field(..., description="'query' (get live states) or 'action' (execute command)")
+    # Filters — all optional, combinable
+    location_id: Optional[str] = None
+    domain: Optional[str] = Field(default=None, description="Entity domain filter (e.g., 'light', 'cover', 'sensor')")
+    room: Optional[str] = Field(default=None, description="Room/area name filter")
+    zone: Optional[str] = Field(default=None, description="Zone name filter")
+    floor: Optional[str] = Field(default=None, description="Floor/piano filter")
+    search: Optional[str] = Field(default=None, description="Free text search in entity names")
+    entity_ids: Optional[List[str]] = Field(default=None, description="Explicit entity_id list (bypasses discovery)")
+    # Action-mode fields
+    action: Optional[str] = Field(default=None, description="Service to call (e.g., 'turn_on', 'turn_off')")
+    parameters: Optional[Dict[str, Any]] = Field(default=None, description="Service parameters (e.g., {'brightness': 128})")
+    source_channel: str = Field(default="api_tools", description="Source channel for security check")
+
+
+class EntityBulkItem(BaseModel):
+    entity_id: str
+    friendly_name: str
+    domain: str
+    room: Optional[str] = None
+    state: Optional[str] = None
+    attributes: Optional[Dict[str, Any]] = None
+    action_result: Optional[str] = None
+
+
+class EntityBulkResponse(BaseModel):
+    location_id: str
+    mode: str
+    count: int
+    entities: List[EntityBulkItem] = []
+    summary: str = ""
+    errors: List[str] = []
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TOOL ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -715,6 +751,253 @@ async def tool_entity_discover(
         return EntityDiscoveryResponse(location_id=req.location_id or "", count=0)
 
 
+# ── Key attributes to extract per domain (keeps response compact) ──────────
+DOMAIN_KEY_ATTRIBUTES: Dict[str, List[str]] = {
+    "light": ["brightness", "color_temp_kelvin", "rgb_color", "color_mode"],
+    "climate": ["current_temperature", "temperature", "hvac_action", "hvac_modes"],
+    "cover": ["current_position"],
+    "media_player": ["media_title", "source", "volume_level", "app_name"],
+    "sensor": ["unit_of_measurement", "device_class"],
+    "binary_sensor": ["device_class"],
+    "fan": ["percentage", "preset_mode"],
+    "vacuum": ["status", "battery_level"],
+}
+
+
+@router.post("/entity_bulk", response_model=EntityBulkResponse)
+async def tool_entity_bulk(
+    req: EntityBulkRequest,
+    _: None = Depends(verify_openclaw_token)
+):
+    """
+    Bulk query or action on multiple entities.
+
+    **Query mode**: Returns live states for all matching entities in a single HA call.
+    Use for: "quali luci sono accese?", "temperatura di tutte le stanze", "stato tapparelle".
+
+    **Action mode**: Executes a service on all matching entities in a single HA call.
+    Use for: "spegni tutte le luci del soggiorno", "chiudi le tapparelle zona notte".
+
+    Filters (room, zone, floor, domain, search) are all optional and combinable.
+    """
+    try:
+        from database import _get_conn
+        from multi_ha import multi_ha
+
+        location_id = req.location_id or config.DEFAULT_LOCATION_ID
+        errors: List[str] = []
+
+        # ── 1. DISCOVERY: find matching entities ─────────────────────────
+        if req.entity_ids:
+            # Explicit entity_ids — fetch their info from DB
+            conn = _get_conn()
+            c = conn.cursor()
+            placeholders = ",".join("?" for _ in req.entity_ids)
+            c.execute(f"""
+                SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
+                FROM entity_maps
+                WHERE location_id = ? AND entity_id IN ({placeholders})
+            """, [location_id] + req.entity_ids)
+            rows = c.fetchall()
+            conn.close()
+        else:
+            # Filter-based discovery (reuse entity_discover SQL pattern)
+            conn = _get_conn()
+            c = conn.cursor()
+            query = """
+                SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
+                FROM entity_maps
+                WHERE location_id = ? AND entity_id IS NOT NULL
+            """
+            params: list = [location_id]
+
+            if req.domain:
+                query += " AND entity_type = ?"
+                params.append(req.domain)
+
+            if req.room:
+                query += " AND LOWER(room) LIKE LOWER(?)"
+                params.append(f"%{req.room}%")
+
+            if req.zone:
+                query += " AND LOWER(area) LIKE LOWER(?)"
+                params.append(f"%{req.zone}%")
+
+            if req.floor:
+                query += " AND LOWER(zone) LIKE LOWER(?)"
+                params.append(f"%{req.floor}%")
+
+            if req.search:
+                query += " AND (LOWER(entity_name) LIKE LOWER(?) OR LOWER(entity_id) LIKE LOWER(?))"
+                params.append(f"%{req.search}%")
+                params.append(f"%{req.search}%")
+
+            query += " ORDER BY room, entity_type, entity_name LIMIT 200"
+            c.execute(query, params)
+            rows = c.fetchall()
+            conn.close()
+
+        if not rows:
+            return EntityBulkResponse(
+                location_id=location_id,
+                mode=req.mode,
+                count=0,
+                summary="Nessuna entity trovata con i filtri specificati.",
+            )
+
+        # Build entity list with entity_ids
+        discovered = []
+        for row in rows:
+            discovered.append({
+                "entity_id": row["entity_id"],
+                "friendly_name": row["entity_name"],
+                "domain": row["entity_type"],
+                "room": row["room"],
+            })
+
+        entity_ids = [e["entity_id"] for e in discovered]
+
+        # ── 2. QUERY MODE: fetch live states ─────────────────────────────
+        if req.mode == "query":
+            states = await multi_ha.get_states_bulk(location_id, entity_ids)
+
+            items = []
+            for ent in discovered:
+                eid = ent["entity_id"]
+                live = states.get(eid, {})
+                domain = ent["domain"]
+
+                # Extract key attributes for this domain
+                key_attrs = DOMAIN_KEY_ATTRIBUTES.get(domain, [])
+                raw_attrs = live.get("attributes", {})
+                filtered_attrs = {k: raw_attrs[k] for k in key_attrs if k in raw_attrs}
+
+                items.append(EntityBulkItem(
+                    entity_id=eid,
+                    friendly_name=ent["friendly_name"],
+                    domain=domain,
+                    room=ent["room"],
+                    state=live.get("state"),
+                    attributes=filtered_attrs if filtered_attrs else None,
+                ))
+
+            # Generate summary
+            summary = _build_query_summary(items, req)
+            return EntityBulkResponse(
+                location_id=location_id,
+                mode="query",
+                count=len(items),
+                entities=items,
+                summary=summary,
+                errors=errors,
+            )
+
+        # ── 3. ACTION MODE: execute bulk service ─────────────────────────
+        elif req.mode == "action":
+            if not req.action:
+                return EntityBulkResponse(
+                    location_id=location_id,
+                    mode="action",
+                    count=0,
+                    summary="Errore: campo 'action' obbligatorio in modalita action.",
+                    errors=["Missing 'action' field"],
+                )
+
+            # Security check per domain — group by domain
+            domains_in_batch = {}
+            for ent in discovered:
+                d = ent["domain"]
+                if d not in domains_in_batch:
+                    domains_in_batch[d] = []
+                domains_in_batch[d].append(ent)
+
+            allowed_entities = []
+            for domain, ents in domains_in_batch.items():
+                allowed, reason, domain_level, channel_max = check_security(
+                    domain=domain,
+                    service=req.action,
+                    source_channel=req.source_channel,
+                )
+
+                if not allowed:
+                    errors.append(f"{domain}: {reason}")
+                    logger.warning(f"Bulk action blocked for domain {domain}: {reason}")
+                    continue
+
+                allowed_entities.extend(ents)
+
+            if not allowed_entities:
+                return EntityBulkResponse(
+                    location_id=location_id,
+                    mode="action",
+                    count=0,
+                    summary="Nessuna entity autorizzata per questa azione.",
+                    errors=errors,
+                )
+
+            # Group by domain for execution (HA call_service needs same domain)
+            exec_groups: Dict[str, List[str]] = {}
+            for ent in allowed_entities:
+                d = ent["domain"]
+                if d not in exec_groups:
+                    exec_groups[d] = []
+                exec_groups[d].append(ent["entity_id"])
+
+            total_ok = 0
+            total_fail = 0
+            items = []
+            for domain, eids in exec_groups.items():
+                success, message = await multi_ha.call_service_bulk(
+                    location_id, domain, req.action, eids, req.parameters
+                )
+
+                for eid in eids:
+                    ent_info = next((e for e in allowed_entities if e["entity_id"] == eid), {})
+                    items.append(EntityBulkItem(
+                        entity_id=eid,
+                        friendly_name=ent_info.get("friendly_name", ""),
+                        domain=domain,
+                        room=ent_info.get("room"),
+                        action_result="ok" if success else message,
+                    ))
+                    if success:
+                        total_ok += 1
+                    else:
+                        total_fail += 1
+
+            summary = _build_action_summary(
+                total_ok, total_fail, req.action, allowed_entities, req
+            )
+
+            return EntityBulkResponse(
+                location_id=location_id,
+                mode="action",
+                count=len(items),
+                entities=items,
+                summary=summary,
+                errors=errors,
+            )
+
+        else:
+            return EntityBulkResponse(
+                location_id=location_id,
+                mode=req.mode,
+                count=0,
+                summary=f"Modalita '{req.mode}' non valida. Usa 'query' o 'action'.",
+                errors=[f"Invalid mode: {req.mode}"],
+            )
+
+    except Exception as e:
+        logger.error(f"entity_bulk error: {e}", exc_info=True)
+        return EntityBulkResponse(
+            location_id=req.location_id or "",
+            mode=req.mode,
+            count=0,
+            summary=f"Errore: {str(e)}",
+            errors=[str(e)],
+        )
+
+
 @router.post("/tts", response_model=TtsResponse)
 async def tool_tts(
     req: TtsRequest,
@@ -939,6 +1222,68 @@ async def _execute_ha_action(
 
     except Exception as e:
         return {"success": False, "message": str(e)}
+
+
+def _build_query_summary(items: List[EntityBulkItem], req) -> str:
+    """Build Italian human-readable summary for query results."""
+    if not items:
+        return "Nessuna entity trovata."
+
+    # Group by state
+    on_items = [i for i in items if i.state and i.state.lower() in ("on", "heat", "cool", "auto", "open", "playing")]
+    off_items = [i for i in items if i.state and i.state.lower() in ("off", "closed", "idle", "standby", "paused")]
+    other_items = [i for i in items if i not in on_items and i not in off_items]
+
+    domain = req.domain or "entity"
+    domain_label = {
+        "light": "luci", "cover": "tapparelle", "climate": "termostati",
+        "media_player": "media player", "sensor": "sensori",
+        "binary_sensor": "sensori binari", "switch": "switch",
+        "fan": "ventilatori", "vacuum": "aspirapolvere",
+    }.get(domain, domain)
+
+    scope = req.room or req.zone or req.floor or "tutta la casa"
+
+    if domain in ("sensor", "binary_sensor"):
+        # For sensors, list values
+        parts = []
+        for i in items:
+            unit = (i.attributes or {}).get("unit_of_measurement", "")
+            val = f"{i.friendly_name}: {i.state}{' ' + unit if unit else ''}"
+            parts.append(val)
+        return f"{len(items)} {domain_label} in {scope}: " + ", ".join(parts[:20])
+
+    on_names = [i.friendly_name for i in on_items]
+    total = len(items)
+    on_count = len(on_items)
+
+    if on_count == 0:
+        return f"Tutte le {total} {domain_label} in {scope} sono spente/chiuse."
+    elif on_count == total:
+        return f"Tutte le {total} {domain_label} in {scope} sono accese/aperte: {', '.join(on_names[:15])}."
+    else:
+        return (f"{on_count} {domain_label} accese/aperte su {total} in {scope}: "
+                f"{', '.join(on_names[:15])}.")
+
+
+def _build_action_summary(
+    total_ok: int, total_fail: int, action: str,
+    entities: list, req
+) -> str:
+    """Build Italian human-readable summary for action results."""
+    action_labels = {
+        "turn_on": "Accese", "turn_off": "Spente", "toggle": "Commutate",
+        "open_cover": "Aperte", "close_cover": "Chiuse", "stop_cover": "Fermate",
+        "lock": "Bloccate", "unlock": "Sbloccate",
+    }
+    action_label = action_labels.get(action, f"Eseguito {action} su")
+
+    scope = req.room or req.zone or req.floor or "tutta la casa"
+
+    if total_fail == 0:
+        return f"{action_label} {total_ok} entity in {scope}."
+    else:
+        return f"{action_label} {total_ok} entity in {scope}. {total_fail} errori."
 
 
 async def _send_approval_request(entity_id: str, action: str, source_channel: str, service_data: dict = None):

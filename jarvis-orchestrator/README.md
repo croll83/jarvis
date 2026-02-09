@@ -38,6 +38,10 @@ Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 
 │                                                               │
 │  JARVIS Approval Bot — Telegram bot separato per conferme L3 │
 │  (locks, alarm, cameras) — canale isolato da OpenClaw        │
+│                                                               │
+│  OpenClaw WS Operator Client — WebSocket conn a gateway       │
+│  Riceve exec approval events, invia bottoni inline Telegram   │
+│  (Once/Always/Deny), risolve approvazioni via WS              │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -130,7 +134,7 @@ OpenClaw ──▶ jarvis_home_control (L3 action)
 
 ## OpenClaw Skill API
 
-9 endpoint REST su `/api/tools/`, autenticati via Bearer token (`OPENCLAW_GATEWAY_TOKEN`).
+10 endpoint REST su `/api/tools/`, autenticati via Bearer token (`OPENCLAW_GATEWAY_TOKEN`).
 
 | # | Endpoint | Metodo | Descrizione |
 |---|----------|--------|-------------|
@@ -140,11 +144,27 @@ OpenClaw ──▶ jarvis_home_control (L3 action)
 | 4 | `/api/tools/security` | POST | Azioni sicurezza (privacy mode, allarme) |
 | 5 | `/api/tools/memory_query` | POST | Query memoria stratificata (SQL + vector) |
 | 6 | `/api/tools/entity_resolve` | POST | Risolvi friendly name -> entity_id HA |
-| 7 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker |
-| 8 | `/api/tools/locations` | GET | Lista location con stato health HA |
-| 9 | `/api/tools/audit_log` | POST | Registra evento nel trail di audit |
+| 7 | `/api/tools/entity_discover` | POST | Scopri entita per stanza, zona, piano, dominio |
+| 8 | `/api/tools/entity_bulk` | POST | **Query/azione bulk** su gruppi di entita (room/zone/floor/domain) |
+| 9 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker |
+| 10 | `/api/tools/locations` | GET | Lista location con stato health HA |
+| 11 | `/api/tools/audit_log` | POST | Registra evento nel trail di audit |
 
 La definizione completa della skill e dei parametri e in `skill/SKILL.md` e `skill/skill.json`.
+
+### entity_bulk — Query e azioni di gruppo
+
+Nuovo endpoint per eliminare il problema N+1 delle query multi-entita.
+
+**Prima**: "quali luci sono accese?" -> `entity_discover` + N x `entity_resolve` = N+1 chiamate API
+**Dopo**: "quali luci sono accese?" -> 1 x `entity_bulk` (internamente: 1 query DB + 1 REST HA)
+
+| Modalita | Esempio | Cosa fa |
+|----------|---------|---------|
+| `query` | `{"mode":"query","domain":"light","room":"soggiorno"}` | Ritorna stati live + attributi chiave (brightness, temperatura, ecc.) |
+| `action` | `{"mode":"action","domain":"light","action":"turn_off","zone":"Zona Giorno"}` | Esegue servizio su tutte le entita del gruppo in una singola chiamata HA |
+
+Filtri combinabili: `domain`, `room`, `zone`, `floor`, `search`, `entity_ids`. Sicurezza L1-L4 applicata per dominio; L3 (lock, camera, alarm) esclusi dal bulk.
 
 ---
 
