@@ -126,27 +126,61 @@ async def openclaw_operator_loop():
                 ping_timeout=10,
                 close_timeout=5
             ) as ws:
-                # Send connect handshake (gateway requires this within ~10s)
+                # ── Step 1: Wait for connect.challenge from gateway ──
+                challenge_raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                challenge = _json.loads(challenge_raw)
+                challenge_nonce = ""
+                challenge_ts = 0
+
+                if challenge.get("type") == "event" and challenge.get("event") == "connect.challenge":
+                    challenge_nonce = challenge.get("payload", {}).get("nonce", "")
+                    challenge_ts = challenge.get("payload", {}).get("ts", 0)
+                    logger.info(f"Received connect.challenge nonce={challenge_nonce[:12]}...")
+                else:
+                    logger.warning(f"Expected connect.challenge, got: {challenge}")
+
+                # ── Step 2: Send connect request with full protocol v3 params ──
+                # client.id MUST be one of the gateway whitelist enum values
+                # device object is OPTIONAL — we rely on auth.token instead
                 connect_id = str(uuid.uuid4())
                 connect_msg = _json.dumps({
                     "type": "req",
                     "id": connect_id,
                     "method": "connect",
                     "params": {
+                        "minProtocol": 3,
+                        "maxProtocol": 3,
+                        "client": {
+                            "id": "gateway-client",
+                            "version": "1.0.0",
+                            "platform": "linux",
+                            "mode": "backend"
+                        },
                         "role": "operator",
-                        "token": token,
-                        "scopes": ["operator.approvals"]
+                        "scopes": [
+                            "operator.read",
+                            "operator.write",
+                            "operator.approvals"
+                        ],
+                        "auth": {
+                            "token": token
+                        },
+                        "locale": "it-IT",
+                        "userAgent": "jarvis-orchestrator/1.0.0"
                     }
                 })
                 await ws.send(connect_msg)
+                logger.info("Sent connect request (protocol v3)")
 
-                # Wait for HelloOk response
+                # ── Step 3: Wait for HelloOk response ──
                 hello_raw = await asyncio.wait_for(ws.recv(), timeout=10)
                 hello = _json.loads(hello_raw)
                 if hello.get("type") == "res" and hello.get("ok"):
-                    logger.info(f"✅ OpenClaw operator WS connected (proto={hello.get('payload', {}).get('version', '?')})")
+                    proto = hello.get("payload", {}).get("protocol", "?")
+                    logger.info(f"✅ OpenClaw operator WS connected (proto={proto})")
                 else:
-                    logger.error(f"OpenClaw WS handshake failed: {hello}")
+                    err = hello.get("error", hello)
+                    logger.error(f"OpenClaw WS handshake failed: {err}")
                     await asyncio.sleep(reconnect_delay)
                     continue
 
@@ -171,6 +205,21 @@ async def openclaw_operator_loop():
                                 if req_id and req_id in pending_exec_approvals:
                                     del pending_exec_approvals[req_id]
                                     logger.info(f"Exec approval {req_id[:8]} resolved externally")
+                            elif event_name == "tick":
+                                pass  # Gateway heartbeat — ignore silently
+                            else:
+                                logger.debug(f"WS event: {event_name}")
+
+                        elif msg_type == "req":
+                            # Server-initiated request (e.g. tick ping) — respond ok
+                            req_id = msg.get("id")
+                            if req_id:
+                                await ws.send(_json.dumps({
+                                    "type": "res",
+                                    "id": req_id,
+                                    "ok": True,
+                                    "payload": {}
+                                }))
 
                         elif msg_type == "res":
                             # Response to a request we sent (e.g. resolve)
