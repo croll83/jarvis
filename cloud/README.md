@@ -222,8 +222,9 @@ Variabili obbligatorie da compilare:
 | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) |
 | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | `OPENCLAW_GATEWAY_TOKEN` | Stesso valore usato in `openclaw onboard` |
+| `OPENCLAW_WS_URL` | `ws://<IP-TAILSCALE-VPS>:18789` — stesso IP di `OPENCLAW_URL` ma con `ws://` |
 | `OPENCLAW_TELEGRAM_BOT_TOKEN` | @BotFather su Telegram |
-| `JARVIS_APPROVAL_BOT_TOKEN` | @BotFather (secondo bot, separato) |
+| `JARVIS_APPROVAL_BOT_TOKEN` | @BotFather (secondo bot, separato da OpenClaw) |
 | `JARVIS_APPROVAL_CHAT_ID` | Scrivi al bot, poi `curl https://api.telegram.org/bot<TOKEN>/getUpdates` |
 | `HASS_URL` | `http://100.x.x.x:8123` (IP Tailscale del tuo HA, senza `/api`) |
 | `JARVIS_HASS_TOKEN` | HA → Profilo → Token di lunga durata |
@@ -280,6 +281,31 @@ Configura il webhook del bot OpenClaw puntando al tuo dominio:
 ```bash
 curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
 ```
+
+### STEP 8b — Exec Approvals (bottoni Telegram)
+
+L'orchestrator si connette al gateway OpenClaw via WebSocket come operator client.
+Quando un agente richiede l'esecuzione di un comando, l'approval arriva come
+messaggio Telegram con bottoni inline (✅ Once, 🔓 Always, ❌ Deny) sul **JARVIS Approval Bot**.
+
+**Prerequisiti (già nel .env):**
+- `OPENCLAW_WS_URL` — URL WebSocket del gateway (`ws://<IP-TAILSCALE>:18789`)
+- `OPENCLAW_GATEWAY_TOKEN` — token di autenticazione gateway
+- `JARVIS_APPROVAL_BOT_TOKEN` — token del secondo bot Telegram (separato da OpenClaw)
+- `JARVIS_APPROVAL_CHAT_ID` — chat ID per ricevere le notifiche
+
+**Configurazione OpenClaw** (`~/.openclaw/config.json5`):
+```json5
+"approvals": {
+  "exec": {
+    "enabled": false  // disabilita il flow testuale nativo di OpenClaw
+  }
+}
+```
+
+> **Nota**: Il bot Approval usa **long-polling** (getUpdates) per ricevere i callback
+> dai bottoni inline. Non richiede URL pubblico o webhook. Verrà migrato a webhook
+> quando sarà configurato un DNS pubblico (jarvis-pub.mintwork.it).
 
 ### STEP 9 — Nginx + SSL (certbot DNS Cloudflare)
 

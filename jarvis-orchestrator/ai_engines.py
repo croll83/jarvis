@@ -76,7 +76,7 @@ def _get_entity_map_for_prompt(location_id: Optional[str] = None, user_id: Optio
     - Cap a MAX_ENTITY_MAP_CHARS per evitare di saturare il context
     - Formato compatto: rimuove livelli gerarchici inutili per il routing
     """
-    MAX_ENTITY_MAP_CHARS = 8000  # ~2000 token, cap di sicurezza
+    MAX_ENTITY_MAP_CHARS = 10000  # ~2500 token, cap di sicurezza
 
     try:
         from database import get_entity_map_for_llm, get_all_locations, get_user_location
