@@ -384,7 +384,7 @@ async def approval_bot_polling_loop():
             params = {
                 "offset": offset,
                 "timeout": poll_timeout,
-                "allowed_updates": _json.dumps(["callback_query"])
+                "allowed_updates": _json.dumps(["callback_query", "message"])
             }
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -400,6 +400,43 @@ async def approval_bot_polling_loop():
 
             for update in data.get("result", []):
                 offset = update["update_id"] + 1
+
+                # ── Handle /location command ──
+                message = update.get("message")
+                if message:
+                    text_msg = (message.get("text") or "").strip()
+                    msg_chat_id = message.get("chat", {}).get("id")
+                    from_user_msg = message.get("from", {})
+                    tg_id_msg = from_user_msg.get("id")
+
+                    if text_msg.lower() == "/location" and msg_chat_id:
+                        user_msg = get_user_by_telegram_id(tg_id_msg) if tg_id_msg else None
+                        if user_msg:
+                            locations = get_all_locations(enabled_only=True)
+                            user_loc = get_user_location(user_msg.id)
+                            current_loc = user_loc.location_id if user_loc else None
+
+                            buttons = []
+                            for loc in locations:
+                                prefix = "✅ " if loc.id == current_loc else "🏠 "
+                                buttons.append({"text": f"{prefix}{loc.name}", "callback_data": f"setloc_{loc.id}"})
+
+                            keyboard = {"inline_keyboard": [buttons]}
+                            send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                            try:
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(send_url, json={
+                                        "chat_id": msg_chat_id,
+                                        "text": f"📍 Location attuale: *{current_loc or 'non impostata'}*\nSeleziona la tua posizione:",
+                                        "parse_mode": "Markdown",
+                                        "reply_markup": keyboard
+                                    }) as _:
+                                        pass
+                            except Exception as e:
+                                logger.error(f"Send location keyboard error: {e}")
+                    continue
+
+                # ── Handle callback queries ──
                 callback_query = update.get("callback_query")
                 if not callback_query:
                     continue
@@ -416,6 +453,38 @@ async def approval_bot_polling_loop():
                             pass
                 except Exception:
                     pass
+
+                # ── setloc_ callback: set user location directly ──
+                if cb_data.startswith("setloc_"):
+                    loc_id = cb_data[7:]
+                    from_user_cb = callback_query.get("from", {})
+                    tg_id_cb = from_user_cb.get("id")
+                    user_cb = get_user_by_telegram_id(tg_id_cb) if tg_id_cb else None
+
+                    if user_cb and loc_id:
+                        set_user_location(user_cb.id, loc_id, "telegram_command")
+                        loc = get_location(loc_id)
+                        loc_name = loc.name if loc else loc_id
+
+                        try:
+                            msg = callback_query.get("message", {})
+                            chat_id = msg.get("chat", {}).get("id")
+                            message_id = msg.get("message_id")
+                            if chat_id and message_id:
+                                edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(edit_url, json={
+                                        "chat_id": chat_id,
+                                        "message_id": message_id,
+                                        "text": f"📍 Location impostata: *{loc_name}*",
+                                        "parse_mode": "Markdown"
+                                    }) as _:
+                                        pass
+                        except Exception as e:
+                            logger.debug(f"Failed to edit setloc message: {e}")
+
+                        logger.info(f"User {user_cb.name} location set to {loc_id} via /location command")
+                    continue
 
                 # Parse callback: execonce_slug, execalways_slug, execdeny_slug
                 if "_" not in cb_data:
