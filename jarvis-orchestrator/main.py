@@ -253,15 +253,17 @@ async def openclaw_operator_loop():
 
 async def _handle_exec_approval_event(payload: dict):
     """Handle an exec.approval.requested event from OpenClaw gateway."""
-    # Debug: log full payload to discover field names
-    logger.info(f"Exec approval payload keys: {list(payload.keys())}")
-    logger.debug(f"Exec approval full payload: {payload}")
+    # Payload structure: {id, request: {command, cwd, agentId, ...}, createdAtMs, expiresAtMs}
+    logger.debug(f"Exec approval payload keys: {list(payload.keys())}")
 
     approval_id = payload.get("id", "")
-    command = payload.get("command", payload.get("cmd", payload.get("line", "unknown")))
-    cwd = payload.get("cwd", "")
-    agent = payload.get("agent", payload.get("agentId", ""))
-    ws_req_id = payload.pop("_ws_req_id", None)  # WS request ID for responding
+    ws_req_id = payload.pop("_ws_req_id", None)
+
+    # The command details are nested inside the "request" object
+    request = payload.get("request", {})
+    command = request.get("command", payload.get("command", "unknown"))
+    cwd = request.get("cwd", payload.get("cwd", ""))
+    agent = request.get("agentId", request.get("agent", payload.get("agentId", "")))
 
     if not approval_id:
         logger.error(f"Exec approval event missing id, payload: {payload}")
@@ -270,10 +272,10 @@ async def _handle_exec_approval_event(payload: dict):
     # Store in pending map for callback resolution
     pending_exec_approvals[approval_id] = {
         "data": payload,
-        "ws_req_id": ws_req_id,  # Store the gateway's WS req ID for the response
+        "ws_req_id": ws_req_id,
         "timestamp": time.time()
     }
-    logger.info(f"Exec approval requested: {approval_id[:8]} cmd={command[:80]} ws_req_id={ws_req_id}")
+    logger.info(f"Exec approval requested: {approval_id[:8]} cmd={command[:80]}")
 
     # Send Telegram message with inline buttons
     await send_exec_approval(
