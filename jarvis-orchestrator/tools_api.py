@@ -1025,8 +1025,8 @@ async def tool_tts(
 
         await speak_with_sound(
             text=req.text,
-            speaker=speaker_entity,
-            sound=sound,
+            media_player_id=speaker_entity,
+            sound_type=sound,
             location_id=req.location_id,
         )
 
