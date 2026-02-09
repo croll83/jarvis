@@ -200,6 +200,62 @@ ss -tlnp | grep 18789
 
 > **Nota**: con `bind: "tailnet"`, OpenClaw NON ascolta su `localhost:18789` ma sull'IP Tailscale. L'orchestrator deve puntare a quell'IP nel `.env`.
 
+### STEP 4c — Browser DOM Plugin (automazione browser headless)
+
+Il plugin `browser-dom` aggiunge tool di manipolazione DOM diretta (CSS selectors, XPath, JS evaluate) via Chrome DevTools Protocol. Permette all'agente di navigare siti web, compilare form, cliccare bottoni e fare screenshot senza i problemi di stale-ref del browser tool built-in.
+
+```bash
+su - jarvis
+
+# 1. Copia il plugin nella directory extensions di OpenClaw
+cp -r /opt/jarvis/extensions/browser-dom ~/.openclaw/extensions/browser-dom
+cd ~/.openclaw/extensions/browser-dom
+npm install
+
+# 2. Installa il servizio Chrome headless (gestito da systemd)
+sudo cp openclaw-chrome.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now openclaw-chrome
+
+# 3. Verifica che Chrome CDP sia attivo
+curl -s http://127.0.0.1:18800/json/version | head -3
+# Deve mostrare: { "Browser": "Chrome/xxx", ... }
+
+# 4. Configura il plugin in openclaw.json
+# (aggiungere queste sezioni alla configurazione esistente)
+python3 -c "
+import json
+with open('$HOME/.openclaw/openclaw.json') as f:
+    cfg = json.load(f)
+cfg.setdefault('browser', {})['enabled'] = True
+cfg['browser']['evaluateEnabled'] = True
+cfg['browser']['defaultProfile'] = 'openclaw'
+cfg['browser'].setdefault('profiles', {})['openclaw'] = {'cdpPort': 18800, 'color': '#4A90D9'}
+cfg.setdefault('plugins', {}).setdefault('entries', {})['browser-dom'] = {
+    'enabled': True,
+    'config': {'cdpUrl': 'http://127.0.0.1:18800', 'defaultTimeoutMs': 15000}
+}
+allow = cfg.setdefault('tools', {}).get('alsoAllow', [])
+if 'group:plugins' not in allow:
+    allow.append('group:plugins')
+    cfg['tools']['alsoAllow'] = allow
+with open('$HOME/.openclaw/openclaw.json', 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('browser-dom plugin configured')
+"
+
+# 5. Riavvia OpenClaw
+sudo systemctl restart openclaw
+
+# 6. Verifica che il plugin sia caricato
+journalctl -u openclaw --no-pager -n 10 | grep browser-dom
+# Deve mostrare: [browser-dom] 8 DOM tools registered successfully.
+```
+
+> **Boot order**: `openclaw-chrome.service` parte prima di `openclaw.service` (grazie a `Before=openclaw.service`). Se Chrome non e attivo, i tool dom_* falliranno con "fetch failed".
+
+Per maggiori dettagli, vedi: [`extensions/browser-dom/README.md`](../../extensions/browser-dom/README.md)
+
 ### STEP 5 — Configura .env
 
 ```bash
@@ -401,6 +457,51 @@ Per ricaricare senza riavvio:
 curl -X POST http://localhost:5000/admin/prompts/reload
 ```
 
+### OpenClaw Environment Variables (openclaw.env)
+
+Il servizio systemd carica variabili aggiuntive da `~/.openclaw/openclaw.env` (opzionale, creato dallo script di setup).
+
+```bash
+nano ~/.openclaw/openclaw.env
+```
+
+| Variabile | Descrizione |
+|-----------|-------------|
+| `GOG_KEYRING_PASSWORD` | Password per il keyring gogcli |
+| `GOG_ACCOUNT` | Email dell'account GOG |
+
+Dopo aver modificato il file, riavvia OpenClaw:
+```bash
+sudo systemctl restart openclaw
+```
+
+### gogcli — Configurazione Credenziali
+
+La skill `gogcli` richiede file di credenziali nella directory `~/.config/gog/` dell'utente jarvis.
+
+**File da copiare manualmente:**
+```
+~/.config/gog/
+  ├── credentials.json     # Credenziali GOG (generato da gogcli login)
+  └── keyring/
+      └── <email>/         # Directory con i file del keyring per il tuo account
+          ├── key.json
+          └── ...
+```
+
+**Setup:**
+```bash
+# La directory viene creata dallo script di setup. Copia i file dal tuo ambiente locale:
+scp -r ~/.config/gog/credentials.json jarvis@<vps-ip>:~/.config/gog/
+scp -r ~/.config/gog/keyring/ jarvis@<vps-ip>:~/.config/gog/
+
+# Verifica
+ls -la ~/.config/gog/
+ls -la ~/.config/gog/keyring/
+```
+
+> **Nota**: Questi file contengono credenziali sensibili. Non committarli nel repository.
+
 ### Dashboard OpenClaw
 
 OpenClaw espone una dashboard web accessibile su:
@@ -430,6 +531,7 @@ La porta 18789 NON e esposta su internet (non e in Docker, e un processo locale)
 |-------|----------|---------|
 | 5000 | Orchestrator + Admin UI | Pubblico (dietro nginx) |
 | 18789 | OpenClaw (bare-metal) | Solo localhost + Tailscale (NO Docker, NO internet) |
+| 18800 | Chrome CDP (headless) | Solo localhost (browser-dom plugin) |
 | 41641/udp | Tailscale NAT traversal | WAN (host-level, servizio systemd) |
 
 ---
@@ -437,6 +539,10 @@ La porta 18789 NON e esposta su internet (non e in Docker, e un processo locale)
 ## Monitoring
 
 ```bash
+# Stato Chrome headless (browser-dom)
+systemctl status openclaw-chrome
+curl -s http://127.0.0.1:18800/json/version | head -3
+
 # Stato OpenClaw (systemd)
 systemctl status openclaw
 journalctl -u openclaw -f --no-pager
@@ -465,6 +571,27 @@ ps aux | grep openclaw
 ---
 
 ## Troubleshooting
+
+### Chrome headless / browser-dom non funziona
+
+```bash
+# Verifica che il servizio Chrome sia attivo
+sudo systemctl status openclaw-chrome
+journalctl -u openclaw-chrome --no-pager -n 20
+
+# Verifica CDP
+curl -s http://127.0.0.1:18800/json/version
+
+# Se Chrome non risponde, riavvialo
+sudo systemctl restart openclaw-chrome
+
+# Verifica che il plugin sia caricato
+journalctl -u openclaw --no-pager -n 20 | grep browser-dom
+# Deve mostrare: [browser-dom] 8 DOM tools registered successfully.
+
+# Se il plugin non appare, verifica che sia installato
+ls -la ~/.openclaw/extensions/browser-dom/
+```
 
 ### OpenClaw non parte
 
@@ -597,6 +724,11 @@ sudo systemctl restart openclaw
 # 5. Se exec-approvals.json e cambiato
 cp /opt/jarvis/cloud/exec-approvals.json ~/.openclaw/
 sudo systemctl restart openclaw
+
+# 6. Se il plugin browser-dom e cambiato
+cp -r /opt/jarvis/extensions/browser-dom/* ~/.openclaw/extensions/browser-dom/
+cd ~/.openclaw/extensions/browser-dom && npm install
+sudo systemctl restart openclaw-chrome openclaw
 ```
 
 > **Nota**: l'aggiornamento di OpenClaw non richiede rebuild Docker. L'aggiornamento Docker non tocca OpenClaw. L'aggiornamento di Tailscale non tocca ne Docker ne OpenClaw. Se cambiano solo file Python dell'orchestrator, basta rebuild Docker. Se cambia la skill definition, serve anche la copia + restart OpenClaw.

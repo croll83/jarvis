@@ -8,12 +8,14 @@
 #   ansible-playbook playbooks/site.yml                    # Deploy completo
 #   ansible-playbook playbooks/site.yml --tags common      # Solo sistema + Docker
 #   ansible-playbook playbooks/site.yml --tags nvidia      # Solo NVIDIA (GPU)
+#   ansible-playbook playbooks/site.yml --tags openclaw    # Solo setup VM OpenClaw
 #   ansible-playbook playbooks/site.yml --tags jarvis      # Solo deploy JARVIS
 #   ansible-playbook playbooks/site.yml --tags security    # Solo stack sicurezza
 #   ansible-playbook playbooks/site.yml --tags verify      # Solo verifica servizi
 #
 # Step by step:
 #   ansible-playbook playbooks/site.yml --tags common,nvidia
+#   ansible-playbook playbooks/site.yml --tags openclaw
 #   ansible-playbook playbooks/site.yml --tags jarvis
 #   ansible-playbook playbooks/site.yml --tags verify
 
@@ -25,14 +27,18 @@
   ansible.builtin.import_playbook: nvidia.yml
   tags: [nvidia]
 
-- name: "Fase 3: Deploy JARVIS"
+- name: "Fase 3: Setup OpenClaw VM (Node.js, Chrome, Brew, Skill deps)"
+  ansible.builtin.import_playbook: openclaw.yml
+  tags: [openclaw]
+
+- name: "Fase 4: Deploy JARVIS"
   ansible.builtin.import_playbook: jarvis.yml
   tags: [jarvis]
 
-- name: "Fase 4: Security Stack (opzionale)"
+- name: "Fase 5: Security Stack (opzionale)"
   ansible.builtin.import_playbook: security.yml
   tags: [security]
 
-- name: "Fase 5: Verifica Servizi"
+- name: "Fase 6: Verifica Servizi"
   ansible.builtin.import_playbook: verify.yml
   tags: [verify]

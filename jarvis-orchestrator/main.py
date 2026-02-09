@@ -82,6 +82,9 @@ pending_exec_approvals: dict = {}
 # Strong references to background tasks (prevents GC from destroying them)
 _background_tasks: set = set()
 
+# Virtual Microphone response store (request_id -> response data, auto-expires)
+_vmic_responses: dict = {}
+
 
 # ===========================================================================
 # OPENCLAW GATEWAY OPERATOR (WebSocket client for exec approvals)
@@ -527,11 +530,24 @@ app.include_router(tools_router)
 
 
 # ===========================================================================
+# VIRTUAL MICROPHONE — Polling endpoint per risposta
+# ===========================================================================
+
+@app.get("/api/admin/vmic-response")
+async def get_vmic_response(request_id: str = Query(...)):
+    """Polling endpoint per il Virtual Microphone della dashboard."""
+    data = _vmic_responses.get(request_id)
+    if data:
+        return data
+    return JSONResponse(status_code=202, content={"response": None})
+
+
+# ===========================================================================
 # MIDDLEWARE — Access Logging per sicurezza
 # ===========================================================================
 
 # Path da escludere dal logging (troppo frequenti / non rilevanti)
-_ACCESS_LOG_SKIP_PREFIXES = ("/assets/", "/health", "/favicon")
+_ACCESS_LOG_SKIP_PREFIXES = ("/assets/", "/health", "/favicon", "/api/admin/vmic-response")
 
 @app.middleware("http")
 async def access_logging_middleware(request: Request, call_next):
@@ -1297,6 +1313,9 @@ async def voice_stream(
     if header_device_id:
         device_id_value = header_device_id.upper().strip()
 
+    # Virtual Microphone: request_id per tracciare la risposta
+    vmic_request_id = request.headers.get("X-Request-ID")
+
     # Handle multipart form data (streaming)
     if "multipart/form-data" in content_type:
         if audio:
@@ -1327,7 +1346,22 @@ async def voice_stream(
 
     # Recupera configurazione device dal database
     device_config = None
-    if device_id_value:
+    is_virtual_mic = device_id_value == "VIRTUALMICBROWSER"
+
+    if is_virtual_mic:
+        # Virtual Microphone: build config from request headers
+        vmic_speaker = request.headers.get("X-Output-Speaker", "")
+        vmic_location = request.headers.get("X-Location", "")
+        if vmic_speaker and vmic_location:
+            device_config = {
+                "location_id": vmic_location,
+                "friendly_name": room_value or "VirtualMic",
+                "output_speaker": vmic_speaker,
+                "fallback_speaker": None,
+                "fallback_telegram": True,
+                "fallback_local_speaker": False,
+            }
+    elif device_id_value:
         device_config = get_device_speaker_config(device_id_value)
 
     if device_config:
@@ -1360,7 +1394,7 @@ async def voice_stream(
         admin_metrics.record_speaker_id((time.time() - speaker_start) * 1000)
 
         context = {
-            "source": "AtomS3R",
+            "source": "VirtualMic" if is_virtual_mic else "AtomS3R",
             "room": room_value,
             "mic_id": mic_id_value or device_id_value or "unknown",
             "device_id": device_id_value or mic_id_value or "unknown",
@@ -1368,6 +1402,11 @@ async def voice_stream(
             "device_config": device_config,  # Passa la config per la fallback chain
             **speaker_ctx
         }
+
+        # Virtual Microphone: traccia request_id per la risposta
+        if vmic_request_id:
+            context["vmic_request_id"] = vmic_request_id
+            context["_vmic_start_time"] = time.time()
 
         # Aggiorna user location (voice)
         if speaker_ctx.get("speaker_id"):
@@ -1417,6 +1456,9 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     Handle voice commands that need OpenClaw (non-certain domotics or general queries).
     Forwards to OpenClaw and delivers response via TTS.
     """
+    context["_user_text"] = text  # Per VirtualMic response tracking
+    context["_intent"] = f"OPENCLAW:{hint}" if hint else "OPENCLAW"
+
     save_chat_message("user", text, context.get("source", "AtomS3R"),
                       context.get("speaker_id"), context.get("speaker_name", "Sconosciuto"))
 
@@ -1432,6 +1474,7 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
 
 async def process_jarvis_logic(text: str, context: dict):
     """Main processing logic per tutti i comandi."""
+    context["_user_text"] = text  # Per VirtualMic response tracking
     source = context.get("source", "unknown")
     speaker_id = context.get("speaker_id")
     speaker_name = context.get("speaker_name", "Sconosciuto")
@@ -1535,6 +1578,7 @@ async def process_jarvis_logic(text: str, context: dict):
     conf_high, conf_low = get_confidence_thresholds()
 
     logger.info(f"Routed: intent={intent}, confidence={conf:.2f}, speaker={speaker_name}")
+    context["_intent"] = intent  # Per VirtualMic response tracking
 
     # Pubblica evento SSE per dashboard real-time
     try:
@@ -2017,6 +2061,33 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
     # la risposta locale. Per ora logghiamo solo.
     if use_local_speaker:
         logger.warning(f"Local speaker fallback triggered for device {context.get('device_id')}")
+
+    # Virtual Microphone: salva risposta e notifica dashboard via SSE
+    vmic_req_id = context.get("vmic_request_id")
+    if vmic_req_id:
+        duration_ms = int((time.time() - context.get("_vmic_start_time", time.time())) * 1000)
+        vmic_data = {
+            "request_id": vmic_req_id,
+            "response": text,
+            "speaker_name": speaker_name,
+            "speaker_target": target_player or "",
+            "intent": context.get("_intent", ""),
+            "duration_ms": duration_ms,
+            "user_text": context.get("_user_text", ""),
+        }
+        _vmic_responses[vmic_req_id] = vmic_data
+        # Auto-cleanup dopo 60s
+        async def _cleanup_vmic(rid):
+            await asyncio.sleep(60)
+            _vmic_responses.pop(rid, None)
+        asyncio.create_task(_cleanup_vmic(vmic_req_id))
+        # SSE push
+        try:
+            from event_bus import event_bus
+            await event_bus.publish("voice_response", vmic_data)
+        except Exception:
+            pass
+        logger.info(f"VirtualMic response stored for request {vmic_req_id}")
 
 
 async def try_speak(text: str, target_player: str, location: str, sound_type: str = None) -> bool:

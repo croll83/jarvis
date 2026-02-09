@@ -49,11 +49,15 @@ Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA r
 |  Tailscale host-level - jarvis-openclaw                              |
 |                                                                      |
 |  openclaw gateway :18789                                             |
+|  Chrome headless  :18800 (CDP, solo localhost)                       |
 |  Gemini 3 Pro (API cloud)                                            |
 |  Telegram bot integrato                                              |
 |                                                                      |
 |  Skill (copiata):                                                    |
-|  ~/.openclaw/workspace/skills/jarvis-orchestrator/ (SKILL.md + skill.json)     |
+|  ~/.openclaw/workspace/skills/jarvis-orchestrator/                   |
+|                                                                      |
+|  Plugin:                                                             |
+|  ~/.openclaw/extensions/browser-dom/ (DOM automation via CDP)        |
 |                                                                      |
 |  Raggiungibile via:                                                  |
 |  - Tailscale MagicDNS: http://jarvis-openclaw:18789                  |
@@ -69,8 +73,10 @@ Le due VM sono indipendenti su Proxmox e si avviano in parallelo.
 
 **VM-OpenClaw** (boot autonomo):
 ```
-systemd -> tailscaled.service -> openclaw.service (Node.js, porta 18789)
+systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
+                              -> openclaw.service (Node.js, porta 18789)
 ```
+`openclaw-chrome.service` ha `Before=openclaw.service`, quindi Chrome parte prima del gateway.
 
 **VM-GPU** (boot sequenziale):
 ```
@@ -92,6 +98,7 @@ systemd -> tailscaled.service -> openclaw.service (Node.js, porta 18789)
 | **PostgreSQL** | VM-GPU | `jarvis_postgres` | 0.5 | 512 MB | - | Database side projects |
 | **MongoDB** | VM-GPU | `jarvis_mongo` | 0.5 | 512 MB | - | Database side projects |
 | **OpenClaw** | VM separata (bare-metal) | `openclaw.service` (systemd) | 0.5 | 512 MB | - | Gemini 3 Pro brain (API cloud) |
+| **Chrome Headless** | VM separata (bare-metal) | `openclaw-chrome.service` (systemd) | 0.5 | ≤1 GB | - | Browser automation via CDP :18800 |
 
 ---
 
@@ -116,12 +123,16 @@ systemd -> tailscaled.service -> openclaw.service (Node.js, porta 18789)
 | Componente | Minimo | Consigliato |
 |------------|--------|-------------|
 | CPU | 1 core | 2 core |
-| RAM | 512 MB | 1 GB |
+| RAM | 1 GB | 2 GB |
 | Disco | 10 GB | 20 GB |
 | OS | Ubuntu 22.04+ / Debian 12+ | - |
-| Node.js | 18+ | 20 LTS |
+| Node.js | 22+ | 22 LTS |
+| Google Chrome | stable | latest |
 | GPU | Non richiesta | - |
 | Tailscale | installato host-level | latest |
+
+> **Nota:** Chrome headless (per browser-dom) richiede ~512 MB extra di RAM rispetto al solo gateway.
+> Node.js 22+ è necessario per il supporto nativo WebSocket usato dal plugin browser-dom.
 
 ---
 
@@ -215,6 +226,46 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now openclaw
+```
+
+#### STEP 3b — Browser-DOM Plugin (VM-OpenClaw, opzionale)
+
+Il plugin browser-dom aggiunge 8 tool DOM per automazione web (navigazione, click,
+fill, screenshot via CSS selectors / XPath / text matching) parlando direttamente con
+Chrome headless tramite CDP.
+
+```bash
+# Installa Chrome headless (se non presente)
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo apt install -y ./google-chrome-stable_current_amd64.deb
+rm google-chrome-stable_current_amd64.deb
+
+# Copia il plugin
+mkdir -p ~/.openclaw/extensions/browser-dom
+cp -r /opt/jarvis/extensions/browser-dom/{src,index.ts,package.json,openclaw.plugin.json} \
+    ~/.openclaw/extensions/browser-dom/
+cd ~/.openclaw/extensions/browser-dom && npm install --omit=dev && cd -
+
+# Crea directory Chrome user-data
+mkdir -p ~/.openclaw/browser/openclaw/user-data
+
+# Crea servizio Chrome headless (come root)
+sudo cp /opt/jarvis/extensions/browser-dom/openclaw-chrome.service \
+    /etc/systemd/system/openclaw-chrome.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now openclaw-chrome
+
+# Verifica CDP
+curl -s http://127.0.0.1:18800/json/version
+
+# Configura il plugin in openclaw.json (dopo onboarding)
+bash /opt/jarvis/cloud/scripts/configure-browser-dom.sh
+
+# Riavvia OpenClaw per caricare il plugin
+sudo systemctl restart openclaw
+
+# Verifica che il plugin sia caricato
+journalctl -u openclaw --since '1 min ago' | grep browser-dom
 ```
 
 ### STEP 4 — Clone repository (VM-GPU)
@@ -553,6 +604,7 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | Porta | Servizio | Protocollo | Accesso |
 |-------|----------|------------|---------|
 | 18789 | OpenClaw Gateway + Dashboard | HTTP | LAN / Tailscale |
+| 18800 | Chrome Headless (CDP) | HTTP/WS | Solo localhost (127.0.0.1) |
 
 ---
 
@@ -605,14 +657,20 @@ tailscale ping jarvis-openclaw
 
 # === VM-OpenClaw ===
 
-# Stato servizio
-sudo systemctl status openclaw
+# Stato servizi
+sudo systemctl status openclaw-chrome openclaw
+
+# Chrome CDP attivo?
+curl -s http://127.0.0.1:18800/json/version
 
 # Tailscale status
 tailscale status
 
 # Logs OpenClaw
 sudo journalctl -u openclaw -f
+
+# Logs Chrome headless
+sudo journalctl -u openclaw-chrome -f
 
 # Health
 curl http://localhost:18789/health
@@ -695,6 +753,47 @@ openclaw --version
 sudo systemctl restart openclaw
 ```
 
+### Chrome headless non parte (VM-OpenClaw)
+
+```bash
+# Stato del servizio
+sudo systemctl status openclaw-chrome
+sudo journalctl -u openclaw-chrome --since '5 min ago'
+
+# Verifica Chrome installato
+google-chrome --version
+
+# CDP risponde?
+curl -s http://127.0.0.1:18800/json/version
+
+# Stale singleton files? (Chrome crashato in precedenza)
+ls -la ~/.openclaw/browser/openclaw/user-data/Singleton*
+# Il servizio li pulisce automaticamente all'avvio (ExecStartPre)
+
+# Riavvia il servizio
+sudo systemctl restart openclaw-chrome
+```
+
+### browser-dom plugin non carica (VM-OpenClaw)
+
+```bash
+# Verifica che il plugin sia presente
+ls -la ~/.openclaw/extensions/browser-dom/
+
+# Controlla i log OpenClaw per errori di caricamento
+journalctl -u openclaw --since '5 min ago' | grep -i 'browser-dom\|plugin'
+
+# Verifica che openclaw.json abbia il plugin configurato
+jq '.plugins["browser-dom"]' ~/.openclaw/openclaw.json
+
+# Test manuale CDP
+curl -s http://127.0.0.1:18800/json/list   # Deve mostrare tab aperte
+
+# Riavvia entrambi i servizi
+sudo systemctl restart openclaw-chrome
+sudo systemctl restart openclaw
+```
+
 ### HA non raggiungibile
 
 ```bash
@@ -761,6 +860,21 @@ cp jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orch
 # Non serve riavvio — OpenClaw ricarica le skill automaticamente
 ```
 
+Per aggiornare il plugin browser-dom:
+
+```bash
+# Sulla VM-OpenClaw
+cd /opt/jarvis
+git pull
+# Ricopia il plugin aggiornato
+cp -r extensions/browser-dom/{src,index.ts,package.json,openclaw.plugin.json} \
+    ~/.openclaw/extensions/browser-dom/
+cd ~/.openclaw/extensions/browser-dom && npm install --omit=dev && cd -
+
+# Riavvia OpenClaw per ricaricare il plugin
+sudo systemctl restart openclaw
+```
+
 ---
 
 ## File di Riferimento
@@ -776,3 +890,5 @@ cp jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orch
 | [../docker-compose.yml](../docker-compose.yml) | Stack locale VM-GPU (NO OpenClaw, NO Tailscale) |
 | [../cloud/](../cloud/) | Deploy cloud (VPS senza GPU) |
 | [../security/](../security/) | Stack security (Frigate + DoubleTake) |
+| [../../extensions/browser-dom/](../../extensions/browser-dom/) | Plugin DOM automation (CDP) |
+| [../../extensions/browser-dom/README.md](../../extensions/browser-dom/README.md) | Documentazione browser-dom |
