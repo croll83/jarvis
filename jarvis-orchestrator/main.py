@@ -79,182 +79,154 @@ speaking_state_lock = asyncio.Lock()
 # Pending exec approvals from OpenClaw (approval_id -> full request data)
 pending_exec_approvals: dict = {}
 
+# Strong references to background tasks (prevents GC from destroying them)
+_background_tasks: set = set()
+
 
 # ===========================================================================
-# OPENCLAW EXEC APPROVAL SERVER (Unix socket - NDJSON protocol)
+# OPENCLAW GATEWAY OPERATOR (WebSocket client for exec approvals)
 # ===========================================================================
-# OpenClaw uses a Unix domain socket for exec approvals.
-# Protocol: Newline-delimited JSON (NDJSON) over Unix socket.
+# OpenClaw gateway broadcasts exec.approval.requested events to connected
+# operator clients. We connect as an operator, receive these events, forward
+# them to Telegram with inline buttons, and resolve via exec.approval.resolve.
 #
-# Flow:
-# 1. We listen on the socket path from exec-approvals.json
-# 2. When OpenClaw needs an exec approval, it connects to our socket
-# 3. It sends: {"type":"request","token":"...","id":"uuid","request":{command,cwd,...}}
-# 4. We forward to Telegram with inline buttons
-# 5. When user presses a button, we respond: {"type":"decision","decision":"allow-once"}
-# 6. OpenClaw reads the decision and closes the connection
-#
-# Each approval = one socket connection that stays open until decision or timeout.
+# Gateway WS protocol (JSON-RPC style):
+#   Request:  {"type":"req", "id":"<uuid>", "method":"<method>", "params":{...}}
+#   Response: {"type":"res", "id":"<uuid>", "ok":true, "payload":{...}}
+#   Event:    {"type":"event", "event":"<name>", "payload":{...}}
 
-async def openclaw_approval_server():
+# Reference WS connection that stays open for resolving approvals
+_operator_ws = None
+
+async def openclaw_operator_loop():
     """
-    Unix socket server that listens for exec approval requests from OpenClaw.
-    Each connection represents one pending approval.
+    Connects to OpenClaw gateway as a WebSocket operator client.
+    Listens for exec.approval.requested events and forwards them
+    to Telegram with inline buttons via the JARVIS Approval Bot.
     """
+    global _operator_ws
+    import websockets
     import json as _json
 
-    socket_path = config.OPENCLAW_APPROVAL_SOCKET_PATH
-    socket_token = config.OPENCLAW_APPROVAL_SOCKET_TOKEN
+    ws_url = config.OPENCLAW_WS_URL
+    token = config.OPENCLAW_TOKEN
 
-    if not socket_path or not socket_token:
-        logger.warning("OPENCLAW_APPROVAL_SOCKET not configured, exec approval server disabled")
+    if not ws_url or not token:
+        logger.warning("OPENCLAW_WS_URL or OPENCLAW_TOKEN not set, exec approval operator disabled")
         return
 
-    # Remove stale socket file if it exists
-    import os
-    if os.path.exists(socket_path):
-        os.unlink(socket_path)
+    reconnect_delay = 5
 
-    # Ensure parent directory exists
-    os.makedirs(os.path.dirname(socket_path), exist_ok=True)
-
-    async def handle_approval_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """Handle a single approval request connection from OpenClaw."""
-        logger.info("Exec approval: new socket connection received")
+    while True:
         try:
-            # Read the request line (NDJSON - one JSON per line)
-            line = await asyncio.wait_for(reader.readline(), timeout=5.0)
-            if not line:
-                return
+            logger.info(f"Connecting to OpenClaw gateway WS: {ws_url}")
+            async with websockets.connect(
+                ws_url,
+                additional_headers={"Authorization": f"Bearer {token}"},
+                ping_interval=30,
+                ping_timeout=10,
+                close_timeout=5
+            ) as ws:
+                _operator_ws = ws
+                logger.info("✅ OpenClaw operator WS connected")
+                reconnect_delay = 5
 
-            msg = _json.loads(line.decode("utf-8").strip())
+                # Listen for events
+                async for raw_msg in ws:
+                    try:
+                        msg = _json.loads(raw_msg)
+                        msg_type = msg.get("type")
 
-            # Validate token
-            if msg.get("token") != socket_token:
-                logger.warning(f"Exec approval: invalid token received")
-                error_resp = _json.dumps({"type": "error", "error": "invalid_token"}) + "\n"
-                writer.write(error_resp.encode("utf-8"))
-                await writer.drain()
-                return
+                        if msg_type == "event":
+                            event_name = msg.get("event", "")
+                            payload = msg.get("payload", {})
 
-            if msg.get("type") != "request":
-                logger.warning(f"Exec approval: unexpected message type: {msg.get('type')}")
-                return
+                            if event_name == "exec.approval.requested":
+                                await _handle_exec_approval_event(payload)
+                            elif event_name == "exec.approval.resolved":
+                                # Cleanup pending map
+                                req_id = payload.get("id", "")
+                                if req_id and req_id in pending_exec_approvals:
+                                    del pending_exec_approvals[req_id]
+                                    logger.info(f"Exec approval {req_id[:8]} resolved externally")
 
-            request_id = msg.get("id", "")
-            request_data = msg.get("request", {})
-            command = request_data.get("command", "unknown")
-            cwd = request_data.get("cwd", "")
-            agent_id = request_data.get("agentId", "")
+                        elif msg_type == "res":
+                            # Response to a request we sent (e.g. resolve)
+                            logger.debug(f"WS response: {msg}")
 
-            logger.info(f"Exec approval request: {request_id[:8]} cmd={command[:80]}")
-
-            # Create an asyncio.Future to wait for the Telegram callback
-            decision_future = asyncio.get_event_loop().create_future()
-
-            # Store in pending map: approval_id -> {data, future, writer}
-            pending_exec_approvals[request_id] = {
-                "data": request_data,
-                "future": decision_future,
-                "writer": writer,
-                "timestamp": time.time()
-            }
-
-            # Send Telegram message with inline buttons
-            await send_exec_approval(
-                approval_id=request_id,
-                command=command,
-                cwd=cwd,
-                agent=agent_id
-            )
-
-            # Wait for decision from Telegram callback (or timeout)
-            try:
-                decision = await asyncio.wait_for(
-                    decision_future,
-                    timeout=config.OPENCLAW_EXEC_APPROVAL_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                decision = None
-                logger.warning(f"Exec approval {request_id[:8]} timed out")
-                await send_telegram(f"⏰ Exec approval `{request_id[:8]}` scaduto (timeout).")
-
-            # Send decision back to OpenClaw via the socket
-            if decision:
-                resp = _json.dumps({"type": "decision", "decision": decision}) + "\n"
-                writer.write(resp.encode("utf-8"))
-                await writer.drain()
-                logger.info(f"Exec approval {request_id[:8]} resolved: {decision}")
-            else:
-                # No decision (timeout) — OpenClaw will handle the timeout on its side
-                logger.info(f"Exec approval {request_id[:8]}: no decision sent (timeout)")
+                    except Exception as e:
+                        logger.error(f"Error processing OpenClaw WS message: {e}")
 
         except asyncio.CancelledError:
-            raise
+            logger.info("OpenClaw operator loop cancelled")
+            return
         except Exception as e:
-            logger.error(f"Exec approval connection error: {e}")
-        finally:
-            # Cleanup
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
-            # Remove from pending if still there
-            for rid, pdata in list(pending_exec_approvals.items()):
-                if isinstance(pdata, dict) and pdata.get("writer") is writer:
-                    del pending_exec_approvals[rid]
-                    break
+            logger.warning(f"OpenClaw operator WS disconnected: {e}, reconnecting in {reconnect_delay}s")
+            _operator_ws = None
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, 60)
 
-    server = None
-    try:
-        server = await asyncio.start_unix_server(
-            handle_approval_connection,
-            path=socket_path
-        )
 
-        # Set permissions to 0600 (owner only)
-        os.chmod(socket_path, 0o600)
+async def _handle_exec_approval_event(payload: dict):
+    """Handle an exec.approval.requested event from OpenClaw gateway."""
+    approval_id = payload.get("id", "")
+    command = payload.get("command", payload.get("cmd", "unknown"))
+    cwd = payload.get("cwd", "")
+    agent = payload.get("agent", payload.get("agentId", ""))
 
-        logger.info(f"✅ OpenClaw exec approval server listening on {socket_path}")
+    if not approval_id:
+        logger.error("Exec approval event missing id")
+        return
 
-        # Keep the server running forever
-        await server.serve_forever()
+    # Store in pending map for callback resolution
+    pending_exec_approvals[approval_id] = {
+        "data": payload,
+        "timestamp": time.time()
+    }
+    logger.info(f"Exec approval requested: {approval_id[:8]} cmd={command[:80]}")
 
-    except asyncio.CancelledError:
-        logger.info("OpenClaw approval server cancelled")
-    except Exception as e:
-        logger.error(f"OpenClaw approval server error: {e}")
-    finally:
-        if server:
-            server.close()
-            await server.wait_closed()
-        # Cleanup socket file
-        try:
-            if os.path.exists(socket_path):
-                os.unlink(socket_path)
-        except Exception:
-            pass
+    # Send Telegram message with inline buttons
+    await send_exec_approval(
+        approval_id=approval_id,
+        command=command,
+        cwd=cwd,
+        agent=agent
+    )
 
 
 async def resolve_exec_approval(approval_id: str, decision: str):
     """
-    Resolve an exec approval by setting the result on the pending Future.
-    The socket connection handler will send the decision back to OpenClaw.
+    Resolve an exec approval via the OpenClaw gateway WebSocket.
     decision: "allow-once" | "allow-always" | "deny"
     """
-    pending = pending_exec_approvals.get(approval_id)
-    if not pending or not isinstance(pending, dict):
-        logger.warning(f"Exec approval {approval_id[:8]}: not found in pending map")
+    import json as _json
+
+    ws = _operator_ws
+    if not ws or ws.closed:
+        logger.error(f"Cannot resolve exec approval {approval_id[:8]}: WS not connected")
         return False
 
-    future = pending.get("future")
-    if future and not future.done():
-        future.set_result(decision)
-        logger.info(f"Exec approval {approval_id[:8]} decision set: {decision}")
+    try:
+        req_id = str(uuid.uuid4())
+        resolve_msg = _json.dumps({
+            "type": "req",
+            "id": req_id,
+            "method": "exec.approval.resolve",
+            "params": {
+                "id": approval_id,
+                "decision": decision
+            }
+        })
+        await ws.send(resolve_msg)
+        logger.info(f"Exec approval {approval_id[:8]} resolve sent: {decision}")
+
+        # Cleanup pending
+        if approval_id in pending_exec_approvals:
+            del pending_exec_approvals[approval_id]
+
         return True
-    else:
-        logger.warning(f"Exec approval {approval_id[:8]}: future already done or missing")
+    except Exception as e:
+        logger.error(f"Error resolving exec approval {approval_id[:8]}: {e}")
         return False
 
 # Device DND status (per sapere quali device sono in DND)
@@ -278,18 +250,22 @@ async def lifespan(app: FastAPI):
     # Inizializza vector store
     init_vector_store()
 
-    # Avvia task periodici
-    asyncio.create_task(periodic_cleanup())
-    asyncio.create_task(warmup_models())
-    asyncio.create_task(periodic_health_check())
+    # Avvia task periodici (salva riferimenti forti per evitare GC)
+    def _keep(t):
+        _background_tasks.add(t)
+        t.add_done_callback(_background_tasks.discard)
+
+    _keep(asyncio.create_task(periodic_cleanup()))
+    _keep(asyncio.create_task(warmup_models()))
+    _keep(asyncio.create_task(periodic_health_check()))
 
     # Carica memory services e avvia scheduler memoria
     load_memory_services_from_db()
-    asyncio.create_task(memory_scheduler())
-    asyncio.create_task(proactive_check_loop())
+    _keep(asyncio.create_task(memory_scheduler()))
+    _keep(asyncio.create_task(proactive_check_loop()))
 
-    # OpenClaw exec approval socket server (inline Telegram buttons)
-    asyncio.create_task(openclaw_approval_server())
+    # OpenClaw gateway operator (exec approval buttons via WS)
+    _keep(asyncio.create_task(openclaw_operator_loop()))
 
     logger.info("✅ JARVIS Core ready!")
     yield
