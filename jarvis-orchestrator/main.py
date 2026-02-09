@@ -197,7 +197,7 @@ async def openclaw_operator_loop():
                             event_name = msg.get("event", "")
                             payload = msg.get("payload", {})
 
-                            if event_name == "exec.approval.requested":
+                            if event_name in ("exec.approval.requested", "exec.approval.request"):
                                 await _handle_exec_approval_event(payload)
                             elif event_name == "exec.approval.resolved":
                                 # Cleanup pending map
@@ -211,15 +211,28 @@ async def openclaw_operator_loop():
                                 logger.debug(f"WS event: {event_name}")
 
                         elif msg_type == "req":
-                            # Server-initiated request (e.g. tick ping) — respond ok
-                            req_id = msg.get("id")
-                            if req_id:
-                                await ws.send(_json.dumps({
-                                    "type": "res",
-                                    "id": req_id,
-                                    "ok": True,
-                                    "payload": {}
-                                }))
+                            # Server-initiated request — gateway sends exec approvals as req!
+                            method = msg.get("method", "")
+                            req_id = msg.get("id", "")
+                            params = msg.get("params", {})
+
+                            if method in ("exec.approval.request", "exec.approval.requested"):
+                                # Gateway sends approval as a req and expects a res with the decision.
+                                # We store the WS req_id so we can respond later when the user presses a button.
+                                logger.info(f"Exec approval req received: ws_req_id={req_id}, params keys={list(params.keys())}")
+                                # Merge req_id into params so we can respond later
+                                params["_ws_req_id"] = req_id
+                                await _handle_exec_approval_event(params)
+                            else:
+                                # Other server requests (e.g. ping/tick) — respond ok
+                                logger.debug(f"WS req: method={method} id={req_id}")
+                                if req_id:
+                                    await ws.send(_json.dumps({
+                                        "type": "res",
+                                        "id": req_id,
+                                        "ok": True,
+                                        "payload": {}
+                                    }))
 
                         elif msg_type == "res":
                             # Response to a request we sent (e.g. resolve)
@@ -240,21 +253,27 @@ async def openclaw_operator_loop():
 
 async def _handle_exec_approval_event(payload: dict):
     """Handle an exec.approval.requested event from OpenClaw gateway."""
+    # Debug: log full payload to discover field names
+    logger.info(f"Exec approval payload keys: {list(payload.keys())}")
+    logger.debug(f"Exec approval full payload: {payload}")
+
     approval_id = payload.get("id", "")
-    command = payload.get("command", payload.get("cmd", "unknown"))
+    command = payload.get("command", payload.get("cmd", payload.get("line", "unknown")))
     cwd = payload.get("cwd", "")
     agent = payload.get("agent", payload.get("agentId", ""))
+    ws_req_id = payload.pop("_ws_req_id", None)  # WS request ID for responding
 
     if not approval_id:
-        logger.error("Exec approval event missing id")
+        logger.error(f"Exec approval event missing id, payload: {payload}")
         return
 
     # Store in pending map for callback resolution
     pending_exec_approvals[approval_id] = {
         "data": payload,
+        "ws_req_id": ws_req_id,  # Store the gateway's WS req ID for the response
         "timestamp": time.time()
     }
-    logger.info(f"Exec approval requested: {approval_id[:8]} cmd={command[:80]}")
+    logger.info(f"Exec approval requested: {approval_id[:8]} cmd={command[:80]} ws_req_id={ws_req_id}")
 
     # Send Telegram message with inline buttons
     await send_exec_approval(
@@ -269,6 +288,12 @@ async def resolve_exec_approval(approval_id: str, decision: str):
     """
     Resolve an exec approval via the OpenClaw gateway WebSocket.
     decision: "allow-once" | "allow-always" | "deny"
+
+    The gateway may send approvals either as:
+      1. A "req" frame (expects a "res" response with the decision)
+      2. An "event" frame (resolve via a new "exec.approval.resolve" req)
+
+    We try method 1 first (respond to original req), then fall back to method 2.
     """
     import json as _json
 
@@ -277,19 +302,37 @@ async def resolve_exec_approval(approval_id: str, decision: str):
         logger.error(f"Cannot resolve exec approval {approval_id[:8]}: WS not connected")
         return False
 
+    pending = pending_exec_approvals.get(approval_id, {})
+    ws_req_id = pending.get("ws_req_id")
+
     try:
-        req_id = str(uuid.uuid4())
-        resolve_msg = _json.dumps({
-            "type": "req",
-            "id": req_id,
-            "method": "exec.approval.resolve",
-            "params": {
-                "id": approval_id,
-                "decision": decision
-            }
-        })
-        await ws.send(resolve_msg)
-        logger.info(f"Exec approval {approval_id[:8]} resolve sent: {decision}")
+        if ws_req_id:
+            # Method 1: Respond to the gateway's original req frame
+            resolve_msg = _json.dumps({
+                "type": "res",
+                "id": ws_req_id,
+                "ok": True,
+                "payload": {
+                    "id": approval_id,
+                    "decision": decision
+                }
+            })
+            await ws.send(resolve_msg)
+            logger.info(f"Exec approval {approval_id[:8]} resolved via res to req {ws_req_id[:8]}: {decision}")
+        else:
+            # Method 2: Send a new req to resolve
+            req_id = str(uuid.uuid4())
+            resolve_msg = _json.dumps({
+                "type": "req",
+                "id": req_id,
+                "method": "exec.approval.resolve",
+                "params": {
+                    "id": approval_id,
+                    "decision": decision
+                }
+            })
+            await ws.send(resolve_msg)
+            logger.info(f"Exec approval {approval_id[:8]} resolved via req: {decision}")
 
         # Cleanup pending
         if approval_id in pending_exec_approvals:
@@ -299,6 +342,129 @@ async def resolve_exec_approval(approval_id: str, decision: str):
     except Exception as e:
         logger.error(f"Error resolving exec approval {approval_id[:8]}: {e}")
         return False
+
+# ===========================================================================
+# APPROVAL BOT POLLING (getUpdates long-polling for inline button callbacks)
+# ===========================================================================
+# The JARVIS Approval Bot uses long-polling to receive inline button callbacks.
+# This avoids requiring a public HTTPS URL for webhook registration.
+# Will be replaced with webhook once jarvis-pub DNS + nginx are configured.
+
+async def approval_bot_polling_loop():
+    """Poll the JARVIS Approval Bot for callback_query updates (inline buttons)."""
+    import json as _json
+    import aiohttp
+
+    bot_token = config.JARVIS_APPROVAL_BOT_TOKEN
+    if not bot_token:
+        logger.warning("JARVIS_APPROVAL_BOT_TOKEN not set, approval polling disabled")
+        return
+
+    # Delete any existing webhook so getUpdates works
+    try:
+        async with aiohttp.ClientSession() as session:
+            del_url = f"https://api.telegram.org/bot{bot_token}/deleteWebhook"
+            async with session.post(del_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                result = await resp.json()
+                logger.info(f"Approval bot deleteWebhook: {result.get('ok')}")
+    except Exception as e:
+        logger.warning(f"Approval bot deleteWebhook error: {e}")
+
+    offset = 0
+    poll_timeout = 30  # long-polling seconds
+
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+            params = {
+                "offset": offset,
+                "timeout": poll_timeout,
+                "allowed_updates": _json.dumps(["callback_query"])
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, params=params,
+                    timeout=aiohttp.ClientTimeout(total=poll_timeout + 10)
+                ) as resp:
+                    data = await resp.json()
+
+            if not data.get("ok"):
+                logger.warning(f"Approval bot poll error: {data}")
+                await asyncio.sleep(5)
+                continue
+
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                callback_query = update.get("callback_query")
+                if not callback_query:
+                    continue
+
+                cb_data = callback_query.get("data", "")
+                cb_id = callback_query.get("id", "")
+                logger.info(f"Approval bot callback: {cb_data}")
+
+                # Answer the callback to remove the loading spinner
+                try:
+                    answer_url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(answer_url, json={"callback_query_id": cb_id}) as _:
+                            pass
+                except Exception:
+                    pass
+
+                # Parse callback: execonce_slug, execalways_slug, execdeny_slug
+                if "_" not in cb_data:
+                    continue
+
+                parts = cb_data.split("_", 1)
+                action_type = parts[0]
+                slug = parts[1] if len(parts) > 1 else ""
+
+                decision_map = {
+                    "execonce": "allow-once",
+                    "execalways": "allow-always",
+                    "execdeny": "deny"
+                }
+
+                if action_type in decision_map and slug:
+                    full_id = _find_exec_approval_by_slug(slug)
+                    decision = decision_map[action_type]
+
+                    if full_id:
+                        success = await resolve_exec_approval(full_id, decision)
+                        label = {"execonce": "✅ Once", "execalways": "🔓 Always", "execdeny": "❌ Deny"}[action_type]
+                        # Edit the original message to show the result
+                        try:
+                            msg = callback_query.get("message", {})
+                            chat_id = msg.get("chat", {}).get("id")
+                            message_id = msg.get("message_id")
+                            if chat_id and message_id:
+                                original_text = msg.get("text", "")
+                                status = f"\n\n→ {label}" if success else "\n\n→ ⚠️ Error"
+                                edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(edit_url, json={
+                                        "chat_id": chat_id,
+                                        "message_id": message_id,
+                                        "text": original_text + status
+                                    }) as _:
+                                        pass
+                        except Exception as e:
+                            logger.debug(f"Failed to edit approval message: {e}")
+
+                        logger.info(f"Exec approval {slug} resolved: {decision} (success={success})")
+                    else:
+                        logger.warning(f"Exec approval {slug} not found in pending (expired?)")
+                else:
+                    logger.debug(f"Unhandled approval callback: {cb_data}")
+
+        except asyncio.CancelledError:
+            logger.info("Approval bot polling cancelled")
+            return
+        except Exception as e:
+            logger.warning(f"Approval bot polling error: {e}")
+            await asyncio.sleep(5)
+
 
 # Device DND status (per sapere quali device sono in DND)
 device_dnd_status: dict = {}
@@ -337,6 +503,9 @@ async def lifespan(app: FastAPI):
 
     # OpenClaw gateway operator (exec approval buttons via WS)
     _keep(asyncio.create_task(openclaw_operator_loop()))
+
+    # Approval Bot polling (inline button callbacks via long-polling)
+    _keep(asyncio.create_task(approval_bot_polling_loop()))
 
     logger.info("✅ JARVIS Core ready!")
     yield
