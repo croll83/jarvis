@@ -1717,7 +1717,7 @@ async def process_jarvis_logic(text: str, context: dict):
         service_data = {"entity_id": entity_id}
 
         # L1-L4 security check
-        source_channel = "voice" if source == "AtomS3R" else source.lower()
+        source_channel = "voice" if source in ("AtomS3R", "VirtualMic") else source.lower()
         allowed, sec_reason, domain_level, channel_max = check_security(
             domain, action, source_channel, entity_id=entity_id
         )
