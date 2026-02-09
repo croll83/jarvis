@@ -61,7 +61,7 @@
 | Component | Role | Details |
 |-----------|------|---------|
 | **OpenClaw + Gemini 3 Pro** | Brain | Reasoning, web search, Telegram chat, multi-turn conversations |
-| **JARVIS Orchestrator** | Skill / Executor | Voice processing, home control, speaker ID, security enforcement |
+| **JARVIS Orchestrator** | Skill / Executor | Voice processing, home control (single + bulk), speaker ID, security enforcement |
 | **Qwen 7B Q4** | Pre-router | Local Ollama model for domotics fast path and offline fallback |
 | **Whisper** | Speech-to-Text | Local model, low-latency transcription |
 | **Resemblyzer** | Speaker ID | Voice biometric identification (embedded in orchestrator) |
@@ -156,17 +156,18 @@ Each location has its own entity map, memory sidecar, and HA token stored in Pos
 ```
 jarvis/
 ├── orchestrator/           # Core FastAPI app
-│   ├── main.py             # Routing, voice pipeline, Telegram webhook
+│   ├── main.py             # Routing, voice pipeline, Telegram webhook, WS operator client
 │   ├── config.py           # Service URLs, timeouts, security rules
 │   ├── database.py         # PostgreSQL: users, locations, entities, memory
 │   ├── ai_engines.py       # Pre-routing (Qwen) + OpenClaw/Gemini calls
+│   ├── tools_api.py        # OpenClaw skill endpoints (11 REST tools incl. entity_bulk)
 │   ├── integrations.py     # Home Assistant, Telegram, audio feedback
 │   ├── voice_recognition.py# Resemblyzer speaker ID
-│   ├── security.py         # L1-L4 enforcement, prompt injection guard
+│   ├── security_levels.py  # L1-L4 enforcement, domain/channel security
 │   ├── context_builder.py  # Hybrid context (PostgreSQL + ChromaDB)
 │   ├── vector_store.py     # ChromaDB vector store + embeddings
 │   ├── memory_jobs.py      # Scheduled summarization + fact extraction
-│   ├── multi_ha.py         # Multi-location HA manager
+│   ├── multi_ha.py         # Multi-location HA manager (single + bulk ops)
 │   ├── admin_api.py        # Admin dashboard API
 │   └── templates/          # Admin UI (HTML/JS)
 ├── config/

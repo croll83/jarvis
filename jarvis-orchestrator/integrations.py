@@ -2,7 +2,7 @@ import aiohttp
 import asyncio
 import json
 import logging
-from typing import Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any
 
 import config
 from database import log_event, get_default_location_id
@@ -30,6 +30,36 @@ async def call_hass_service(location_id: str, domain: str, service: str, service
         service_data: Dati del servizio (es: {"entity_id": "light.salotto"})
     """
     return await multi_ha.call_service(location_id, domain, service, service_data)
+
+
+async def call_hass_service_bulk(
+    location_id: str, domain: str, service: str,
+    entity_ids: List[str], service_data: dict = None
+) -> Tuple[bool, str]:
+    """
+    Wrapper per chiamate bulk HA — esegue un servizio su multiple entity in una singola chiamata.
+
+    Args:
+        location_id: ID della location
+        domain: Dominio HA (es: "light")
+        service: Servizio (es: "turn_off")
+        entity_ids: Lista di entity_id su cui eseguire
+        service_data: Parametri aggiuntivi opzionali
+    """
+    return await multi_ha.call_service_bulk(location_id, domain, service, entity_ids, service_data)
+
+
+async def get_hass_states_bulk(
+    location_id: str, entity_ids: List[str] = None
+) -> Dict[str, dict]:
+    """
+    Wrapper per fetch bulk degli stati HA — un'unica chiamata GET /api/states.
+
+    Args:
+        location_id: ID della location
+        entity_ids: Lista opzionale di entity_id da filtrare
+    """
+    return await multi_ha.get_states_bulk(location_id, entity_ids)
 
 
 async def call_hass_service_by_name(

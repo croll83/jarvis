@@ -12,10 +12,15 @@ Base URL: `$JARVIS_ORCHESTRATOR_URL` | Auth: `Bearer $OPENCLAW_GATEWAY_TOKEN`
 
 ## Workflow
 
-**Always resolve before controlling:**
+**Single entity** — resolve before controlling:
 1. `entity_resolve` or `entity_discover` → get entity_id + capabilities
 2. Check `state` → skip if already in desired state
 3. `home_control` → execute with exact entity_id and supported action
+
+**Multiple entities** — use `entity_bulk` instead of looping:
+- "quali luci sono accese?" → `entity_bulk` mode=query, domain=light
+- "spegni tutte le luci del soggiorno" → `entity_bulk` mode=action, domain=light, room=soggiorno, action=turn_off
+- "temperatura di tutte le stanze" → `entity_bulk` mode=query, domain=sensor, search=temperatura
 
 ## Tools
 
@@ -32,6 +37,25 @@ Browse/search entities. All filters optional, combinable:
 {"room": "soggiorno", "domain": "camera", "zone": "Zona Giorno", "floor": "Piano 1", "search": "temperatura", "limit": 50}
 ```
 Returns: `entities[]` with entity_id, friendly_name, domain, room, device_name, available_services. Also `rooms_found[]`, `domains_found[]`.
+
+### entity_bulk `POST /api/tools/entity_bulk`
+Query states or execute actions on multiple entities in a single call. All filters optional and combinable.
+
+**Query mode** — get live states:
+```json
+{"mode": "query", "domain": "light", "room": "soggiorno", "location_id": "wagmi"}
+```
+Returns: `entities[]` with live `state` and key `attributes` (brightness, temperature, etc.), plus `summary` (human-readable).
+
+**Action mode** — execute on group:
+```json
+{"mode": "action", "domain": "light", "action": "turn_off", "zone": "Zona Giorno", "location_id": "wagmi", "source_channel": "openclaw_telegram"}
+```
+Returns: per-entity `action_result` ("ok" / error), plus `summary`.
+
+Filters: `domain`, `room`, `zone`, `floor`, `search`, `entity_ids` (explicit list). L3 domains (lock, camera, alarm) are excluded from bulk actions.
+
+**Prefer this over looping** `entity_resolve` + `home_control` for any group query or action.
 
 ### home_control `POST /api/tools/home_control`
 Execute device actions. Use entity_id from resolve/discover.
