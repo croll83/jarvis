@@ -1,0 +1,453 @@
+---
+# =============================================================================
+# JARVIS — OpenClaw VM Setup (locale)
+# =============================================================================
+# Setup della VM dedicata a OpenClaw nello scenario locale (Proxmox/LXC).
+# Installa: Node.js 22, OpenClaw, Linuxbrew, Google Chrome (headless),
+#           skill dependencies (codexbar, ffmpeg, gcc, gogcli, gifgrep,
+#           goplaces, wacli, summarize), e configura il servizio systemd.
+#
+# Utilizzo:
+#   ansible-playbook playbooks/openclaw.yml
+#
+# Prerequisiti:
+#   - VM/LXC con Ubuntu 22.04/24.04
+#   - Utente jarvis (creato dal playbook common.yml o manualmente)
+
+- name: Setup OpenClaw VM
+  hosts: openclaw
+  become: true
+  tags: [openclaw]
+
+  vars:
+    openclaw_user: "{{ jarvis_user | default('jarvis') }}"
+    brew_prefix: "/home/linuxbrew/.linuxbrew"
+
+  tasks:
+    # -----------------------------------------------------------------
+    # NODE.JS 22
+    # -----------------------------------------------------------------
+    - name: Verifica se Node.js >= 22 è installato
+      ansible.builtin.command: node -v
+      register: node_check
+      changed_when: false
+      failed_when: false
+
+    - name: Installa Node.js 22
+      when: node_check.rc != 0 or (node_check.stdout | regex_replace('^v', '') | split('.') | first | int) < 22
+      block:
+        - name: Aggiungi NodeSource repository
+          ansible.builtin.shell: |
+            curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+          args:
+            creates: /etc/apt/sources.list.d/nodesource.list
+
+        - name: Installa nodejs
+          ansible.builtin.apt:
+            name: nodejs
+            state: present
+            update_cache: true
+
+    - name: Mostra versione Node.js
+      ansible.builtin.command: node -v
+      register: node_version
+      changed_when: false
+
+    - name: "Node.js: {{ node_version.stdout }}"
+      ansible.builtin.debug:
+        msg: "Node.js {{ node_version.stdout }}"
+
+    # -----------------------------------------------------------------
+    # OPENCLAW
+    # -----------------------------------------------------------------
+    - name: Installa OpenClaw
+      community.general.npm:
+        name: openclaw
+        global: true
+        state: latest
+
+    # -----------------------------------------------------------------
+    # CREA UTENTE (se non esiste)
+    # -----------------------------------------------------------------
+    - name: Crea utente {{ openclaw_user }}
+      ansible.builtin.user:
+        name: "{{ openclaw_user }}"
+        shell: /bin/bash
+        groups: [sudo]
+        append: true
+        create_home: true
+      when: openclaw_user != "root"
+
+    - name: Configura sudo senza password per {{ openclaw_user }}
+      ansible.builtin.lineinfile:
+        path: /etc/sudoers.d/{{ openclaw_user }}
+        line: "{{ openclaw_user }} ALL=(ALL) NOPASSWD:ALL"
+        create: true
+        mode: "0440"
+        validate: "visudo -cf %s"
+      when: openclaw_user != "root"
+
+    - name: Abilita linger per {{ openclaw_user }}
+      ansible.builtin.command: loginctl enable-linger {{ openclaw_user }}
+      changed_when: false
+      failed_when: false
+
+    # -----------------------------------------------------------------
+    # DIRECTORY OPENCLAW
+    # -----------------------------------------------------------------
+    - name: Crea directory OpenClaw
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ openclaw_user }}"
+        group: "{{ openclaw_user }}"
+        mode: "0755"
+      loop:
+        - "/home/{{ openclaw_user }}/.openclaw"
+        - "/home/{{ openclaw_user }}/.openclaw/workspace"
+        - "/home/{{ openclaw_user }}/.openclaw/workspace/skills"
+
+    # -----------------------------------------------------------------
+    # GOOGLE CHROME (headless browser per OpenClaw)
+    # -----------------------------------------------------------------
+    - name: Verifica se Google Chrome è installato
+      ansible.builtin.command: google-chrome --version
+      register: chrome_check
+      changed_when: false
+      failed_when: false
+
+    - name: Installa Google Chrome (non snap)
+      when: chrome_check.rc != 0
+      block:
+        - name: Scarica Google Chrome .deb
+          ansible.builtin.get_url:
+            url: https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+            dest: /tmp/google-chrome-stable.deb
+            mode: "0644"
+
+        - name: Installa Chrome .deb
+          ansible.builtin.apt:
+            deb: /tmp/google-chrome-stable.deb
+            state: present
+
+        - name: Rimuovi file .deb
+          ansible.builtin.file:
+            path: /tmp/google-chrome-stable.deb
+            state: absent
+
+    - name: Mostra versione Chrome
+      ansible.builtin.command: google-chrome --version
+      register: chrome_version
+      changed_when: false
+
+    - name: "Chrome: {{ chrome_version.stdout }}"
+      ansible.builtin.debug:
+        msg: "{{ chrome_version.stdout }}"
+
+    # -----------------------------------------------------------------
+    # BUILD-ESSENTIAL (necessario per wacli e compilazioni native)
+    # -----------------------------------------------------------------
+    - name: Installa build-essential
+      ansible.builtin.apt:
+        name: build-essential
+        state: present
+
+    # -----------------------------------------------------------------
+    # LINUXBREW
+    # -----------------------------------------------------------------
+    - name: Verifica se Linuxbrew è installato
+      ansible.builtin.stat:
+        path: "{{ brew_prefix }}/bin/brew"
+      register: brew_check
+
+    - name: Installa Linuxbrew
+      ansible.builtin.shell: |
+        NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      become_user: "{{ openclaw_user }}"
+      environment:
+        HOME: "/home/{{ openclaw_user }}"
+      when: not brew_check.stat.exists
+
+    - name: Aggiungi brew al .bashrc di {{ openclaw_user }}
+      ansible.builtin.lineinfile:
+        path: "/home/{{ openclaw_user }}/.bashrc"
+        line: 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"'
+        create: true
+        owner: "{{ openclaw_user }}"
+        group: "{{ openclaw_user }}"
+        mode: "0644"
+
+    # -----------------------------------------------------------------
+    # SKILL DEPENDENCIES (brew + npm)
+    # -----------------------------------------------------------------
+    - name: Installa skill dependencies via brew
+      ansible.builtin.shell: |
+        eval "$({{ brew_prefix }}/bin/brew shellenv)"
+
+        # steipete tap
+        brew tap steipete/tap 2>/dev/null || true
+
+        # gcc + symlink
+        brew install gcc 2>/dev/null || true
+        brew postinstall gcc 2>/dev/null || true
+        GCC_VERSION=$(ls {{ brew_prefix }}/bin/gcc-* 2>/dev/null | grep -oP 'gcc-\K[0-9]+' | sort -n | tail -1)
+        if [ -n "$GCC_VERSION" ] && [ ! -e "{{ brew_prefix }}/bin/gcc" ]; then
+            ln -sf "{{ brew_prefix }}/bin/gcc-${GCC_VERSION}" "{{ brew_prefix }}/bin/gcc"
+            ln -sf "{{ brew_prefix }}/bin/g++-${GCC_VERSION}" "{{ brew_prefix }}/bin/g++"
+        fi
+
+        # Skill tools
+        brew install steipete/tap/codexbar 2>/dev/null || true
+        brew install ffmpeg-full 2>/dev/null || true
+        brew install steipete/tap/gogcli 2>/dev/null || true
+        brew install steipete/tap/gifgrep 2>/dev/null || true
+        brew install steipete/tap/goplaces 2>/dev/null || true
+        brew install steipete/tap/wacli 2>/dev/null || true
+
+        # npm global
+        npm i -g @steipete/summarize 2>/dev/null || true
+      become_user: "{{ openclaw_user }}"
+      environment:
+        HOME: "/home/{{ openclaw_user }}"
+      args:
+        executable: /bin/bash
+
+    # -----------------------------------------------------------------
+    # OPENCLAW ENV FILE + GOGCLI DIRS
+    # -----------------------------------------------------------------
+    - name: Crea openclaw.env (se non esiste)
+      ansible.builtin.copy:
+        dest: "/home/{{ openclaw_user }}/.openclaw/openclaw.env"
+        owner: "{{ openclaw_user }}"
+        group: "{{ openclaw_user }}"
+        mode: "0600"
+        force: false
+        content: |
+          # OpenClaw env vars — compila con i tuoi valori
+          # gogcli
+          GOG_KEYRING_PASSWORD=
+          GOG_ACCOUNT=
+
+    - name: Crea directory gogcli credentials
+      ansible.builtin.file:
+        path: "/home/{{ openclaw_user }}/.config/gog"
+        state: directory
+        owner: "{{ openclaw_user }}"
+        group: "{{ openclaw_user }}"
+        mode: "0700"
+
+    # -----------------------------------------------------------------
+    # BROWSER-DOM PLUGIN
+    # -----------------------------------------------------------------
+    - name: Verifica se browser-dom plugin esiste nel repo
+      ansible.builtin.stat:
+        path: "{{ jarvis_dir | default('/opt/jarvis') }}/extensions/browser-dom/package.json"
+      register: browser_dom_check
+
+    - name: Installa browser-dom plugin
+      when: browser_dom_check.stat.exists
+      block:
+        - name: Crea directory plugin browser-dom
+          ansible.builtin.file:
+            path: "/home/{{ openclaw_user }}/.openclaw/extensions/browser-dom"
+            state: directory
+            owner: "{{ openclaw_user }}"
+            group: "{{ openclaw_user }}"
+            mode: "0755"
+
+        - name: Copia browser-dom plugin files
+          ansible.builtin.copy:
+            src: "{{ jarvis_dir | default('/opt/jarvis') }}/extensions/browser-dom/{{ item }}"
+            dest: "/home/{{ openclaw_user }}/.openclaw/extensions/browser-dom/{{ item }}"
+            owner: "{{ openclaw_user }}"
+            group: "{{ openclaw_user }}"
+            remote_src: true
+          loop:
+            - index.ts
+            - package.json
+            - openclaw.plugin.json
+          ignore_errors: true
+
+        - name: Copia browser-dom src directory
+          ansible.builtin.copy:
+            src: "{{ jarvis_dir | default('/opt/jarvis') }}/extensions/browser-dom/src/"
+            dest: "/home/{{ openclaw_user }}/.openclaw/extensions/browser-dom/src/"
+            owner: "{{ openclaw_user }}"
+            group: "{{ openclaw_user }}"
+            remote_src: true
+
+        - name: Installa dipendenze npm browser-dom
+          community.general.npm:
+            path: "/home/{{ openclaw_user }}/.openclaw/extensions/browser-dom"
+            production: true
+          become_user: "{{ openclaw_user }}"
+
+    # -----------------------------------------------------------------
+    # CHROME HEADLESS SERVICE (CDP :18800)
+    # -----------------------------------------------------------------
+    - name: Crea directory Chrome user-data
+      ansible.builtin.file:
+        path: "/home/{{ openclaw_user }}/.openclaw/browser/openclaw/user-data"
+        state: directory
+        owner: "{{ openclaw_user }}"
+        group: "{{ openclaw_user }}"
+        mode: "0755"
+
+    - name: Deploy servizio systemd Chrome headless
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/openclaw-chrome.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=OpenClaw Headless Chrome (CDP :18800)
+          Documentation=https://github.com/AnirudhRanganathan/jarvis
+          After=network.target
+          Before=openclaw.service
+
+          [Service]
+          Type=simple
+          User={{ openclaw_user }}
+          Group={{ openclaw_user }}
+          Environment=HOME=/home/{{ openclaw_user }}
+
+          # Remove stale singleton files from previous crashes
+          ExecStartPre=/bin/rm -f /home/{{ openclaw_user }}/.openclaw/browser/openclaw/user-data/SingletonLock
+          ExecStartPre=/bin/rm -f /home/{{ openclaw_user }}/.openclaw/browser/openclaw/user-data/SingletonCookie
+          ExecStartPre=/bin/rm -f /home/{{ openclaw_user }}/.openclaw/browser/openclaw/user-data/SingletonSocket
+
+          ExecStart=/usr/bin/google-chrome \
+              --headless=new \
+              --no-sandbox \
+              --disable-gpu \
+              --disable-dev-shm-usage \
+              --disable-software-rasterizer \
+              --disable-background-networking \
+              --disable-default-apps \
+              --disable-extensions \
+              --disable-sync \
+              --disable-translate \
+              --metrics-recording-only \
+              --no-first-run \
+              --mute-audio \
+              --remote-debugging-port=18800 \
+              --remote-debugging-address=127.0.0.1 \
+              --user-data-dir=/home/{{ openclaw_user }}/.openclaw/browser/openclaw/user-data \
+              --window-size=1920,1080 \
+              about:blank
+
+          Restart=on-failure
+          RestartSec=5
+          TimeoutStopSec=10
+
+          MemoryMax=1G
+          CPUQuota=150%
+
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier=openclaw-chrome
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Ricarica systemd
+
+    - name: Abilita servizio Chrome headless
+      ansible.builtin.systemd:
+        name: openclaw-chrome
+        enabled: true
+        daemon_reload: true
+
+    # -----------------------------------------------------------------
+    # SYSTEMD SERVICE (OpenClaw Gateway)
+    # -----------------------------------------------------------------
+    - name: Deploy servizio systemd OpenClaw
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/openclaw.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=OpenClaw AI Gateway
+          After=network.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User={{ openclaw_user }}
+          Group={{ openclaw_user }}
+          Environment=NODE_ENV=production
+          Environment=HOME=/home/{{ openclaw_user }}
+          Environment=PATH={{ brew_prefix }}/bin:{{ brew_prefix }}/sbin:/usr/local/bin:/usr/bin:/bin
+          Environment=CHROME_PATH=/usr/bin/google-chrome
+          Environment=PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
+          EnvironmentFile=-/home/{{ openclaw_user }}/.openclaw/openclaw.env
+          ExecStart=/usr/bin/openclaw gateway run
+          KillSignal=SIGINT
+          KillMode=mixed
+          TimeoutStopSec=15
+          Restart=on-failure
+          RestartSec=10
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier=openclaw
+
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ReadWritePaths=/home/{{ openclaw_user }}/.openclaw /home/{{ openclaw_user }}/.npm /home/{{ openclaw_user }}/.config /home/{{ openclaw_user }}/.cache /tmp
+          PrivateTmp=false
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Ricarica systemd
+
+    - name: Abilita servizio OpenClaw
+      ansible.builtin.systemd:
+        name: openclaw
+        enabled: true
+        daemon_reload: true
+
+    # -----------------------------------------------------------------
+    # RIEPILOGO
+    # -----------------------------------------------------------------
+    - name: Riepilogo setup OpenClaw
+      ansible.builtin.debug:
+        msg: |
+          ================================================================
+          OpenClaw VM Setup completato!
+          ================================================================
+
+          Componenti installati:
+            - Node.js 22 + OpenClaw
+            - Google Chrome (headless) + systemd service (CDP :18800)
+            - browser-dom plugin (DOM automation via CDP)
+            - Linuxbrew + skill dependencies
+              (codexbar, ffmpeg, gcc, gogcli, gifgrep, goplaces, wacli, summarize)
+
+          Prossimi passi (come utente {{ openclaw_user }}):
+            1. su - {{ openclaw_user }}
+            2. openclaw onboard
+            3. Copia skill JARVIS:
+               cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
+               cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
+            4. Configura browser-dom nel config:
+               bash /opt/jarvis/cloud/scripts/configure-browser-dom.sh
+            5. Configura env vars:
+               nano ~/.openclaw/openclaw.env   # GOG_KEYRING_PASSWORD, GOG_ACCOUNT
+            6. Copia credenziali gogcli:
+               scp -r ~/.config/gog/credentials.json {{ openclaw_user }}@<host>:~/.config/gog/
+               scp -r ~/.config/gog/keyring/ {{ openclaw_user }}@<host>:~/.config/gog/
+            7. Avvia servizi:
+               sudo systemctl start openclaw-chrome   # Chrome headless
+               sudo systemctl start openclaw           # OpenClaw gateway
+            8. Verifica:
+               curl -s http://127.0.0.1:18800/json/version   # Chrome CDP
+               curl http://localhost:18789/health              # OpenClaw
+               journalctl -u openclaw -f | grep browser-dom   # Plugin caricato
+          ================================================================
+
+  handlers:
+    - name: Ricarica systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
