@@ -5,6 +5,11 @@ Guida completa per il deploy di JARVIS su un VPS. Nessuna GPU richiesta: AI via 
 Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere Home Assistant.
 **OpenClaw gira bare-metal** (Node.js, non in Docker) sulla stessa macchina.
 
+> **TODO:**
+> - Aggiungere conf Nginx per webhook Telegram (jarvis-pub.mintwork.it → IP pubblico VPS)
+> - Aggiungere conf Nginx per AtomS3R (endpoint accessibile da rete locale/Tailscale)
+> - Migrare Approval Bot da long-polling a webhook una volta configurato il DNS pubblico
+
 ---
 
 ## Architettura
