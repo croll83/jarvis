@@ -21,8 +21,9 @@ resemblyzer==0.1.3
 librosa==0.10.1
 soundfile==0.12.1
 
-# Audio Processing (opzionale)
+# Audio Processing
 numpy>=1.24.0
+rnnoise-python>=1.0.0
 
 # Google Gemini (for image generation)
 google-generativeai>=0.8.0

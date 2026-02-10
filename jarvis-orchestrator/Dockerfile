@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     libsndfile1 \
     ffmpeg \
+    librnnoise-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copia requirements prima (per cache Docker)
