@@ -2385,6 +2385,116 @@ def get_entities_by_type(location_id: str, entity_type: str) -> List[dict]:
 
 
 # ===========================================================================
+# ENTITY DISCOVERY FOR VOICE (Room/Zone/Floor → entity_id list)
+# ===========================================================================
+
+def discover_entities_for_voice(
+    location_id: str,
+    target_name: str,
+    domain: str = None
+) -> List[dict]:
+    """
+    Cerca entity matchando target_name come stanza, zona, piano o 'tutto'.
+
+    Usato dal flusso DOMOTICA_CERTA per risolvere comandi come:
+    - "spegni le luci in cucina" → tutte le light nella room Cucina
+    - "chiudi le tapparelle zona notte" → tutte le cover nella zona Notte
+    - "spegni tutto" → tutte le entity del dominio nella location
+
+    Args:
+        location_id: ID della location
+        target_name: Nome target (stanza, zona, piano, o "tutto"/"tutte")
+        domain: Dominio opzionale per filtrare (es. "light", "cover")
+
+    Returns:
+        Lista di dict con entity_id, entity_name, room, match_type
+        Vuota se nessun match trovato.
+    """
+    conn = _get_conn()
+    c = conn.cursor()
+    target_lower = target_name.lower().strip()
+
+    # Caso "tutto" / "tutte" / "tutta la casa" → tutte le entity del dominio
+    if target_lower in ("tutto", "tutti", "tutte", "tutta la casa", "ovunque", "dappertutto"):
+        query = """
+            SELECT entity_id, entity_name, entity_type, room, area, zone
+            FROM entity_maps
+            WHERE location_id = ? AND entity_id IS NOT NULL
+        """
+        params: list = [location_id]
+        if domain:
+            query += " AND entity_type = ?"
+            params.append(domain)
+        c.execute(query, params)
+        rows = c.fetchall()
+        conn.close()
+        return [{"entity_id": r["entity_id"], "entity_name": r["entity_name"],
+                 "room": r["room"], "match_type": "all"} for r in rows]
+
+    results = []
+
+    # 1. Match per stanza (room) — priorità più alta
+    query = """
+        SELECT entity_id, entity_name, entity_type, room, area, zone
+        FROM entity_maps
+        WHERE location_id = ? AND entity_id IS NOT NULL
+          AND LOWER(room) LIKE ?
+    """
+    params = [location_id, f"%{target_lower}%"]
+    if domain:
+        query += " AND entity_type = ?"
+        params.append(domain)
+    c.execute(query, params)
+    rows = c.fetchall()
+    if rows:
+        results = [{"entity_id": r["entity_id"], "entity_name": r["entity_name"],
+                     "room": r["room"], "match_type": "room"} for r in rows]
+        conn.close()
+        return results
+
+    # 2. Match per zona (area) — es. "Zona Giorno", "Zona Notte"
+    query = """
+        SELECT entity_id, entity_name, entity_type, room, area, zone
+        FROM entity_maps
+        WHERE location_id = ? AND entity_id IS NOT NULL
+          AND LOWER(area) LIKE ?
+    """
+    params = [location_id, f"%{target_lower}%"]
+    if domain:
+        query += " AND entity_type = ?"
+        params.append(domain)
+    c.execute(query, params)
+    rows = c.fetchall()
+    if rows:
+        results = [{"entity_id": r["entity_id"], "entity_name": r["entity_name"],
+                     "room": r["room"], "match_type": "zone"} for r in rows]
+        conn.close()
+        return results
+
+    # 3. Match per piano (zone) — es. "Piano 1", "Piano Terra"
+    query = """
+        SELECT entity_id, entity_name, entity_type, room, area, zone
+        FROM entity_maps
+        WHERE location_id = ? AND entity_id IS NOT NULL
+          AND LOWER(zone) LIKE ?
+    """
+    params = [location_id, f"%{target_lower}%"]
+    if domain:
+        query += " AND entity_type = ?"
+        params.append(domain)
+    c.execute(query, params)
+    rows = c.fetchall()
+    if rows:
+        results = [{"entity_id": r["entity_id"], "entity_name": r["entity_name"],
+                     "room": r["room"], "match_type": "floor"} for r in rows]
+        conn.close()
+        return results
+
+    conn.close()
+    return []
+
+
+# ===========================================================================
 # ENTITY RESOLUTION (Friendly Name → Entity ID)
 # ===========================================================================
 

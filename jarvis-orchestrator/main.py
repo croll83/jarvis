@@ -36,7 +36,7 @@ from database import (
     get_default_location_id
 )
 from integrations import (
-    call_hass_service, speak, send_telegram, edit_telegram,
+    call_hass_service, call_hass_service_bulk, speak, send_telegram, edit_telegram,
     send_telegram_approval, send_exec_approval, denoise_audio, transcribe_audio,
     quick_feedback, speak_with_sound, play_feedback_sound
 )
@@ -1597,6 +1597,77 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
 
 
 # ===========================================================================
+# ENTITY RESOLUTION FOR VOICE (single entity, room, zone, floor, all)
+# ===========================================================================
+
+def _resolve_home_control_target(
+    location_id: str, domain: str, entity_name: str, room_hint: str = None
+) -> dict:
+    """
+    Risolve il target di un comando HOME_CONTROL voice.
+
+    Strategia a cascata:
+    1. Match esatto friendly name → singola entity
+    2. Match stanza/zona/piano → bulk su tutte le entity del dominio
+    3. Fallback sintetico → {domain}.{entity} (backwards compatible)
+
+    Returns:
+        {
+            "mode": "single" | "bulk",
+            "entity_ids": [str],          # lista di entity_id
+            "description": str,           # per log/risposta utente
+            "match_type": str,            # "exact", "room", "zone", "floor", "all", "fallback"
+        }
+    """
+    from database import resolve_entity_id, discover_entities_for_voice
+
+    # 1. Match esatto: friendly name → entity_id singolo
+    exact_id = resolve_entity_id(
+        location_id=location_id,
+        friendly_name=entity_name,
+        entity_type=domain,
+        room=room_hint
+    )
+    if exact_id:
+        logger.info(f"Entity resolution: exact match '{entity_name}' → {exact_id}")
+        return {
+            "mode": "single",
+            "entity_ids": [exact_id],
+            "description": entity_name,
+            "match_type": "exact",
+        }
+
+    # 2. Discovery: stanza → zona → piano → "tutto"
+    discovered = discover_entities_for_voice(location_id, entity_name, domain=domain)
+    if discovered:
+        entity_ids = [e["entity_id"] for e in discovered]
+        match_type = discovered[0]["match_type"]
+        rooms = sorted(set(e["room"] for e in discovered if e.get("room")))
+        rooms_str = ", ".join(rooms) if rooms else entity_name
+
+        logger.info(
+            f"Entity resolution: {match_type} match '{entity_name}' → "
+            f"{len(entity_ids)} {domain} entities in [{rooms_str}]"
+        )
+        return {
+            "mode": "bulk",
+            "entity_ids": entity_ids,
+            "description": f"{len(entity_ids)} {domain} in {rooms_str}",
+            "match_type": match_type,
+        }
+
+    # 3. Fallback sintetico (backwards compatible)
+    fallback_id = f"{domain}.{entity_name.lower().replace(' ', '_')}"
+    logger.warning(f"Entity resolution: no match for '{entity_name}', fallback → {fallback_id}")
+    return {
+        "mode": "single",
+        "entity_ids": [fallback_id],
+        "description": entity_name,
+        "match_type": "fallback",
+    }
+
+
+# ===========================================================================
 # CORE LOGIC
 # ===========================================================================
 
@@ -1766,13 +1837,14 @@ async def process_jarvis_logic(text: str, context: dict):
             await deliver_final_response(response, context, sound_type="negative")
             return
 
-        entity_id = f"{domain}.{entity.lower().replace(' ', '_')}"
-        service_data = {"entity_id": entity_id}
+        # Entity resolution: singola entity, stanza, zona, piano o "tutto"
+        room_hint = context.get("room")
+        target = _resolve_home_control_target(target_location, domain, entity, room_hint)
 
-        # L1-L4 security check
+        # L1-L4 security check (domain-level, come entity_bulk)
         source_channel = "voice" if source in ("AtomS3R", "VirtualMic") else source.lower()
         allowed, sec_reason, domain_level, channel_max = check_security(
-            domain, action, source_channel, entity_id=entity_id
+            domain, action, source_channel, entity_id=target["entity_ids"][0]
         )
 
         if not allowed:
@@ -1782,7 +1854,7 @@ async def process_jarvis_logic(text: str, context: dict):
                 save_action(action_id, {
                     "domain": domain,
                     "action": action,
-                    "data": service_data,
+                    "data": {"entity_id": target["entity_ids"]},
                     "location": target_location
                 }, speaker_id)
                 await send_telegram_approval(f"Richiesta: {router_data.get('response', action)}", action_id)
@@ -1796,16 +1868,38 @@ async def process_jarvis_logic(text: str, context: dict):
             return
         else:
             hass_start = time.time()
-            success, err = await call_hass_service(target_location, domain, action, service_data)
+
+            if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
+                # Bulk: multiple entity in una sola chiamata HA
+                success, err = await call_hass_service_bulk(
+                    target_location, domain, action, target["entity_ids"]
+                )
+                entity_desc = target["description"]
+                log_detail = f"[{target_location}] BULK {action} su {entity_desc} ({len(target['entity_ids'])} entities)"
+            else:
+                # Single entity
+                entity_id = target["entity_ids"][0]
+                service_data = {"entity_id": entity_id}
+                success, err = await call_hass_service(target_location, domain, action, service_data)
+                entity_desc = target["description"]
+                log_detail = f"[{target_location}] {action} su {entity_desc} ({entity_id})"
+
             admin_metrics.record_hass((time.time() - hass_start) * 1000)
 
             if success:
-                response = router_data.get("response", f"Fatto! {action} su {entity}.")
+                if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
+                    action_verb = {
+                        "turn_on": "acceso", "turn_off": "spento", "toggle": "cambiato",
+                        "open_cover": "aperto", "close_cover": "chiuso", "stop_cover": "fermato",
+                    }.get(action, action)
+                    response = router_data.get("response", f"Fatto! Ho {action_verb} {target['description']}.")
+                else:
+                    response = router_data.get("response", f"Fatto! {action} su {entity_desc}.")
                 smart_cache.learn(text, response, intent)
-                log_event("HASS", f"[{target_location}] {action} su {entity}", speaker_id, speaker_name)
+                log_event("HASS", log_detail, speaker_id, speaker_name)
             else:
-                response = f"Problema con {entity}: {err}"
-                log_event("HARDWARE_ERROR", f"[{target_location}] Fallito {action} su {entity}: {err}", speaker_id, speaker_name)
+                response = f"Problema con {entity_desc}: {err}"
+                log_event("HARDWARE_ERROR", f"Fallito {log_detail}: {err}", speaker_id, speaker_name)
 
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
 
