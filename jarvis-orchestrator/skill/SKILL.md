@@ -8,7 +8,24 @@ user-invocable: true
 
 You are the reasoning brain of JARVIS, a smart home AI. Fast local commands go through a Qwen 7B router — you handle complex requests, ambiguous commands, and chat interactions.
 
-Base URL: `$JARVIS_ORCHESTRATOR_URL` | Auth: `Bearer $OPENCLAW_GATEWAY_TOKEN`
+## How to call the Orchestrator
+
+All tools are REST endpoints on the JARVIS orchestrator. Call them using `exec` with `curl`:
+
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/<endpoint>" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '<json_body>'
+```
+
+For GET endpoints:
+```bash
+curl -s "$JARVIS_ORCHESTRATOR_URL/api/tools/<endpoint>" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
+```
+
+**IMPORTANT**: Always use `exec` with the curl commands above. Never try to invoke `jarvis-orchestrator` as a node — it is a REST API, not a paired device.
 
 ## Location resolution
 
@@ -17,12 +34,12 @@ All entity endpoints auto-resolve `location_id` when omitted:
 2. Admin user's last known location (tracked from voice devices and Telegram) → auto-resolved
 3. Default fallback → "wagmi"
 
-You don't need to pass `location_id` unless the user explicitly requests a different location. The system tracks where the admin is based on their last interaction.
+You don't need to pass `location_id` unless the user explicitly requests a different location.
 
 ## Workflow
 
 **Single entity** — resolve before controlling:
-1. `entity_resolve` or `entity_discover` → get entity_id + capabilities
+1. `entity_resolve` → get entity_id + capabilities + current state
 2. Check `state` → skip if already in desired state
 3. `home_control` → execute with exact entity_id and supported action
 
@@ -33,74 +50,105 @@ You don't need to pass `location_id` unless the user explicitly requests a diffe
 
 ## Tools
 
-### entity_resolve `POST /api/tools/entity_resolve`
+### entity_resolve
 Resolve a friendly name to entity_id with live state and capabilities.
-```json
-{"friendly_name": "luce cucina", "location_id": "albani"}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/entity_resolve" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"friendly_name": "luce cucina"}'
 ```
 Returns: `entity_id`, `domain`, `state`, `available_services[]`, `service_params{}`, `device_class`, `alternatives[]`
 
-### entity_discover `POST /api/tools/entity_discover`
+### entity_discover
 Browse/search entities. All filters optional, combinable:
-```json
-{"room": "soggiorno", "domain": "camera", "zone": "Zona Giorno", "floor": "Piano 1", "search": "temperatura", "limit": 50}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/entity_discover" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"room": "soggiorno", "domain": "light"}'
 ```
-Returns: `entities[]` with entity_id, friendly_name, domain, room, device_name, available_services. Also `rooms_found[]`, `domains_found[]`.
+Filters: `room`, `zone`, `floor`, `domain`, `search`, `limit`. Returns: `entities[]` with entity_id, friendly_name, domain, room, available_services. Also `rooms_found[]`, `domains_found[]`.
 
-### entity_bulk `POST /api/tools/entity_bulk`
-Query states or execute actions on multiple entities in a single call. All filters optional and combinable.
+### entity_bulk
+Query states or execute actions on multiple entities in a single call. **Prefer this over looping** for any group operation.
 
 **Query mode** — get live states:
-```json
-{"mode": "query", "domain": "light", "room": "soggiorno", "location_id": "wagmi"}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/entity_bulk" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "query", "domain": "light"}'
 ```
-Returns: `entities[]` with live `state` and key `attributes` (brightness, temperature, etc.), plus `summary` (human-readable).
 
 **Action mode** — execute on group:
-```json
-{"mode": "action", "domain": "light", "action": "turn_off", "zone": "Zona Giorno", "location_id": "wagmi", "source_channel": "openclaw_telegram"}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/entity_bulk" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "action", "domain": "light", "action": "turn_off", "room": "soggiorno", "source_channel": "openclaw_telegram"}'
 ```
-Returns: per-entity `action_result` ("ok" / error), plus `summary`.
 
-Filters: `domain`, `room`, `zone`, `floor`, `search`, `entity_ids` (explicit list). L3 domains (lock, camera, alarm) are excluded from bulk actions.
+Filters: `domain`, `room`, `zone`, `floor`, `search`, `entity_ids` (explicit list). Returns: `entities[]` with live `state` and `attributes`, plus `summary` (human-readable). L3 domains (lock, camera, alarm) are excluded from bulk actions.
 
-**Prefer this over looping** `entity_resolve` + `home_control` for any group query or action.
-
-### home_control `POST /api/tools/home_control`
+### home_control
 Execute device actions. Use entity_id from resolve/discover.
-```json
-{"entity_name": "light.cucina", "action": "turn_on", "parameters": {"brightness": 200}, "location_id": "wagmi", "source_channel": "openclaw_telegram"}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/home_control" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"entity_name": "light.cucina", "action": "turn_on", "parameters": {"brightness": 200}, "source_channel": "openclaw_telegram"}'
 ```
-`source_channel` is mandatory. Security levels L1-L4 auto-enforced. L3 actions (cameras, locks) require approval via Telegram bot.
+`source_channel` is mandatory. Security levels L1-L4 auto-enforced. L3 actions (cameras, locks) require Telegram approval.
 
-### memory_query `POST /api/tools/memory_query`
+### memory_query
 Hybrid memory search (SQL + Vector DB). Use for past events, conversations, habits.
-```json
-{"user_id": "marco", "query": "quando e' arrivata ada?", "context_type": "reasoning"}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/memory_query" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "marco", "query": "quando e arrivata ada?", "context_type": "reasoning"}'
 ```
 
-### user_context `GET /api/tools/user_context?user_id=marco`
+### user_context
 User profile, current location, preferences, role.
+```bash
+curl -s "$JARVIS_ORCHESTRATOR_URL/api/tools/user_context?user_id=marco" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
+```
 
-### locations `GET /api/tools/locations`
+### locations
 List all HA locations with health status.
+```bash
+curl -s "$JARVIS_ORCHESTRATOR_URL/api/tools/locations" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
+```
 
-### security `POST /api/tools/security`
+### security
 Privacy mode, alarms. High-security actions.
-```json
-{"action": "set_privacy_mode", "parameters": {"enabled": true}, "source_channel": "openclaw_telegram"}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/security" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "set_privacy_mode", "parameters": {"enabled": true}, "source_channel": "openclaw_telegram"}'
 ```
 
-### tts `POST /api/tools/tts`
+### tts
 Speak through smart speakers.
-```json
-{"text": "Lavatrice terminata.", "speaker_entity": "media_player.echo_salotto", "location_id": "wagmi"}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/tts" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Lavatrice terminata.", "speaker_entity": "media_player.echo_salotto"}'
 ```
 
-### audit_log `POST /api/tools/audit_log`
+### audit_log
 Log events for security/history trail.
-```json
-{"event_type": "home_control", "details": "Manual backup triggered", "user_id": "marco", "source": "openclaw", "severity": "info"}
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/audit_log" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "home_control", "details": "Manual backup triggered", "user_id": "marco", "source": "openclaw", "severity": "info"}'
 ```
 
 ## Users

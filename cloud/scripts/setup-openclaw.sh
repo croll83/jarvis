@@ -284,14 +284,15 @@ cat > "$HELPER_SCRIPT" <<'SCRIPT'
 # Usage (as jarvis user):
 #   bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
 #
-# Optional:
-#   JARVIS_ORCHESTRATOR_URL=http://custom:5000 bash configure-openclaw-skill.sh
+# Optional (skip interactive prompt):
+#   JARVIS_ORCHESTRATOR_URL=http://100.x.x.x:5000 bash configure-openclaw-skill.sh
 
 set -e
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
@@ -309,12 +310,72 @@ if [ -z "$GW_TOKEN" ]; then
     exit 1
 fi
 
-# Orchestrator URL (default: http://localhost:5000)
-ORCH_URL="${JARVIS_ORCHESTRATOR_URL:-http://localhost:5000}"
+# --- Orchestrator URL: auto-detect or ask interactively ---
+if [ -n "$JARVIS_ORCHESTRATOR_URL" ]; then
+    # Explicit env var — use it directly (non-interactive mode)
+    ORCH_URL="$JARVIS_ORCHESTRATOR_URL"
+else
+    # Try to auto-detect Tailscale IP of THIS machine
+    TAILSCALE_IP=""
+    if command -v tailscale &> /dev/null; then
+        TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || true)
+    fi
 
+    echo ""
+    echo -e "${YELLOW}━━━ JARVIS Orchestrator URL ━━━${NC}"
+    echo ""
+    echo "  Where is the JARVIS orchestrator running?"
+    echo ""
+    echo -e "  ${CYAN}1)${NC} Same machine (localhost:5000)"
+    if [ -n "$TAILSCALE_IP" ]; then
+        echo -e "  ${CYAN}2)${NC} This machine via Tailscale (${TAILSCALE_IP}:5000)"
+    fi
+    echo -e "  ${CYAN}3)${NC} Different machine (enter IP manually)"
+    echo ""
+
+    read -p "  Choose [1/2/3]: " choice
+
+    case "$choice" in
+        1)
+            ORCH_URL="http://localhost:5000"
+            ;;
+        2)
+            if [ -n "$TAILSCALE_IP" ]; then
+                ORCH_URL="http://${TAILSCALE_IP}:5000"
+            else
+                echo -e "${RED}Tailscale not found. Enter the IP manually.${NC}"
+                read -p "  Orchestrator IP (e.g. 100.100.74.71): " CUSTOM_IP
+                ORCH_URL="http://${CUSTOM_IP}:5000"
+            fi
+            ;;
+        3)
+            read -p "  Orchestrator IP or hostname (e.g. 100.100.74.71): " CUSTOM_IP
+            # Add http:// and :5000 if not already present
+            if [[ "$CUSTOM_IP" == http* ]]; then
+                ORCH_URL="$CUSTOM_IP"
+            else
+                ORCH_URL="http://${CUSTOM_IP}:5000"
+            fi
+            ;;
+        *)
+            echo -e "${RED}Invalid choice. Using localhost:5000${NC}"
+            ORCH_URL="http://localhost:5000"
+            ;;
+    esac
+fi
+
+echo ""
 echo -e "${YELLOW}Configuring jarvis-orchestrator skill...${NC}"
 echo "  Gateway token: ${GW_TOKEN:0:8}..."
 echo "  Orchestrator URL: ${ORCH_URL}"
+
+# Verify connectivity
+echo -n "  Testing connection... "
+if curl -sf --connect-timeout 5 "${ORCH_URL}/health" > /dev/null 2>&1; then
+    echo -e "${GREEN}✓ reachable${NC}"
+else
+    echo -e "${YELLOW}⚠ unreachable (orchestrator may not be running yet)${NC}"
+fi
 
 # Inject skill env config into openclaw.json
 jq --arg token "$GW_TOKEN" --arg url "$ORCH_URL" '
@@ -326,6 +387,7 @@ jq --arg token "$GW_TOKEN" --arg url "$ORCH_URL" '
   }
 ' "$OPENCLAW_CONFIG" > "${OPENCLAW_CONFIG}.tmp" && mv "${OPENCLAW_CONFIG}.tmp" "$OPENCLAW_CONFIG"
 
+echo ""
 echo -e "${GREEN}Done! jarvis-orchestrator skill configured in openclaw.json${NC}"
 echo ""
 echo "Restart OpenClaw to apply:"
