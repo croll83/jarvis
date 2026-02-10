@@ -965,9 +965,9 @@ def build_speaker_context(audio_bytes: Optional[bytes], source: str, explicit_sp
 
 async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
     """
-    Forward request to OpenClaw Gateway (Gemini 3 Pro brain).
+    Forward request to OpenClaw Gateway via OpenResponses API (POST /v1/responses).
 
-    Sends the user message with speaker context to OpenClaw's conversation API.
+    Sends the user message with speaker context to OpenClaw's OpenResponses endpoint.
     On timeout or error, falls back to local Qwen quick response.
     """
     import aiohttp
@@ -976,24 +976,34 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
         logger.warning("OpenClaw not configured, falling back to local response")
         return await get_quick_response(text, context)
 
-    # Build payload for OpenClaw Gateway
+    # Build message with context for OpenClaw
     speaker_name = context.get("speaker_name", "Sconosciuto")
     source = context.get("source", "unknown")
     location = context.get("location", "")
+    room = context.get("room", "")
 
-    message_text = text
+    # Compose context-enriched message
+    context_parts = []
+    if speaker_name and speaker_name != "Sconosciuto":
+        context_parts.append(f"speaker: {speaker_name}")
+    if location:
+        context_parts.append(f"location: {location}")
+    if room:
+        context_parts.append(f"room: {room}")
+    if source:
+        context_parts.append(f"source: {source}")
     if hint:
-        message_text = f"[hint: {hint}] {text}"
+        context_parts.append(f"hint: {hint}")
 
+    if context_parts:
+        message_text = f"[{', '.join(context_parts)}] {text}"
+    else:
+        message_text = text
+
+    # OpenResponses API format: POST /v1/responses
     payload = {
-        "message": message_text,
-        "context": {
-            "speaker": speaker_name,
-            "source": source,
-            "location": location,
-            "speaker_id": context.get("speaker_id"),
-            "room": context.get("room", ""),
-        }
+        "input": message_text,
+        "stream": False,
     }
 
     try:
@@ -1003,14 +1013,15 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
                 "Content-Type": "application/json"
             }
             async with session.post(
-                f"{config.OPENCLAW_URL}/api/v1/chat",
+                f"{config.OPENCLAW_URL}/v1/responses",
                 json=payload,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=config.OPENCLAW_TIMEOUT)
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    response = data.get("response", data.get("message", ""))
+                    # OpenResponses format: output[].content[].text
+                    response = _extract_openclaw_response(data)
                     if response:
                         logger.info(f"OpenClaw response received ({len(response)} chars)")
                         return response
@@ -1029,6 +1040,32 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
 
     # Fallback: local Qwen quick response
     return await get_quick_response(text, context)
+
+
+def _extract_openclaw_response(data: dict) -> str:
+    """
+    Extract text from OpenResponses API response format.
+
+    Response structure:
+    {
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "..."}]
+            }
+        ]
+    }
+    """
+    output = data.get("output", [])
+    texts = []
+    for item in output:
+        if item.get("type") == "message" and item.get("role") == "assistant":
+            content = item.get("content", [])
+            for part in content:
+                if part.get("type") == "output_text" and part.get("text"):
+                    texts.append(part["text"])
+    return "\n\n".join(texts) if texts else ""
 
 
 # ===========================================================================
