@@ -446,32 +446,54 @@ async def send_exec_approval(approval_id: str, command: str, cwd: str = "", agen
 
 async def denoise_audio(audio_bytes: bytes) -> bytes:
     """
-    Applica noise reduction all'audio usando RNNoise.
-    Se RNNoise non è disponibile, restituisce l'audio originale.
+    Applica noise reduction all'audio usando pyrnnoise.
+
+    pyrnnoise lavora a 48kHz internamente. Il nostro audio è PCM 16kHz int16 mono.
+    Strategia: resample 16k→48k, denoise, resample 48k→16k.
+    Se pyrnnoise non è disponibile, restituisce l'audio originale (graceful fallback).
     """
     try:
         import numpy as np
-        from rnnoise import RNNoise
-        
-        denoiser = RNNoise()
-        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        
-        # RNNoise lavora su frame di 480 samples (10ms a 48kHz)
-        # Per 16kHz, usiamo frame di 160 samples
-        frame_size = 160
-        cleaned_frames = []
-        
-        for i in range(0, len(audio_np), frame_size):
-            frame = audio_np[i:i+frame_size]
-            if len(frame) == frame_size:
-                cleaned = denoiser.process_frame(frame)
-                cleaned_frames.extend(cleaned)
-        
-        cleaned_audio = np.array(cleaned_frames)
-        return (cleaned_audio * 32768).astype(np.int16).tobytes()
-        
+        from pyrnnoise import RNNoise
+
+        denoiser = RNNoise(sample_rate=48000)
+
+        # PCM int16 mono 16kHz → numpy int16
+        audio_16k = np.frombuffer(audio_bytes, dtype=np.int16)
+
+        # Resample 16kHz → 48kHz (semplice repeat x3, sufficiente per denoising)
+        audio_48k = np.repeat(audio_16k, 3)
+
+        # pyrnnoise vuole shape [1, num_samples] per mono (channels, samples)
+        audio_48k_2d = audio_48k.reshape(1, -1)
+
+        # Denoise in chunks — raccoglie l'output
+        denoised_chunks = []
+        for _speech_prob, denoised in denoiser.denoise_chunk(audio_48k_2d):
+            denoised_chunks.append(denoised)
+
+        if not denoised_chunks:
+            logger.warning("RNNoise returned no chunks, returning original audio")
+            return audio_bytes
+
+        # Concatena e torna a mono 1D
+        denoised_48k = np.concatenate(denoised_chunks, axis=-1).flatten()
+
+        # Resample 48kHz → 16kHz (decimate x3)
+        denoised_16k = denoised_48k[::3]
+
+        # Assicurati che la lunghezza sia compatibile con l'originale
+        orig_len = len(audio_16k)
+        if len(denoised_16k) > orig_len:
+            denoised_16k = denoised_16k[:orig_len]
+        elif len(denoised_16k) < orig_len:
+            denoised_16k = np.pad(denoised_16k, (0, orig_len - len(denoised_16k)))
+
+        logger.info(f"RNNoise denoised {len(audio_bytes)} bytes of audio")
+        return denoised_16k.astype(np.int16).tobytes()
+
     except ImportError:
-        logger.warning("RNNoise not available, returning original audio")
+        logger.warning("RNNoise not available (pyrnnoise not installed), returning original audio")
         return audio_bytes
     except Exception as e:
         logger.error(f"Denoise error: {e}")
