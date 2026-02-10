@@ -1001,11 +1001,26 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
         message_text = text
 
     # OpenResponses API format: POST /v1/responses
+    # Inietta istruzione TTS solo per richieste voice (verrà letto da Alexa)
+    tts_instructions = (
+        "IMPORTANT: This response will be read aloud by a voice assistant (Alexa TTS). "
+        "Format accordingly: use natural spoken Italian, no markdown, no bullet points, "
+        "no asterisks, no special characters. Use short sentences with clear punctuation "
+        "(commas, periods, exclamation marks, question marks) for natural speech rhythm. "
+        "Add emphasis and expressiveness: use exclamation marks for enthusiasm, ellipsis for "
+        "suspense or pauses, rhetorical questions to engage. Vary sentence length and tone — "
+        "mix short punchy phrases with longer flowing ones. Sound warm, lively and human, "
+        "not robotic or flat. Be concise but conversational — max 3-4 sentences unless "
+        "the topic requires more."
+    ) if source in ("AtomS3R", "VirtualMic") else None
+
     payload = {
         "input": message_text,
         "model": "openclaw:main",
         "stream": False,
     }
+    if tts_instructions:
+        payload["instructions"] = tts_instructions
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -1499,7 +1514,7 @@ async def voice_stream(
         if not text:
             return {"status": "no_speech_detected", "use_local_speaker": False}
 
-        logger.info(f"Transcribed from stream: '{text[:50]}...'")
+        logger.info(f"Transcribed from stream: '{text[:120]}...'")
 
         # Speaker identification
         speaker_start = time.time()
@@ -1547,7 +1562,7 @@ async def voice_stream(
             "speaker": speaker_ctx.get("speaker_name"),
             "location": location,
             "room": room_value,
-            "transcribed_text": text[:100],
+            "transcribed_text": text,
             "pre_route": classification,
             "use_local_speaker": False  # Default, verrà aggiornato dalla risposta finale
         }
