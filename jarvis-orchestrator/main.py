@@ -2027,13 +2027,30 @@ async def process_jarvis_logic(text: str, context: dict):
     # --- HOME CONTROL ---
     if intent == "HOME_CONTROL" and conf >= conf_high:
         payload = router_data.get("payload", {})
-        domain = payload.get("domain", "light")
+        domain_raw = payload.get("domain", "light")
         action = payload.get("action", "toggle")
         entity_raw = payload.get("entity", "unknown")
-        # Qwen può restituire entity come lista — normalizza a stringa
+
+        # Normalizza domain — Qwen può restituire "light|switch|media_player" o lista
+        VALID_DOMAINS = {"light", "switch", "cover", "climate", "lock", "fan",
+                         "media_player", "sensor", "binary_sensor", "camera",
+                         "automation", "scene", "script", "input_boolean"}
+        if isinstance(domain_raw, list):
+            domain = domain_raw[0] if domain_raw else "light"
+        else:
+            domain = str(domain_raw).strip().lower()
+        # Se contiene pipe o non è un dominio valido HA → None (discovery trova tutto)
+        if "|" in domain or domain not in VALID_DOMAINS:
+            logger.info(f"Domain '{domain_raw}' non valido o multi-domain, usando discovery senza filtro dominio")
+            domain = None
+
+        # Normalizza entity — Qwen può restituire lista o stringa con pipe
         if isinstance(entity_raw, list):
             entity = entity_raw[0] if entity_raw else "unknown"
-            logger.warning(f"Qwen returned entity as list {entity_raw}, using first: '{entity}'")
+            logger.info(f"Qwen returned entity as list ({len(entity_raw)} items), using first: '{entity}'")
+        elif isinstance(entity_raw, str) and "|" in entity_raw:
+            entity = entity_raw.split("|")[0].strip()
+            logger.info(f"Qwen returned entity with pipes, using first: '{entity}'")
         else:
             entity = str(entity_raw) if entity_raw else "unknown"
 
@@ -2082,8 +2099,10 @@ async def process_jarvis_logic(text: str, context: dict):
 
         # L1-L4 security check (domain-level, come entity_bulk)
         source_channel = "voice" if source in ("AtomS3R", "VirtualMic") else source.lower()
+        # Per security check usiamo il primo entity_id; domain potrebbe essere None per multi-domain
+        sec_domain = (domain or target["entity_ids"][0].split(".")[0]) if target["entity_ids"] else "light"
         allowed, sec_reason, domain_level, channel_max = check_security(
-            domain, action, source_channel, entity_id=target["entity_ids"][0]
+            sec_domain, action, source_channel, entity_id=target["entity_ids"][0]
         )
 
         if not allowed:
@@ -2091,7 +2110,7 @@ async def process_jarvis_logic(text: str, context: dict):
                 # L3 action from L2 channel → send to JARVIS approval bot
                 action_id = str(uuid.uuid4())[:8]
                 save_action(action_id, {
-                    "domain": domain,
+                    "domain": sec_domain,
                     "action": action,
                     "data": {"entity_id": target["entity_ids"]},
                     "location": target_location
@@ -2100,7 +2119,7 @@ async def process_jarvis_logic(text: str, context: dict):
                 log_event("APPROVAL", f"L3 azione {action_id} proposta: {sec_reason}", speaker_id, speaker_name)
             else:
                 # L4 blocked or other denial
-                response = f"Azione bloccata per sicurezza: {domain}.{action} non è consentito da {source}."
+                response = f"Azione bloccata per sicurezza: {sec_domain}.{action} non è consentito da {source}."
                 log_event("SECURITY", f"BLOCKED: {sec_reason}", speaker_id, speaker_name)
                 save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
                 await deliver_final_response(response, context, sound_type="negative")
@@ -2108,32 +2127,71 @@ async def process_jarvis_logic(text: str, context: dict):
         else:
             hass_start = time.time()
 
+            # Helper: mappa action generico → action specifico per dominio
+            def _map_action_for_domain(base_action: str, entity_domain: str) -> str:
+                """Converte action generico nell'action corretto per il dominio."""
+                if entity_domain == "cover":
+                    return {"turn_on": "open_cover", "turn_off": "close_cover",
+                            "toggle": "toggle"}.get(base_action, base_action)
+                if entity_domain == "lock":
+                    return {"turn_on": "unlock", "turn_off": "lock",
+                            "toggle": "toggle"}.get(base_action, base_action)
+                # light, switch, media_player, fan, etc. → turn_on/turn_off/toggle funzionano
+                return base_action
+
             if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
-                # Bulk: multiple entity in una sola chiamata HA
-                success, err = await call_hass_service_bulk(
-                    target_location, domain, action, target["entity_ids"]
-                )
+                # Raggruppa entity per dominio (dal prefisso entity_id)
+                from collections import defaultdict
+                domain_groups = defaultdict(list)
+                for eid in target["entity_ids"]:
+                    eid_domain = eid.split(".")[0] if "." in eid else "light"
+                    domain_groups[eid_domain].append(eid)
+
+                # Esegui per ogni gruppo di dominio
+                total_ok = 0
+                total_fail = 0
+                errors = []
+                for grp_domain, grp_ids in domain_groups.items():
+                    grp_action = _map_action_for_domain(action, grp_domain)
+                    grp_success, grp_err = await call_hass_service_bulk(
+                        target_location, grp_domain, grp_action, grp_ids
+                    )
+                    if grp_success:
+                        total_ok += len(grp_ids)
+                        logger.info(f"[{target_location}] BULK {grp_action} su {len(grp_ids)} {grp_domain} entities OK")
+                    else:
+                        total_fail += len(grp_ids)
+                        errors.append(f"{grp_domain}: {grp_err}")
+                        logger.warning(f"[{target_location}] BULK {grp_action} su {grp_domain} FAILED: {grp_err}")
+
+                success = total_ok > 0
+                err = "; ".join(errors) if errors else None
                 entity_desc = target["description"]
-                log_detail = f"[{target_location}] BULK {action} su {entity_desc} ({len(target['entity_ids'])} entities)"
+                log_detail = (
+                    f"[{target_location}] BULK {action} su {entity_desc} "
+                    f"({total_ok} ok, {total_fail} fail, {len(domain_groups)} domains)"
+                )
             else:
                 # Single entity
                 entity_id = target["entity_ids"][0]
+                eid_domain = entity_id.split(".")[0] if "." in entity_id else (domain or "light")
+                mapped_action = _map_action_for_domain(action, eid_domain)
                 service_data = {"entity_id": entity_id}
-                success, err = await call_hass_service(target_location, domain, action, service_data)
+                success, err = await call_hass_service(target_location, eid_domain, mapped_action, service_data)
                 entity_desc = target["description"]
-                log_detail = f"[{target_location}] {action} su {entity_desc} ({entity_id})"
+                log_detail = f"[{target_location}] {mapped_action} su {entity_desc} ({entity_id})"
 
             admin_metrics.record_hass((time.time() - hass_start) * 1000)
 
             if success:
+                action_verb = {
+                    "turn_on": "acceso", "turn_off": "spento", "toggle": "cambiato",
+                    "open_cover": "aperto", "close_cover": "chiuso", "stop_cover": "fermato",
+                }.get(action, action)
                 if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
-                    action_verb = {
-                        "turn_on": "acceso", "turn_off": "spento", "toggle": "cambiato",
-                        "open_cover": "aperto", "close_cover": "chiuso", "stop_cover": "fermato",
-                    }.get(action, action)
-                    response = router_data.get("response", f"Fatto! Ho {action_verb} {target['description']}.")
+                    response = f"Fatto! Ho {action_verb} {target['description']}."
                 else:
-                    response = router_data.get("response", f"Fatto! {action} su {entity_desc}.")
+                    response = f"Fatto! {action_verb}: {entity_desc}."
                 smart_cache.learn(text, response, intent)
                 log_event("HASS", log_detail, speaker_id, speaker_name)
             else:
@@ -2142,23 +2200,53 @@ async def process_jarvis_logic(text: str, context: dict):
 
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
 
-            # Quick feedback per comandi vocali (stile Alexa: suono breve)
-            # Legge impostazione dal database (default: True)
+            # Quick feedback: suono breve per comandi vocali (AtomS3R + VirtualMic)
+            # Solo Telegram riceve TTS completo, o in caso di errore
             quick_feedback_enabled = get_global_preference("ha_quick_feedback", "True") == "True"
-            if source == "AtomS3R" and quick_feedback_enabled:
-                room = context.get("room", "salotto").lower()
-                room_speakers = get_room_speakers(target_location)
-                # Fallback sicuro se room_speakers è vuoto
-                if room_speakers:
-                    target_player = room_speakers.get(room) or next(iter(room_speakers.values()), config.DEFAULT_FALLBACK_SPEAKER)
+            if source in ("AtomS3R", "VirtualMic") and quick_feedback_enabled:
+                # VirtualMic: manda testo alla dashboard (no TTS)
+                if source == "VirtualMic":
+                    vmic_req_id = context.get("vmic_request_id")
+                    if vmic_req_id:
+                        # Salva risposta per polling dashboard (senza TTS)
+                        duration_ms = int((time.time() - context.get("_vmic_start_time", time.time())) * 1000)
+                        vmic_data = {
+                            "request_id": vmic_req_id,
+                            "response": response,
+                            "speaker_name": context.get("speaker_name", "Sconosciuto"),
+                            "speaker_target": "",
+                            "intent": "HOME_CONTROL",
+                            "duration_ms": duration_ms,
+                            "user_text": context.get("_user_text", text),
+                        }
+                        _vmic_responses[vmic_req_id] = vmic_data
+                        async def _cleanup_vmic_hc(rid):
+                            await asyncio.sleep(60)
+                            _vmic_responses.pop(rid, None)
+                        asyncio.create_task(_cleanup_vmic_hc(vmic_req_id))
+                        try:
+                            from event_bus import event_bus
+                            await event_bus.publish("voice_response", vmic_data)
+                        except Exception:
+                            pass
+                        logger.info(f"VirtualMic HOME_CONTROL response stored for {vmic_req_id} (no TTS)")
                 else:
-                    target_player = config.DEFAULT_FALLBACK_SPEAKER
-                await quick_feedback(success, target_player, err, target_location)
+                    # AtomS3R: suono breve dallo speaker della stanza
+                    room = context.get("room", "salotto").lower()
+                    room_speakers = get_room_speakers(target_location)
+                    if room_speakers:
+                        target_player = room_speakers.get(room) or next(iter(room_speakers.values()), config.DEFAULT_FALLBACK_SPEAKER)
+                    else:
+                        target_player = config.DEFAULT_FALLBACK_SPEAKER
+                    await quick_feedback(success, target_player, err, target_location)
             else:
-                # Risposta vocale completa per Telegram o se quick feedback disabilitato
-                # Suono positivo se OK, negativo se errore
-                sound = "positive" if success else "negative"
-                await deliver_final_response(response, context, sound_type=sound)
+                # Telegram o quick feedback disabilitato: risposta TTS completa
+                # Solo in caso di errore forza il TTS, altrimenti suono
+                if not success:
+                    await deliver_final_response(response, context, sound_type="negative")
+                else:
+                    sound = "positive"
+                    await deliver_final_response(response, context, sound_type=sound)
 
     # --- SET LOCATION ---
     elif intent == "SET_LOCATION":
