@@ -12,7 +12,7 @@ import uuid
 import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from fastapi import FastAPI, Request, UploadFile, File, Form, Query
 from fastapi.responses import JSONResponse
@@ -440,6 +440,72 @@ async def approval_bot_polling_loop():
                                     pass
                         except Exception as e:
                             logger.error(f"Send location keyboard error: {e}")
+
+                    # ── Handle /panicstop command ──
+                    elif cmd == "/panicstop" and msg_chat_id:
+                        user_msg = get_user_by_telegram_id(tg_id_msg) if tg_id_msg else None
+                        if not user_msg:
+                            logger.warning(f"Approval bot /panicstop: tg_id {tg_id_msg} not linked to any user")
+                            try:
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(
+                                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                                        json={"chat_id": msg_chat_id, "text": "⚠️ Utente non riconosciuto."}
+                                    ) as _:
+                                        pass
+                            except Exception:
+                                pass
+                            continue
+
+                        user_loc = get_user_location(user_msg.id)
+                        if not user_loc:
+                            try:
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.post(
+                                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                                        json={
+                                            "chat_id": msg_chat_id,
+                                            "text": "⚠️ Location non impostata. Usa /location prima."
+                                        }
+                                    ) as _:
+                                        pass
+                            except Exception:
+                                pass
+                            continue
+
+                        count, stopped_ids = await _panic_stop_all_speakers(user_loc.location_id)
+                        loc_obj = get_location(user_loc.location_id)
+                        loc_name = loc_obj.name if loc_obj else user_loc.location_id
+
+                        if count > 0:
+                            reply = f"🛑 *Panic Stop!*\nFermati {count} speaker a _{loc_name}_."
+                        else:
+                            reply = f"⚠️ Nessuno speaker trovato a _{loc_name}_."
+
+                        log_event("panic_stop", {
+                            "source": "telegram",
+                            "user": user_msg.name,
+                            "location": user_loc.location_id,
+                            "speakers_stopped": count,
+                            "entity_ids": stopped_ids
+                        })
+
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.post(
+                                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                                    json={
+                                        "chat_id": msg_chat_id,
+                                        "text": reply,
+                                        "parse_mode": "Markdown"
+                                    }
+                                ) as _:
+                                    pass
+                        except Exception as e:
+                            logger.error(f"Send panicstop reply error: {e}")
+
+                        logger.info(f"🛑 Panic stop via Telegram by {user_msg.name}: {count} speakers at {loc_name}")
+
                     continue
 
                 # ── Handle callback queries ──
@@ -1540,6 +1606,28 @@ async def voice_stream(
         if speaker_ctx.get("speaker_id"):
             set_user_location(speaker_ctx["speaker_id"], location, "voice")
 
+        # ── PANIC STOP keyword check (pre-route bypass) ──
+        if _is_panic_command(text):
+            logger.warning(f"🛑 PANIC STOP triggered by voice: '{text}' (location={location})")
+            count, stopped_ids = await _panic_stop_all_speakers(location)
+            response_text = f"Ok, ho fermato {count} speaker." if count > 0 else "Non ho trovato speaker attivi."
+            log_event("panic_stop", {
+                "source": "voice",
+                "text": text,
+                "location": location,
+                "speakers_stopped": count,
+                "entity_ids": stopped_ids
+            })
+            # Deliver response to VirtualMic dashboard if applicable
+            if context.get("vmic_request_id"):
+                await deliver_final_response(response_text, context)
+            return {
+                "status": "panic_stop",
+                "speakers_stopped": count,
+                "transcribed_text": text,
+                "location": location
+            }
+
         # 3-way pre-routing via Qwen 7B (~100ms)
         pre_route_start = time.time()
         pre_result = await pre_route(text)
@@ -1597,6 +1685,71 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
 
 
 # ===========================================================================
+# PANIC STOP — Emergency speaker shutdown (bypasses all LLM routing)
+# ===========================================================================
+
+PANIC_KEYWORDS = [
+    "jarvis zitto", "jarvis stop", "jarvis basta", "jarvis silenzio",
+    "zitto", "stop stop", "basta", "silenzio", "stai zitto", "fermati",
+]
+
+def _is_panic_command(text: str) -> bool:
+    """Check se il testo trascritto è un comando di panic stop."""
+    # Pulisci punteggiatura per match più robusto
+    cleaned = re.sub(r'[,\.\!\?\;\:\-]', ' ', text.strip().lower())
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return any(kw in cleaned for kw in PANIC_KEYWORDS)
+
+
+async def _panic_stop_all_speakers(location_id: str) -> Tuple[int, List[str]]:
+    """
+    Ferma TUTTI i media_player nella location.
+    Pulisce speaking_state per tutte le stanze.
+
+    Returns:
+        (count, entity_ids) — numero di speaker fermati e lista entity_id
+    """
+    from database import get_entities_by_type
+
+    entity_ids = []
+    try:
+        media_players = get_entities_by_type(location_id, "media_player")
+        if media_players:
+            entity_ids = [
+                f"media_player.{mp['name'].lower().replace(' ', '_')}"
+                for mp in media_players
+            ]
+    except Exception as e:
+        logger.error(f"Panic stop: failed to get media_players for {location_id}: {e}")
+
+    if not entity_ids:
+        logger.warning(f"Panic stop: no media_players found for location {location_id}")
+        return 0, []
+
+    # Bulk stop su tutti gli speaker
+    try:
+        success, msg = await call_hass_service_bulk(
+            location_id, "media_player", "media_stop", entity_ids
+        )
+        if success:
+            logger.info(f"🛑 Panic stop: stopped {len(entity_ids)} speakers in {location_id}: {entity_ids}")
+        else:
+            logger.error(f"Panic stop: HA bulk call failed: {msg}")
+    except Exception as e:
+        logger.error(f"Panic stop: exception during bulk stop: {e}")
+
+    # Pulisci speaking_state per la location
+    async with speaking_state_lock:
+        rooms_to_clear = list(speaking_state.keys())
+        for room in rooms_to_clear:
+            del speaking_state[room]
+        if rooms_to_clear:
+            logger.info(f"Panic stop: cleared speaking_state for rooms: {rooms_to_clear}")
+
+    return len(entity_ids), entity_ids
+
+
+# ===========================================================================
 # ENTITY RESOLUTION FOR VOICE (single entity, room, zone, floor, all)
 # ===========================================================================
 
@@ -1639,6 +1792,31 @@ def _resolve_home_control_target(
 
     # 2. Discovery: stanza → zona → piano → "tutto"
     discovered = discover_entities_for_voice(location_id, entity_name, domain=domain)
+
+    # 2b. Se non trovato, prova con le singole parole (es. "Luce Cucina" → "Cucina")
+    if not discovered and " " in entity_name:
+        words = entity_name.split()
+        # Prova ciascuna parola (skip parole generiche del dominio: luce, luci, tapparella, etc.)
+        generic_words = {
+            "luce", "luci", "lampada", "lampade", "led",
+            "tapparella", "tapparelle", "tenda", "tende",
+            "sensore", "sensori", "interruttore", "interruttori",
+            "presa", "prese", "switch",
+        }
+        for word in words:
+            if word.lower() in generic_words:
+                continue
+            discovered = discover_entities_for_voice(location_id, word, domain=domain)
+            if discovered:
+                logger.info(f"Entity resolution: word extraction '{entity_name}' → tried '{word}' → match!")
+                break
+
+    # 2c. Se ancora non trovato e c'è room_hint dal contesto, prova con quello
+    if not discovered and room_hint and room_hint.lower() != "unknown":
+        discovered = discover_entities_for_voice(location_id, room_hint, domain=domain)
+        if discovered:
+            logger.info(f"Entity resolution: room_hint fallback '{room_hint}' → match!")
+
     if discovered:
         entity_ids = [e["entity_id"] for e in discovered]
         match_type = discovered[0]["match_type"]
@@ -1799,7 +1977,13 @@ async def process_jarvis_logic(text: str, context: dict):
         payload = router_data.get("payload", {})
         domain = payload.get("domain", "light")
         action = payload.get("action", "toggle")
-        entity = payload.get("entity", "unknown")
+        entity_raw = payload.get("entity", "unknown")
+        # Qwen può restituire entity come lista — normalizza a stringa
+        if isinstance(entity_raw, list):
+            entity = entity_raw[0] if entity_raw else "unknown"
+            logger.warning(f"Qwen returned entity as list {entity_raw}, using first: '{entity}'")
+        else:
+            entity = str(entity_raw) if entity_raw else "unknown"
 
         # Risolvi location
         target_location = payload.get("location") or location
