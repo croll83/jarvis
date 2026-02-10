@@ -1003,6 +1003,7 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
     # OpenResponses API format: POST /v1/responses
     payload = {
         "input": message_text,
+        "model": "openclaw:main",
         "stream": False,
     }
 
