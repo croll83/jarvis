@@ -1898,6 +1898,118 @@ def _resolve_home_control_target(
 
 
 # ===========================================================================
+# ENTITY QUERY HELPER (for SIMPLE_CHAT multi-turn with api_call)
+# ===========================================================================
+
+async def _execute_entity_query(payload: dict, location: str, context: dict) -> str | None:
+    """
+    Execute entity_discover/entity_bulk query from router payload.
+    Returns a human-readable summary string, or None on failure.
+    """
+    try:
+        from database import _get_conn
+
+        params = payload.get("params", {})
+        target_location = params.get("location_id") or location or get_default_location_id()
+
+        # Build DB query to find matching entities
+        conn = _get_conn()
+        c = conn.cursor()
+        query = """
+            SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
+            FROM entity_maps
+            WHERE location_id = ? AND entity_id IS NOT NULL
+        """
+        q_params: list = [target_location]
+
+        if params.get("domain"):
+            query += " AND entity_type = ?"
+            q_params.append(params["domain"])
+
+        if params.get("room"):
+            query += " AND LOWER(room) LIKE LOWER(?)"
+            q_params.append(f"%{params['room']}%")
+
+        if params.get("zone"):
+            query += " AND LOWER(area) LIKE LOWER(?)"
+            q_params.append(f"%{params['zone']}%")
+
+        if params.get("floor"):
+            query += " AND LOWER(zone) LIKE LOWER(?)"
+            q_params.append(f"%{params['floor']}%")
+
+        if params.get("search"):
+            query += " AND (LOWER(entity_name) LIKE LOWER(?) OR LOWER(entity_id) LIKE LOWER(?))"
+            q_params.append(f"%{params['search']}%")
+            q_params.append(f"%{params['search']}%")
+
+        query += " ORDER BY room, entity_type, entity_name LIMIT 200"
+        c.execute(query, q_params)
+        rows = c.fetchall()
+        conn.close()
+
+        if not rows:
+            return "Non ho trovato dispositivi corrispondenti."
+
+        # Collect entity_ids and fetch live states from HA
+        discovered = []
+        for row in rows:
+            discovered.append({
+                "entity_id": row["entity_id"],
+                "friendly_name": row["entity_name"],
+                "domain": row["entity_type"],
+                "room": row["room"],
+            })
+
+        entity_ids = [e["entity_id"] for e in discovered]
+        states = await multi_ha.get_states_bulk(target_location, entity_ids)
+
+        # Build human-readable summary
+        domain = params.get("domain", "entity")
+        domain_label = {
+            "light": "luci", "cover": "tapparelle", "climate": "termostati",
+            "media_player": "media player", "sensor": "sensori",
+            "binary_sensor": "sensori binari", "switch": "switch",
+            "fan": "ventilatori", "vacuum": "aspirapolvere",
+        }.get(domain, domain)
+
+        scope = params.get("room") or params.get("zone") or params.get("floor") or "tutta la casa"
+
+        if domain in ("sensor", "binary_sensor"):
+            parts = []
+            for ent in discovered:
+                live = states.get(ent["entity_id"], {})
+                attrs = live.get("attributes", {})
+                unit = attrs.get("unit_of_measurement", "")
+                state = live.get("state", "sconosciuto")
+                val = f"{ent['friendly_name']}: {state}{' ' + unit if unit else ''}"
+                parts.append(val)
+            return f"Ho trovato {len(discovered)} {domain_label} in {scope}: " + ", ".join(parts[:15])
+
+        on_states = {"on", "heat", "cool", "auto", "open", "playing"}
+        on_items = []
+        for ent in discovered:
+            live = states.get(ent["entity_id"], {})
+            if live.get("state", "").lower() in on_states:
+                on_items.append(ent["friendly_name"])
+
+        total = len(discovered)
+        on_count = len(on_items)
+
+        if on_count == 0:
+            return f"Tutte le {total} {domain_label} in {scope} sono spente."
+        elif on_count == total:
+            return f"Tutte le {total} {domain_label} in {scope} sono accese: {', '.join(on_items[:15])}."
+        else:
+            return (f"{on_count} {domain_label} accese su {total} in {scope}: "
+                    f"{', '.join(on_items[:15])}.")
+
+    except Exception as e:
+        logger.error(f"Entity query from SIMPLE_CHAT failed: {e}")
+        return None
+
+
+# ===========================================================================
 # CORE LOGIC
 # ===========================================================================
 
@@ -2483,9 +2595,25 @@ async def process_jarvis_logic(text: str, context: dict):
 
     # --- SIMPLE CHAT / UNKNOWN ---
     else:
-        response = router_data.get("response")
-        if not response:
-            response = await get_quick_response(text, context)
+        payload = router_data.get("payload", {})
+        api_call = payload.get("api_call") if isinstance(payload, dict) else None
+
+        # Multi-turn: if router indicated an api_call (entity_discover/entity_bulk),
+        # execute it to get live data from Home Assistant
+        if api_call in ("entity_discover", "entity_bulk"):
+            logger.info(f"SIMPLE_CHAT multi-turn: executing {api_call} with params={payload.get('params', {})}")
+            query_response = await _execute_entity_query(payload, location, context)
+            if query_response:
+                response = query_response
+            else:
+                # Query failed, use router's interim response or quick response
+                response = router_data.get("response")
+                if not response:
+                    response = await get_quick_response(text, context)
+        else:
+            response = router_data.get("response")
+            if not response:
+                response = await get_quick_response(text, context)
 
         smart_cache.learn(text, response, intent)
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
