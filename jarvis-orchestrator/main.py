@@ -1753,78 +1753,75 @@ async def _panic_stop_all_speakers(location_id: str) -> Tuple[int, List[str]]:
 # ENTITY RESOLUTION FOR VOICE (single entity, room, zone, floor, all)
 # ===========================================================================
 
+def _extract_target_from_user_text(user_text: str, location_id: str) -> Optional[str]:
+    """
+    Estrae il target (stanza, zona, piano, "tutto") dal testo originale dell'utente,
+    confrontandolo con le room/zone/area reali nel database.
+
+    Approccio: carica tutti i nomi reali dal DB e cerca quale appare nel testo utente.
+    Questo è molto più affidabile di fidarsi dell'entity name che Qwen restituisce.
+
+    Returns:
+        Il nome del target trovato (es. "Cucina", "Zona Giorno") oppure None.
+    """
+    from database import get_entity_map_locations
+
+    text_lower = re.sub(r'[,\.\!\?\;\:\-]', ' ', user_text.strip().lower())
+    text_lower = re.sub(r'\s+', ' ', text_lower).strip()
+
+    # Check wildcard prima ("tutto", "tutte", "tutti", "ovunque")
+    wildcard_tokens = {"tutto", "tutti", "tutte", "tutta la casa", "ovunque", "dappertutto"}
+    for wt in wildcard_tokens:
+        if wt in text_lower:
+            return wt
+
+    # Carica room/zone/area reali dal DB
+    locations = get_entity_map_locations(location_id)
+    if not locations:
+        return None
+
+    # Ordina per lunghezza decrescente (match più specifico prima)
+    # es. "Zona Giorno" deve matchare prima di "Giorno"
+    all_names = sorted(locations, key=len, reverse=True)
+
+    for name in all_names:
+        if name.lower() in text_lower:
+            return name
+
+    return None
+
+
 def _resolve_home_control_target(
-    location_id: str, domain: str, entity_name: str, room_hint: str = None
+    location_id: str, domain: str, entity_name: str,
+    room_hint: str = None, user_text: str = None
 ) -> dict:
     """
     Risolve il target di un comando HOME_CONTROL voice.
 
-    Strategia a cascata:
-    1. Match esatto friendly name → singola entity
-    2. Match stanza/zona/piano → bulk su tutte le entity del dominio
-    3. Fallback sintetico → {domain}.{entity} (backwards compatible)
+    Strategia a cascata (con tripla fonte):
+    A. TESTO UTENTE: estrae room/zona/piano dal testo originale (più affidabile)
+    B. ENTITY QWEN: prova match esatto del friendly name che Qwen restituisce
+    C. ROOM HINT: usa la stanza del microfono come ultimo resort
+
+    In tutti i casi, non verifica stato on/off — esegue direttamente l'azione.
 
     Returns:
         {
             "mode": "single" | "bulk",
-            "entity_ids": [str],          # lista di entity_id
-            "description": str,           # per log/risposta utente
-            "match_type": str,            # "exact", "room", "zone", "floor", "all", "fallback"
+            "entity_ids": [str],
+            "description": str,
+            "match_type": str,
         }
     """
     from database import resolve_entity_id, discover_entities_for_voice
 
-    # 1. Match esatto: friendly name → entity_id singolo
-    exact_id = resolve_entity_id(
-        location_id=location_id,
-        friendly_name=entity_name,
-        entity_type=domain,
-        room=room_hint
-    )
-    if exact_id:
-        logger.info(f"Entity resolution: exact match '{entity_name}' → {exact_id}")
-        return {
-            "mode": "single",
-            "entity_ids": [exact_id],
-            "description": entity_name,
-            "match_type": "exact",
-        }
-
-    # 2. Discovery: stanza → zona → piano → "tutto"
-    discovered = discover_entities_for_voice(location_id, entity_name, domain=domain)
-
-    # 2b. Se non trovato, prova con le singole parole (es. "Luce Cucina" → "Cucina")
-    if not discovered and " " in entity_name:
-        words = entity_name.split()
-        # Prova ciascuna parola (skip parole generiche del dominio: luce, luci, tapparella, etc.)
-        generic_words = {
-            "luce", "luci", "lampada", "lampade", "led",
-            "tapparella", "tapparelle", "tenda", "tende",
-            "sensore", "sensori", "interruttore", "interruttori",
-            "presa", "prese", "switch",
-        }
-        for word in words:
-            if word.lower() in generic_words:
-                continue
-            discovered = discover_entities_for_voice(location_id, word, domain=domain)
-            if discovered:
-                logger.info(f"Entity resolution: word extraction '{entity_name}' → tried '{word}' → match!")
-                break
-
-    # 2c. Se ancora non trovato e c'è room_hint dal contesto, prova con quello
-    if not discovered and room_hint and room_hint.lower() != "unknown":
-        discovered = discover_entities_for_voice(location_id, room_hint, domain=domain)
-        if discovered:
-            logger.info(f"Entity resolution: room_hint fallback '{room_hint}' → match!")
-
-    if discovered:
-        entity_ids = [e["entity_id"] for e in discovered]
-        match_type = discovered[0]["match_type"]
-        rooms = sorted(set(e["room"] for e in discovered if e.get("room")))
-        rooms_str = ", ".join(rooms) if rooms else entity_name
-
+    def _make_bulk_result(discovered_list, source_label):
+        entity_ids = [e["entity_id"] for e in discovered_list]
+        match_type = discovered_list[0]["match_type"]
+        rooms = sorted(set(e["room"] for e in discovered_list if e.get("room")))
+        rooms_str = ", ".join(rooms) if rooms else source_label
         logger.info(
-            f"Entity resolution: {match_type} match '{entity_name}' → "
+            f"Entity resolution [{source_label}]: {match_type} match → "
             f"{len(entity_ids)} {domain} entities in [{rooms_str}]"
         )
         return {
@@ -1834,9 +1831,64 @@ def _resolve_home_control_target(
             "match_type": match_type,
         }
 
-    # 3. Fallback sintetico (backwards compatible)
+    # ── A. TESTO UTENTE: estrai target direttamente dal testo originale ──
+    if user_text:
+        extracted = _extract_target_from_user_text(user_text, location_id)
+        if extracted:
+            discovered = discover_entities_for_voice(location_id, extracted, domain=domain)
+            if discovered:
+                return _make_bulk_result(discovered, f"user_text:'{extracted}'")
+
+    # ── B. ENTITY QWEN: prova quello che Qwen ha restituito ──
+    # B1. Match esatto friendly name → entity singola
+    exact_id = resolve_entity_id(
+        location_id=location_id,
+        friendly_name=entity_name,
+        entity_type=domain,
+        room=room_hint
+    )
+    if exact_id:
+        logger.info(f"Entity resolution [qwen_exact]: '{entity_name}' → {exact_id}")
+        return {
+            "mode": "single",
+            "entity_ids": [exact_id],
+            "description": entity_name,
+            "match_type": "exact",
+        }
+
+    # B2. Prova entity_name come target di discovery (room/zona/piano)
+    discovered = discover_entities_for_voice(location_id, entity_name, domain=domain)
+    if discovered:
+        return _make_bulk_result(discovered, f"qwen_entity:'{entity_name}'")
+
+    # B3. Estrai parole non-generiche dall'entity_name di Qwen
+    if " " in entity_name:
+        generic_words = {
+            "luce", "luci", "lampada", "lampade", "led", "la", "le", "il", "i",
+            "del", "della", "dei", "delle", "di", "in", "box",
+            "tapparella", "tapparelle", "tenda", "tende",
+            "sensore", "sensori", "interruttore", "interruttori",
+            "presa", "prese", "switch", "tutte", "tutti", "tutto",
+        }
+        # Pulisci punteggiatura e split
+        cleaned = re.sub(r'[,\.\!\?\;\:\-]', ' ', entity_name)
+        words = [w.strip() for w in cleaned.split() if w.strip()]
+        for word in words:
+            if word.lower() in generic_words or len(word) < 3:
+                continue
+            discovered = discover_entities_for_voice(location_id, word, domain=domain)
+            if discovered:
+                return _make_bulk_result(discovered, f"qwen_word:'{word}'")
+
+    # ── C. ROOM HINT: stanza del microfono come ultimo resort ──
+    if room_hint and room_hint.lower() not in ("unknown", "sconosciuto"):
+        discovered = discover_entities_for_voice(location_id, room_hint, domain=domain)
+        if discovered:
+            return _make_bulk_result(discovered, f"room_hint:'{room_hint}'")
+
+    # ── D. FALLBACK SINTETICO (backwards compatible) ──
     fallback_id = f"{domain}.{entity_name.lower().replace(' ', '_')}"
-    logger.warning(f"Entity resolution: no match for '{entity_name}', fallback → {fallback_id}")
+    logger.warning(f"Entity resolution: no match for '{entity_name}' (user_text='{user_text}'), fallback → {fallback_id}")
     return {
         "mode": "single",
         "entity_ids": [fallback_id],
@@ -2022,8 +2074,11 @@ async def process_jarvis_logic(text: str, context: dict):
             return
 
         # Entity resolution: singola entity, stanza, zona, piano o "tutto"
+        # Passa il testo originale dell'utente per estrazione diretta (più affidabile di entity Qwen)
         room_hint = context.get("room")
-        target = _resolve_home_control_target(target_location, domain, entity, room_hint)
+        target = _resolve_home_control_target(
+            target_location, domain, entity, room_hint, user_text=text
+        )
 
         # L1-L4 security check (domain-level, come entity_bulk)
         source_channel = "voice" if source in ("AtomS3R", "VirtualMic") else source.lower()

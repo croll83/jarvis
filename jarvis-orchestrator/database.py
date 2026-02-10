@@ -2341,6 +2341,31 @@ def get_rooms_for_location(location_id: str) -> List[str]:
     return rooms
 
 
+def get_entity_map_locations(location_id: str) -> List[str]:
+    """
+    Ritorna tutti i nomi di room, area e zone DISTINTI per una location.
+    Usato da _extract_target_from_user_text per matchare il testo utente
+    con i nomi reali delle stanze/zone/piani nel database.
+
+    Returns:
+        Lista di nomi unici (es. ["Cucina", "Soggiorno", "Zona Giorno", "Piano 1"])
+    """
+    conn = _get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT DISTINCT room FROM entity_maps WHERE location_id = ? AND room IS NOT NULL
+        UNION
+        SELECT DISTINCT area FROM entity_maps WHERE location_id = ? AND area IS NOT NULL
+        UNION
+        SELECT DISTINCT zone FROM entity_maps WHERE location_id = ? AND zone IS NOT NULL
+    """, (location_id, location_id, location_id))
+    names = [row[0] for row in c.fetchall() if row[0]]
+    conn.close()
+    # Filtra nomi "vuoti" o placeholder
+    skip = {"sconosciuto", "non classificato", "unknown", ""}
+    return [n for n in names if n.lower().strip() not in skip]
+
+
 def get_entities_by_room(location_id: str, room: str) -> dict:
     """Ritorna le entity di una stanza specifica, raggruppate per tipo."""
     conn = _get_conn()
