@@ -189,7 +189,17 @@ class VoiceRecognizer:
                 "Che ore sono e che tempo fa oggi?",
                 "Ricordami di chiamare il dentista domani.",
                 "Qual è la temperatura in camera da letto?",
-                "Buongiorno Jarvis, come stai oggi?"
+                "Buongiorno Jarvis, come stai oggi?",
+                "Spegni tutte le luci di casa.",
+                "Che programmi ci sono stasera in televisione?",
+                "Imposta una sveglia per domani mattina alle sette.",
+                "Jarvis, apri le tapparelle della cucina.",
+                "Quanto manca alla prossima riunione?",
+                "Abbassa il volume della musica in soggiorno.",
+                "Dimmi le ultime notizie di oggi.",
+                "Jarvis, qual è il meteo per il weekend?",
+                "Aggiungi il latte alla lista della spesa.",
+                "Chiudi la porta del garage per favore."
             ]
         }
     

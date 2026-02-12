@@ -431,17 +431,19 @@
             3. Copia skill JARVIS:
                cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
                cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
-            4. Configura browser-dom nel config:
+            4. Configura credenziali skill (scrive token + URL in skill.json):
+               bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
+            5. Configura browser-dom nel config:
                bash /opt/jarvis/cloud/scripts/configure-browser-dom.sh
-            5. Configura env vars:
+            6. Configura env vars:
                nano ~/.openclaw/openclaw.env   # GOG_KEYRING_PASSWORD, GOG_ACCOUNT
-            6. Copia credenziali gogcli:
+            7. Copia credenziali gogcli:
                scp -r ~/.config/gog/credentials.json {{ openclaw_user }}@<host>:~/.config/gog/
                scp -r ~/.config/gog/keyring/ {{ openclaw_user }}@<host>:~/.config/gog/
-            7. Avvia servizi:
+            8. Avvia servizi:
                sudo systemctl start openclaw-chrome   # Chrome headless
                sudo systemctl start openclaw           # OpenClaw gateway
-            8. Verifica:
+            9. Verifica:
                curl -s http://127.0.0.1:18800/json/version   # Chrome CDP
                curl http://localhost:18789/health              # OpenClaw
                journalctl -u openclaw -f | grep browser-dom   # Plugin caricato

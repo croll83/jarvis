@@ -159,7 +159,7 @@ Dopo l'onboarding, esegui lo script che legge il gateway token dal config e lo i
 bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
 ```
 
-Lo script configura automaticamente `OPENCLAW_GATEWAY_TOKEN` e `JARVIS_ORCHESTRATOR_URL` in `openclaw.json`.
+Lo script configura automaticamente `OPENCLAW_GATEWAY_TOKEN` e `JARVIS_ORCHESTRATOR_URL` in `skill.json` (le env vars nello skill hanno precedenza su `openclaw.json`).
 
 > **IMPORTANTE**: il `OPENCLAW_GATEWAY_TOKEN` nel `.env` dell'orchestratore DEVE essere lo stesso valore. Lo trovi con:
 > `jq -r '.gateway.auth.token' ~/.openclaw/openclaw.json`
@@ -719,6 +719,8 @@ docker compose -f docker-compose.cloud.yml up -d
 # 4. Se SKILL.md o skill.json sono cambiati, ricopiali per OpenClaw
 cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
 cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
+# NOTA: la copia sovrascrive le credenziali in skill.json — riesegui lo script:
+bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
 sudo systemctl restart openclaw
 
 # 5. Se exec-approvals.json e cambiato

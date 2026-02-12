@@ -180,11 +180,10 @@ async def test_voice_identification(audio: UploadFile = File(...)) -> dict:
     result = voice_recognizer.identify_speaker(audio_bytes)
 
     return {
-        "identified": result.get("identified", False),
-        "speaker_name": result.get("speaker_name", "Sconosciuto"),
-        "speaker_id": result.get("speaker_id"),
-        "confidence": result.get("confidence", 0),
-        "all_scores": result.get("all_scores", {})
+        "identified": result.is_known,
+        "speaker_name": result.user_name or "Sconosciuto",
+        "speaker_id": result.user_id,
+        "confidence": result.confidence,
     }
 
 

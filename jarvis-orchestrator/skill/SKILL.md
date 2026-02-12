@@ -151,6 +151,16 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/audit_log" \
   -d '{"event_type": "home_control", "details": "Manual backup triggered", "user_id": "marco", "source": "openclaw", "severity": "info"}'
 ```
 
+## Risposte Voice (TTS)
+
+Quando il messaggio contiene `source: AtomS3R` o `source: VirtualMic`, la risposta verrà letta ad alta voce da Alexa TTS. Formatta di conseguenza:
+- Italiano naturale parlato, niente markdown, niente bullet point, niente asterischi, niente emoji, niente caratteri speciali
+- Frasi brevi con punteggiatura chiara (virgole, punti, punti esclamativi, punti interrogativi)
+- Aggiungi espressività: esclamativi per entusiasmo, puntini di sospensione per pause, domande retoriche per coinvolgere
+- Alterna frasi corte e incisive con frasi più lunghe e fluide
+- Tono caldo, vivace e umano, non robotico o piatto
+- Sii conciso ma conversazionale, massimo 3-4 frasi a meno che il tema non richieda di più
+
 ## Users
 - **Marco**: Admin. Main user.
 - **Ada**: Wife (DOB: 19-Nov).
