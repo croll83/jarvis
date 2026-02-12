@@ -279,7 +279,11 @@ cat > "$HELPER_SCRIPT" <<'SCRIPT'
 # Configure JARVIS skill env vars in OpenClaw
 # =============================================================================
 # Run this AFTER 'openclaw onboard' to inject JARVIS_ORCHESTRATOR_URL and
-# OPENCLAW_GATEWAY_TOKEN into the OpenClaw config.
+# OPENCLAW_GATEWAY_TOKEN into the skill.json file (NOT openclaw.json).
+#
+# skill.json env vars take precedence — OpenClaw reads them at skill load time
+# and makes $JARVIS_ORCHESTRATOR_URL and $OPENCLAW_GATEWAY_TOKEN available
+# to the agent when executing the skill.
 #
 # Usage (as jarvis user):
 #   bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
@@ -296,10 +300,20 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+SKILL_JSON="$HOME/.openclaw/workspace/skills/jarvis-orchestrator/skill.json"
 
-# Check openclaw.json exists
+# Check openclaw.json exists (we read the gateway token from it)
 if [ ! -f "$OPENCLAW_CONFIG" ]; then
     echo -e "${RED}Error: $OPENCLAW_CONFIG not found. Run 'openclaw onboard' first.${NC}"
+    exit 1
+fi
+
+# Check skill.json exists (must be copied first)
+if [ ! -f "$SKILL_JSON" ]; then
+    echo -e "${RED}Error: $SKILL_JSON not found.${NC}"
+    echo "Copy the skill first:"
+    echo "  mkdir -p ~/.openclaw/workspace/skills/jarvis-orchestrator"
+    echo "  cp /opt/jarvis/jarvis-orchestrator/skill/* ~/.openclaw/workspace/skills/jarvis-orchestrator/"
     exit 1
 fi
 
@@ -315,7 +329,7 @@ if [ -n "$JARVIS_ORCHESTRATOR_URL" ]; then
     # Explicit env var — use it directly (non-interactive mode)
     ORCH_URL="$JARVIS_ORCHESTRATOR_URL"
 else
-    # Try to auto-detect Tailscale IP of THIS machine
+    # Try to auto-detect Tailscale IP of the orchestrator VM
     TAILSCALE_IP=""
     if command -v tailscale &> /dev/null; then
         TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || true)
@@ -377,18 +391,15 @@ else
     echo -e "${YELLOW}⚠ unreachable (orchestrator may not be running yet)${NC}"
 fi
 
-# Inject skill env config into openclaw.json
+# Write credentials into skill.json (skill env vars take precedence over openclaw.json)
 jq --arg token "$GW_TOKEN" --arg url "$ORCH_URL" '
-  .skills.entries["jarvis-orchestrator"] = {
-    "env": {
-      "OPENCLAW_GATEWAY_TOKEN": $token,
-      "JARVIS_ORCHESTRATOR_URL": $url
-    }
-  }
-' "$OPENCLAW_CONFIG" > "${OPENCLAW_CONFIG}.tmp" && mv "${OPENCLAW_CONFIG}.tmp" "$OPENCLAW_CONFIG"
+  .env.OPENCLAW_GATEWAY_TOKEN = $token |
+  .env.JARVIS_ORCHESTRATOR_URL = $url
+' "$SKILL_JSON" > "${SKILL_JSON}.tmp" && mv "${SKILL_JSON}.tmp" "$SKILL_JSON"
 
 echo ""
-echo -e "${GREEN}Done! jarvis-orchestrator skill configured in openclaw.json${NC}"
+echo -e "${GREEN}Done! Credentials written to skill.json${NC}"
+echo "  File: ${SKILL_JSON}"
 echo ""
 echo "Restart OpenClaw to apply:"
 echo "  sudo systemctl restart openclaw"
@@ -430,11 +441,10 @@ fi
 
 echo -e "${YELLOW}Configuring browser-dom plugin...${NC}"
 
-# Add browser-dom plugin config
+# Add browser-dom plugin config (must be under plugins.entries)
 jq '
-  .plugins["browser-dom"] = {
+  .plugins.entries["browser-dom"] = {
     "enabled": true,
-    "path": (.plugins["browser-dom"].path // ($ENV.HOME + "/.openclaw/extensions/browser-dom")),
     "config": {
       "cdpUrl": "http://127.0.0.1:18800",
       "defaultTimeoutMs": 15000

@@ -49,7 +49,23 @@
         { "id": "a1b2c3d4-001c-4000-8000-00000000001c", "pattern": "/usr/bin/xargs", "lastResolvedPath": "/usr/bin/xargs" },
         { "id": "a1b2c3d4-001d-4000-8000-00000000001d", "pattern": "/home/linuxbrew/.linuxbrew/**/node", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/Cellar/node/25.6.0/bin/node" },
         { "id": "a1b2c3d4-001e-4000-8000-00000000001e", "pattern": "/home/linuxbrew/.linuxbrew/**/npm", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/npm" },
-        { "id": "a1b2c3d4-001f-4000-8000-00000000001f", "pattern": "/home/linuxbrew/.linuxbrew/**/npx", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/npx" }
+        { "id": "a1b2c3d4-001f-4000-8000-00000000001f", "pattern": "/home/linuxbrew/.linuxbrew/**/npx", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/npx" },
+
+        { "id": "a1b2c3d4-0020-4000-8000-000000000020", "pattern": "/home/linuxbrew/.linuxbrew/**/gog", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/gog" },
+        { "id": "a1b2c3d4-0021-4000-8000-000000000021", "pattern": "/home/linuxbrew/.linuxbrew/**/gemini", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/gemini" },
+        { "id": "a1b2c3d4-0022-4000-8000-000000000022", "pattern": "/home/linuxbrew/.linuxbrew/**/gifgrep", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/gifgrep" },
+        { "id": "a1b2c3d4-0023-4000-8000-000000000023", "pattern": "/home/linuxbrew/.linuxbrew/**/goplaces", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/goplaces" },
+        { "id": "a1b2c3d4-0024-4000-8000-000000000024", "pattern": "/home/linuxbrew/.linuxbrew/**/wacli", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/wacli" },
+        { "id": "a1b2c3d4-0025-4000-8000-000000000025", "pattern": "/home/linuxbrew/.linuxbrew/**/summarize", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/summarize" },
+        { "id": "a1b2c3d4-0026-4000-8000-000000000026", "pattern": "/home/linuxbrew/.linuxbrew/**/ffmpeg", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/ffmpeg" },
+        { "id": "a1b2c3d4-0027-4000-8000-000000000027", "pattern": "/home/linuxbrew/.linuxbrew/**/ffprobe", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/ffprobe" },
+        { "id": "a1b2c3d4-0028-4000-8000-000000000028", "pattern": "/home/linuxbrew/.linuxbrew/**/gh", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/gh" },
+        { "id": "a1b2c3d4-0029-4000-8000-000000000029", "pattern": "/home/linuxbrew/.linuxbrew/**/op", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/op" },
+        { "id": "a1b2c3d4-002a-4000-8000-00000000002a", "pattern": "/home/linuxbrew/.linuxbrew/**/codexbar", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/codexbar" },
+        { "id": "a1b2c3d4-002b-4000-8000-00000000002b", "pattern": "/home/linuxbrew/.linuxbrew/**/rg", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/rg" },
+        { "id": "a1b2c3d4-002c-4000-8000-00000000002c", "pattern": "/usr/bin/python3", "lastResolvedPath": "/usr/bin/python3" },
+        { "id": "a1b2c3d4-002d-4000-8000-00000000002d", "pattern": "/usr/bin/tmux", "lastResolvedPath": "/usr/bin/tmux" },
+        { "id": "a1b2c3d4-002e-4000-8000-00000000002e", "pattern": "/usr/bin/clawhub", "lastResolvedPath": "/usr/bin/clawhub" }
       ]
     },
     "*": {
@@ -72,7 +88,23 @@
         { "id": "c0000001-000d-4000-8000-00000000000d", "pattern": "/home/linuxbrew/.linuxbrew/**/node", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/Cellar/node/25.6.0/bin/node" },
         { "id": "c0000001-000e-4000-8000-00000000000e", "pattern": "/home/linuxbrew/.linuxbrew/**/npm", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/npm" },
         { "id": "c0000001-000f-4000-8000-00000000000f", "pattern": "/home/linuxbrew/.linuxbrew/**/npx", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/npx" },
-        { "id": "c0000001-0010-4000-8000-000000000010", "pattern": "/home/linuxbrew/.linuxbrew/**/uv", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/uv" }
+        { "id": "c0000001-0010-4000-8000-000000000010", "pattern": "/home/linuxbrew/.linuxbrew/**/uv", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/uv" },
+
+        { "id": "c0000001-0020-4000-8000-000000000020", "pattern": "/home/linuxbrew/.linuxbrew/**/gog", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/gog" },
+        { "id": "c0000001-0021-4000-8000-000000000021", "pattern": "/home/linuxbrew/.linuxbrew/**/gemini", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/gemini" },
+        { "id": "c0000001-0022-4000-8000-000000000022", "pattern": "/home/linuxbrew/.linuxbrew/**/gifgrep", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/gifgrep" },
+        { "id": "c0000001-0023-4000-8000-000000000023", "pattern": "/home/linuxbrew/.linuxbrew/**/goplaces", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/goplaces" },
+        { "id": "c0000001-0024-4000-8000-000000000024", "pattern": "/home/linuxbrew/.linuxbrew/**/wacli", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/wacli" },
+        { "id": "c0000001-0025-4000-8000-000000000025", "pattern": "/home/linuxbrew/.linuxbrew/**/summarize", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/summarize" },
+        { "id": "c0000001-0026-4000-8000-000000000026", "pattern": "/home/linuxbrew/.linuxbrew/**/ffmpeg", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/ffmpeg" },
+        { "id": "c0000001-0027-4000-8000-000000000027", "pattern": "/home/linuxbrew/.linuxbrew/**/ffprobe", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/ffprobe" },
+        { "id": "c0000001-0028-4000-8000-000000000028", "pattern": "/home/linuxbrew/.linuxbrew/**/gh", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/gh" },
+        { "id": "c0000001-0029-4000-8000-000000000029", "pattern": "/home/linuxbrew/.linuxbrew/**/op", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/op" },
+        { "id": "c0000001-002a-4000-8000-00000000002a", "pattern": "/home/linuxbrew/.linuxbrew/**/codexbar", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/codexbar" },
+        { "id": "c0000001-002b-4000-8000-00000000002b", "pattern": "/home/linuxbrew/.linuxbrew/**/rg", "lastResolvedPath": "/home/linuxbrew/.linuxbrew/bin/rg" },
+        { "id": "c0000001-002c-4000-8000-00000000002c", "pattern": "/usr/bin/python3", "lastResolvedPath": "/usr/bin/python3" },
+        { "id": "c0000001-002d-4000-8000-00000000002d", "pattern": "/usr/bin/tmux", "lastResolvedPath": "/usr/bin/tmux" },
+        { "id": "c0000001-002e-4000-8000-00000000002e", "pattern": "/usr/bin/clawhub", "lastResolvedPath": "/usr/bin/clawhub" }
       ]
     }
   }

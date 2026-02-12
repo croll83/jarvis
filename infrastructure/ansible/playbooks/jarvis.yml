@@ -255,5 +255,8 @@
             3. Configura location Home Assistant
             4. Importa entity map
             5. Registra profili vocali
-            6. Configura OpenClaw (VM separata): openclaw onboard + skill symlink
+            6. Configura OpenClaw (VM separata):
+                 openclaw onboard
+                 cp /opt/jarvis/jarvis-orchestrator/skill/* ~/.openclaw/workspace/skills/jarvis-orchestrator/
+                 bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
           ================================================================
