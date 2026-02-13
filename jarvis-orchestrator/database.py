@@ -253,6 +253,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Colonna già esiste
 
+    # Migration: aggiungi colonna hass_lan_url (URL raggiungibile dai device LAN, es. TV)
+    try:
+        c.execute("ALTER TABLE locations ADD COLUMN hass_lan_url TEXT")
+    except sqlite3.OperationalError:
+        pass  # Colonna già esiste
+
     # 13. USER LOCATIONS (Location corrente per utente)
     c.execute('''CREATE TABLE IF NOT EXISTS user_locations (
         user_id INTEGER PRIMARY KEY REFERENCES users(id),
@@ -1754,6 +1760,7 @@ class Location:
     city: Optional[str]
     hass_url: str
     hass_token: str
+    hass_lan_url: Optional[str]  # URL HA raggiungibile dai device LAN (TV, speaker)
     entity_map_path: Optional[str]
     has_security: bool
     enabled: bool
@@ -1767,6 +1774,7 @@ class Location:
             "city": self.city,
             "hass_url": self.hass_url,
             "hass_token": self.hass_token,
+            "hass_lan_url": self.hass_lan_url,
             "entity_map_path": self.entity_map_path,
             "has_security": self.has_security,
             "enabled": self.enabled,
@@ -1805,6 +1813,7 @@ def get_all_locations(enabled_only: bool = True) -> List[Location]:
         city=row['city'],
         hass_url=row['hass_url'],
         hass_token=row['hass_token'],
+        hass_lan_url=row['hass_lan_url'] if 'hass_lan_url' in row.keys() else None,
         entity_map_path=row['entity_map_path'],
         has_security=bool(row['has_security']),
         enabled=bool(row['enabled']),
@@ -1828,6 +1837,7 @@ def get_location(location_id: str) -> Optional[Location]:
             city=row['city'],
             hass_url=row['hass_url'],
             hass_token=row['hass_token'],
+            hass_lan_url=row['hass_lan_url'] if 'hass_lan_url' in row.keys() else None,
             entity_map_path=row['entity_map_path'],
             has_security=bool(row['has_security']),
             enabled=bool(row['enabled']),
@@ -1869,7 +1879,7 @@ def update_location(location_id: str, **kwargs) -> bool:
     if not kwargs:
         return False
 
-    allowed_fields = {'name', 'city', 'hass_url', 'hass_token', 'entity_map_path', 'has_security', 'enabled', 'keywords'}
+    allowed_fields = {'name', 'city', 'hass_url', 'hass_token', 'hass_lan_url', 'entity_map_path', 'has_security', 'enabled', 'keywords'}
 
     # Converti keywords in JSON se è una lista
     if 'keywords' in kwargs and isinstance(kwargs['keywords'], list):
