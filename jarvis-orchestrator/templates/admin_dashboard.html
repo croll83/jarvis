@@ -3892,7 +3892,7 @@
                 const syncRes = await fetch(`/api/admin/locations/${selectedLocationId}/ha-sync`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ overwrite_existing: false })
+                    body: JSON.stringify({ overwrite_existing: true })
                 });
 
                 if (syncRes.ok) {
