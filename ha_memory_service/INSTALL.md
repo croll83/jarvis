@@ -1,193 +1,204 @@
-# HA Memory Service (Sidecar) — Guida Installazione
+# HA Memory Service — Guida Installazione
 
-Servizio sidecar che gira accanto a Home Assistant. Ingerisce eventi via WebSocket, genera summary con Qwen, e offre ricerca semantica via ChromaDB.
+Servizio memory per JARVIS. Ingerisce eventi HA via WebSocket, genera summary con LLM, e offre ricerca semantica via ChromaDB.
 
-**Importante:** Viene deployato **1 istanza per location HA**. Se hai 2 location Home Assistant, avrai 2 container di questo servizio.
+**1 istanza per location HA.**
 
 ---
 
-## Prerequisiti
+## Metodo 1: Add-on HAOS (consigliato)
+
+Il modo piu semplice. L'addon gira dentro HAOS con accesso diretto a HA, Tailscale, e Supervisor API.
+
+### Prerequisiti
+
+- HAOS con almeno **8 GB RAM** (il servizio usa ~300 MB)
+- Addon Tailscale installato (se serve raggiungere Ollama remoto)
+
+### Installazione
+
+1. Copia la cartella `ha_memory_service/` nel path local addons di HAOS:
+
+```
+/addons/jarvis_ha_memory/
+├── main.py
+├── prompts/
+├── Dockerfile
+├── build.yaml
+├── config.yaml
+├── run.sh
+├── requirements.txt
+├── translations/
+│   └── en.yaml
+└── DOCS.md
+```
+
+Per copiare i file su HAOS puoi usare:
+- **Samba share addon** — monta `/addons/` via rete e copia
+- **SSH addon** — `scp -r ha_memory_service/ root@<HAOS_IP>:/addons/jarvis_ha_memory/`
+- **VS Code addon** — naviga in `/addons/` e copia
+
+2. In HA vai su **Settings > Add-ons > Add-on Store**
+3. Clicca i **3 puntini** in alto a destra > **Check for updates**
+4. L'addon **JARVIS HA Memory** appare nella sezione "Local add-ons"
+5. Clicca > **Install**
+
+### Configurazione
+
+Dopo l'installazione, vai nella tab **Configuration** dell'addon:
+
+**Cloud (temporaneo):**
+```yaml
+location_id: wagmi
+ai_backend: api
+openrouter_api_key: sk-or-v1-xxx
+gemini_api_key: AIzaSyxxx
+```
+
+**Locale (definitivo):**
+```yaml
+location_id: wagmi
+ai_backend: local
+ollama_url: http://100.x.x.x:11434
+```
+
+6. Clicca **Save** > **Start**
+7. Controlla i log nella tab **Log**
+
+### Vantaggi addon
+
+- **Zero config HA token** — il Supervisor lo gestisce automaticamente
+- **Tailscale incluso** — se l'addon Tailscale e installato, la rete 100.x.x.x e gia visibile
+- **Watchdog** — HA monitora la salute del servizio e lo riavvia se crasha
+- **Backup** — incluso nei backup HA automatici
+- **Update** — aggiornabile dalla UI
+- **Log** — visibili dalla UI HA
+
+### Migrazione cloud -> locale
+
+1. Vai in **Configuration** dell'addon
+2. Cambia `ai_backend` da `api` a `local`
+3. Inserisci `ollama_url` con l'IP Tailscale di Ollama
+4. Rimuovi le API keys (opzionale)
+5. **Save** > **Restart**
+
+I summary storici in SQLite persistono. I vettori ChromaDB si purgano naturalmente in 7 giorni.
+
+---
+
+## Metodo 2: Docker standalone (LXC su Proxmox)
+
+Per deploy separato dall'istanza HA (es. monitoring di HA remoti, o ambienti senza HAOS).
+
+### Prerequisiti
 
 | Requisito | Minimo |
 |-----------|--------|
-| Python | 3.11+ |
-| RAM | 256 MB per istanza |
-| Disk | 500 MB per ChromaDB per location |
-| Ollama | Raggiungibile via rete (per embedding + summary) |
-| Home Assistant | Long-lived access token |
+| Proxmox | 7.x+ |
+| LXC template | Debian 12 o Ubuntu 22.04 |
+| RAM (LXC) | 512 MB |
+| Disk (LXC) | 4 GB |
+| Docker | Installato dentro LXC |
+| Tailscale | Installato dentro LXC |
 
-Non richiede GPU — usa Ollama remoto per embedding e summarization.
-
----
-
-## Deploy con Docker
-
-### 1. Build
+### Creazione LXC
 
 ```bash
-cd jarvis/orchestrator/ha_memory_service
-docker build -t jarvis-ha-memory .
+pct create 201 local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst \
+  --hostname ha-memory \
+  --memory 512 \
+  --swap 256 \
+  --rootfs local-lvm:4 \
+  --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+  --features nesting=1,keyctl=1 \
+  --unprivileged 1 \
+  --start 1
 ```
 
-### 2. Configurazione
-
-Tutte le configurazioni sono via env var (nessun config.py):
-
-#### Env var obbligatorie
-
-| Env Var | Esempio | Descrizione |
-|---------|---------|-------------|
-| `LOCATION_ID` | `wagmi` | ID univoco della location (deve corrispondere al DB orchestrator) |
-| `HA_URL` | `http://192.168.1.100:8123` | URL Home Assistant |
-| `HA_TOKEN` | `eyJ0eX...` | Long-lived access token HA |
-| `QWEN_URL` | `http://ollama:11434` | URL Ollama (per embedding + summary) |
-
-#### Env var opzionali
-
-| Env Var | Default | Descrizione |
-|---------|---------|-------------|
-| `DB_PATH` | `/data/ha_memory.db` | Path database SQLite |
-| `CHROMA_PATH` | `/data/chroma` | Path storage ChromaDB |
-| `EMBEDDING_MODEL` | `nomic-embed-text` | Modello embedding Ollama |
-| `SUMMARY_MODEL` | `qwen2.5:3b` | Modello summarization |
-| `SUMMARY_TEMPERATURE` | `0.3` | Temperatura summary LLM |
-| `SUMMARY_TIMEOUT` | `30` | Timeout chiamate summary (sec) |
-| `EMBEDDING_TIMEOUT` | `30` | Timeout chiamate embedding (sec) |
-| `SERVICE_PORT` | `8100` | Porta del servizio |
-
-#### Env var intervalli/timing
-
-| Env Var | Default | Descrizione |
-|---------|---------|-------------|
-| `WS_RETRY_DELAY` | `30` | Delay retry WebSocket dopo errore auth (sec) |
-| `WS_RECONNECT_DELAY` | `10` | Delay riconnessione WebSocket (sec) |
-| `SCHEDULER_INITIAL_DELAY` | `30` | Delay iniziale scheduler (sec) |
-| `SCHEDULER_INTERVAL` | `60` | Intervallo check scheduler (sec) |
-
-#### Env var filtri entita
-
-| Env Var | Default | Descrizione |
-|---------|---------|-------------|
-| `SKIP_ENTITY_PREFIXES` | `update.` | Prefissi entita da ignorare (separati da virgola) |
-| `SKIP_ENTITY_SUFFIXES` | `_battery,_linkquality,_signal` | Suffissi entita da ignorare |
-
-### 3. Avvio (singola location)
+### Setup LXC
 
 ```bash
+pct enter 201
+apt update && apt upgrade -y
+apt install -y curl ca-certificates gnupg
+curl -fsSL https://get.docker.com | sh
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --hostname=ha-memory
+```
+
+### Build e avvio
+
+```bash
+mkdir -p /opt/ha_memory_service
+cd /opt/ha_memory_service
+# Copia i file del servizio qui
+
+# Build per standalone (base image Python, non HA)
+docker build \
+  --build-arg BUILD_FROM=python:3.11-slim \
+  -t jarvis-ha-memory .
+
+# Cloud mode
 docker run -d \
   --name jarvis_ha_memory_wagmi \
+  -e AI_BACKEND=api \
   -e LOCATION_ID=wagmi \
   -e HA_URL=http://192.168.1.100:8123 \
   -e HA_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOi... \
-  -e QWEN_URL=http://ollama:11434 \
+  -e OPENROUTER_API_KEY=sk-or-v1-xxx \
+  -e GEMINI_API_KEY=AIzaSyxxx \
   -v ha_memory_wagmi:/data \
   -p 8100:8100 \
   --restart unless-stopped \
-  jarvis-ha-memory
-```
+  jarvis-ha-memory \
+  python /app/main.py
 
-### 4. Avvio multi-location
-
-Per ogni location, un container separato con LOCATION_ID diverso e porta diversa:
-
-```bash
-# Location 1: wagmi
+# Local mode
 docker run -d \
   --name jarvis_ha_memory_wagmi \
+  -e AI_BACKEND=local \
   -e LOCATION_ID=wagmi \
   -e HA_URL=http://192.168.1.100:8123 \
-  -e HA_TOKEN=token_wagmi \
-  -e QWEN_URL=http://ollama:11434 \
-  -e SERVICE_PORT=8100 \
+  -e HA_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOi... \
+  -e OLLAMA_URL=http://100.x.x.x:11434 \
   -v ha_memory_wagmi:/data \
   -p 8100:8100 \
   --restart unless-stopped \
-  jarvis-ha-memory
-
-# Location 2: albani
-docker run -d \
-  --name jarvis_ha_memory_albani \
-  -e LOCATION_ID=albani \
-  -e HA_URL=http://100.x.x.x:8123 \
-  -e HA_TOKEN=token_albani \
-  -e QWEN_URL=http://ollama:11434 \
-  -e SERVICE_PORT=8101 \
-  -v ha_memory_albani:/data \
-  -p 8101:8100 \
-  --restart unless-stopped \
-  jarvis-ha-memory
+  jarvis-ha-memory \
+  python /app/main.py
 ```
+
+**NOTA:** In standalone mode il CMD e `python /app/main.py` (non `/run.sh` che richiede bashio).
 
 ---
 
-## Integrazione con docker-compose
-
-Aggiungi al `docker-compose.yml` principale o crea un file dedicato:
-
-```yaml
-  ha_memory_wagmi:
-    build: ./orchestrator/ha_memory_service
-    container_name: jarvis_ha_memory_wagmi
-    environment:
-      - LOCATION_ID=wagmi
-      - HA_URL=http://homeassistant:8123
-      - HA_TOKEN=${HASS_TOKEN_WAGMI}
-      - QWEN_URL=http://ollama:11434
-      - EMBEDDING_MODEL=nomic-embed-text
-      - SUMMARY_MODEL=qwen2.5:3b
-    volumes:
-      - ha_memory_wagmi:/data
-    ports:
-      - "8100:8100"
-    depends_on:
-      ollama:
-        condition: service_healthy
-    restart: unless-stopped
-
-  ha_memory_albani:
-    build: ./orchestrator/ha_memory_service
-    container_name: jarvis_ha_memory_albani
-    environment:
-      - LOCATION_ID=albani
-      - HA_URL=http://100.x.x.x:8123
-      - HA_TOKEN=${HASS_TOKEN_ALBANI}
-      - QWEN_URL=http://ollama:11434
-      - SERVICE_PORT=8100
-    volumes:
-      - ha_memory_albani:/data
-    ports:
-      - "8101:8100"
-    depends_on:
-      ollama:
-        condition: service_healthy
-    restart: unless-stopped
-```
-
----
-
-## Prompt Templates
-
-I prompt per la summarization sono in `ha_memory_service/prompts/`:
+## Architettura di rete
 
 ```
-prompts/
-  location_hourly.txt    # Analisi eventi orari della casa
-  location_daily.txt     # Analisi giornaliera con pattern
+                    TAILSCALE MESH
+                         |
+    ┌────────────────────┼────────────────────┐
+    │                    │                    │
+  MILANO              NAPOLI               VPS (temp)
+  Proxmox             Proxmox
+  ├─ HAOS VM          ├─ Orchestrator      ├─ Orchestrator
+  │  ├─ HA Core       ├─ Ollama            └─ (no Ollama)
+  │  ├─ ha_memory     └─ ...
+  │  │  (addon)
+  │  └─ Tailscale
+  │     (addon)
+  │
+  └─ 2ms latency      ~50ms Starlink       Cloud
 ```
 
-Modificabili per traduzione o personalizzazione senza toccare il codice.
+### Latency
 
----
-
-## Come Funziona
-
-1. **WebSocket Listener** — Si connette a Home Assistant via WebSocket e riceve tutti gli eventi `state_changed`
-2. **Event Filtering** — Ignora entita rumorose (`update.*`, `*_battery`, ecc.)
-3. **Raw Storage** — Salva eventi raw in SQLite (TTL 30 min)
-4. **Hourly Summary** — Al minuto 5, genera un riassunto degli eventi dell'ultima ora con Qwen
-5. **Daily Summary** — Alle 03:00, genera un riassunto giornaliero con pattern e anomalie
-6. **Vector Index** — Indicizza summary e fatti in ChromaDB per ricerca semantica
-7. **API** — Espone endpoint REST per l'orchestrator (`/memory`, `/search`, `/health`)
+| Percorso | Latency | Note |
+|----------|---------|------|
+| ha_memory -> HA (addon) | <1ms | Stesso container network |
+| ha_memory -> Ollama (Napoli) | ~50ms | Tailscale, solo ogni ora |
+| ha_memory -> OpenRouter | ~100-200ms | Solo in API mode |
+| ha_memory -> Gemini embeddings | ~100-200ms | Solo in API mode |
 
 ---
 
@@ -196,81 +207,44 @@ Modificabili per traduzione o personalizzazione senza toccare il codice.
 | Metodo | Path | Descrizione |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| POST | `/memory` | Recupera memoria stratificata (hot/warm/cold/longterm) |
-| POST | `/search` | Ricerca semantica eventi |
-| GET | `/stats` | Statistiche (conteggi eventi, summary, vettori) |
-
-### Esempio: Recupera memoria
-
-```bash
-curl -X POST http://localhost:8100/memory \
-  -H "Content-Type: application/json" \
-  -d '{"hot_minutes": 30, "warm_hours": 24, "cold_days": 7}'
-```
-
-### Esempio: Ricerca semantica
-
-```bash
-curl -X POST http://localhost:8100/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "quando e stata aperta la porta", "n_results": 10}'
-```
-
----
-
-## Verifica Installazione
-
-```bash
-# Health check
-curl http://localhost:8100/health
-
-# Verifica connessione WebSocket (nei logs)
-docker logs jarvis_ha_memory_wagmi -f --tail 20
-```
-
-**Risposta health attesa:**
-```json
-{
-  "status": "healthy",
-  "location_id": "wagmi",
-  "ha_connected": true,
-  "events_today": 1234,
-  "summaries_today": 5
-}
-```
+| GET | `/memory` | Memoria stratificata (hot/warm/cold/longterm) |
+| POST | `/memory/search` | Ricerca semantica eventi |
 
 ---
 
 ## Troubleshooting
 
-### WebSocket non si connette
+### WebSocket non si connette (addon)
+
+Riavvia l'addon. Il Supervisor token viene rigenerato al restart.
+
+### WebSocket non si connette (standalone)
 
 ```bash
-# Verifica token HA
 curl -H "Authorization: Bearer $HA_TOKEN" http://<HA_URL>/api/
-
-# Verifica raggiungibilita
-ping <HA_IP>
 ```
 
-### Embedding fallisce
+### Embedding fallisce (local)
 
 ```bash
-# Verifica che il modello sia scaricato in Ollama
-curl http://<QWEN_URL>/api/tags
+curl http://100.x.x.x:11434/api/tags
 # Deve contenere "nomic-embed-text"
-
-# Se mancante:
-docker exec jarvis_ollama ollama pull nomic-embed-text
 ```
 
-### ChromaDB pieno
+### Embedding fallisce (api)
 
 ```bash
-# Verifica dimensione
-du -sh /data/chroma/
+curl -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent" \
+  -H "x-goog-api-key: $GEMINI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"content": {"parts": [{"text": "test"}]}, "output_dimensionality": 768}'
+```
 
-# Cleanup manuale (il servizio lo fa automaticamente ogni notte)
-# Ma puoi forzarlo riavviando il container
-docker restart jarvis_ha_memory_wagmi
+### Summary fallisce (api)
+
+```bash
+curl -X POST "https://openrouter.ai/api/v1/chat/completions" \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen/qwen-2.5-7b-instruct", "messages": [{"role": "user", "content": "test"}], "max_tokens": 10}'
 ```

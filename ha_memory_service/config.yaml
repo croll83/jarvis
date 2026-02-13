@@ -1,0 +1,103 @@
+# =============================================================================
+# JARVIS HA Memory Service — Home Assistant Add-on
+# =============================================================================
+# Ingerisce eventi HA via WebSocket, genera summary con LLM,
+# offre ricerca semantica via ChromaDB per l'orchestrator JARVIS.
+# =============================================================================
+
+name: "JARVIS HA Memory"
+version: "1.0.0"
+slug: jarvis_ha_memory
+description: "Location memory service for JARVIS — event ingestion, LLM summarization, and semantic search"
+url: "https://github.com/your-repo/jarvis"
+
+arch:
+  - aarch64
+  - amd64
+
+# S6 overlay gestisce il lifecycle e inietta SUPERVISOR_TOKEN
+init: true
+
+# Start after HA Core is ready (needs WebSocket API)
+startup: services
+boot: auto
+
+# Porta API esposta per l'orchestrator
+ports:
+  8100/tcp: 8100
+ports_description:
+  8100/tcp: "Memory API (REST)"
+
+# Ingress per UI futura (health dashboard)
+ingress: false
+
+# Accesso Home Assistant API — per autenticazione WebSocket automatica
+homeassistant_api: true
+# Accesso Supervisor API — per leggere addon info e network
+hassio_api: true
+hassio_role: default
+# Auth API — per validare token se servisse
+auth_api: false
+
+# Volume persistente per SQLite + ChromaDB
+map:
+  - addon_config:rw
+
+# ===========================================================================
+# OPTIONS (valori di default mostrati nella UI)
+# ===========================================================================
+options:
+  location_id: "wagmi"
+  ai_backend: "api"
+
+  # --- Local mode (Ollama) ---
+  ollama_url: "http://100.x.x.x:11434"
+  embedding_model: "nomic-embed-text"
+  summary_model: "qwen2.5:3b"
+
+  # --- API mode (OpenRouter + Gemini) ---
+  openrouter_api_key: ""
+  gemini_api_key: ""
+  openrouter_summary_model: "qwen/qwen-2.5-7b-instruct"
+
+  # --- Tuning ---
+  summary_temperature: 0.3
+  summary_timeout: 30
+  embedding_timeout: 30
+  skip_entity_prefixes: "update."
+  skip_entity_suffixes: "_battery,_linkquality,_signal"
+
+# ===========================================================================
+# SCHEMA (validazione input dalla UI)
+# ===========================================================================
+schema:
+  location_id: str
+  ai_backend: "list(local|api)"
+
+  # Local mode
+  ollama_url: str
+  embedding_model: str
+  summary_model: str
+
+  # API mode
+  openrouter_api_key: password
+  gemini_api_key: password
+  openrouter_summary_model: str
+
+  # Tuning
+  summary_temperature: float
+  summary_timeout: int
+  embedding_timeout: int
+  skip_entity_prefixes: str
+  skip_entity_suffixes: str
+
+# Watchdog: health check automatico
+watchdog: "http://[HOST]:[PORT:8100]/health"
+
+# Backup: hot (non serve fermare il servizio)
+backup: hot
+backup_exclude:
+  - "*.log"
+
+# Stage
+stage: experimental

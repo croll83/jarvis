@@ -1,0 +1,58 @@
+configuration:
+  location_id:
+    name: Location ID
+    description: >-
+      Unique identifier for this Home Assistant location (e.g., "wagmi", "albani").
+      Must match the location ID configured in the JARVIS orchestrator.
+  ai_backend:
+    name: AI Backend
+    description: >-
+      "local" — Uses Ollama for summarization and embeddings (requires Ollama reachable via network).
+      "api" — Uses OpenRouter for summarization and Gemini for embeddings (cloud, no Ollama needed).
+  ollama_url:
+    name: Ollama URL
+    description: >-
+      URL of the Ollama server (e.g., http://100.x.x.x:11434 via Tailscale).
+      Only used when AI Backend is "local".
+  embedding_model:
+    name: Embedding Model
+    description: >-
+      Ollama model for vector embeddings. Default: nomic-embed-text.
+      Only used when AI Backend is "local".
+  summary_model:
+    name: Summary Model
+    description: >-
+      Ollama model for hourly/daily summarization. Default: qwen2.5:3b.
+      Only used when AI Backend is "local".
+  openrouter_api_key:
+    name: OpenRouter API Key
+    description: >-
+      API key for OpenRouter (https://openrouter.ai/keys).
+      Only used when AI Backend is "api".
+  gemini_api_key:
+    name: Gemini API Key
+    description: >-
+      Google Gemini API key for embeddings (https://aistudio.google.com/app/apikey).
+      Only used when AI Backend is "api".
+  openrouter_summary_model:
+    name: OpenRouter Summary Model
+    description: >-
+      Model name for OpenRouter summarization. Default: qwen/qwen-2.5-7b-instruct.
+      Only used when AI Backend is "api".
+  summary_temperature:
+    name: Summary Temperature
+    description: LLM temperature for summary generation (0.0 = deterministic, 1.0 = creative). Default 0.3.
+  summary_timeout:
+    name: Summary Timeout
+    description: Timeout in seconds for LLM summary calls. Default 30.
+  embedding_timeout:
+    name: Embedding Timeout
+    description: Timeout in seconds for embedding calls. Default 30.
+  skip_entity_prefixes:
+    name: Skip Entity Prefixes
+    description: >-
+      Comma-separated entity prefixes to ignore (e.g., "update." to skip update entities).
+  skip_entity_suffixes:
+    name: Skip Entity Suffixes
+    description: >-
+      Comma-separated entity suffixes to ignore (e.g., "_battery,_linkquality,_signal").
