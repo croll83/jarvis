@@ -1363,7 +1363,7 @@ class MediaCastUrlRequest(BaseModel):
 class MediaCastResponse(BaseModel):
     success: bool
     message: str
-    media_url: Optional[str] = None
+    media_content_id: Optional[str] = None
     tv_entity: Optional[str] = None
     media_type: Optional[str] = None
     duration: Optional[int] = None
@@ -1382,46 +1382,56 @@ class MediaCastStopResponse(BaseModel):
 
 
 async def _execute_media_cast(
-    local_path: str,
+    file_bytes: bytes,
+    filename: str,
     media_type_hint: Optional[str],
     tv_entity_input: Optional[str],
     room: Optional[str],
     location_id: Optional[str],
     duration: int,
 ) -> MediaCastResponse:
-    """Logica comune di cast per entrambi gli endpoint (URL e upload)."""
-    from media_cast import get_cast_url, resolve_tv_entity, cast_to_tv, detect_media_type
+    """
+    Logica comune di cast per entrambi gli endpoint (URL e upload).
+
+    Flusso:
+    1. Risolve TV target (DLNA-first)
+    2. Upload file su HA via media_source API
+    3. Chiama play_media con media-source:// URI
+    """
+    from media_cast import upload_to_ha, resolve_tv_entity, cast_to_tv, detect_media_type
 
     loc_id = location_id or _get_admin_location()
 
-    # Risolvi TV entity
-    tv_entity = resolve_tv_entity(tv_entity_input, room, loc_id)
-    if not tv_entity:
+    # Risolvi TV entity (ritorna CastTarget con entity_id + provider)
+    target = resolve_tv_entity(tv_entity_input, room, loc_id)
+    if not target:
         return MediaCastResponse(
             success=False,
             message="Nessuna TV trovata. Specifica tv_entity o room."
         )
 
-    # URL accessibile dalla TV via HA
-    media_url = get_cast_url(local_path, loc_id)
-
     # Auto-detect tipo media se non fornito
     media_type = media_type_hint
     if not media_type:
-        media_type = detect_media_type(local_path)
+        media_type = detect_media_type(filename)
     if not media_type:
         return MediaCastResponse(
             success=False,
             message="Impossibile determinare il tipo di media. Specifica media_type."
         )
 
+    # Upload su HA via media_source API
+    up_ok, media_content_id, up_msg = await upload_to_ha(file_bytes, filename, loc_id)
+    if not up_ok:
+        return MediaCastResponse(success=False, message=up_msg)
+
     # Durata effettiva (solo per immagini)
     effective_duration = duration if media_type == "image" else 0
 
     # Cast sulla TV
     success, message = await cast_to_tv(
-        media_url=media_url,
-        tv_entity=tv_entity,
+        media_content_id=media_content_id,
+        target=target,
         media_type=media_type,
         duration=effective_duration,
         location_id=loc_id,
@@ -1429,8 +1439,8 @@ async def _execute_media_cast(
 
     if success:
         type_label = "Video" if media_type == "video" else "Immagine"
-        tv_label = tv_entity.replace("media_player.", "").replace("_", " ").title()
-        msg = f"{type_label} in riproduzione su {tv_label}"
+        tv_label = target.entity_id.replace("media_player.", "").replace("_", " ").title()
+        msg = f"{type_label} in riproduzione su {tv_label} (via {target.provider})"
         if media_type == "image" and effective_duration > 0:
             msg += f" (durata: {effective_duration}s)"
     else:
@@ -1439,8 +1449,8 @@ async def _execute_media_cast(
     return MediaCastResponse(
         success=success,
         message=msg,
-        media_url=media_url,
-        tv_entity=tv_entity,
+        media_content_id=media_content_id,
+        tv_entity=target.entity_id,
         media_type=media_type,
         duration=effective_duration if media_type == "image" else None,
     )
@@ -1454,19 +1464,21 @@ async def tool_media_cast_url(
     """
     Cast media da URL a una Samsung TV.
 
-    Scarica il contenuto, lo salva localmente e lo riproduce sulla TV target.
+    Scarica il contenuto dall'URL, lo uploada su HA via media_source API,
+    e lo riproduce sulla TV target.
     Per immagini, il browser si chiude automaticamente dopo `duration` secondi.
     """
     try:
-        from media_cast import download_and_save
+        from media_cast import download_url
 
-        # Scarica e salva
-        success, local_path, dl_msg = await download_and_save(req.url)
+        # Scarica da URL
+        success, file_bytes, filename, dl_msg = await download_url(req.url)
         if not success:
             return MediaCastResponse(success=False, message=dl_msg)
 
         return await _execute_media_cast(
-            local_path=local_path,
+            file_bytes=file_bytes,
+            filename=filename,
             media_type_hint=req.media_type,
             tv_entity_input=req.tv_entity,
             room=req.room,
@@ -1499,17 +1511,12 @@ async def tool_media_cast_upload(
     await verify_openclaw_token(authorization)
 
     try:
-        from media_cast import save_cast_file
-
         file_bytes = await file.read()
         filename = file.filename or "upload.mp4"
 
-        success, local_path, save_msg = await save_cast_file(file_bytes, filename)
-        if not success:
-            return MediaCastResponse(success=False, message=save_msg)
-
         return await _execute_media_cast(
-            local_path=local_path,
+            file_bytes=file_bytes,
+            filename=filename,
             media_type_hint=media_type,
             tv_entity_input=tv_entity,
             room=room,
@@ -1535,14 +1542,14 @@ async def tool_media_cast_stop(
 
         loc_id = req.location_id or _get_admin_location()
 
-        tv_entity = resolve_tv_entity(req.tv_entity, req.room, loc_id)
-        if not tv_entity:
+        target = resolve_tv_entity(req.tv_entity, req.room, loc_id)
+        if not target:
             return MediaCastStopResponse(
                 success=False,
                 message="Nessuna TV trovata. Specifica tv_entity o room."
             )
 
-        success, message = await stop_cast(tv_entity, loc_id)
+        success, message = await stop_cast(target.entity_id, loc_id)
         return MediaCastStopResponse(success=success, message=message)
 
     except Exception as e:

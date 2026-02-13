@@ -180,7 +180,7 @@ Parametri:
 - `duration` (int, default 30): Durata display in secondi per immagini. 0=indefinito. Ignorato per video.
 - `media_type` (string, opzionale): `video` o `image`. Auto-detect dall'estensione se omesso.
 
-Returns: `success`, `message`, `media_url`, `tv_entity`, `media_type`, `duration`
+Returns: `success`, `message`, `media_content_id`, `tv_entity`, `media_type`, `duration`
 
 Comportamento:
 - **Video (mp4)**: Player nativo Samsung (UPnP). Nessun switch sorgente. La TV torna al contenuto precedente a fine riproduzione.
