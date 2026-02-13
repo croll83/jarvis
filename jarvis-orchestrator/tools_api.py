@@ -1462,28 +1462,56 @@ async def tool_media_cast_url(
     _: None = Depends(verify_openclaw_token)
 ):
     """
-    Cast media da URL a una Samsung TV.
+    Cast media da URL pubblico a una Samsung TV.
 
-    Scarica il contenuto dall'URL, lo uploada su HA via media_source API,
-    e lo riproduce sulla TV target.
+    L'URL viene passato direttamente a play_media — la TV lo fetcha da internet.
+    Supporta anche streaming HLS (.m3u8) e MPEG-TS (.ts).
     Per immagini, il browser si chiude automaticamente dopo `duration` secondi.
     """
     try:
-        from media_cast import download_url
+        from media_cast import resolve_tv_entity, cast_url_to_tv, detect_media_type_url
 
-        # Scarica da URL
-        success, file_bytes, filename, dl_msg = await download_url(req.url)
-        if not success:
-            return MediaCastResponse(success=False, message=dl_msg)
+        loc_id = req.location_id or _get_admin_location()
 
-        return await _execute_media_cast(
-            file_bytes=file_bytes,
-            filename=filename,
-            media_type_hint=req.media_type,
-            tv_entity_input=req.tv_entity,
-            room=req.room,
-            location_id=req.location_id,
-            duration=req.duration,
+        # Risolvi TV target
+        target = resolve_tv_entity(req.tv_entity, req.room, loc_id)
+        if not target:
+            return MediaCastResponse(
+                success=False,
+                message="Nessuna TV trovata. Specifica tv_entity o room."
+            )
+
+        # Tipo media: usa hint esplicito o auto-detect da URL (default: video)
+        media_type = req.media_type or detect_media_type_url(req.url)
+
+        # Durata effettiva (solo per immagini)
+        effective_duration = req.duration if media_type == "image" else 0
+
+        # Cast URL diretto sulla TV
+        success, message = await cast_url_to_tv(
+            url=req.url,
+            target=target,
+            media_type=media_type,
+            duration=effective_duration,
+            location_id=loc_id,
+        )
+
+        if success:
+            type_label = "Video" if media_type == "video" else "Immagine"
+            tv_label = target.entity_id.replace("media_player.", "").replace("_", " ").title()
+            msg = f"{type_label} in riproduzione su {tv_label} (via {target.provider})"
+            if media_type == "image" and effective_duration > 0:
+                msg += f" (durata: {effective_duration}s)"
+        else:
+            msg = message
+
+        return MediaCastResponse(
+            success=success,
+            message=msg,
+            media_content_id=req.url,
+            tv_entity=target.entity_id,
+            media_type=media_type,
+            duration=effective_duration if media_type == "image" else None,
         )
 
     except Exception as e:

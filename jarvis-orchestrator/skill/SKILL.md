@@ -152,9 +152,9 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/audit_log" \
 ```
 
 ### media_cast
-Cast media (video o immagini) su una Samsung TV. Due modalità: URL o upload file.
+Cast media (video o immagini) su una Samsung TV. Due modalità: URL diretto o upload file.
 
-**Da URL** (per contenuti esterni o già hostati):
+**Da URL** (per contenuti pubblici — l'URL viene passato direttamente alla TV):
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast" \
   -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
@@ -162,7 +162,7 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast" \
   -d '{"url": "https://example.com/video.mp4", "room": "soggiorno"}'
 ```
 
-**Upload file** (per contenuti generati localmente):
+**Upload file** (per contenuti generati localmente — uploadati su HA, poi serviti via LAN):
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast/upload" \
   -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
@@ -172,8 +172,8 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast/upload" \
 ```
 
 Parametri:
-- `url` (string, solo modalità URL): URL HTTP del media
-- `file` (binary, solo modalità upload): File media (mp4, png, jpg)
+- `url` (string, solo modalità URL): Qualsiasi URL pubblico (video, immagini, streaming). Viene passato direttamente alla TV.
+- `file` (binary, solo modalità upload): File media (mp4, png, jpg). Viene uploadato su HA e servito via LAN.
 - `tv_entity` (string, opzionale): Entity ID della TV target (es: `media_player.tv_soggiorno`)
 - `room` (string, opzionale): Nome stanza per auto-risolvere TV (es: `soggiorno`, `camera`)
 - `location_id` (string, opzionale): Location HA (auto-risolto se omesso)
@@ -183,9 +183,10 @@ Parametri:
 Returns: `success`, `message`, `media_content_id`, `tv_entity`, `media_type`, `duration`
 
 Comportamento:
-- **Video (mp4)**: Player nativo Samsung (UPnP). Nessun switch sorgente. La TV torna al contenuto precedente a fine riproduzione.
-- **Immagine (png/jpg)**: Browser Tizen fullscreen. Si chiude automaticamente dopo `duration` secondi (KEY_EXIT). La TV torna al contenuto precedente.
-- Formati supportati: mp4, png, jpg/jpeg. Max 100 MB.
+- **URL mode**: L'URL pubblico viene passato direttamente a play_media. La TV lo fetcha da internet. Qualsiasi URL pubblico è supportato (video, immagini, streaming HLS/m3u8, MPEG-TS, ecc.).
+- **Upload mode**: Il file viene uploadato su HA via media_source API. HA genera signed URL e la TV fetcha dalla LAN. Formati: mp4, png, jpg/jpeg. Max 100 MB.
+- **Video**: Player nativo Samsung. Nessun switch sorgente. La TV torna al contenuto precedente a fine riproduzione.
+- **Immagine**: Browser Tizen fullscreen. Si chiude automaticamente dopo `duration` secondi (KEY_EXIT). La TV torna al contenuto precedente.
 
 ### media_cast/stop
 Ferma un cast attivo su una TV (chiude il browser/player).
