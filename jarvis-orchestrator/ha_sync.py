@@ -322,25 +322,33 @@ async def sync_entities_from_ha(
                 zone = _infer_zone(entity)
                 area = room
 
-            # Controlla se esiste già
-            c.execute("""
-                SELECT id, entity_id FROM entity_maps
-                WHERE location_id = ? AND LOWER(entity_name) = LOWER(?)
-                AND entity_type = ?
-            """, (location_id, entity.friendly_name, entity.domain))
+            # Controlla se esiste già — usa entity_id come chiave primaria
+            existing = None
+            if entity.entity_id:
+                c.execute("""
+                    SELECT id, entity_id FROM entity_maps
+                    WHERE location_id = ? AND entity_id = ?
+                """, (location_id, entity.entity_id))
+                existing = c.fetchone()
 
-            existing = c.fetchone()
+            # Fallback: cerca per friendly_name (per entity senza entity_id)
+            if not existing:
+                c.execute("""
+                    SELECT id, entity_id FROM entity_maps
+                    WHERE location_id = ? AND LOWER(entity_name) = LOWER(?)
+                    AND entity_type = ?
+                """, (location_id, entity.friendly_name, entity.domain))
+                existing = c.fetchone()
 
             if existing:
-                # Entity esiste già
-                if overwrite_existing or not existing['entity_id']:
-                    c.execute("""
-                        UPDATE entity_maps
-                        SET entity_id = ?, room = ?, zone = ?, area = ?, device_name = ?
-                        WHERE id = ?
-                    """, (entity.entity_id, room, zone, area,
-                          entity.device_name, existing['id']))
-                    updated += 1
+                # Entity esiste già — aggiorna sempre (room, zone, area, device_name, friendly_name)
+                c.execute("""
+                    UPDATE entity_maps
+                    SET entity_id = ?, entity_name = ?, room = ?, zone = ?, area = ?, device_name = ?
+                    WHERE id = ?
+                """, (entity.entity_id, entity.friendly_name, room, zone, area,
+                      entity.device_name, existing['id']))
+                updated += 1
             else:
                 # Nuova entity
                 c.execute("""
