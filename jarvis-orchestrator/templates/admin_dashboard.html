@@ -2571,17 +2571,45 @@
             document.getElementById('enrollmentButton').disabled = true;
 
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream);
-                audioChunks = [];
-                mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
-                mediaRecorder.onstop = async () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                    await uploadEnrollmentSample(audioBlob);
-                    stream.getTracks().forEach(t => t.stop());
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: { sampleRate: { ideal: 16000 }, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+                });
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                const source = audioCtx.createMediaStreamSource(stream);
+                const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+                const pcmChunks = [];
+
+                processor.onaudioprocess = (e) => {
+                    const float32 = e.inputBuffer.getChannelData(0);
+                    const int16 = new Int16Array(float32.length);
+                    for (let i = 0; i < float32.length; i++) {
+                        const s = Math.max(-1, Math.min(1, float32[i]));
+                        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+                    pcmChunks.push(int16.buffer);
                 };
-                mediaRecorder.start();
-                setTimeout(() => mediaRecorder?.state === 'recording' && mediaRecorder.stop(), 4000);
+
+                source.connect(processor);
+                processor.connect(audioCtx.destination);
+
+                // Ferma dopo 4 secondi
+                setTimeout(async () => {
+                    processor.disconnect();
+                    source.disconnect();
+                    stream.getTracks().forEach(t => t.stop());
+                    audioCtx.close();
+
+                    const totalLen = pcmChunks.reduce((sum, b) => sum + b.byteLength, 0);
+                    const pcmBuffer = new Uint8Array(totalLen);
+                    let offset = 0;
+                    for (const chunk of pcmChunks) {
+                        pcmBuffer.set(new Uint8Array(chunk), offset);
+                        offset += chunk.byteLength;
+                    }
+
+                    const audioBlob = new Blob([pcmBuffer], { type: 'application/octet-stream' });
+                    await uploadEnrollmentSample(audioBlob);
+                }, 4000);
             } catch (e) {
                 showToast('Errore microfono', 'error');
                 document.getElementById('recordingIndicator').style.display = 'none';
@@ -2638,15 +2666,45 @@
             btn.disabled = true; btn.textContent = 'Registrazione...'; resultDiv.innerHTML = '';
 
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                const recorder = new MediaRecorder(stream);
-                const chunks = [];
-                recorder.ondataavailable = (e) => chunks.push(e.data);
-                recorder.onstop = async () => {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: { sampleRate: { ideal: 16000 }, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+                });
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                const source = audioCtx.createMediaStreamSource(stream);
+                const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+                const pcmChunks = [];
+
+                processor.onaudioprocess = (e) => {
+                    const float32 = e.inputBuffer.getChannelData(0);
+                    const int16 = new Int16Array(float32.length);
+                    for (let i = 0; i < float32.length; i++) {
+                        const s = Math.max(-1, Math.min(1, float32[i]));
+                        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+                    pcmChunks.push(int16.buffer);
+                };
+
+                source.connect(processor);
+                processor.connect(audioCtx.destination);
+
+                setTimeout(async () => {
+                    processor.disconnect();
+                    source.disconnect();
+                    stream.getTracks().forEach(t => t.stop());
+                    audioCtx.close();
+
                     btn.textContent = 'Analisi...';
-                    const blob = new Blob(chunks, { type: 'audio/wav' });
+                    const totalLen = pcmChunks.reduce((sum, b) => sum + b.byteLength, 0);
+                    const pcmBuffer = new Uint8Array(totalLen);
+                    let offset = 0;
+                    for (const chunk of pcmChunks) {
+                        pcmBuffer.set(new Uint8Array(chunk), offset);
+                        offset += chunk.byteLength;
+                    }
+
+                    const blob = new Blob([pcmBuffer], { type: 'application/octet-stream' });
                     const formData = new FormData();
-                    formData.append('audio', blob, 'test.wav');
+                    formData.append('audio', blob, 'audio.raw');
                     try {
                         const response = await fetch('/api/users/voice/test', { method: 'POST', body: formData });
                         const result = await response.json();
@@ -2654,11 +2712,8 @@
                             `<div class="voice-test-result success"><strong>Identificato: ${result.speaker_name}</strong><div style="margin-top: 0.5rem; font-size: 0.85rem;">Confidenza: ${(result.confidence * 100).toFixed(1)}%</div></div>` :
                             `<div class="voice-test-result unknown"><strong>Non riconosciuto</strong><div style="margin-top: 0.5rem; font-size: 0.85rem;">Confidenza max: ${(result.confidence * 100).toFixed(1)}%</div></div>`;
                     } catch (e) { resultDiv.innerHTML = `<div style="color: var(--error);">Errore analisi</div>`; }
-                    stream.getTracks().forEach(t => t.stop());
                     btn.disabled = false; btn.textContent = 'Avvia Test';
-                };
-                recorder.start();
-                setTimeout(() => recorder.stop(), 4000);
+                }, 4000);
             } catch (e) { showToast('Errore microfono', 'error'); btn.disabled = false; btn.textContent = 'Avvia Test'; }
         }
 
