@@ -152,7 +152,7 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/audit_log" \
 ```
 
 ### media_cast
-Cast media (video o immagini) su una Samsung TV. Due modalità: URL diretto o upload file.
+Cast media (video, immagini, pagine web) su una Samsung TV. Due modalità: URL diretto o upload file.
 
 **Da URL** (per contenuti pubblici — l'URL viene passato direttamente alla TV):
 ```bash
@@ -160,6 +160,14 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast" \
   -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://example.com/video.mp4", "room": "soggiorno"}'
+```
+
+**Apri pagina web nel browser Tizen** (force_browser bypassa DLNA, usa il browser della TV):
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/dashboard", "room": "soggiorno", "force_browser": true, "duration": 60}'
 ```
 
 **Upload file** (per contenuti generati localmente — uploadati su HA, poi serviti via LAN):
@@ -172,18 +180,20 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast/upload" \
 ```
 
 Parametri:
-- `url` (string, solo modalità URL): Qualsiasi URL pubblico (video, immagini, streaming). Viene passato direttamente alla TV.
+- `url` (string, solo modalità URL): Qualsiasi URL pubblico (video, immagini, streaming, pagine web). Viene passato direttamente alla TV.
 - `file` (binary, solo modalità upload): File media (mp4, png, jpg). Viene uploadato su HA e servito via LAN.
 - `tv_entity` (string, opzionale): Entity ID della TV target (es: `media_player.tv_soggiorno`)
 - `room` (string, opzionale): Nome stanza per auto-risolvere TV (es: `soggiorno`, `camera`)
 - `location_id` (string, opzionale): Location HA (auto-risolto se omesso)
-- `duration` (int, default 30): Durata display in secondi per immagini. 0=indefinito. Ignorato per video.
+- `duration` (int, default 30): Durata display in secondi per browser/immagini. 0=indefinito. Ignorato per video.
 - `media_type` (string, opzionale): `video` o `image`. Auto-detect dall'estensione se omesso.
+- `force_browser` (bool, default false): Forza apertura nel browser Tizen. Bypassa DLNA. Per pagine web, dashboard, webcam, ecc.
 
 Returns: `success`, `message`, `media_content_id`, `tv_entity`, `media_type`, `duration`
 
 Comportamento:
 - **URL mode**: L'URL pubblico viene passato direttamente a play_media. La TV lo fetcha da internet. Qualsiasi URL pubblico è supportato (video, immagini, streaming HLS/m3u8, MPEG-TS, ecc.).
+- **force_browser mode**: Apre l'URL nel browser Tizen della TV. Usa sempre SamsungTV Smart (no DLNA). Il browser si chiude dopo `duration` secondi. Ideale per pagine web, dashboard, webcam live.
 - **Upload mode**: Il file viene uploadato su HA via media_source API. HA genera signed URL e la TV fetcha dalla LAN. Formati: mp4, png, jpg/jpeg. Max 100 MB.
 - **Video**: Player nativo Samsung. Nessun switch sorgente. La TV torna al contenuto precedente a fine riproduzione.
 - **Immagine**: Browser Tizen fullscreen. Si chiude automaticamente dopo `duration` secondi (KEY_EXIT). La TV torna al contenuto precedente.

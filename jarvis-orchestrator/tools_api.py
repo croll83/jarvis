@@ -1352,12 +1352,13 @@ async def _send_approval_request(entity_id: str, action: str, source_channel: st
 
 class MediaCastUrlRequest(BaseModel):
     """Cast media da URL a una Samsung TV."""
-    url: str = Field(..., description="URL HTTP(S) del media da castare (mp4, png, jpg)")
+    url: str = Field(..., description="URL HTTP(S) del media o pagina web da castare")
     tv_entity: Optional[str] = Field(default=None, description="Entity ID della TV (es: media_player.tv_soggiorno)")
     room: Optional[str] = Field(default=None, description="Nome stanza per auto-risolvere TV (es: soggiorno)")
     location_id: Optional[str] = Field(default=None, description="Location HA (auto-risolto se omesso)")
-    duration: int = Field(default=30, description="Durata display in secondi per immagini (0=indefinito, ignorato per video)")
+    duration: int = Field(default=30, description="Durata display in secondi per browser/immagini (0=indefinito, ignorato per video)")
     media_type: Optional[str] = Field(default=None, description="'video' o 'image' (auto-detect se omesso)")
+    force_browser: bool = Field(default=False, description="Forza apertura nel browser Tizen (per pagine web, dashboard, webcam). Bypassa DLNA.")
 
 
 class MediaCastResponse(BaseModel):
@@ -1462,18 +1463,17 @@ async def tool_media_cast_url(
     _: None = Depends(verify_openclaw_token)
 ):
     """
-    Cast media da URL pubblico a una Samsung TV.
+    Cast media o pagina web da URL a una Samsung TV.
 
     L'URL viene passato direttamente a play_media — la TV lo fetcha da internet.
-    Supporta anche streaming HLS (.m3u8) e MPEG-TS (.ts).
-    Per immagini, il browser si chiude automaticamente dopo `duration` secondi.
+    Con force_browser=true, apre l'URL nel browser Tizen (per pagine web, dashboard, ecc.)
     """
     try:
         from media_cast import resolve_tv_entity, cast_url_to_tv, detect_media_type_url
 
         loc_id = req.location_id or _get_admin_location()
 
-        # Risolvi TV target
+        # Risolvi TV target — se force_browser, forza SamsungTV Smart (no DLNA)
         target = resolve_tv_entity(req.tv_entity, req.room, loc_id)
         if not target:
             return MediaCastResponse(
@@ -1481,11 +1481,23 @@ async def tool_media_cast_url(
                 message="Nessuna TV trovata. Specifica tv_entity o room."
             )
 
-        # Tipo media: usa hint esplicito o auto-detect da URL (default: video)
-        media_type = req.media_type or detect_media_type_url(req.url)
+        # force_browser → forza provider samsungtv (DLNA non supporta browser)
+        if req.force_browser:
+            from media_cast import CastTarget
+            target = CastTarget(
+                entity_id=target.entity_id.replace("_dlna", ""),
+                provider="samsungtv",
+                room=target.room,
+            )
 
-        # Durata effettiva (solo per immagini)
-        effective_duration = req.duration if media_type == "image" else 0
+        # Tipo media: force_browser → "image" (usa browser), altrimenti auto-detect
+        if req.force_browser:
+            media_type = "browser"
+        else:
+            media_type = req.media_type or detect_media_type_url(req.url)
+
+        # Durata: per browser e immagini, usa duration; per video ignora
+        effective_duration = req.duration if media_type in ("image", "browser") else 0
 
         # Cast URL diretto sulla TV
         success, message = await cast_url_to_tv(
@@ -1494,13 +1506,19 @@ async def tool_media_cast_url(
             media_type=media_type,
             duration=effective_duration,
             location_id=loc_id,
+            force_browser=req.force_browser,
         )
 
         if success:
-            type_label = "Video" if media_type == "video" else "Immagine"
+            if media_type == "browser":
+                type_label = "Pagina web"
+            elif media_type == "video":
+                type_label = "Video"
+            else:
+                type_label = "Immagine"
             tv_label = target.entity_id.replace("media_player.", "").replace("_", " ").title()
-            msg = f"{type_label} in riproduzione su {tv_label} (via {target.provider})"
-            if media_type == "image" and effective_duration > 0:
+            msg = f"{type_label} aperta su {tv_label}"
+            if effective_duration > 0:
                 msg += f" (durata: {effective_duration}s)"
         else:
             msg = message
@@ -1511,7 +1529,7 @@ async def tool_media_cast_url(
             media_content_id=req.url,
             tv_entity=target.entity_id,
             media_type=media_type,
-            duration=effective_duration if media_type == "image" else None,
+            duration=effective_duration if effective_duration > 0 else None,
         )
 
     except Exception as e:
