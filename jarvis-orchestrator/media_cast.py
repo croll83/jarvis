@@ -1,12 +1,13 @@
 """
 JARVIS Media Cast — Cast media (video/images) to Samsung TVs
 
-Flusso:
-1. Riceve file binari o URL dall'orchestrator
-2. Uploada su HA via /api/media_source/local_source/upload → /media/local/cast/
-3. Chiama play_media con media-source://media_source/local/cast/{file}
-4. HA genera signed URL → la TV fetcha dal LAN IP di HA
-5. Strategia DLNA-first: cerca DLNA DMR nella stanza, fallback SamsungTV Smart
+Due modalità:
+A) URL diretto: l'URL pubblico viene passato direttamente a play_media.
+   La TV fetcha direttamente dall'URL. Supporta anche streaming (m3u8, ts).
+B) Upload file: i bytes vengono uploadati su HA via media_source API,
+   poi play_media con media-source:// URI → HA genera signed URL sulla LAN.
+
+Strategia DLNA-first: cerca DLNA DMR nella stanza, fallback SamsungTV Smart.
 
 Provider:
 - DLNA DMR: play_media con MIME type standard (video/mp4, image/png, image/jpeg)
@@ -29,12 +30,32 @@ import config
 
 logger = logging.getLogger("JARVIS_MEDIA_CAST")
 
-# Formati supportati: estensione → (tipo media, MIME type)
-ALLOWED_EXTENSIONS = {
+# Formati supportati per upload file: estensione → (tipo media, MIME type)
+UPLOAD_EXTENSIONS = {
     ".mp4": ("video", "video/mp4"),
     ".png": ("image", "image/png"),
     ".jpg": ("image", "image/jpeg"),
     ".jpeg": ("image", "image/jpeg"),
+}
+
+# Mapping estensione → MIME type per hint (best-effort, non bloccante)
+# Usato per dare un content_type sensato a play_media quando si conosce l'estensione
+KNOWN_MIME_TYPES = {
+    ".mp4": "video/mp4",
+    ".m3u8": "application/x-mpegURL",
+    ".ts": "video/MP2T",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".flv": "video/x-flv",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
 }
 
 # Cast attivi (per tracciare timer KEY_EXIT su SamsungTV Smart)
@@ -50,23 +71,49 @@ HA_MEDIA_CAST_FOLDER = "cast"
 # ==========================================================================
 
 def detect_media_type(filename: str) -> Optional[str]:
-    """Rileva tipo media dall'estensione. Ritorna 'video' o 'image' o None."""
+    """Rileva tipo media dall'estensione (solo formati uploadabili). Ritorna 'video' o 'image' o None."""
     ext = os.path.splitext(filename)[1].lower()
-    info = ALLOWED_EXTENSIONS.get(ext)
+    info = UPLOAD_EXTENSIONS.get(ext)
     return info[0] if info else None
 
 
-def _get_mime_type(filename: str) -> Optional[str]:
-    """Rileva MIME type dall'estensione."""
+def detect_media_type_url(url: str) -> str:
+    """
+    Rileva tipo media da URL. Best-effort basato su estensione.
+    Se non riconosciuto, default 'video' (caso più comune per URL).
+    """
+    path = url.split("?")[0].split("#")[0]
+    filename = path.split("/")[-1]
     ext = os.path.splitext(filename)[1].lower()
-    info = ALLOWED_EXTENSIONS.get(ext)
+    # Immagini note
+    if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"):
+        return "image"
+    # Tutto il resto (video, streaming, sconosciuto) → video
+    return "video"
+
+
+def _get_mime_type_for_url(url: str) -> str:
+    """
+    Rileva MIME type da URL. Best-effort basato su estensione.
+    Se non riconosciuto, default 'video/mp4'.
+    """
+    path = url.split("?")[0].split("#")[0]
+    filename = path.split("/")[-1]
+    ext = os.path.splitext(filename)[1].lower()
+    return KNOWN_MIME_TYPES.get(ext, "video/mp4")
+
+
+def _get_mime_type(filename: str) -> Optional[str]:
+    """Rileva MIME type dall'estensione (solo formati uploadabili)."""
+    ext = os.path.splitext(filename)[1].lower()
+    info = UPLOAD_EXTENSIONS.get(ext)
     return info[1] if info else None
 
 
 def _generate_cast_filename(original_filename: str) -> str:
     """Genera filename univoco preservando l'estensione originale."""
     ext = os.path.splitext(original_filename)[1].lower()
-    if ext not in ALLOWED_EXTENSIONS:
+    if ext not in UPLOAD_EXTENSIONS:
         ext = ".mp4"
     return f"cast_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{ext}"
 
@@ -414,6 +461,71 @@ async def cast_to_tv(
         _active_casts[tv_entity] = {
             "task": task,
             "cast_id": media_content_id,
+            "started_at": time.time(),
+        }
+
+    return True, "OK"
+
+
+async def cast_url_to_tv(
+    url: str,
+    target: CastTarget,
+    media_type: str,
+    duration: int = 30,
+    location_id: str = None
+) -> Tuple[bool, str]:
+    """
+    Cast URL pubblico direttamente su TV via HA media_player.play_media.
+
+    L'URL viene passato as-is a play_media — la TV lo fetcha direttamente.
+    Funziona per qualsiasi URL raggiungibile dalla TV (internet pubblico).
+    Supporta anche streaming HLS (.m3u8) e MPEG-TS (.ts).
+
+    Args:
+        url: URL pubblico del media
+        target: CastTarget con entity_id e provider
+        media_type: "video" o "image"
+        duration: Durata display in secondi per immagini (0=indefinito)
+        location_id: ID location HA
+
+    Returns:
+        (success, message)
+    """
+    from integrations import call_hass_service
+
+    tv_entity = target.entity_id
+
+    # Cancella cast attivo su questa TV
+    await _cancel_active_cast(tv_entity)
+
+    # Rileva content_type dall'URL (best-effort, default video/mp4)
+    content_type = _get_mime_type_for_url(url)
+
+    # play_media con URL diretto
+    service_data = {
+        "entity_id": tv_entity,
+        "media_content_type": content_type,
+        "media_content_id": url,
+    }
+
+    success, message = await call_hass_service(
+        location_id, "media_player", "play_media", service_data
+    )
+
+    if not success:
+        logger.warning(f"URL cast failed on {tv_entity} (provider={target.provider}): {message}")
+        return False, f"Errore cast su TV: {message}"
+
+    logger.info(f"URL cast {media_type} on {tv_entity} (provider={target.provider}): {url}")
+
+    # Per immagini su SamsungTV Smart: programma KEY_EXIT per chiudere il browser
+    if target.provider == "samsungtv" and media_type == "image" and duration > 0:
+        task = asyncio.create_task(
+            _delayed_close_browser(tv_entity, duration, location_id)
+        )
+        _active_casts[tv_entity] = {
+            "task": task,
+            "cast_id": url,
             "started_at": time.time(),
         }
 
