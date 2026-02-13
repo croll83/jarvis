@@ -744,6 +744,13 @@ async def periodic_cleanup():
             except Exception as e:
                 logger.warning(f"Image cleanup failed: {e}")
 
+        # Cleanup cast files
+        try:
+            from media_cast import cleanup_cast_files
+            await cleanup_cast_files()
+        except Exception as e:
+            logger.warning(f"Cast cleanup failed: {e}")
+
         # Cleanup access log e auth attempts vecchi (>30 giorni)
         try:
             from database import cleanup_old_access_logs

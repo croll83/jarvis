@@ -222,6 +222,14 @@ GENERATED_IMAGES_DIR = os.getenv("GENERATED_IMAGES_DIR", "/app/data/www/generate
 IMAGE_CLEANUP_HOURS = int(os.getenv("IMAGE_CLEANUP_HOURS", "24"))
 
 # ===========================================================================
+# MEDIA CAST (TV display via Samsung TV Smart)
+# ===========================================================================
+CAST_DIR = os.getenv("CAST_DIR", "/app/data/www/cast")
+CAST_MAX_FILE_SIZE = int(os.getenv("CAST_MAX_FILE_SIZE", str(100 * 1024 * 1024)))  # 100 MB
+CAST_DEFAULT_IMAGE_DURATION = int(os.getenv("CAST_DEFAULT_IMAGE_DURATION", "30"))   # seconds
+CAST_FILE_TTL = int(os.getenv("CAST_FILE_TTL", "7200"))                            # 2 hours
+
+# ===========================================================================
 # HINT CONFIDENCE (pre-routing keyword matching)
 # ===========================================================================
 HINT_CONFIDENCE = {

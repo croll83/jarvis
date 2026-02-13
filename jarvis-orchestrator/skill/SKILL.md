@@ -151,6 +151,52 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/audit_log" \
   -d '{"event_type": "home_control", "details": "Manual backup triggered", "user_id": "marco", "source": "openclaw", "severity": "info"}'
 ```
 
+### media_cast
+Cast media (video o immagini) su una Samsung TV. Due modalità: URL o upload file.
+
+**Da URL** (per contenuti esterni o già hostati):
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/video.mp4", "room": "soggiorno"}'
+```
+
+**Upload file** (per contenuti generati localmente):
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast/upload" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -F "file=@/path/to/image.png" \
+  -F "room=soggiorno" \
+  -F "duration=30"
+```
+
+Parametri:
+- `url` (string, solo modalità URL): URL HTTP del media
+- `file` (binary, solo modalità upload): File media (mp4, png, jpg)
+- `tv_entity` (string, opzionale): Entity ID della TV target (es: `media_player.tv_soggiorno`)
+- `room` (string, opzionale): Nome stanza per auto-risolvere TV (es: `soggiorno`, `camera`)
+- `location_id` (string, opzionale): Location HA (auto-risolto se omesso)
+- `duration` (int, default 30): Durata display in secondi per immagini. 0=indefinito. Ignorato per video.
+- `media_type` (string, opzionale): `video` o `image`. Auto-detect dall'estensione se omesso.
+
+Returns: `success`, `message`, `media_url`, `tv_entity`, `media_type`, `duration`
+
+Comportamento:
+- **Video (mp4)**: Player nativo Samsung (UPnP). Nessun switch sorgente. La TV torna al contenuto precedente a fine riproduzione.
+- **Immagine (png/jpg)**: Browser Tizen fullscreen. Si chiude automaticamente dopo `duration` secondi (KEY_EXIT). La TV torna al contenuto precedente.
+- Formati supportati: mp4, png, jpg/jpeg. Max 100 MB.
+
+### media_cast/stop
+Ferma un cast attivo su una TV (chiude il browser/player).
+```bash
+curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast/stop" \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"tv_entity": "media_player.tv_soggiorno"}'
+```
+Parametri: `tv_entity` o `room`, `location_id` (opzionale).
+
 ## Risposte Voice (TTS)
 
 Quando il messaggio contiene `source: AtomS3R` o `source: VirtualMic`, la risposta verrà letta ad alta voce da Alexa TTS. Formatta di conseguenza:

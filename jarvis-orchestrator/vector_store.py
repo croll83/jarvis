@@ -81,6 +81,12 @@ class OllamaEmbeddingFunction:
                 embeddings.append([0.0] * EMBEDDING_DIM)
         return embeddings
 
+    def embed_documents(self, documents: List[str]) -> List[List[float]]:
+        return self(documents)
+
+    def embed_query(self, query: str) -> List[float]:
+        return self([query])[0]
+
 
 class GeminiEmbeddingFunction:
     """Embedding via Gemini API (gemini-embedding-001).
@@ -126,6 +132,12 @@ class GeminiEmbeddingFunction:
                 logger.error(f"Gemini embedding exception: {e}")
                 embeddings.append([0.0] * EMBEDDING_DIM)
         return embeddings
+
+    def embed_documents(self, documents: List[str]) -> List[List[float]]:
+        return self(documents)
+
+    def embed_query(self, query: str) -> List[float]:
+        return self([query])[0]
 
 
 def get_embedding_function():

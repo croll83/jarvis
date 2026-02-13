@@ -4,7 +4,7 @@ JARVIS Tools API — OpenClaw Skill Endpoints
 REST API endpoints that OpenClaw calls as a skill.
 All endpoints are behind bearer token authentication (OPENCLAW_TOKEN).
 
-9 tool endpoints:
+12 tool endpoints:
 - jarvis_home_control:   Control HA entities with L1-L4 security
 - jarvis_speaker_id:     Identify speaker from audio
 - jarvis_get_user_context: Get user info + location + preferences
@@ -14,13 +14,16 @@ All endpoints are behind bearer token authentication (OPENCLAW_TOKEN).
 - jarvis_tts:            Text-to-speech passthrough
 - jarvis_get_locations:  List all locations with health status
 - jarvis_audit_log:      Log an event to the audit trail
+- media_cast:            Cast media (URL) to Samsung TV
+- media_cast/upload:     Cast uploaded file to Samsung TV
+- media_cast/stop:       Stop active cast on a TV
 """
 
 import logging
 import time
 from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Header, Depends
+from fastapi import APIRouter, HTTPException, Header, Depends, UploadFile, File, Form
 from pydantic import BaseModel, Field
 
 import config
@@ -1341,3 +1344,207 @@ async def _send_approval_request(entity_id: str, action: str, source_channel: st
 
     except Exception as e:
         logger.error(f"Failed to send approval request: {e}")
+
+
+# ==========================================================================
+# MEDIA CAST — Cast media to Samsung TVs
+# ==========================================================================
+
+class MediaCastUrlRequest(BaseModel):
+    """Cast media da URL a una Samsung TV."""
+    url: str = Field(..., description="URL HTTP(S) del media da castare (mp4, png, jpg)")
+    tv_entity: Optional[str] = Field(default=None, description="Entity ID della TV (es: media_player.tv_soggiorno)")
+    room: Optional[str] = Field(default=None, description="Nome stanza per auto-risolvere TV (es: soggiorno)")
+    location_id: Optional[str] = Field(default=None, description="Location HA (auto-risolto se omesso)")
+    duration: int = Field(default=30, description="Durata display in secondi per immagini (0=indefinito, ignorato per video)")
+    media_type: Optional[str] = Field(default=None, description="'video' o 'image' (auto-detect se omesso)")
+
+
+class MediaCastResponse(BaseModel):
+    success: bool
+    message: str
+    media_url: Optional[str] = None
+    tv_entity: Optional[str] = None
+    media_type: Optional[str] = None
+    duration: Optional[int] = None
+
+
+class MediaCastStopRequest(BaseModel):
+    """Ferma cast attivo su una TV."""
+    tv_entity: Optional[str] = Field(default=None, description="Entity ID della TV")
+    room: Optional[str] = Field(default=None, description="Nome stanza per auto-risolvere TV")
+    location_id: Optional[str] = Field(default=None, description="Location HA")
+
+
+class MediaCastStopResponse(BaseModel):
+    success: bool
+    message: str
+
+
+async def _execute_media_cast(
+    local_path: str,
+    media_type_hint: Optional[str],
+    tv_entity_input: Optional[str],
+    room: Optional[str],
+    location_id: Optional[str],
+    duration: int,
+) -> MediaCastResponse:
+    """Logica comune di cast per entrambi gli endpoint (URL e upload)."""
+    from media_cast import get_cast_url, resolve_tv_entity, cast_to_tv, detect_media_type
+
+    loc_id = location_id or _get_admin_location()
+
+    # Risolvi TV entity
+    tv_entity = resolve_tv_entity(tv_entity_input, room, loc_id)
+    if not tv_entity:
+        return MediaCastResponse(
+            success=False,
+            message="Nessuna TV trovata. Specifica tv_entity o room."
+        )
+
+    # URL accessibile dalla TV via HA
+    media_url = get_cast_url(local_path, loc_id)
+
+    # Auto-detect tipo media se non fornito
+    media_type = media_type_hint
+    if not media_type:
+        media_type = detect_media_type(local_path)
+    if not media_type:
+        return MediaCastResponse(
+            success=False,
+            message="Impossibile determinare il tipo di media. Specifica media_type."
+        )
+
+    # Durata effettiva (solo per immagini)
+    effective_duration = duration if media_type == "image" else 0
+
+    # Cast sulla TV
+    success, message = await cast_to_tv(
+        media_url=media_url,
+        tv_entity=tv_entity,
+        media_type=media_type,
+        duration=effective_duration,
+        location_id=loc_id,
+    )
+
+    if success:
+        type_label = "Video" if media_type == "video" else "Immagine"
+        tv_label = tv_entity.replace("media_player.", "").replace("_", " ").title()
+        msg = f"{type_label} in riproduzione su {tv_label}"
+        if media_type == "image" and effective_duration > 0:
+            msg += f" (durata: {effective_duration}s)"
+    else:
+        msg = message
+
+    return MediaCastResponse(
+        success=success,
+        message=msg,
+        media_url=media_url,
+        tv_entity=tv_entity,
+        media_type=media_type,
+        duration=effective_duration if media_type == "image" else None,
+    )
+
+
+@router.post("/media_cast", response_model=MediaCastResponse)
+async def tool_media_cast_url(
+    req: MediaCastUrlRequest,
+    _: None = Depends(verify_openclaw_token)
+):
+    """
+    Cast media da URL a una Samsung TV.
+
+    Scarica il contenuto, lo salva localmente e lo riproduce sulla TV target.
+    Per immagini, il browser si chiude automaticamente dopo `duration` secondi.
+    """
+    try:
+        from media_cast import download_and_save
+
+        # Scarica e salva
+        success, local_path, dl_msg = await download_and_save(req.url)
+        if not success:
+            return MediaCastResponse(success=False, message=dl_msg)
+
+        return await _execute_media_cast(
+            local_path=local_path,
+            media_type_hint=req.media_type,
+            tv_entity_input=req.tv_entity,
+            room=req.room,
+            location_id=req.location_id,
+            duration=req.duration,
+        )
+
+    except Exception as e:
+        logger.error(f"media_cast URL error: {e}")
+        return MediaCastResponse(success=False, message=f"Errore: {str(e)}")
+
+
+@router.post("/media_cast/upload", response_model=MediaCastResponse)
+async def tool_media_cast_upload(
+    file: UploadFile = File(..., description="File media (mp4, png, jpg, jpeg)"),
+    tv_entity: Optional[str] = Form(default=None),
+    room: Optional[str] = Form(default=None),
+    location_id: Optional[str] = Form(default=None),
+    duration: int = Form(default=30),
+    media_type: Optional[str] = Form(default=None),
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Cast file uploadato su una Samsung TV.
+
+    Accetta multipart/form-data con file media e metadati.
+    Per immagini, il browser si chiude automaticamente dopo `duration` secondi.
+    """
+    # Auth manuale (Form + Depends non combinabili direttamente)
+    await verify_openclaw_token(authorization)
+
+    try:
+        from media_cast import save_cast_file
+
+        file_bytes = await file.read()
+        filename = file.filename or "upload.mp4"
+
+        success, local_path, save_msg = await save_cast_file(file_bytes, filename)
+        if not success:
+            return MediaCastResponse(success=False, message=save_msg)
+
+        return await _execute_media_cast(
+            local_path=local_path,
+            media_type_hint=media_type,
+            tv_entity_input=tv_entity,
+            room=room,
+            location_id=location_id,
+            duration=duration,
+        )
+
+    except Exception as e:
+        logger.error(f"media_cast upload error: {e}")
+        return MediaCastResponse(success=False, message=f"Errore: {str(e)}")
+
+
+@router.post("/media_cast/stop", response_model=MediaCastStopResponse)
+async def tool_media_cast_stop(
+    req: MediaCastStopRequest,
+    _: None = Depends(verify_openclaw_token)
+):
+    """
+    Ferma cast attivo su una TV. Invia KEY_EXIT e cancella il timer.
+    """
+    try:
+        from media_cast import resolve_tv_entity, stop_cast
+
+        loc_id = req.location_id or _get_admin_location()
+
+        tv_entity = resolve_tv_entity(req.tv_entity, req.room, loc_id)
+        if not tv_entity:
+            return MediaCastStopResponse(
+                success=False,
+                message="Nessuna TV trovata. Specifica tv_entity o room."
+            )
+
+        success, message = await stop_cast(tv_entity, loc_id)
+        return MediaCastStopResponse(success=success, message=message)
+
+    except Exception as e:
+        logger.error(f"media_cast stop error: {e}")
+        return MediaCastStopResponse(success=False, message=f"Errore: {str(e)}")

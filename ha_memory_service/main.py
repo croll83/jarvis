@@ -1,7 +1,8 @@
 """
 JARVIS HA Memory Service
 - Event ingestion da Home Assistant via WebSocket
-- Summarization locale con Qwen
+- Summarization con Qwen (locale via Ollama o cloud via OpenRouter)
+- Embedding con nomic-embed-text (locale) o Gemini (cloud)
 - Vector search con ChromaDB per retrieval semantico
 - API per orchestrator
 """
@@ -30,14 +31,30 @@ from chromadb.config import Settings
 LOCATION_ID = os.getenv("LOCATION_ID", "unknown")
 HA_URL = os.getenv("HA_URL", "http://supervisor/core")
 HA_TOKEN = os.getenv("HA_TOKEN", "")
-QWEN_URL = os.getenv("QWEN_URL", "http://localhost:11434")
-DB_PATH = os.getenv("DB_PATH", "/data/ha_memory.db")
-CHROMA_PATH = os.getenv("CHROMA_PATH", "/data/chroma")
+
+# AI Backend: "local" (Ollama) or "api" (OpenRouter + Gemini embeddings)
+AI_BACKEND = os.getenv("AI_BACKEND", "local")
+
+# --- Local mode (Ollama) ---
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen2.5:3b")
+
+# --- API mode (OpenRouter for summarization, Gemini for embeddings) ---
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "https://jarvis.yourdomain.com")
+OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "JARVIS HA Memory")
+OPENROUTER_SUMMARY_MODEL = os.getenv("OPENROUTER_SUMMARY_MODEL", "qwen/qwen-2.5-7b-instruct")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
+
+# --- Common ---
 SUMMARY_TEMPERATURE = float(os.getenv("SUMMARY_TEMPERATURE", "0.3"))
 SUMMARY_TIMEOUT = int(os.getenv("SUMMARY_TIMEOUT", "30"))
 EMBEDDING_TIMEOUT = int(os.getenv("EMBEDDING_TIMEOUT", "30"))
+DB_PATH = os.getenv("DB_PATH", "/data/ha_memory.db")
+CHROMA_PATH = os.getenv("CHROMA_PATH", "/data/chroma")
 SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8100"))
 WS_RETRY_DELAY = int(os.getenv("WS_RETRY_DELAY", "30"))
 WS_RECONNECT_DELAY = int(os.getenv("WS_RECONNECT_DELAY", "10"))
@@ -46,6 +63,8 @@ SCHEDULER_INTERVAL = int(os.getenv("SCHEDULER_INTERVAL", "60"))
 COLLECTION_LOCATION_EVENTS = "location_events"
 SKIP_ENTITY_PREFIXES = os.getenv("SKIP_ENTITY_PREFIXES", "update.").split(",")
 SKIP_ENTITY_SUFFIXES = os.getenv("SKIP_ENTITY_SUFFIXES", "_battery,_linkquality,_signal").split(",")
+
+EMBEDDING_DIM = 768  # Comune a nomic-embed-text e gemini-embedding-001 (con output_dimensionality)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("HA_MEMORY")
@@ -121,18 +140,21 @@ def init_db():
 
 
 # ===========================================================================
-# VECTOR STORE (Location Events)
+# EMBEDDING FUNCTIONS
+# ===========================================================================
+# AI_BACKEND=local → OllamaEmbeddingFunction (nomic-embed-text)
+# AI_BACKEND=api   → GeminiEmbeddingFunction (gemini-embedding-001)
 # ===========================================================================
 
 class OllamaEmbeddingFunction:
-    """Custom embedding function using Ollama."""
+    """Embedding via Ollama locale (nomic-embed-text)."""
 
-    def __init__(self, model: str = EMBEDDING_MODEL, url: str = QWEN_URL):
+    def __init__(self, model: str = EMBEDDING_MODEL, url: str = OLLAMA_URL):
         self.model = model
-        # Usa endpoint embeddings di Ollama
-        self.url = url.replace("/api/chat", "/api/embeddings")
-        if "/api/embeddings" not in self.url:
-            self.url = f"{url.rstrip('/')}/api/embeddings"
+        self.url = f"{url.rstrip('/')}/api/embeddings"
+
+    def name(self) -> str:
+        return f"ollama-{self.model}"
 
     def __call__(self, input: list) -> list:
         import requests
@@ -147,11 +169,69 @@ class OllamaEmbeddingFunction:
                 if response.status_code == 200:
                     embeddings.append(response.json()["embedding"])
                 else:
-                    embeddings.append([0.0] * 768)
-            except Exception:
-                embeddings.append([0.0] * 768)
+                    logger.error(f"Ollama embedding error: {response.status_code}")
+                    embeddings.append([0.0] * EMBEDDING_DIM)
+            except Exception as e:
+                logger.error(f"Ollama embedding exception: {e}")
+                embeddings.append([0.0] * EMBEDDING_DIM)
         return embeddings
 
+
+class GeminiEmbeddingFunction:
+    """Embedding via Gemini API (gemini-embedding-001).
+    Stessa dimensionalita (768) di nomic-embed-text.
+    """
+
+    def __init__(self):
+        self.api_key = GEMINI_API_KEY
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY required for cloud embeddings (AI_BACKEND=api)")
+
+    def name(self) -> str:
+        return "gemini-embedding-001"
+
+    def __call__(self, input: list) -> list:
+        import requests
+        embeddings = []
+        for text in input:
+            try:
+                response = requests.post(
+                    GEMINI_EMBED_URL,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-goog-api-key": self.api_key,
+                    },
+                    json={
+                        "content": {"parts": [{"text": text}]},
+                        "output_dimensionality": EMBEDDING_DIM,
+                    },
+                    timeout=EMBEDDING_TIMEOUT,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    embeddings.append(data["embedding"]["values"])
+                else:
+                    logger.error(f"Gemini embedding error {response.status_code}: {response.text[:200]}")
+                    embeddings.append([0.0] * EMBEDDING_DIM)
+            except Exception as e:
+                logger.error(f"Gemini embedding exception: {e}")
+                embeddings.append([0.0] * EMBEDDING_DIM)
+        return embeddings
+
+
+def get_embedding_function():
+    """Factory: seleziona embedding function in base a AI_BACKEND."""
+    if AI_BACKEND == "api":
+        logger.info("Using Gemini embeddings (cloud mode)")
+        return GeminiEmbeddingFunction()
+    else:
+        logger.info("Using Ollama embeddings (local mode)")
+        return OllamaEmbeddingFunction()
+
+
+# ===========================================================================
+# VECTOR STORE (Location Events)
+# ===========================================================================
 
 class LocationVectorStore:
     """Vector store per eventi location."""
@@ -172,7 +252,7 @@ class LocationVectorStore:
 
         self.collection = self.client.get_or_create_collection(
             name=f"{COLLECTION_LOCATION_EVENTS}_{LOCATION_ID}",
-            embedding_function=OllamaEmbeddingFunction(),
+            embedding_function=get_embedding_function(),
             metadata={"hnsw:space": "cosine"}
         )
 
@@ -287,9 +367,23 @@ location_vector_store = LocationVectorStore()
 # EVENT INGESTION
 # ===========================================================================
 
+def _get_ws_url() -> str:
+    """
+    Costruisce WebSocket URL in base al contesto:
+    - HAOS addon: ws://supervisor/core/websocket (via Supervisor proxy)
+    - Standalone: ws://<HA_URL>/api/websocket
+    """
+    if "supervisor" in HA_URL:
+        # HAOS addon mode — Supervisor proxy
+        return "ws://supervisor/core/websocket"
+    else:
+        # Standalone Docker — connessione diretta
+        return HA_URL.replace("http", "ws") + "/api/websocket"
+
+
 async def subscribe_ha_events():
     """Sottoscrivi agli eventi state_changed di Home Assistant."""
-    ws_url = HA_URL.replace("http", "ws") + "/api/websocket"
+    ws_url = _get_ws_url()
 
     while True:
         try:
@@ -399,8 +493,16 @@ LOCATION_HOURLY_PROMPT = load_prompt("location_hourly")
 LOCATION_DAILY_PROMPT = load_prompt("location_daily")
 
 
-async def call_qwen(prompt: str, max_tokens: int = 150) -> str:
-    """Chiama Qwen per summarization."""
+async def call_llm_summary(prompt: str, max_tokens: int = 150) -> str:
+    """Chiama LLM per summarization. Usa Ollama o OpenRouter in base a AI_BACKEND."""
+    if AI_BACKEND == "api":
+        return await _call_openrouter(prompt, max_tokens)
+    else:
+        return await _call_ollama(prompt, max_tokens)
+
+
+async def _call_ollama(prompt: str, max_tokens: int = 150) -> str:
+    """Chiamata Ollama locale."""
     payload = {
         "model": SUMMARY_MODEL,
         "messages": [{"role": "user", "content": prompt}],
@@ -410,7 +512,7 @@ async def call_qwen(prompt: str, max_tokens: int = 150) -> str:
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
-            f"{QWEN_URL}/api/chat",
+            f"{OLLAMA_URL.rstrip('/')}/api/chat",
             json=payload,
             timeout=aiohttp.ClientTimeout(total=SUMMARY_TIMEOUT)
         ) as resp:
@@ -418,7 +520,37 @@ async def call_qwen(prompt: str, max_tokens: int = 150) -> str:
                 result = await resp.json()
                 return result.get("message", {}).get("content", "")
             else:
-                raise Exception(f"Qwen error: {resp.status}")
+                raise Exception(f"Ollama error: {resp.status}")
+
+
+async def _call_openrouter(prompt: str, max_tokens: int = 150) -> str:
+    """Chiamata OpenRouter (formato OpenAI-compatible)."""
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": OPENROUTER_REFERER,
+        "X-Title": OPENROUTER_TITLE,
+    }
+    payload = {
+        "model": OPENROUTER_SUMMARY_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": SUMMARY_TEMPERATURE,
+        "max_tokens": max_tokens,
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{OPENROUTER_API_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=SUMMARY_TIMEOUT)
+        ) as resp:
+            if resp.status == 200:
+                result = await resp.json()
+                return result["choices"][0]["message"]["content"]
+            else:
+                body = await resp.text()
+                raise Exception(f"OpenRouter error {resp.status}: {body[:200]}")
 
 
 async def run_hourly_summary():
@@ -453,7 +585,7 @@ async def run_hourly_summary():
     )
 
     try:
-        summary = await call_qwen(prompt, max_tokens=150)
+        summary = await call_llm_summary(prompt, max_tokens=150)
 
         c.execute('''
             INSERT INTO location_memory_hourly (hour_start, hour_end, summary, event_count)
@@ -505,7 +637,7 @@ async def run_daily_summary():
     )
 
     try:
-        response = await call_qwen(prompt, max_tokens=400)
+        response = await call_llm_summary(prompt, max_tokens=400)
         data = json.loads(response)
 
         c.execute('''
@@ -566,6 +698,12 @@ async def scheduler():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Log backend mode
+    if AI_BACKEND == "api":
+        logger.info(f"AI Backend: cloud (OpenRouter: {OPENROUTER_SUMMARY_MODEL}, Gemini embeddings)")
+    else:
+        logger.info(f"AI Backend: local (Ollama: {SUMMARY_MODEL}, {EMBEDDING_MODEL})")
+
     init_db()
     location_vector_store.initialize()
     asyncio.create_task(subscribe_ha_events())
@@ -671,7 +809,11 @@ async def search_location_memory(request: VectorSearchRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "location_id": LOCATION_ID}
+    return {
+        "status": "ok",
+        "location_id": LOCATION_ID,
+        "ai_backend": AI_BACKEND,
+    }
 
 
 if __name__ == "__main__":
