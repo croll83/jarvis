@@ -109,47 +109,56 @@ class VoiceRecognizer:
     def identify_speaker(self, audio_bytes: bytes, sample_rate: int = 16000) -> SpeakerMatch:
         """
         Identifica lo speaker da un campione audio.
-        
+
         Returns:
             SpeakerMatch con user_id, nome, confidence e flag is_known
         """
         if self.encoder is None or not self.speaker_embeddings:
+            logger.warning(f"Speaker ID skipped: encoder={self.encoder is not None}, models={len(self.speaker_embeddings)}")
             return SpeakerMatch(
                 user_id=None,
                 user_name=None,
                 confidence=0.0,
                 is_known=False
             )
-        
+
         # Converti bytes in numpy array
         audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-        
+        logger.debug(f"Speaker ID: audio {len(audio_data)} samples, dtype={audio_data.dtype}")
+
         # Genera embedding
         query_embedding = self._audio_to_embedding(audio_data, sample_rate)
         if query_embedding is None:
+            logger.warning("Speaker ID: failed to generate embedding from audio")
             return SpeakerMatch(None, None, 0.0, False)
-        
+
         # Confronta con tutti gli speaker registrati
         best_match_id = None
         best_similarity = 0.0
-        
+        all_scores = {}
+
         for user_id, stored_embedding in self.speaker_embeddings.items():
             similarity = self._cosine_similarity(query_embedding, stored_embedding)
+            all_scores[user_id] = round(similarity, 4)
             if similarity > best_similarity:
                 best_similarity = similarity
                 best_match_id = user_id
-        
+
+        logger.info(f"Speaker ID: scores={all_scores}, best={best_match_id} ({best_similarity:.4f}), threshold={SIMILARITY_THRESHOLD}")
+
         # Verifica soglia
         if best_similarity >= SIMILARITY_THRESHOLD and best_match_id is not None:
             from database import get_user_by_id
             user = get_user_by_id(best_match_id)
+            logger.info(f"Speaker identified: user_id={best_match_id}, name={user.name if user else 'Unknown'}, confidence={best_similarity:.4f}")
             return SpeakerMatch(
                 user_id=best_match_id,
                 user_name=user.name if user else "Unknown",
                 confidence=float(best_similarity),
                 is_known=True
             )
-        
+
+        logger.info(f"Speaker NOT identified: best similarity {best_similarity:.4f} < threshold {SIMILARITY_THRESHOLD}")
         return SpeakerMatch(
             user_id=None,
             user_name=None,
