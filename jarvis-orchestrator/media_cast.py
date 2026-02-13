@@ -472,7 +472,8 @@ async def cast_url_to_tv(
     target: CastTarget,
     media_type: str,
     duration: int = 30,
-    location_id: str = None
+    location_id: str = None,
+    force_browser: bool = False
 ) -> Tuple[bool, str]:
     """
     Cast URL pubblico direttamente su TV via HA media_player.play_media.
@@ -481,12 +482,16 @@ async def cast_url_to_tv(
     Funziona per qualsiasi URL raggiungibile dalla TV (internet pubblico).
     Supporta anche streaming HLS (.m3u8) e MPEG-TS (.ts).
 
+    Con force_browser=True, usa media_content_type="browser" per aprire
+    l'URL nel browser Tizen (pagine web, dashboard, webcam, ecc.)
+
     Args:
-        url: URL pubblico del media
+        url: URL pubblico del media o pagina web
         target: CastTarget con entity_id e provider
-        media_type: "video" o "image"
-        duration: Durata display in secondi per immagini (0=indefinito)
+        media_type: "video", "image" o "browser"
+        duration: Durata display in secondi per browser/immagini (0=indefinito)
         location_id: ID location HA
+        force_browser: Se True, apre nel browser Tizen (ignora MIME type)
 
     Returns:
         (success, message)
@@ -498,8 +503,11 @@ async def cast_url_to_tv(
     # Cancella cast attivo su questa TV
     await _cancel_active_cast(tv_entity)
 
-    # Rileva content_type dall'URL (best-effort, default video/mp4)
-    content_type = _get_mime_type_for_url(url)
+    # Determina content_type
+    if force_browser:
+        content_type = "browser"
+    else:
+        content_type = _get_mime_type_for_url(url)
 
     # play_media con URL diretto
     service_data = {
@@ -516,10 +524,11 @@ async def cast_url_to_tv(
         logger.warning(f"URL cast failed on {tv_entity} (provider={target.provider}): {message}")
         return False, f"Errore cast su TV: {message}"
 
-    logger.info(f"URL cast {media_type} on {tv_entity} (provider={target.provider}): {url}")
+    logger.info(f"URL cast {media_type} on {tv_entity} (provider={target.provider})"
+                f"{' [browser]' if force_browser else ''}: {url}")
 
-    # Per immagini su SamsungTV Smart: programma KEY_EXIT per chiudere il browser
-    if target.provider == "samsungtv" and media_type == "image" and duration > 0:
+    # Per browser e immagini su SamsungTV Smart: programma KEY_EXIT per chiudere
+    if target.provider == "samsungtv" and media_type in ("image", "browser") and duration > 0:
         task = asyncio.create_task(
             _delayed_close_browser(tv_entity, duration, location_id)
         )
