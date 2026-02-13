@@ -1185,7 +1185,7 @@
                 <div class="card-header">
                     <span class="card-title">Entity Map - <span id="entityMapLocationName"></span></span>
                     <div style="display: flex; gap: 0.5rem;">
-                        <button class="btn-primary btn-sm" onclick="syncEntitiesFromHA()" id="btnSyncHA" style="display: none;">🔄 Sync da HA</button>
+                        <button class="btn-primary btn-sm" onclick="syncEntitiesFromHA()" id="btnSyncHA">🔄 Sync Entity Map</button>
                         <button class="btn-secondary btn-sm" onclick="openModal('importHierarchyModal')" id="btnImportHierarchy">📐 Importa Gerarchia</button>
                         <button class="btn-secondary btn-sm" onclick="exportEntityMap()">Esporta JSON</button>
                         <button class="btn-secondary btn-sm" onclick="openModal('importEntityMapModal')">Importa JSON</button>
@@ -3840,15 +3840,13 @@
                     const infoSpan = document.getElementById('hierarchyInfo');
 
                     if (data.has_hierarchy) {
-                        // Gerarchia presente → mostra sync, mostra banner
-                        btnSync.style.display = '';
+                        // Gerarchia presente → mostra banner
                         btnHierarchy.innerHTML = '📐 Aggiorna Gerarchia';
                         banner.style.display = '';
                         const areaCount = Object.keys(data.ha_area_mapping).length;
                         infoSpan.textContent = `${areaCount} stanze HA mappate`;
                     } else {
-                        // Nessuna gerarchia → nascondi sync
-                        btnSync.style.display = 'none';
+                        // Nessuna gerarchia
                         btnHierarchy.innerHTML = '📐 Importa Gerarchia';
                         banner.style.display = 'none';
                     }
