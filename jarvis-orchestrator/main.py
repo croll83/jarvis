@@ -1040,10 +1040,14 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
     """
     Forward request to OpenClaw Gateway via OpenResponses API (POST /v1/responses).
 
-    Sends the user message with speaker context to OpenClaw's OpenResponses endpoint.
+    Uses SSE streaming (stream: True) to avoid hard timeout on long multi-turn
+    conversations. As long as OpenClaw sends SSE events (deltas, tool calls, etc.),
+    the connection stays alive. Timeout triggers only on prolonged silence.
+
     On timeout or error, falls back to local Qwen quick response.
     """
     import aiohttp
+    import json as _json
 
     if not config.OPENCLAW_URL or not config.OPENCLAW_TOKEN:
         logger.warning("OpenClaw not configured, falling back to local response")
@@ -1090,12 +1094,16 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
     payload = {
         "input": message_text,
         "model": "openclaw:main",
-        "stream": False,
+        "stream": True,
     }
     if tts_instructions:
         payload["instructions"] = tts_instructions
 
     try:
+        timeout = aiohttp.ClientTimeout(
+            total=config.OPENCLAW_TIMEOUT_TOTAL,   # 120s max totale
+            sock_read=config.OPENCLAW_TIMEOUT_READ  # 45s max silenzio tra chunk
+        )
         async with aiohttp.ClientSession() as session:
             headers = {
                 "Authorization": f"Bearer {config.OPENCLAW_TOKEN}",
@@ -1105,27 +1113,81 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
                 f"{config.OPENCLAW_URL}/v1/responses",
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=config.OPENCLAW_TIMEOUT)
+                timeout=timeout,
             ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    # OpenResponses format: output[].content[].text
-                    response = _extract_openclaw_response(data)
-                    if response:
-                        logger.info(f"OpenClaw response received ({len(response)} chars)")
-                        return response
-                    logger.warning("OpenClaw returned empty response")
-                else:
+                if resp.status != 200:
                     body = await resp.text()
                     logger.error(f"OpenClaw error {resp.status}: {body[:200]}")
+                    return await get_quick_response(text, context)
+
+                # Parse SSE stream
+                accumulated_text = ""
+                event_count = 0
+                final_status = None
+
+                async for raw_line in resp.content:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+
+                    # Fine stream
+                    if line == "data: [DONE]":
+                        break
+
+                    # Solo righe "data:" contengono payload JSON
+                    if not line.startswith("data: "):
+                        continue
+
+                    try:
+                        event = _json.loads(line[6:])
+                    except _json.JSONDecodeError:
+                        continue
+
+                    event_type = event.get("type", "")
+                    event_count += 1
+
+                    # Accumula testo dai delta incrementali
+                    if event_type == "response.output_text.delta":
+                        delta = event.get("delta", "")
+                        if delta:
+                            accumulated_text += delta
+
+                    # Testo completo — più affidabile dei delta accumulati
+                    elif event_type == "response.output_text.done":
+                        done_text = event.get("text", "")
+                        if done_text:
+                            accumulated_text = done_text
+
+                    # Risposta completata — estrai testo se non accumulato
+                    elif event_type == "response.completed":
+                        resp_data = event.get("response", {})
+                        final_status = resp_data.get("status")
+                        if not accumulated_text:
+                            accumulated_text = _extract_openclaw_response(resp_data)
+
+                    # Errore
+                    elif event_type == "response.failed":
+                        error = event.get("response", {}).get("error", {})
+                        logger.error(f"OpenClaw stream failed: {error.get('code', '?')}: {error.get('message', '?')}")
+                        return await get_quick_response(text, context)
+
+                if accumulated_text:
+                    logger.info(
+                        f"OpenClaw stream response ({len(accumulated_text)} chars, "
+                        f"{event_count} events, status={final_status})"
+                    )
+                    return accumulated_text
+
+                logger.warning(f"OpenClaw stream ended with no text ({event_count} events, status={final_status})")
 
     except asyncio.TimeoutError:
-        logger.warning(f"OpenClaw timeout ({config.OPENCLAW_TIMEOUT}s), falling back to local")
+        logger.warning(
+            f"OpenClaw stream timeout (total={config.OPENCLAW_TIMEOUT_TOTAL}s, "
+            f"read={config.OPENCLAW_TIMEOUT_READ}s), falling back to local"
+        )
     except aiohttp.ClientConnectorError:
         logger.warning("OpenClaw unreachable, falling back to local")
         service_status.set_offline("openclaw")
     except Exception as e:
-        logger.error(f"OpenClaw forward error: {e}")
+        logger.error(f"OpenClaw stream error: {e}")
 
     # Fallback: local Qwen quick response
     return await get_quick_response(text, context)
@@ -1677,13 +1739,18 @@ async def voice_stream(
 async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     """
     Handle voice commands that need OpenClaw (non-certain domotics or general queries).
-    Forwards to OpenClaw and delivers response via TTS.
+    Sends immediate TTS feedback, then forwards to OpenClaw and delivers final response.
     """
     context["_user_text"] = text  # Per VirtualMic response tracking
     context["_intent"] = f"OPENCLAW:{hint}" if hint else "OPENCLAW"
 
     save_chat_message("user", text, context.get("source", "AtomS3R"),
                       context.get("speaker_id"), context.get("speaker_name", "Sconosciuto"))
+
+    # Feedback TTS immediato per voice sources (come GEMINI intent)
+    source = context.get("source", "")
+    if source in ("AtomS3R", "VirtualMic"):
+        await deliver_final_response("Hmm... ci penso!", context)
 
     response = await forward_to_openclaw(text, context, hint=hint)
 
