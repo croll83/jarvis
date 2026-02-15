@@ -1696,7 +1696,7 @@ async def speaker_suppressed_status():
 
 # Weather value cache: (room, location) -> {"result": dict, "timestamp": float}
 _temp_weather_cache: Dict[str, dict] = {}
-_TEMP_WEATHER_CACHE_TTL = 43200    # 12 ore
+_TEMP_WEATHER_CACHE_TTL = 3600     # 1 ora
 
 # Entity resolution cache: (room, location) -> {"entity_id": str, "source": str, "loc": str, "timestamp": float}
 # Avoids expensive bulk fetch to resolve which entity matches the room name
