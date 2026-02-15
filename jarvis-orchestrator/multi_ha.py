@@ -204,8 +204,8 @@ class HomeAssistantClient:
                     "last_changed": s.get("last_changed"),
                 }
 
-            logger.info(f"[{self.location_id}] Bulk state fetch: {len(result)} entities"
-                        f" (filtered from {len(all_states)} total)")
+            logger.debug(f"[{self.location_id}] Bulk state fetch: {len(result)} entities"
+                         f" (filtered from {len(all_states)} total)")
             return result
 
         except Exception as e:
