@@ -18,6 +18,7 @@
 #include "esp_heap_caps.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
@@ -38,7 +39,12 @@ static const char *TAG = "DISPLAY";
 #define PIN_NUM_CS          14  // LCD CS
 #define PIN_NUM_DC          42  // LCD DC (Register Select)
 #define PIN_NUM_RST         48  // LCD RST
-#define PIN_NUM_BL          16  // Backlight (PWM)
+// Backlight: AtomS3R usa un controller I2C (indirizzo 0x30) su SDA=GPIO45, SCL=GPIO0
+// NON è un semplice GPIO. I registri vengono da M5GFX Light_M5StackAtomS3R.
+#define BL_I2C_ADDR         0x30
+#define BL_I2C_SDA          45
+#define BL_I2C_SCL          0
+#define BL_I2C_FREQ_HZ      400000
 
 // Colors (RGB565)
 #define COLOR_BLACK         0x0000
@@ -67,6 +73,8 @@ static const char *TAG = "DISPLAY";
 // =============================================================================
 
 static esp_lcd_panel_handle_t panel_handle = NULL;
+static i2c_master_bus_handle_t i2c_bus = NULL;
+static i2c_master_dev_handle_t bl_dev = NULL;
 static display_state_t current_state = DISPLAY_STATE_IDLE;
 static display_state_t prev_state = DISPLAY_STATE_IDLE;
 
@@ -416,10 +424,42 @@ bool jarvis_display_init(void) {
     }
     ESP_LOGI(TAG, "Frame buffer allocated (%d bytes)", DISPLAY_WIDTH * DISPLAY_HEIGHT * 2);
 
-    // Initialize backlight (se disponibile)
-    if (PIN_NUM_BL >= 0) {
-        gpio_set_direction(PIN_NUM_BL, GPIO_MODE_OUTPUT);
-        gpio_set_level(PIN_NUM_BL, 1);
+    // Initialize backlight via I2C (AtomS3R: controller I2C @ 0x30, SDA=45, SCL=0)
+    {
+        i2c_master_bus_config_t bus_cfg = {
+            .i2c_port = I2C_NUM_0,
+            .sda_io_num = BL_I2C_SDA,
+            .scl_io_num = BL_I2C_SCL,
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .flags.enable_internal_pullup = true,
+        };
+        esp_err_t i2c_ret = i2c_new_master_bus(&bus_cfg, &i2c_bus);
+        if (i2c_ret == ESP_OK) {
+            i2c_device_config_t dev_cfg = {
+                .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+                .device_address = BL_I2C_ADDR,
+                .scl_speed_hz = BL_I2C_FREQ_HZ,
+            };
+            i2c_ret = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &bl_dev);
+            if (i2c_ret == ESP_OK) {
+                // Init sequence from M5GFX Light_M5StackAtomS3R
+                uint8_t cmd1[] = {0x00, 0x40};  // Register 0x00 = 0b01000000
+                uint8_t cmd2[] = {0x08, 0x01};  // Register 0x08 = 0b00000001
+                uint8_t cmd3[] = {0x70, 0x00};  // Register 0x70 = 0b00000000
+                uint8_t cmd4[] = {0x0e, 0xFF};  // Register 0x0e = brightness (max)
+                i2c_master_transmit(bl_dev, cmd1, 2, 100);
+                vTaskDelay(pdMS_TO_TICKS(2));
+                i2c_master_transmit(bl_dev, cmd2, 2, 100);
+                i2c_master_transmit(bl_dev, cmd3, 2, 100);
+                i2c_master_transmit(bl_dev, cmd4, 2, 100);
+                ESP_LOGI(TAG, "Backlight initialized via I2C (0x%02X)", BL_I2C_ADDR);
+            } else {
+                ESP_LOGW(TAG, "Backlight I2C device add failed: %s", esp_err_to_name(i2c_ret));
+            }
+        } else {
+            ESP_LOGW(TAG, "Backlight I2C bus init failed: %s", esp_err_to_name(i2c_ret));
+        }
     }
 
     // Initialize SPI bus
@@ -469,9 +509,12 @@ bool jarvis_display_init(void) {
     // I comandi base (MADCTL, COLMOD, set column/row, draw bitmap) sono identici.
     // La differenza è solo nei registri di init specifici del produttore, che
     // vengono inviati manualmente dopo panel_init().
+    // NOTA: GC9107 su AtomS3R è un pannello BGR (confermato da M5GFX/LovyanGFX che
+    // impostano MADCTL bit D3=1). Quando il precedente test con BGR sembrava fallire,
+    // era perché il modulo network non parsava le risposte HTTP (bug esp_http_client_read).
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = PIN_NUM_RST,
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,  // GC9107 usa BGR
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,  // GC9107 AtomS3R = BGR (M5GFX default)
         .bits_per_pixel = 16,
     };
 
@@ -499,6 +542,15 @@ bool jarvis_display_init(void) {
     }
     vTaskDelay(pdMS_TO_TICKS(50));  // Post-init stabilizzazione
 
+    // Forza MADCTL esplicitamente a 0x08 (BGR, rotation 0) per sicurezza.
+    // Questo è il valore usato da M5GFX/LovyanGFX per il GC9107 su AtomS3R.
+    // Lo scriviamo DOPO panel_init() per sovrascrivere qualsiasi valore impostato dal driver.
+    {
+        uint8_t madctl_val = 0x08;  // D3=BGR, tutti gli altri bit a 0 (rotation 0, no flip)
+        esp_lcd_panel_io_tx_param(io_handle, 0x36, &madctl_val, 1);
+        ESP_LOGI(TAG, "MADCTL forced to 0x%02X (BGR, rotation 0)", madctl_val);
+    }
+
     // GC9107: comandi vendor-specific post-init (da M5Unified/LovyanGFX)
     // Questi configurano il display 128x128 correttamente
     uint8_t param;
@@ -509,8 +561,9 @@ bool jarvis_display_init(void) {
     param = 0x14;  // 128 lines
     esp_lcd_panel_io_tx_param(io_handle, 0xB4, &param, 1);
 
-    // GC9107 128x128: offset Y=32 (da M5GFX source, il controller ha 128x160 di RAM)
-    esp_lcd_panel_set_gap(panel_handle, 0, 32);
+    // GC9107 128x128: offset empirico per AtomS3R (x=2, y=1)
+    // M5GFX usa offset_y=32 ma nel Panel_GC9107 driver, non con ST7789 compat
+    esp_lcd_panel_set_gap(panel_handle, 2, 1);
 
     esp_lcd_panel_invert_color(panel_handle, true);
     esp_lcd_panel_disp_on_off(panel_handle, true);

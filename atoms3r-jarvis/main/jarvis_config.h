@@ -54,7 +54,7 @@
 #define TEMP_SENSOR_PATTERN "sensor.temperatura_%s"
 
 // Intervallo polling stato busy dal server (ms)
-#define BUSY_POLL_INTERVAL_MS   500
+#define BUSY_POLL_INTERVAL_MS   2000
 
 // Timeout stato busy (ms)
 #define BUSY_STATE_TIMEOUT_MS   10000
