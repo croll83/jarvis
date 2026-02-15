@@ -112,6 +112,8 @@ services:
       # OpenClaw gira su VM separata — raggiungibile via Tailscale MagicDNS
       - OPENCLAW_URL=${OPENCLAW_URL:-http://jarvis-openclaw:18789}
       - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      # Device firmware auth (AtomS3R Bearer token)
+      - DEVICE_API_TOKEN=${DEVICE_API_TOKEN:-}
       # JARVIS Approval Bot (L3 critical actions - separate from OpenClaw Telegram)
       - JARVIS_APPROVAL_BOT_TOKEN=${JARVIS_APPROVAL_BOT_TOKEN:-}
       - JARVIS_APPROVAL_CHAT_ID=${JARVIS_APPROVAL_CHAT_ID:-}

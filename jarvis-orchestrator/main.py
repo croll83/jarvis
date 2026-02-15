@@ -661,6 +661,37 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Jarvis Core Orchestrator", lifespan=lifespan)
 
+# ===========================================================================
+# DEVICE AUTH MIDDLEWARE (Bearer token per AtomS3R e altri device firmware)
+# ===========================================================================
+# Protegge gli endpoint usati dal firmware. Se DEVICE_API_TOKEN è vuoto,
+# l'autenticazione è disabilitata (retrocompatibilità).
+DEVICE_AUTH_PATHS = {
+    "/voice_stream", "/device_config", "/device_status", "/heartbeat",
+    "/room_temperature", "/speaker/suppress", "/speaker/restore", "/speaker/suppressed",
+}
+
+@app.middleware("http")
+async def device_auth_middleware(request: Request, call_next):
+    # Controlla solo se il token è configurato
+    if config.DEVICE_API_TOKEN:
+        # Verifica se il path richiede autenticazione device
+        path = request.url.path
+        # Match esatto o path che inizia con un prefix noto (es. /room_temperature/salotto)
+        needs_auth = any(
+            path == p or path.startswith(p + "/")
+            for p in DEVICE_AUTH_PATHS
+        )
+        if needs_auth:
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
+                return JSONResponse(status_code=401, content={"error": "Missing Bearer token"})
+            token = auth_header[7:]  # Rimuovi "Bearer "
+            if token != config.DEVICE_API_TOKEN:
+                logger.warning(f"Invalid device token from {request.client.host} on {path}")
+                return JSONResponse(status_code=403, content={"error": "Invalid token"})
+    return await call_next(request)
+
 # Registra routers
 app.include_router(user_router)
 app.include_router(web_router)

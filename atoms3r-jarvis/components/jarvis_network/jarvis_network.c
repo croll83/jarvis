@@ -17,6 +17,8 @@
 #include "esp_netif.h"
 #include "esp_http_client.h"
 #include "esp_timer.h"
+#include "esp_tls.h"
+#include "esp_crt_bundle.h"
 #include "nvs_flash.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -53,18 +55,31 @@ static const char *TAG = "NETWORK";
 #define JARVIS_SERVER_PORT  5000
 #endif
 
-// Device room/id (legacy, kept for backwards compatibility)
-#ifdef CONFIG_DEVICE_ROOM
-#define DEVICE_ROOM         CONFIG_DEVICE_ROOM
+// HTTPS: usa https:// se porta è 443, altrimenti http://
+#if JARVIS_SERVER_PORT == 443
+#define JARVIS_URL_SCHEME   "https"
+#define JARVIS_USE_TLS      1
 #else
-#define DEVICE_ROOM         "salotto"
+#define JARVIS_URL_SCHEME   "http"
+#define JARVIS_USE_TLS      0
 #endif
 
-#ifdef CONFIG_DEVICE_ID
-#define DEVICE_ID           CONFIG_DEVICE_ID
+// Helper macro: aggiunge TLS cert bundle se HTTPS è abilitato
+#if JARVIS_USE_TLS
+#define JARVIS_TLS_CONFIG  .crt_bundle_attach = esp_crt_bundle_attach,
 #else
-#define DEVICE_ID           "atoms3r_salotto"
+#define JARVIS_TLS_CONFIG
 #endif
+
+// Bearer token per autenticazione API
+#ifdef CONFIG_JARVIS_API_TOKEN
+#define JARVIS_API_TOKEN    CONFIG_JARVIS_API_TOKEN
+#else
+#define JARVIS_API_TOKEN    ""
+#endif
+
+// Helper: true se il token è configurato (non vuoto)
+#define JARVIS_HAS_TOKEN    (JARVIS_API_TOKEN[0] != '\0')
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
@@ -96,14 +111,26 @@ typedef enum {
 } stream_net_state_t;
 
 static stream_net_state_t stream_state = STREAM_NET_IDLE;
-static int stream_socket = -1;
-static char current_room[32] = "";
+static char current_room[32] = "";  // Contiene device_id per lo streaming
 static size_t total_bytes_sent = 0;
 static int64_t stream_start_time = 0;
 
 // Accumulate buffer
 static int16_t* accumulate_buffer = NULL;
 static size_t accumulated_samples = 0;
+
+// =============================================================================
+// AUTH HELPER
+// =============================================================================
+
+// Aggiunge header Authorization: Bearer <token> al client HTTP
+static void set_auth_header(esp_http_client_handle_t client) {
+    if (JARVIS_HAS_TOKEN) {
+        char auth_header[128];
+        snprintf(auth_header, sizeof(auth_header), "Bearer %s", JARVIS_API_TOKEN);
+        esp_http_client_set_header(client, "Authorization", auth_header);
+    }
+}
 
 // =============================================================================
 // WIFI EVENT HANDLER
@@ -235,16 +262,18 @@ bool jarvis_network_fetch_config(const char* device_id, device_config_t* out_con
     if (!wifi_connected || !device_id || !out_config) return false;
 
     char url[192];
-    snprintf(url, sizeof(url), "http://%s:%d/device_config?device_id=%s",
+    snprintf(url, sizeof(url), JARVIS_URL_SCHEME "://%s:%d/device_config?device_id=%s",
              JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, device_id);
 
     esp_http_client_config_t config = {
         .url = url,
         .timeout_ms = 5000,
+        JARVIS_TLS_CONFIG
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return false;
+    set_auth_header(client);
 
     esp_err_t err = esp_http_client_perform(client);
     if (err != ESP_OK) {
@@ -308,7 +337,7 @@ bool jarvis_network_send_heartbeat(const char* device_id, const char* firmware_v
     if (!wifi_connected || !device_id) return false;
 
     char url[128];
-    snprintf(url, sizeof(url), "http://%s:%d/heartbeat",
+    snprintf(url, sizeof(url), JARVIS_URL_SCHEME "://%s:%d/heartbeat",
              JARVIS_SERVER_HOST, JARVIS_SERVER_PORT);
 
     cJSON* json = cJSON_CreateObject();
@@ -325,6 +354,7 @@ bool jarvis_network_send_heartbeat(const char* device_id, const char* firmware_v
         .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 5000,
+        JARVIS_TLS_CONFIG
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -332,6 +362,7 @@ bool jarvis_network_send_heartbeat(const char* device_id, const char* firmware_v
         free(payload);
         return false;
     }
+    set_auth_header(client);
 
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_post_field(client, payload, strlen(payload));
@@ -390,11 +421,28 @@ void jarvis_network_set_config_callback(config_update_callback_t config_cb) {
 }
 
 // =============================================================================
-// STREAMING
+// STREAMING (usa esp_tls per supporto HTTPS trasparente)
 // =============================================================================
 
+// Handle TLS per streaming (sostituisce stream_socket raw)
+static esp_tls_t *stream_tls = NULL;
+
+// Helper: scrive dati sulla connessione TLS (gestisce write parziali)
+static int tls_write_all(esp_tls_t *tls, const char *data, size_t len) {
+    size_t written = 0;
+    while (written < len) {
+        int ret = esp_tls_conn_write(tls, data + written, len - written);
+        if (ret < 0) {
+            ESP_LOGE(TAG, "TLS write error: %d", ret);
+            return -1;
+        }
+        written += ret;
+    }
+    return (int)written;
+}
+
 static bool send_accumulated_chunk(void) {
-    if (accumulated_samples == 0 || stream_socket < 0) return true;
+    if (accumulated_samples == 0 || !stream_tls) return true;
 
     size_t data_size = accumulated_samples * sizeof(int16_t);
 
@@ -402,13 +450,13 @@ static bool send_accumulated_chunk(void) {
     char chunk_header[16];
     snprintf(chunk_header, sizeof(chunk_header), "%zx\r\n", data_size);
 
-    if (send(stream_socket, chunk_header, strlen(chunk_header), 0) < 0) {
+    if (tls_write_all(stream_tls, chunk_header, strlen(chunk_header)) < 0) {
         return false;
     }
-    if (send(stream_socket, accumulate_buffer, data_size, 0) < 0) {
+    if (tls_write_all(stream_tls, (const char*)accumulate_buffer, data_size) < 0) {
         return false;
     }
-    if (send(stream_socket, "\r\n", 2, 0) < 0) {
+    if (tls_write_all(stream_tls, "\r\n", 2) < 0) {
         return false;
     }
 
@@ -417,7 +465,7 @@ static bool send_accumulated_chunk(void) {
     return true;
 }
 
-bool jarvis_network_start_stream(const char* room) {
+bool jarvis_network_start_stream(const char* device_id) {
     if (!wifi_connected) {
         ESP_LOGE(TAG, "Cannot start stream: no WiFi");
         return false;
@@ -428,96 +476,102 @@ bool jarvis_network_start_stream(const char* room) {
         return false;
     }
 
-    strncpy(current_room, room, sizeof(current_room) - 1);
+    strncpy(current_room, device_id, sizeof(current_room) - 1);
     total_bytes_sent = 0;
     accumulated_samples = 0;
     stream_start_time = esp_timer_get_time() / 1000;
     stream_state = STREAM_NET_CONNECTING;
 
-    // Resolve host
-    struct addrinfo hints = {
-        .ai_family = AF_INET,
-        .ai_socktype = SOCK_STREAM,
+    // Configura connessione TLS/TCP
+    esp_tls_cfg_t tls_cfg = {
+        .timeout_ms = 10000,
+#if JARVIS_USE_TLS
+        .crt_bundle_attach = esp_crt_bundle_attach,
+#else
+        .non_block = false,
+#endif
     };
-    struct addrinfo *res;
+
+    stream_tls = esp_tls_init();
+    if (!stream_tls) {
+        ESP_LOGE(TAG, "TLS init failed");
+        stream_state = STREAM_NET_ERROR;
+        return false;
+    }
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%d", JARVIS_SERVER_PORT);
 
-    int err = getaddrinfo(JARVIS_SERVER_HOST, port_str, &hints, &res);
-    if (err != 0 || res == NULL) {
-        ESP_LOGE(TAG, "DNS lookup failed: %d", err);
+    int ret = esp_tls_conn_new_sync(JARVIS_SERVER_HOST, strlen(JARVIS_SERVER_HOST),
+                                     JARVIS_SERVER_PORT, &tls_cfg, stream_tls);
+    if (ret != 1) {
+        ESP_LOGE(TAG, "TLS connection failed: %d", ret);
+        esp_tls_conn_destroy(stream_tls);
+        stream_tls = NULL;
         stream_state = STREAM_NET_ERROR;
         return false;
     }
-
-    // Create socket
-    stream_socket = socket(res->ai_family, res->ai_socktype, 0);
-    if (stream_socket < 0) {
-        ESP_LOGE(TAG, "Socket creation failed");
-        freeaddrinfo(res);
-        stream_state = STREAM_NET_ERROR;
-        return false;
-    }
-
-    // Connect
-    if (connect(stream_socket, res->ai_addr, res->ai_addrlen) != 0) {
-        ESP_LOGE(TAG, "Socket connect failed");
-        close(stream_socket);
-        stream_socket = -1;
-        freeaddrinfo(res);
-        stream_state = STREAM_NET_ERROR;
-        return false;
-    }
-    freeaddrinfo(res);
 
     // Send HTTP header with chunked transfer
     const char* boundary = "----JarvisAudioStream";
-    char header[512];
-    int header_len = snprintf(header, sizeof(header),
-        "POST /voice_stream HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Content-Type: multipart/form-data; boundary=%s\r\n"
-        "Transfer-Encoding: chunked\r\n"
-        "Connection: keep-alive\r\n"
-        "\r\n",
-        JARVIS_SERVER_HOST, boundary);
+    char header[640];
+    int header_len;
+    if (JARVIS_HAS_TOKEN) {
+        header_len = snprintf(header, sizeof(header),
+            "POST /voice_stream HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Content-Type: multipart/form-data; boundary=%s\r\n"
+            "Transfer-Encoding: chunked\r\n"
+            "Authorization: Bearer %s\r\n"
+            "Connection: keep-alive\r\n"
+            "\r\n",
+            JARVIS_SERVER_HOST, boundary, JARVIS_API_TOKEN);
+    } else {
+        header_len = snprintf(header, sizeof(header),
+            "POST /voice_stream HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Content-Type: multipart/form-data; boundary=%s\r\n"
+            "Transfer-Encoding: chunked\r\n"
+            "Connection: keep-alive\r\n"
+            "\r\n",
+            JARVIS_SERVER_HOST, boundary);
+    }
 
-    if (send(stream_socket, header, header_len, 0) < 0) {
+    if (tls_write_all(stream_tls, header, header_len) < 0) {
         ESP_LOGE(TAG, "Failed to send header");
-        close(stream_socket);
-        stream_socket = -1;
+        esp_tls_conn_destroy(stream_tls);
+        stream_tls = NULL;
         stream_state = STREAM_NET_ERROR;
         return false;
     }
 
-    // Send metadata part
+    // Send metadata part (device_id al posto di room/DEVICE_ID legacy)
     char meta_part[512];
     int meta_len = snprintf(meta_part, sizeof(meta_part),
         "--%s\r\n"
-        "Content-Disposition: form-data; name=\"room\"\r\n\r\n"
-        "%s\r\n"
-        "--%s\r\n"
-        "Content-Disposition: form-data; name=\"mic_id\"\r\n\r\n"
+        "Content-Disposition: form-data; name=\"device_id\"\r\n\r\n"
         "%s\r\n"
         "--%s\r\n"
         "Content-Disposition: form-data; name=\"audio\"; filename=\"audio.raw\"\r\n"
         "Content-Type: application/octet-stream\r\n\r\n",
-        boundary, current_room, boundary, DEVICE_ID, boundary);
+        boundary, device_id, boundary);
 
     char chunk_header[16];
     snprintf(chunk_header, sizeof(chunk_header), "%x\r\n", meta_len);
-    send(stream_socket, chunk_header, strlen(chunk_header), 0);
-    send(stream_socket, meta_part, meta_len, 0);
-    send(stream_socket, "\r\n", 2, 0);
+    tls_write_all(stream_tls, chunk_header, strlen(chunk_header));
+    tls_write_all(stream_tls, meta_part, meta_len);
+    tls_write_all(stream_tls, "\r\n", 2);
 
     stream_state = STREAM_NET_SENDING;
-    ESP_LOGI(TAG, "Stream started to %s:%d", JARVIS_SERVER_HOST, JARVIS_SERVER_PORT);
+    ESP_LOGI(TAG, "Stream started to %s:%d (%s)",
+             JARVIS_SERVER_HOST, JARVIS_SERVER_PORT,
+             JARVIS_USE_TLS ? "HTTPS" : "HTTP");
     return true;
 }
 
 bool jarvis_network_send_chunk(int16_t* chunk, size_t samples) {
     if (stream_state != STREAM_NET_SENDING) return false;
-    if (stream_socket < 0) {
+    if (!stream_tls) {
         stream_state = STREAM_NET_ERROR;
         return false;
     }
@@ -571,21 +625,40 @@ bool jarvis_network_end_stream(bool* use_local_speaker) {
 
     char chunk_header[16];
     snprintf(chunk_header, sizeof(chunk_header), "%x\r\n", end_len);
-    send(stream_socket, chunk_header, strlen(chunk_header), 0);
-    send(stream_socket, end_part, end_len, 0);
-    send(stream_socket, "\r\n", 2, 0);
+    tls_write_all(stream_tls, chunk_header, strlen(chunk_header));
+    tls_write_all(stream_tls, end_part, end_len);
+    tls_write_all(stream_tls, "\r\n", 2);
 
     // Send final empty chunk
-    send(stream_socket, "0\r\n\r\n", 5, 0);
+    tls_write_all(stream_tls, "0\r\n\r\n", 5);
 
     // Read response
     char response[512];
     bool success = false;
 
-    struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
-    setsockopt(stream_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    // esp_tls_conn_read con timeout
+    int received = 0;
+    int64_t read_start = esp_timer_get_time() / 1000;
+    while (received == 0) {
+        int ret = esp_tls_conn_read(stream_tls, response, sizeof(response) - 1);
+        if (ret > 0) {
+            received = ret;
+        } else if (ret == 0) {
+            // Connection closed
+            break;
+        } else if (ret == ESP_TLS_ERR_SSL_WANT_READ || ret == ESP_TLS_ERR_SSL_WANT_WRITE) {
+            // Non-blocking, retry
+            vTaskDelay(pdMS_TO_TICKS(10));
+            if ((esp_timer_get_time() / 1000) - read_start > 10000) {
+                ESP_LOGW(TAG, "Stream response timeout");
+                break;
+            }
+        } else {
+            ESP_LOGE(TAG, "TLS read error: %d", ret);
+            break;
+        }
+    }
 
-    int received = recv(stream_socket, response, sizeof(response) - 1, 0);
     if (received > 0) {
         response[received] = '\0';
 
@@ -621,8 +694,8 @@ bool jarvis_network_end_stream(bool* use_local_speaker) {
         }
     }
 
-    close(stream_socket);
-    stream_socket = -1;
+    esp_tls_conn_destroy(stream_tls);
+    stream_tls = NULL;
     stream_state = STREAM_NET_IDLE;
 
     int64_t duration = (esp_timer_get_time() / 1000) - stream_start_time;
@@ -644,16 +717,18 @@ bool jarvis_network_fetch_temperature(const char* room, float* temp) {
     if (!room || room[0] == '\0') return false;
 
     char url[128];
-    snprintf(url, sizeof(url), "http://%s:%d/room_temperature/%s",
+    snprintf(url, sizeof(url), JARVIS_URL_SCHEME "://%s:%d/room_temperature/%s",
              JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, room);
 
     esp_http_client_config_t config = {
         .url = url,
         .timeout_ms = 5000,
+        JARVIS_TLS_CONFIG
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return false;
+    set_auth_header(client);
 
     esp_err_t err = esp_http_client_perform(client);
     if (err != ESP_OK) {
@@ -708,7 +783,7 @@ void jarvis_network_notify_dnd(const char* device_id, bool enabled) {
     if (!device_id || device_id[0] == '\0') return;
 
     char url[128];
-    snprintf(url, sizeof(url), "http://%s:%d/device_status",
+    snprintf(url, sizeof(url), JARVIS_URL_SCHEME "://%s:%d/device_status",
              JARVIS_SERVER_HOST, JARVIS_SERVER_PORT);
 
     cJSON* json = cJSON_CreateObject();
@@ -722,10 +797,12 @@ void jarvis_network_notify_dnd(const char* device_id, bool enabled) {
         .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 5000,
+        JARVIS_TLS_CONFIG
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client) {
+        set_auth_header(client);
         esp_http_client_set_header(client, "Content-Type", "application/json");
         esp_http_client_set_post_field(client, payload, strlen(payload));
         esp_http_client_perform(client);
@@ -741,16 +818,18 @@ void jarvis_network_poll_state(const char* device_id) {
     if (!device_id || device_id[0] == '\0') return;
 
     char url[256];
-    snprintf(url, sizeof(url), "http://%s:%d/device_status?device_id=%s",
+    snprintf(url, sizeof(url), JARVIS_URL_SCHEME "://%s:%d/device_status?device_id=%s",
              JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, device_id);
 
     esp_http_client_config_t config = {
         .url = url,
         .timeout_ms = 2000,
+        JARVIS_TLS_CONFIG
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return;
+    set_auth_header(client);
 
     esp_err_t err = esp_http_client_perform(client);
     if (err != ESP_OK || esp_http_client_get_status_code(client) != 200) {
@@ -780,16 +859,9 @@ void jarvis_network_poll_state(const char* device_id) {
     if (!json) return;
 
     cJSON* speaking = cJSON_GetObjectItem(json, "speaking");
-    cJSON* target_room = cJSON_GetObjectItem(json, "target_room");
 
-    bool busy = false;
-    if (speaking && cJSON_IsTrue(speaking)) {
-        bool is_our_room = true;
-        if (target_room && cJSON_IsString(target_room) && strlen(target_room->valuestring) > 0) {
-            is_our_room = (strcmp(target_room->valuestring, DEVICE_ROOM) == 0);
-        }
-        busy = is_our_room;
-    }
+    // Il server filtra già per device_id, quindi se speaking=true riguarda noi
+    bool busy = (speaking && cJSON_IsTrue(speaking));
 
     if (busy_callback) {
         busy_callback(busy);
@@ -817,7 +889,7 @@ void jarvis_network_suppress_speaker(const char* device_id) {
     }
 
     char url[128];
-    snprintf(url, sizeof(url), "http://%s:%d/speaker/suppress",
+    snprintf(url, sizeof(url), JARVIS_URL_SCHEME "://%s:%d/speaker/suppress",
              JARVIS_SERVER_HOST, JARVIS_SERVER_PORT);
 
     cJSON* json = cJSON_CreateObject();
@@ -835,10 +907,12 @@ void jarvis_network_suppress_speaker(const char* device_id) {
         .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 3000,  // Timeout breve: fire-and-forget
+        JARVIS_TLS_CONFIG
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client) {
+        set_auth_header(client);
         esp_http_client_set_header(client, "Content-Type", "application/json");
         esp_http_client_set_post_field(client, payload, strlen(payload));
 
