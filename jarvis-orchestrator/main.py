@@ -1160,7 +1160,8 @@ def build_speaker_context(audio_bytes: Optional[bytes], source: str, explicit_sp
 # OPENCLAW STUB (Phase 4)
 # ===========================================================================
 
-async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
+async def forward_to_openclaw(text: str, context: dict, hint: str = "",
+                              stream_tts_callback=None) -> str:
     """
     Forward request to OpenClaw Gateway via OpenResponses API (POST /v1/responses).
 
@@ -1168,7 +1169,17 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
     conversations. As long as OpenClaw sends SSE events (deltas, tool calls, etc.),
     the connection stays alive. Timeout triggers only on prolonged silence.
 
+    If stream_tts_callback is provided, sentences are delivered progressively
+    to TTS as they complete during streaming (sentence boundaries: .!?\n).
+
     On timeout or error, falls back to local Qwen quick response.
+
+    Args:
+        text: User input text
+        context: Request context dict
+        hint: Optional hint for OpenClaw (e.g. "domotics")
+        stream_tts_callback: Optional async callable(chunk: str, is_first: bool) -> None
+                             Called for each complete sentence during streaming.
     """
     import aiohttp
     import json as _json
@@ -1236,8 +1247,8 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
 
     try:
         timeout = aiohttp.ClientTimeout(
-            total=config.OPENCLAW_TIMEOUT_TOTAL,   # 120s max totale
-            sock_read=config.OPENCLAW_TIMEOUT_READ  # 45s max silenzio tra chunk
+            total=config.OPENCLAW_TIMEOUT_TOTAL,   # 300s max totale
+            sock_read=config.OPENCLAW_TIMEOUT_READ  # 90s max silenzio tra chunk
         )
         async with aiohttp.ClientSession() as session:
             headers = {
@@ -1256,9 +1267,19 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
                     return await get_quick_response(text, context)
 
                 # Parse SSE stream
-                accumulated_text = ""
+                accumulated_text = ""  # Tutto il testo ricevuto finora
+                pending_chunk = ""     # Buffer per sentence splitting (solo con callback)
                 event_count = 0
                 final_status = None
+                is_first_chunk = True  # Per sound_type solo sul primo chunk
+                chunks_sent = 0
+
+                # Reset chunk counter per streaming TTS
+                if stream_tts_callback:
+                    _flush_tts_sentences.chunks_sent = 0
+
+                # Minimum chunk size per evitare frasi troppo corte
+                MIN_CHUNK_LEN = 20
 
                 async for raw_line in resp.content:
                     line = raw_line.decode("utf-8", errors="replace").strip()
@@ -1285,6 +1306,18 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
                         if delta:
                             accumulated_text += delta
 
+                            # Streaming TTS: split at sentence boundaries
+                            if stream_tts_callback:
+                                pending_chunk += delta
+                                pending_chunk = await _flush_tts_sentences(
+                                    pending_chunk, stream_tts_callback,
+                                    is_first_chunk, MIN_CHUNK_LEN,
+                                    flush_all=False
+                                )
+                                if chunks_sent != _flush_tts_sentences.chunks_sent:
+                                    is_first_chunk = False
+                                    chunks_sent = _flush_tts_sentences.chunks_sent
+
                     # Testo completo — più affidabile dei delta accumulati
                     elif event_type == "response.output_text.done":
                         done_text = event.get("text", "")
@@ -1304,10 +1337,19 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
                         logger.error(f"OpenClaw stream failed: {error.get('code', '?')}: {error.get('message', '?')}")
                         return await get_quick_response(text, context)
 
+                # Flush remaining pending chunk (coda che non termina con .!?\n)
+                if stream_tts_callback and pending_chunk.strip():
+                    await _flush_tts_sentences(
+                        pending_chunk, stream_tts_callback,
+                        is_first_chunk, min_len=0,
+                        flush_all=True
+                    )
+
                 if accumulated_text:
                     logger.info(
                         f"OpenClaw stream response ({len(accumulated_text)} chars, "
-                        f"{event_count} events, status={final_status})"
+                        f"{event_count} events, status={final_status}, "
+                        f"tts_chunks={_flush_tts_sentences.chunks_sent if stream_tts_callback else 'n/a'})"
                     )
                     return accumulated_text
 
@@ -1327,6 +1369,66 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
 
     # Fallback: local Qwen quick response
     return await get_quick_response(text, context)
+
+
+# Sentence boundary regex: split at ". " "! " "? " or "\n" (keeping the delimiter)
+_SENTENCE_BOUNDARY_RE = re.compile(r'(?<=[.!?])\s+|(?<=\n)')
+
+
+async def _flush_tts_sentences(pending: str, callback, is_first: bool,
+                                min_len: int = 20, flush_all: bool = False) -> str:
+    """
+    Split pending text at sentence boundaries and send complete sentences to TTS callback.
+
+    Returns the remaining (unsent) text that doesn't end at a sentence boundary yet.
+    Tracks total chunks sent via _flush_tts_sentences.chunks_sent attribute.
+
+    Args:
+        pending: Buffer of accumulated text not yet sent to TTS
+        callback: async callable(chunk: str, is_first: bool) -> None
+        is_first: Whether this is the first chunk (for intro sound)
+        min_len: Minimum chunk length before sending (avoids very short TTS)
+        flush_all: If True, send everything remaining (end of stream)
+    """
+    if flush_all:
+        # End of stream: send whatever is left
+        chunk = pending.strip()
+        if chunk:
+            try:
+                await callback(chunk, is_first)
+                _flush_tts_sentences.chunks_sent += 1
+            except Exception as e:
+                logger.error(f"TTS stream callback error (flush): {e}")
+        return ""
+
+    # Split at sentence boundaries
+    parts = _SENTENCE_BOUNDARY_RE.split(pending)
+
+    if len(parts) <= 1:
+        # No sentence boundary found yet, keep buffering
+        return pending
+
+    # Send all complete sentences (everything except the last part which is incomplete)
+    for i in range(len(parts) - 1):
+        chunk = parts[i].strip()
+        if not chunk:
+            continue
+        if len(chunk) < min_len and i < len(parts) - 2:
+            # Chunk too short and not the last complete sentence — merge with next
+            parts[i + 1] = parts[i] + " " + parts[i + 1]
+            continue
+        try:
+            await callback(chunk, is_first)
+            _flush_tts_sentences.chunks_sent += 1
+            is_first = False
+        except Exception as e:
+            logger.error(f"TTS stream callback error: {e}")
+
+    # Return the remaining incomplete sentence
+    return parts[-1]
+
+# Initialize chunk counter
+_flush_tts_sentences.chunks_sent = 0
 
 
 def _extract_openclaw_response(data: dict) -> str:
@@ -1902,7 +2004,12 @@ async def voice_stream(
 async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     """
     Handle voice commands that need OpenClaw (non-certain domotics or general queries).
-    Sends immediate TTS feedback, then forwards to OpenClaw and delivers final response.
+
+    For AtomS3R/VirtualMic sources: uses streaming TTS — sentences are spoken as they
+    arrive from OpenClaw SSE, without waiting for the full response. This dramatically
+    reduces perceived latency.
+
+    For other sources (Telegram, etc.): waits for full response, then delivers.
     """
     context["_user_text"] = text  # Per VirtualMic response tracking
     context["_intent"] = f"OPENCLAW:{hint}" if hint else "OPENCLAW"
@@ -1910,24 +2017,124 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     save_chat_message("user", text, context.get("source", "AtomS3R"),
                       context.get("speaker_id"), context.get("speaker_name", "Sconosciuto"))
 
-    # Feedback audio immediato: suono "thinking" (no TTS, meno invasivo)
     source = context.get("source", "")
-    if source in ("AtomS3R", "VirtualMic"):
+    location = context.get("location", get_default_location_id())
+
+    # ── Check DND / silent hours — if active, skip streaming TTS and send to Telegram ──
+    dnd_mode = get_global_preference("dnd_mode", "False") == "True"
+    s_start = int(get_global_preference("silent_hour_start", str(config.SILENT_START)))
+    s_end = int(get_global_preference("silent_hour_end", str(config.SILENT_END)))
+    now_h = datetime.now().hour
+    if s_start > s_end:
+        is_silent_time = (now_h >= s_start or now_h < s_end)
+    else:
+        is_silent_time = (s_start <= now_h < s_end)
+
+    use_streaming_tts = (
+        source in ("AtomS3R", "VirtualMic")
+        and not dnd_mode
+        and not is_silent_time
+    )
+
+    if use_streaming_tts:
+        # ── Streaming TTS path ──
+        # Resolve target speaker for TTS delivery
         device_cfg = context.get("device_config")
         if device_cfg:
             target_speaker = device_cfg.get("output_speaker")
-            loc = device_cfg.get("location_id", context.get("location", get_default_location_id()))
+            loc = device_cfg.get("location_id", location)
         else:
-            loc = context.get("location", get_default_location_id())
-            room_speakers = get_room_speakers(loc)
-            target_speaker = room_speakers.get(context.get("room", ""), None)
-        if target_speaker:
-            asyncio.create_task(play_feedback_sound("neutral", target_speaker, loc))
+            loc = location
+            room_speakers_map = get_room_speakers(loc)
+            target_speaker = room_speakers_map.get(context.get("room", ""), None)
 
-    response = await forward_to_openclaw(text, context, hint=hint)
+        if not target_speaker:
+            # Can't stream without a speaker — fallback to non-streaming
+            logger.warning("Streaming TTS: no target speaker found, falling back to non-streaming")
+            use_streaming_tts = False
 
-    save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-    await deliver_final_response(response, context, sound_type="neutral")
+    if use_streaming_tts:
+        # Feedback audio immediato: suono "thinking"
+        asyncio.create_task(play_feedback_sound("neutral", target_speaker, loc))
+
+        # Reset chunk counter per questa sessione
+        _flush_tts_sentences.chunks_sent = 0
+
+        # Build streaming TTS callback
+        async def _stream_tts_chunk(chunk: str, is_first: bool):
+            """Deliver a sentence chunk to TTS speaker immediately."""
+            logger.info(f"🔊 TTS stream chunk ({len(chunk)} chars, first={is_first}): {chunk[:80]}...")
+            try:
+                # No intro sound on chunks — the "thinking" beep was already played above
+                await speak(chunk, target_speaker, loc)
+            except Exception as e:
+                logger.error(f"TTS stream chunk delivery error: {e}")
+
+        # Forward to OpenClaw with streaming callback
+        response = await forward_to_openclaw(text, context, hint=hint, stream_tts_callback=_stream_tts_chunk)
+
+        # Post-streaming: save chat, update speaking state, VirtualMic tracking
+        save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+
+        # Speaking state management
+        room = context.get("room", "salotto").lower()
+        device_id = context.get("device_id", "unknown")
+        if target_speaker and not target_speaker.startswith("telegram:"):
+            await set_speaking_state(room, True, device_id)
+            estimated_duration = max(
+                config.TTS_MIN_DURATION,
+                len(response) / config.TTS_CHARS_PER_SECOND + config.TTS_SOUND_OFFSET
+            )
+            asyncio.create_task(clear_speaking_state_after_delay(room, estimated_duration))
+
+        # VirtualMic response tracking
+        vmic_req_id = context.get("vmic_request_id")
+        if vmic_req_id:
+            duration_ms = int((time.time() - context.get("_vmic_start_time", time.time())) * 1000)
+            vmic_data = {
+                "request_id": vmic_req_id,
+                "response": response,
+                "speaker_name": context.get("speaker_name", ""),
+                "speaker_target": target_speaker or "",
+                "intent": context.get("_intent", ""),
+                "duration_ms": duration_ms,
+                "user_text": context.get("_user_text", ""),
+            }
+            _vmic_responses[vmic_req_id] = vmic_data
+            async def _cleanup_vmic(rid):
+                await asyncio.sleep(60)
+                _vmic_responses.pop(rid, None)
+            asyncio.create_task(_cleanup_vmic(vmic_req_id))
+            try:
+                from event_bus import event_bus
+                await event_bus.publish("voice_response", vmic_data)
+            except Exception:
+                pass
+
+        # If no chunks were sent (e.g. very short response or error), deliver full response
+        if _flush_tts_sentences.chunks_sent == 0 and response:
+            logger.info("TTS stream: no chunks sent during streaming, delivering full response")
+            await deliver_final_response(response, context, sound_type="neutral")
+
+    else:
+        # ── Non-streaming path (Telegram, DND, silent hours, no speaker) ──
+        # Feedback audio immediato (solo se voice source con speaker)
+        if source in ("AtomS3R", "VirtualMic"):
+            device_cfg = context.get("device_config")
+            if device_cfg:
+                fb_speaker = device_cfg.get("output_speaker")
+                fb_loc = device_cfg.get("location_id", location)
+            else:
+                fb_loc = location
+                room_speakers_map = get_room_speakers(fb_loc)
+                fb_speaker = room_speakers_map.get(context.get("room", ""), None)
+            if fb_speaker:
+                asyncio.create_task(play_feedback_sound("neutral", fb_speaker, fb_loc))
+
+        response = await forward_to_openclaw(text, context, hint=hint)
+
+        save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+        await deliver_final_response(response, context, sound_type="neutral")
 
 
 # ===========================================================================
