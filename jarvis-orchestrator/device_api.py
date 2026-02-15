@@ -44,6 +44,7 @@ class HeartbeatResponse(BaseModel):
 # ===========================================================================
 
 @router.get("/device/config", response_model=DeviceConfigResponse)
+@router.get("/device_config", response_model=DeviceConfigResponse, include_in_schema=False)
 async def get_device_config(device_id: str, request: Request):
     """
     Endpoint chiamato dall'AtomS3R al boot per ottenere la sua configurazione.
@@ -104,6 +105,7 @@ async def get_device_config(device_id: str, request: Request):
 
 
 @router.post("/device/heartbeat", response_model=HeartbeatResponse)
+@router.post("/heartbeat", response_model=HeartbeatResponse, include_in_schema=False)
 async def device_heartbeat(data: HeartbeatRequest, request: Request):
     """
     Heartbeat periodico dall'AtomS3R (ogni 5 minuti).

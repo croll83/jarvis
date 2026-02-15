@@ -265,32 +265,50 @@ bool jarvis_network_fetch_config(const char* device_id, device_config_t* out_con
     snprintf(url, sizeof(url), JARVIS_URL_SCHEME "://%s:%d/device_config?device_id=%s",
              JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, device_id);
 
+    ESP_LOGI(TAG, "Fetching config from: %s", url);
+
     esp_http_client_config_t config = {
         .url = url,
-        .timeout_ms = 5000,
+        .timeout_ms = 10000,
+        .disable_auto_redirect = false,
         JARVIS_TLS_CONFIG
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) return false;
+    if (!client) {
+        ESP_LOGE(TAG, "HTTP client init failed");
+        return false;
+    }
     set_auth_header(client);
 
     esp_err_t err = esp_http_client_perform(client);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Fetch config failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Fetch config failed: %s (url=%s)", esp_err_to_name(err), url);
         esp_http_client_cleanup(client);
         return false;
     }
 
     int status = esp_http_client_get_status_code(client);
+    int content_length = esp_http_client_get_content_length(client);
+    ESP_LOGI(TAG, "Fetch config response: HTTP %d, content_length=%d", status, content_length);
+
     if (status != 200) {
-        ESP_LOGW(TAG, "Fetch config: HTTP %d", status);
+        // Leggi body dell'errore per debug
+        if (content_length > 0 && content_length < 256) {
+            char* err_buf = malloc(content_length + 1);
+            if (err_buf) {
+                int read_len = esp_http_client_read(client, err_buf, content_length);
+                err_buf[read_len > 0 ? read_len : 0] = '\0';
+                ESP_LOGW(TAG, "Fetch config error body: %s", err_buf);
+                free(err_buf);
+            }
+        }
         esp_http_client_cleanup(client);
         return false;
     }
 
-    int content_length = esp_http_client_get_content_length(client);
     if (content_length <= 0 || content_length > 512) {
+        ESP_LOGW(TAG, "Fetch config: unexpected content_length=%d", content_length);
         esp_http_client_cleanup(client);
         return false;
     }
@@ -350,10 +368,13 @@ bool jarvis_network_send_heartbeat(const char* device_id, const char* firmware_v
     cJSON_Delete(json);
     if (!payload) return false;
 
+    ESP_LOGI(TAG, "Sending heartbeat to: %s", url);
+
     esp_http_client_config_t config = {
         .url = url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 5000,
+        .timeout_ms = 10000,
+        .disable_auto_redirect = false,
         JARVIS_TLS_CONFIG
     };
 
@@ -369,13 +390,14 @@ bool jarvis_network_send_heartbeat(const char* device_id, const char* firmware_v
 
     esp_err_t err = esp_http_client_perform(client);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Heartbeat failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Heartbeat failed: %s (url=%s)", esp_err_to_name(err), url);
         esp_http_client_cleanup(client);
         free(payload);
         return false;
     }
 
     int status = esp_http_client_get_status_code(client);
+    ESP_LOGI(TAG, "Heartbeat response: HTTP %d", status);
     bool success = (status == 200);
 
     // Parse response per eventuali aggiornamenti config

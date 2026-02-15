@@ -66,22 +66,23 @@
 #define CONFIG_FETCH_TIMEOUT_MS 10000
 
 // =============================================================================
-// DISPLAY CONFIGURATION (AtomS3R: ST7789 128x128)
+// DISPLAY CONFIGURATION (AtomS3R: GC9107/ST7735S 128x128)
 // =============================================================================
 
 #define DISPLAY_WIDTH       128
 #define DISPLAY_HEIGHT      128
 
-// Pin SPI per display AtomS3R (da pinschema ufficiale)
+// Pin SPI per display AtomS3R (da M5Unified/M5GFX source)
+// NOTA: AtomS3R ≠ AtomS3! GPIO33-37 riservati per PSRAM OPI su N8R8
 #define DISPLAY_PIN_MOSI    21  // LCD MOSI
-#define DISPLAY_PIN_SCLK    17  // LCD SCK
-#define DISPLAY_PIN_CS      15  // LCD CS
-#define DISPLAY_PIN_DC      33  // LCD DC
-#define DISPLAY_PIN_RST     34  // LCD RST
-#define DISPLAY_PIN_BL      -1  // Backlight non disponibile (sempre acceso)
+#define DISPLAY_PIN_SCLK    15  // LCD SCK
+#define DISPLAY_PIN_CS      14  // LCD CS
+#define DISPLAY_PIN_DC      42  // LCD DC (Register Select)
+#define DISPLAY_PIN_RST     48  // LCD RST
+#define DISPLAY_PIN_BL      16  // Backlight (PWM)
 
 // Bottone sotto il display
-#define BUTTON_PIN          0   // SCREEN BTN (GPIO0)
+#define BUTTON_PIN          41  // BTN (GPIO41 su AtomS3R, non GPIO0)
 
 // Colori (RGB565)
 #define COLOR_BLACK         0x0000
@@ -133,7 +134,8 @@
 // WAKE WORD CONFIGURATION (ESP-SR WakeNet)
 // =============================================================================
 
-#define WAKENET_MODEL_NAME      "wn9_jarvis"
+// TODO: Generare modello custom "wn9_jarvis" — per ora usa il primo modello disponibile
+#define WAKENET_MODEL_NAME      NULL  // Auto-detect dal SPIFFS
 
 // Modalità detection
 // DET_MODE_90  = Alta sensibilità
