@@ -72,6 +72,11 @@ OPENCLAW_EXEC_APPROVAL_TIMEOUT = int(os.getenv("OPENCLAW_EXEC_APPROVAL_TIMEOUT",
 JARVIS_APPROVAL_BOT_TOKEN = os.getenv("JARVIS_APPROVAL_BOT_TOKEN", "")
 JARVIS_APPROVAL_CHAT_ID = os.getenv("JARVIS_APPROVAL_CHAT_ID", "")
 
+# Webhook URL for Telegram bot (public HTTPS URL)
+# If set, orchestrator registers webhook on startup instead of using getUpdates polling.
+# Example: https://jarvis-pub.mintwork.it/telegram_webhook
+TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
+
 # ===========================================================================
 # MODEL NAMES (richiedono che i modelli siano caricati in Ollama)
 # ===========================================================================

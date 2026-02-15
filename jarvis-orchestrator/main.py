@@ -350,37 +350,317 @@ async def resolve_exec_approval(approval_id: str, decision: str):
         return False
 
 # ===========================================================================
-# APPROVAL BOT POLLING (getUpdates long-polling for inline button callbacks)
+# APPROVAL BOT: WEBHOOK (preferred) or POLLING (fallback)
 # ===========================================================================
-# The JARVIS Approval Bot uses long-polling to receive inline button callbacks.
-# This avoids requiring a public HTTPS URL for webhook registration.
-# Will be replaced with webhook once jarvis-pub DNS + nginx are configured.
+# If TELEGRAM_WEBHOOK_URL is set, the bot registers a webhook on startup and
+# all updates are received via POST /telegram_webhook.
+# If not set, falls back to getUpdates long-polling (legacy mode).
 
-async def approval_bot_polling_loop():
-    """Poll the JARVIS Approval Bot for callback_query updates (inline buttons)."""
-    import json as _json
+async def _tg_bot_api(method: str, payload: dict = None) -> dict:
+    """Helper: call Telegram Bot API method."""
     import aiohttp
+    bot_token = config.JARVIS_APPROVAL_BOT_TOKEN
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload or {},
+                                    timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                return await resp.json()
+    except Exception as e:
+        logger.warning(f"Telegram Bot API {method} error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+async def _handle_approval_update(update: dict):
+    """Process a single Telegram update (message or callback_query).
+
+    This is the unified handler used by both webhook and polling modes.
+    """
+    bot_token = config.JARVIS_APPROVAL_BOT_TOKEN
+
+    # ── Handle text messages (/location, /panicstop) ──
+    message = update.get("message")
+    if message:
+        text_msg = (message.get("text") or "").strip()
+        msg_chat_id = message.get("chat", {}).get("id")
+        from_user_msg = message.get("from", {})
+        tg_id_msg = from_user_msg.get("id")
+        logger.info(f"Approval bot message: '{text_msg}' from tg_id={tg_id_msg}")
+
+        cmd = text_msg.lower().split("@")[0]
+
+        # /location — show inline keyboard for location selection
+        if cmd == "/location" and msg_chat_id:
+            user_msg = get_user_by_telegram_id(tg_id_msg) if tg_id_msg else None
+            if not user_msg:
+                logger.warning(f"Approval bot /location: tg_id {tg_id_msg} not linked to any user")
+                return
+
+            locations = get_all_locations(enabled_only=True)
+            user_loc = get_user_location(user_msg.id)
+            current_loc = user_loc.location_id if user_loc else None
+
+            buttons = []
+            for loc in locations:
+                prefix = "✅ " if loc.id == current_loc else "🏠 "
+                buttons.append({"text": f"{prefix}{loc.name}", "callback_data": f"setloc_{loc.id}"})
+
+            await _tg_bot_api("sendMessage", {
+                "chat_id": msg_chat_id,
+                "text": f"📍 Location attuale: *{current_loc or 'non impostata'}*\nSeleziona la tua posizione:",
+                "parse_mode": "Markdown",
+                "reply_markup": {"inline_keyboard": [buttons]}
+            })
+
+        # /panicstop — emergency stop all speakers in user's location
+        elif cmd == "/panicstop" and msg_chat_id:
+            user_msg = get_user_by_telegram_id(tg_id_msg) if tg_id_msg else None
+            if not user_msg:
+                logger.warning(f"Approval bot /panicstop: tg_id {tg_id_msg} not linked to any user")
+                await _tg_bot_api("sendMessage", {
+                    "chat_id": msg_chat_id, "text": "⚠️ Utente non riconosciuto."
+                })
+                return
+
+            user_loc = get_user_location(user_msg.id)
+            if not user_loc:
+                await _tg_bot_api("sendMessage", {
+                    "chat_id": msg_chat_id,
+                    "text": "⚠️ Location non impostata. Usa /location prima."
+                })
+                return
+
+            count, stopped_ids = await _panic_stop_all_speakers(user_loc.location_id)
+            loc_obj = get_location(user_loc.location_id)
+            loc_name = loc_obj.name if loc_obj else user_loc.location_id
+
+            if count > 0:
+                reply = f"🛑 *Panic Stop!*\nFermati {count} speaker a _{loc_name}_."
+            else:
+                reply = f"⚠️ Nessuno speaker trovato a _{loc_name}_."
+
+            log_event("panic_stop", {
+                "source": "telegram", "user": user_msg.name,
+                "location": user_loc.location_id,
+                "speakers_stopped": count, "entity_ids": stopped_ids
+            })
+
+            await _tg_bot_api("sendMessage", {
+                "chat_id": msg_chat_id, "text": reply, "parse_mode": "Markdown"
+            })
+            logger.info(f"🛑 Panic stop via Telegram by {user_msg.name}: {count} speakers at {loc_name}")
+
+        return
+
+    # ── Handle callback queries (inline button presses) ──
+    callback_query = update.get("callback_query")
+    if not callback_query:
+        return
+
+    cb_data = callback_query.get("data", "")
+    cb_id = callback_query.get("id", "")
+    logger.info(f"Approval bot callback: {cb_data}")
+
+    # Answer the callback to remove the loading spinner
+    await _tg_bot_api("answerCallbackQuery", {"callback_query_id": cb_id})
+
+    # ── setloc_ callback: set user location ──
+    if cb_data.startswith("setloc_"):
+        loc_id = cb_data[7:]
+        from_user_cb = callback_query.get("from", {})
+        tg_id_cb = from_user_cb.get("id")
+        user_cb = get_user_by_telegram_id(tg_id_cb) if tg_id_cb else None
+
+        if user_cb and loc_id:
+            set_user_location(user_cb.id, loc_id, "telegram_command")
+            loc = get_location(loc_id)
+            loc_name = loc.name if loc else loc_id
+
+            msg = callback_query.get("message", {})
+            chat_id = msg.get("chat", {}).get("id")
+            message_id = msg.get("message_id")
+            if chat_id and message_id:
+                await _tg_bot_api("editMessageText", {
+                    "chat_id": chat_id, "message_id": message_id,
+                    "text": f"📍 Location impostata: *{loc_name}*",
+                    "parse_mode": "Markdown"
+                })
+
+            logger.info(f"User {user_cb.name} location set to {loc_id} via /location command")
+        return
+
+    # ── Exec approval callbacks: execonce_slug, execalways_slug, execdeny_slug ──
+    # ── Action approval callbacks: confirm_id, reject_id ──
+    # ── Location selection callbacks: loc_locid_actionid ──
+    if "_" not in cb_data:
+        return
+
+    parts = cb_data.split("_", 1)
+    action_type = parts[0]
+    slug = parts[1] if len(parts) > 1 else ""
+
+    # Exec approvals (OpenClaw)
+    exec_decision_map = {
+        "execonce": "allow-once",
+        "execalways": "allow-always",
+        "execdeny": "deny"
+    }
+
+    if action_type in exec_decision_map and slug:
+        full_id = _find_exec_approval_by_slug(slug)
+        decision = exec_decision_map[action_type]
+
+        if full_id:
+            success = await resolve_exec_approval(full_id, decision)
+            label = {"execonce": "✅ Once", "execalways": "🔓 Always", "execdeny": "❌ Deny"}[action_type]
+            msg = callback_query.get("message", {})
+            chat_id = msg.get("chat", {}).get("id")
+            message_id = msg.get("message_id")
+            if chat_id and message_id:
+                original_text = msg.get("text", "")
+                status = f"\n\n→ {label}" if success else "\n\n→ ⚠️ Error"
+                await _tg_bot_api("editMessageText", {
+                    "chat_id": chat_id, "message_id": message_id,
+                    "text": original_text + status
+                })
+
+            logger.info(f"Exec approval {slug} resolved: {decision} (success={success})")
+        else:
+            logger.warning(f"Exec approval {slug} not found in pending (expired?)")
+        return
+
+    # L2/L3/L4 action approvals (confirm/reject)
+    if action_type == "confirm" and slug:
+        action_id = slug
+        payload = get_action(action_id)
+        if payload:
+            delete_action(action_id)
+            location = payload.get('location', get_default_location_id())
+            success, err = await call_hass_service(
+                location, payload['domain'], payload['action'], payload['data']
+            )
+            msg = callback_query.get("message", {})
+            chat_id = msg.get("chat", {}).get("id")
+            message_id = msg.get("message_id")
+            if success:
+                if chat_id and message_id:
+                    original_text = msg.get("text", "")
+                    await _tg_bot_api("editMessageText", {
+                        "chat_id": chat_id, "message_id": message_id,
+                        "text": original_text + "\n\n→ ✅ Eseguita"
+                    })
+                log_event("APPROVAL", f"Azione {action_id} approvata ed eseguita")
+            else:
+                if chat_id and message_id:
+                    original_text = msg.get("text", "")
+                    await _tg_bot_api("editMessageText", {
+                        "chat_id": chat_id, "message_id": message_id,
+                        "text": original_text + f"\n\n→ ❌ Fallita: {err}"
+                    })
+        else:
+            await send_telegram(f"⚠️ Azione `{action_id}` scaduta o non trovata.")
+        return
+
+    if action_type == "reject" and slug:
+        action_id = slug
+        delete_action(action_id)
+        msg = callback_query.get("message", {})
+        chat_id = msg.get("chat", {}).get("id")
+        message_id = msg.get("message_id")
+        if chat_id and message_id:
+            original_text = msg.get("text", "")
+            await _tg_bot_api("editMessageText", {
+                "chat_id": chat_id, "message_id": message_id,
+                "text": original_text + "\n\n→ 🚫 Rifiutata"
+            })
+        log_event("APPROVAL", f"Azione {action_id} rifiutata")
+        return
+
+    # Location selection callback from old /telegram_callback: loc_wagmi_abc123
+    if action_type == "loc":
+        sub_parts = cb_data.split("_")
+        if len(sub_parts) >= 3:
+            location_id = sub_parts[1]
+            action_id_loc = sub_parts[2]
+            from_user_cb = callback_query.get("from", {})
+            tg_id_cb = from_user_cb.get("id")
+            user_cb = get_user_by_telegram_id(tg_id_cb) if tg_id_cb else None
+
+            saved_action = get_action(action_id_loc)
+            if saved_action and saved_action.get("type") == "location_select":
+                delete_action(action_id_loc)
+                if user_cb and user_cb.id:
+                    set_user_location(user_cb.id, location_id, "telegram_sticky")
+
+                original_text = saved_action.get("original_text", "")
+                action_context = saved_action.get("action_context", {})
+
+                loc = get_location(location_id)
+                loc_name = loc.name if loc else location_id
+                await send_telegram(f"📍 Impostato: {loc_name}")
+
+                context = {
+                    "source": "Telegram",
+                    "chat_id": config.JARVIS_APPROVAL_CHAT_ID,
+                    "location": location_id,
+                    **({"speaker_id": user_cb.id, "speaker_name": user_cb.name,
+                        "is_admin": user_cb.is_admin, "telegram_id": tg_id_cb} if user_cb else
+                       build_speaker_context(None, "Telegram", ""))
+                }
+                asyncio.create_task(process_jarvis_logic(original_text, context))
+            else:
+                await send_telegram(f"⚠️ Selezione scaduta, riprova.")
+        return
+
+    logger.debug(f"Unhandled approval callback: {cb_data}")
+
+
+async def approval_bot_setup():
+    """Setup approval bot: register webhook or start polling loop."""
+    bot_token = config.JARVIS_APPROVAL_BOT_TOKEN
+    if not bot_token:
+        logger.warning("JARVIS_APPROVAL_BOT_TOKEN not set, approval bot disabled")
+        return
+
+    webhook_url = config.TELEGRAM_WEBHOOK_URL
+    if webhook_url:
+        # ── WEBHOOK MODE ──
+        # Register the webhook with Telegram so updates are POSTed to us.
+        result = await _tg_bot_api("setWebhook", {
+            "url": webhook_url,
+            "allowed_updates": ["callback_query", "message"],
+            "drop_pending_updates": False
+        })
+        if result.get("ok"):
+            logger.info(f"✅ Telegram webhook registered: {webhook_url}")
+        else:
+            logger.error(f"❌ Failed to register Telegram webhook: {result}")
+            # Fall back to polling
+            logger.info("Falling back to getUpdates polling...")
+            await _approval_bot_polling_fallback()
+    else:
+        # ── POLLING MODE (legacy) ──
+        logger.info("TELEGRAM_WEBHOOK_URL not set, using getUpdates polling")
+        await _approval_bot_polling_fallback()
+
+
+async def _approval_bot_polling_fallback():
+    """Legacy polling mode using getUpdates."""
+    import json as _json
 
     bot_token = config.JARVIS_APPROVAL_BOT_TOKEN
     if not bot_token:
-        logger.warning("JARVIS_APPROVAL_BOT_TOKEN not set, approval polling disabled")
         return
 
     # Delete any existing webhook so getUpdates works
-    try:
-        async with aiohttp.ClientSession() as session:
-            del_url = f"https://api.telegram.org/bot{bot_token}/deleteWebhook"
-            async with session.post(del_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                result = await resp.json()
-                logger.info(f"Approval bot deleteWebhook: {result.get('ok')}")
-    except Exception as e:
-        logger.warning(f"Approval bot deleteWebhook error: {e}")
+    await _tg_bot_api("deleteWebhook")
 
     offset = 0
-    poll_timeout = 30  # long-polling seconds
+    poll_timeout = 30
 
     while True:
         try:
+            import aiohttp
             url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
             params = {
                 "offset": offset,
@@ -401,209 +681,10 @@ async def approval_bot_polling_loop():
 
             for update in data.get("result", []):
                 offset = update["update_id"] + 1
-
-                # ── Handle /location command ──
-                message = update.get("message")
-                if message:
-                    text_msg = (message.get("text") or "").strip()
-                    msg_chat_id = message.get("chat", {}).get("id")
-                    from_user_msg = message.get("from", {})
-                    tg_id_msg = from_user_msg.get("id")
-                    logger.info(f"Approval bot message: '{text_msg}' from tg_id={tg_id_msg}")
-
-                    # /location or /location@botname
-                    cmd = text_msg.lower().split("@")[0]
-                    if cmd == "/location" and msg_chat_id:
-                        user_msg = get_user_by_telegram_id(tg_id_msg) if tg_id_msg else None
-                        if not user_msg:
-                            logger.warning(f"Approval bot /location: tg_id {tg_id_msg} not linked to any user")
-                            continue
-
-                        locations = get_all_locations(enabled_only=True)
-                        user_loc = get_user_location(user_msg.id)
-                        current_loc = user_loc.location_id if user_loc else None
-
-                        buttons = []
-                        for loc in locations:
-                            prefix = "✅ " if loc.id == current_loc else "🏠 "
-                            buttons.append({"text": f"{prefix}{loc.name}", "callback_data": f"setloc_{loc.id}"})
-
-                        keyboard = {"inline_keyboard": [buttons]}
-                        send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                        try:
-                            async with aiohttp.ClientSession() as session:
-                                async with session.post(send_url, json={
-                                    "chat_id": msg_chat_id,
-                                    "text": f"📍 Location attuale: *{current_loc or 'non impostata'}*\nSeleziona la tua posizione:",
-                                    "parse_mode": "Markdown",
-                                    "reply_markup": keyboard
-                                }) as _:
-                                    pass
-                        except Exception as e:
-                            logger.error(f"Send location keyboard error: {e}")
-
-                    # ── Handle /panicstop command ──
-                    elif cmd == "/panicstop" and msg_chat_id:
-                        user_msg = get_user_by_telegram_id(tg_id_msg) if tg_id_msg else None
-                        if not user_msg:
-                            logger.warning(f"Approval bot /panicstop: tg_id {tg_id_msg} not linked to any user")
-                            try:
-                                async with aiohttp.ClientSession() as session:
-                                    async with session.post(
-                                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                                        json={"chat_id": msg_chat_id, "text": "⚠️ Utente non riconosciuto."}
-                                    ) as _:
-                                        pass
-                            except Exception:
-                                pass
-                            continue
-
-                        user_loc = get_user_location(user_msg.id)
-                        if not user_loc:
-                            try:
-                                async with aiohttp.ClientSession() as session:
-                                    async with session.post(
-                                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                                        json={
-                                            "chat_id": msg_chat_id,
-                                            "text": "⚠️ Location non impostata. Usa /location prima."
-                                        }
-                                    ) as _:
-                                        pass
-                            except Exception:
-                                pass
-                            continue
-
-                        count, stopped_ids = await _panic_stop_all_speakers(user_loc.location_id)
-                        loc_obj = get_location(user_loc.location_id)
-                        loc_name = loc_obj.name if loc_obj else user_loc.location_id
-
-                        if count > 0:
-                            reply = f"🛑 *Panic Stop!*\nFermati {count} speaker a _{loc_name}_."
-                        else:
-                            reply = f"⚠️ Nessuno speaker trovato a _{loc_name}_."
-
-                        log_event("panic_stop", {
-                            "source": "telegram",
-                            "user": user_msg.name,
-                            "location": user_loc.location_id,
-                            "speakers_stopped": count,
-                            "entity_ids": stopped_ids
-                        })
-
-                        try:
-                            async with aiohttp.ClientSession() as session:
-                                async with session.post(
-                                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                                    json={
-                                        "chat_id": msg_chat_id,
-                                        "text": reply,
-                                        "parse_mode": "Markdown"
-                                    }
-                                ) as _:
-                                    pass
-                        except Exception as e:
-                            logger.error(f"Send panicstop reply error: {e}")
-
-                        logger.info(f"🛑 Panic stop via Telegram by {user_msg.name}: {count} speakers at {loc_name}")
-
-                    continue
-
-                # ── Handle callback queries ──
-                callback_query = update.get("callback_query")
-                if not callback_query:
-                    continue
-
-                cb_data = callback_query.get("data", "")
-                cb_id = callback_query.get("id", "")
-                logger.info(f"Approval bot callback: {cb_data}")
-
-                # Answer the callback to remove the loading spinner
                 try:
-                    answer_url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(answer_url, json={"callback_query_id": cb_id}) as _:
-                            pass
-                except Exception:
-                    pass
-
-                # ── setloc_ callback: set user location directly ──
-                if cb_data.startswith("setloc_"):
-                    loc_id = cb_data[7:]
-                    from_user_cb = callback_query.get("from", {})
-                    tg_id_cb = from_user_cb.get("id")
-                    user_cb = get_user_by_telegram_id(tg_id_cb) if tg_id_cb else None
-
-                    if user_cb and loc_id:
-                        set_user_location(user_cb.id, loc_id, "telegram_command")
-                        loc = get_location(loc_id)
-                        loc_name = loc.name if loc else loc_id
-
-                        try:
-                            msg = callback_query.get("message", {})
-                            chat_id = msg.get("chat", {}).get("id")
-                            message_id = msg.get("message_id")
-                            if chat_id and message_id:
-                                edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                                async with aiohttp.ClientSession() as session:
-                                    async with session.post(edit_url, json={
-                                        "chat_id": chat_id,
-                                        "message_id": message_id,
-                                        "text": f"📍 Location impostata: *{loc_name}*",
-                                        "parse_mode": "Markdown"
-                                    }) as _:
-                                        pass
-                        except Exception as e:
-                            logger.debug(f"Failed to edit setloc message: {e}")
-
-                        logger.info(f"User {user_cb.name} location set to {loc_id} via /location command")
-                    continue
-
-                # Parse callback: execonce_slug, execalways_slug, execdeny_slug
-                if "_" not in cb_data:
-                    continue
-
-                parts = cb_data.split("_", 1)
-                action_type = parts[0]
-                slug = parts[1] if len(parts) > 1 else ""
-
-                decision_map = {
-                    "execonce": "allow-once",
-                    "execalways": "allow-always",
-                    "execdeny": "deny"
-                }
-
-                if action_type in decision_map and slug:
-                    full_id = _find_exec_approval_by_slug(slug)
-                    decision = decision_map[action_type]
-
-                    if full_id:
-                        success = await resolve_exec_approval(full_id, decision)
-                        label = {"execonce": "✅ Once", "execalways": "🔓 Always", "execdeny": "❌ Deny"}[action_type]
-                        # Edit the original message to show the result
-                        try:
-                            msg = callback_query.get("message", {})
-                            chat_id = msg.get("chat", {}).get("id")
-                            message_id = msg.get("message_id")
-                            if chat_id and message_id:
-                                original_text = msg.get("text", "")
-                                status = f"\n\n→ {label}" if success else "\n\n→ ⚠️ Error"
-                                edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                                async with aiohttp.ClientSession() as session:
-                                    async with session.post(edit_url, json={
-                                        "chat_id": chat_id,
-                                        "message_id": message_id,
-                                        "text": original_text + status
-                                    }) as _:
-                                        pass
-                        except Exception as e:
-                            logger.debug(f"Failed to edit approval message: {e}")
-
-                        logger.info(f"Exec approval {slug} resolved: {decision} (success={success})")
-                    else:
-                        logger.warning(f"Exec approval {slug} not found in pending (expired?)")
-                else:
-                    logger.debug(f"Unhandled approval callback: {cb_data}")
+                    await _handle_approval_update(update)
+                except Exception as e:
+                    logger.error(f"Error handling approval update: {e}")
 
         except asyncio.CancelledError:
             logger.info("Approval bot polling cancelled")
@@ -651,8 +732,8 @@ async def lifespan(app: FastAPI):
     # OpenClaw gateway operator (exec approval buttons via WS)
     _keep(asyncio.create_task(openclaw_operator_loop()))
 
-    # Approval Bot polling (inline button callbacks via long-polling)
-    _keep(asyncio.create_task(approval_bot_polling_loop()))
+    # Approval Bot: webhook (preferred) or polling fallback
+    _keep(asyncio.create_task(approval_bot_setup()))
 
     logger.info("✅ JARVIS Core ready!")
     yield
@@ -1301,145 +1382,31 @@ async def camera_event(request: Request):
     return {"status": "event_handled"}
 
 
+@app.post("/telegram_webhook")
+async def telegram_webhook(request: Request):
+    """Receives Telegram Bot updates via webhook (messages + callback_query).
+
+    This is the unified handler for ALL Telegram approval bot interactions.
+    Telegram sends POST with a single Update object.
+    """
+    try:
+        update = await request.json()
+    except Exception:
+        return {"status": "bad_request"}
+
+    try:
+        await _handle_approval_update(update)
+    except Exception as e:
+        logger.error(f"Error handling telegram webhook update: {e}")
+
+    # Telegram expects 200 OK quickly; actual processing is done above
+    return {"status": "ok"}
+
+
 @app.post("/telegram_callback")
 async def telegram_callback(request: Request):
-    """Gestisce i callback dai pulsanti Telegram (approvazioni e location selection)."""
-    data = await request.json()
-    callback_query = data.get("callback_query")
-
-    if not callback_query:
-        return {"status": "ok"}
-
-    cb_data = callback_query.get("data", "")
-    from_user = callback_query.get("from", {})
-    telegram_id = from_user.get("id")
-    tg_username = from_user.get("first_name", "")
-
-    # AUTH: Verifica telegram_id
-    user = get_user_by_telegram_id(telegram_id) if telegram_id else None
-    if user:
-        speaker_ctx = {
-            "speaker_id": user.id,
-            "speaker_name": user.name,
-            "is_admin": user.is_admin,
-            "telegram_id": telegram_id
-        }
-    else:
-        # Fallback per backward compatibility
-        speaker_ctx = build_speaker_context(None, "Telegram", tg_username)
-        speaker_ctx["telegram_id"] = telegram_id
-
-    if "_" not in cb_data or not cb_data.strip():
-        return {"status": "invalid_callback"}
-
-    parts = cb_data.split("_")
-    if not parts or not parts[0]:
-        return {"status": "invalid_callback"}
-    action_type = parts[0]
-
-    # Location selection callback: loc_wagmi_abc123
-    if action_type == "loc" and len(parts) >= 3:
-        location_id = parts[1]
-        action_id = parts[2]
-
-        # Recupera azione salvata
-        saved_action = get_action(action_id)
-        if saved_action and saved_action.get("type") == "location_select":
-            delete_action(action_id)
-
-            # Imposta location sticky (speaker_ctx già costruito sopra)
-            if speaker_ctx.get("speaker_id"):
-                set_user_location(speaker_ctx["speaker_id"], location_id, "telegram_sticky")
-
-            # Recupera dati originali e ri-esegui
-            original_text = saved_action.get("original_text", "")
-            action_context = saved_action.get("action_context", {})
-
-            loc = get_location(location_id)
-            loc_name = loc.name if loc else location_id
-            await send_telegram(f"📍 Impostato: {loc_name}")
-
-            # Ri-processa il comando con la location specificata
-            context = {
-                "source": "Telegram",
-                "chat_id": config.TELEGRAM_CHAT_ID,
-                "location": location_id,
-                **speaker_ctx
-            }
-            asyncio.create_task(process_jarvis_logic(original_text, context))
-        else:
-            await send_telegram(f"⚠️ Selezione scaduta, riprova.")
-
-        return {"status": "ok"}
-
-    # Exec approval callbacks: execonce_abc123, execalways_abc123, execdeny_abc123
-    if action_type == "execonce" and len(parts) >= 2:
-        slug = parts[1]
-        full_id = _find_exec_approval_by_slug(slug)
-        if full_id:
-            success = await resolve_exec_approval(full_id, "allow-once")
-            if success:
-                await send_telegram(f"\u2705 Exec approvato (once): `{slug}`")
-            else:
-                await send_telegram(f"\u26a0\ufe0f Errore nell'approvazione exec `{slug}`")
-        else:
-            await send_telegram(f"\u26a0\ufe0f Approvazione exec `{slug}` scaduta o non trovata.")
-        return {"status": "ok"}
-
-    if action_type == "execalways" and len(parts) >= 2:
-        slug = parts[1]
-        full_id = _find_exec_approval_by_slug(slug)
-        if full_id:
-            success = await resolve_exec_approval(full_id, "allow-always")
-            if success:
-                await send_telegram(f"\U0001f513 Exec approvato (always): `{slug}`")
-            else:
-                await send_telegram(f"\u26a0\ufe0f Errore nell'approvazione exec `{slug}`")
-        else:
-            await send_telegram(f"\u26a0\ufe0f Approvazione exec `{slug}` scaduta o non trovata.")
-        return {"status": "ok"}
-
-    if action_type == "execdeny" and len(parts) >= 2:
-        slug = parts[1]
-        full_id = _find_exec_approval_by_slug(slug)
-        if full_id:
-            success = await resolve_exec_approval(full_id, "deny")
-            if success:
-                await send_telegram(f"\u274c Exec rifiutato: `{slug}`")
-            else:
-                await send_telegram(f"\u26a0\ufe0f Errore nel rifiuto exec `{slug}`")
-        else:
-            await send_telegram(f"\u26a0\ufe0f Approvazione exec `{slug}` scaduta o non trovata.")
-        return {"status": "ok"}
-
-    # Approval callbacks: confirm_abc123, reject_abc123
-    if action_type == "confirm" and len(parts) >= 2:
-        action_id = parts[1]
-        payload = get_action(action_id)
-        if payload:
-            delete_action(action_id)
-            location = payload.get('location', get_default_location_id())
-            success, err = await call_hass_service(
-                location,
-                payload['domain'],
-                payload['action'],
-                payload['data']
-            )
-            if success:
-                await send_telegram(f"✅ Azione `{action_id}` eseguita con successo.")
-                log_event("APPROVAL", f"Azione {action_id} approvata ed eseguita")
-            else:
-                await send_telegram(f"❌ Azione `{action_id}` fallita: {err}")
-        else:
-            await send_telegram(f"⚠️ Azione `{action_id}` scaduta o non trovata.")
-
-    elif action_type == "reject" and len(parts) >= 2:
-        action_id = parts[1]
-        delete_action(action_id)
-        await send_telegram(f"🚫 Azione `{action_id}` rifiutata.")
-        log_event("APPROVAL", f"Azione {action_id} rifiutata")
-
-    return {"status": "ok"}
+    """Legacy alias — redirects to unified webhook handler."""
+    return await telegram_webhook(request)
 
 
 @app.get("/health")
