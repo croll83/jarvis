@@ -749,6 +749,7 @@ app = FastAPI(title="Jarvis Core Orchestrator", lifespan=lifespan)
 # l'autenticazione è disabilitata (retrocompatibilità).
 DEVICE_AUTH_PATHS = {
     "/voice_command", "/voice_stream", "/device_config", "/device_status", "/heartbeat",
+    "/device/config", "/device/heartbeat",
     "/room_temperature", "/speaker/suppress", "/speaker/restore", "/speaker/suppressed",
 }
 
