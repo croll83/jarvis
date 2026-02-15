@@ -748,7 +748,7 @@ app = FastAPI(title="Jarvis Core Orchestrator", lifespan=lifespan)
 # Protegge gli endpoint usati dal firmware. Se DEVICE_API_TOKEN è vuoto,
 # l'autenticazione è disabilitata (retrocompatibilità).
 DEVICE_AUTH_PATHS = {
-    "/voice_stream", "/device_config", "/device_status", "/heartbeat",
+    "/voice_command", "/voice_stream", "/device_config", "/device_status", "/heartbeat",
     "/room_temperature", "/speaker/suppress", "/speaker/restore", "/speaker/suppressed",
 }
 
