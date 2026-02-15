@@ -3,10 +3,12 @@
  * JARVIS AtomS3R - Speaker Module (ESP-IDF)
  * =============================================================================
  *
- * Gestisce l'output audio via I2S TX su Atomic SPK Base (NS4168):
- * - Inizializzazione I2S TX channel
- * - Playback di suoni PCM brevi (wake word feedback)
+ * Audio output via jarvis_codec (shared I2S TX):
+ * - Path: ESP32 → I2S TX (DOUT=GPIO5) → ES8311 DAC → NS4150B → Speaker
+ * - Playback of short PCM sounds (wake word feedback)
  * - Non-blocking playback via FreeRTOS task
+ *
+ * NOTA: jarvis_codec_init() DEVE essere chiamato prima di jarvis_speaker_init()
  */
 
 #ifndef JARVIS_SPEAKER_H
@@ -16,8 +18,12 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
- * @brief Initialize speaker (I2S TX for Atomic SPK Base NS4168)
+ * @brief Initialize speaker module
  * @return true on success
  */
 bool jarvis_speaker_init(void);
@@ -30,8 +36,8 @@ void jarvis_speaker_deinit(void);
 /**
  * @brief Play the wake word feedback sound (non-blocking)
  *
- * Avvia un FreeRTOS task che riproduce il suono harmonic_rise.
- * Se un playback è già in corso, viene ignorato.
+ * Starts a FreeRTOS task to play the harmonic_rise sound.
+ * If playback is already in progress, does nothing.
  */
 void jarvis_speaker_play_wake_sound(void);
 
@@ -51,5 +57,16 @@ bool jarvis_speaker_is_playing(void);
  * @brief Stop current playback
  */
 void jarvis_speaker_stop(void);
+
+/**
+ * @brief Wait for current playback to finish
+ * @param timeout_ms Maximum wait time in milliseconds
+ * @return true if playback finished, false on timeout
+ */
+bool jarvis_speaker_wait_done(uint32_t timeout_ms);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // JARVIS_SPEAKER_H

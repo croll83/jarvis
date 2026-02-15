@@ -204,8 +204,13 @@ class WebRTCSession:
         offer = RTCSessionDescription(sdp=sdp_offer, type="offer")
         await self._pc.setRemoteDescription(offer)
 
-        # Aggiungi transceiver audio recvonly
-        self._pc.addTransceiver("audio", direction="recvonly")
+        # Il firmware invia audio (sendrecv), il server riceve solo.
+        # setRemoteDescription crea già il transceiver dall'offer,
+        # NON creare un secondo — cambia direction su quello esistente.
+        for transceiver in self._pc.getTransceivers():
+            if transceiver.kind == "audio":
+                transceiver.direction = "recvonly"
+                break
 
         # Crea answer
         answer = await self._pc.createAnswer()
