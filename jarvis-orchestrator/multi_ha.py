@@ -166,6 +166,42 @@ class HomeAssistantClient:
         except Exception:
             return False, 0
 
+    async def get_state(self, entity_id: str) -> Optional[dict]:
+        """
+        Fetch a single entity state from HA via GET /api/states/<entity_id>.
+        Much lighter than get_states_bulk() for individual entity lookups.
+
+        Returns:
+            {"state": str, "attributes": dict, "last_changed": str} or None
+        """
+        if not self.hass_token:
+            return None
+
+        url = f"{self.hass_url}/api/states/{entity_id}"
+        headers = {"Authorization": f"Bearer {self.hass_token}"}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+                    if resp.status == 404:
+                        logger.debug(f"[{self.location_id}] Entity {entity_id} not found")
+                        return None
+                    if resp.status != 200:
+                        logger.error(f"[{self.location_id}] GET /api/states/{entity_id} returned {resp.status}")
+                        return None
+
+                    s = await resp.json()
+                    return {
+                        "state": s.get("state"),
+                        "attributes": s.get("attributes", {}),
+                        "last_changed": s.get("last_changed"),
+                    }
+
+        except Exception as e:
+            logger.error(f"[{self.location_id}] get_state({entity_id}) error: {e}")
+            return None
+
     async def get_states_bulk(self, entity_ids: List[str] = None) -> Dict[str, dict]:
         """
         Fetch all entity states from HA via GET /api/states in a single call.
@@ -364,6 +400,14 @@ class MultiHomeAssistant:
         """Restituisce tutte le entity maps (per il router)."""
         self.ensure_loaded()
         return self.entity_maps
+
+    async def get_state(self, location_id: str, entity_id: str) -> Optional[dict]:
+        """Fetch a single entity state for a location (lightweight)."""
+        self.ensure_loaded()
+        client = self.clients.get(location_id)
+        if not client:
+            return None
+        return await client.get_state(entity_id)
 
     async def get_states_bulk(self, location_id: str,
                               entity_ids: List[str] = None) -> Dict[str, dict]:

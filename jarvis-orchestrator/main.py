@@ -1688,16 +1688,20 @@ async def speaker_suppressed_status():
     return get_suppressed_speakers()
 
 
-# Temperature cache: (room, location) -> {"result": dict, "timestamp": float, "source": str}
-# TTL: sensor=300s (5 min), weather=43200s (12h)
-_temp_cache: Dict[str, dict] = {}
-_TEMP_CACHE_TTL_SENSOR = 300       # 5 minuti per sensori reali
-_TEMP_CACHE_TTL_WEATHER = 43200    # 12 ore per weather entity (cambio lento)
+# Temperature caching strategy:
+# - WEATHER entities: cache the VALUE for 12h (temperature changes slowly)
+# - SENSOR entities: cache only the ENTITY_ID for 24h (entity name doesn't change),
+#   but always read the live value via lightweight GET /api/states/<entity_id>
+#   (sensor values can change rapidly — fire, heating, etc.)
 
-# Entity resolution cache: (room, location) -> {"entity_id": str, "source": str, "timestamp": float}
-# Evita di fare get_states_bulk per risolvere quale entity corrisponde alla stanza
+# Weather value cache: (room, location) -> {"result": dict, "timestamp": float}
+_temp_weather_cache: Dict[str, dict] = {}
+_TEMP_WEATHER_CACHE_TTL = 43200    # 12 ore
+
+# Entity resolution cache: (room, location) -> {"entity_id": str, "source": str, "loc": str, "timestamp": float}
+# Avoids expensive bulk fetch to resolve which entity matches the room name
 _temp_entity_cache: Dict[str, dict] = {}
-_TEMP_ENTITY_CACHE_TTL = 86400     # 24 ore — la mappatura stanza→entity non cambia quasi mai
+_TEMP_ENTITY_CACHE_TTL = 86400     # 24 ore
 
 
 @app.get("/room_temperature/{room}")
@@ -1706,10 +1710,9 @@ async def get_room_temperature(room: str, location_id: str = None):
     Endpoint per ottenere la temperatura di una stanza da Home Assistant.
 
     Ricerca intelligente con caching:
-    1. Cerca in cache: se il risultato è ancora valido (sensor: 5 min, weather: 12h), ritorna subito
-    2. Se entity già risolta (cache 24h), fetch diretto solo di quella entity
-    3. Altrimenti: cerca sensore con nome che matcha la stanza (bulk fetch)
-    4. Fallback: weather.* entity
+    1. Weather: se in cache (12h TTL), ritorna il valore cachato
+    2. Sensor: se entity già risolta (24h TTL), legge SOLO quell'entity (GET singolo, no bulk)
+    3. Fallback: bulk fetch per risolvere l'entity (solo alla prima richiesta)
 
     Args:
         room: nome della stanza (friendly_name dal device)
@@ -1724,60 +1727,63 @@ async def get_room_temperature(room: str, location_id: str = None):
     else:
         location_ids = multi_ha.get_location_ids()
 
-    # --- CHECK CACHED RESULT ---
-    for loc_id in location_ids:
-        cache_key = f"{room_lower}:{loc_id}"
-        cached = _temp_cache.get(cache_key)
-        if cached:
-            ttl = _TEMP_CACHE_TTL_WEATHER if cached["result"].get("source") == "weather" else _TEMP_CACHE_TTL_SENSOR
-            if now - cached["timestamp"] < ttl:
-                logger.debug(f"Temperature cache hit for '{room}' ({loc_id}): {cached['result']['temperature']}")
-                return cached["result"]
-
-    # --- CHECK ENTITY RESOLUTION CACHE (avoid bulk fetch) ---
+    # --- CHECK ENTITY RESOLUTION CACHE ---
     for loc_id in location_ids:
         cache_key = f"{room_lower}:{loc_id}"
         entity_cached = _temp_entity_cache.get(cache_key)
-        if entity_cached and now - entity_cached["timestamp"] < _TEMP_ENTITY_CACHE_TTL:
-            # Entity already resolved — fetch only that one entity's state
-            entity_id = entity_cached["entity_id"]
-            source_type = entity_cached["source"]
+        if not entity_cached or now - entity_cached["timestamp"] >= _TEMP_ENTITY_CACHE_TTL:
+            continue
+
+        entity_id = entity_cached["entity_id"]
+        source_type = entity_cached["source"]
+
+        # WEATHER: check value cache first (12h TTL)
+        if source_type == "weather":
+            weather_cached = _temp_weather_cache.get(cache_key)
+            if weather_cached and now - weather_cached["timestamp"] < _TEMP_WEATHER_CACHE_TTL:
+                logger.debug(f"Temperature weather cache hit for '{room}': {weather_cached['result']['temperature']}")
+                return weather_cached["result"]
+            # Weather cache expired — re-fetch the single entity
             try:
-                states = await multi_ha.get_states_bulk(loc_id, [entity_id])
-                state_data = states.get(entity_id)
+                state_data = await multi_ha.get_state(loc_id, entity_id)
                 if state_data:
-                    if source_type == "sensor":
-                        state_val = state_data.get("state", "unavailable")
-                        if state_val not in ("unavailable", "unknown", ""):
-                            attrs = state_data.get("attributes", {})
-                            uom = attrs.get("unit_of_measurement", "°C")
-                            result = {
-                                "temperature": float(state_val),
-                                "unit": uom if uom else "°C",
-                                "entity_id": entity_id,
-                                "source": "sensor",
-                                "location_id": loc_id
-                            }
-                            _temp_cache[cache_key] = {"result": result, "timestamp": now}
-                            logger.debug(f"Temperature for '{room}': {result['temperature']}{result['unit']} from cached entity {entity_id}")
-                            return result
-                    elif source_type == "weather":
-                        attrs = state_data.get("attributes", {})
-                        weather_temp = attrs.get("temperature")
-                        if weather_temp is not None:
-                            result = {
-                                "temperature": float(weather_temp),
-                                "unit": attrs.get("temperature_unit", "°C"),
-                                "entity_id": entity_id,
-                                "source": "weather",
-                                "location_id": loc_id
-                            }
-                            _temp_cache[cache_key] = {"result": result, "timestamp": now}
-                            logger.debug(f"Temperature for '{room}': {result['temperature']}°C from cached weather {entity_id}")
-                            return result
+                    attrs = state_data.get("attributes", {})
+                    weather_temp = attrs.get("temperature")
+                    if weather_temp is not None:
+                        result = {
+                            "temperature": float(weather_temp),
+                            "unit": attrs.get("temperature_unit", "°C"),
+                            "entity_id": entity_id,
+                            "source": "weather",
+                            "location_id": loc_id
+                        }
+                        _temp_weather_cache[cache_key] = {"result": result, "timestamp": now}
+                        logger.debug(f"Temperature for '{room}': {result['temperature']}°C from weather {entity_id}")
+                        return result
             except Exception as e:
-                logger.debug(f"Cached entity fetch failed for {entity_id}, falling back to full search: {e}")
-                # Invalidate entity cache and fall through to full search
+                logger.debug(f"Weather entity fetch failed for {entity_id}: {e}")
+                _temp_entity_cache.pop(cache_key, None)
+
+        # SENSOR: always read live value via lightweight single-entity GET
+        elif source_type == "sensor":
+            try:
+                state_data = await multi_ha.get_state(loc_id, entity_id)
+                if state_data:
+                    state_val = state_data.get("state", "unavailable")
+                    if state_val not in ("unavailable", "unknown", ""):
+                        attrs = state_data.get("attributes", {})
+                        uom = attrs.get("unit_of_measurement", "°C")
+                        result = {
+                            "temperature": float(state_val),
+                            "unit": uom if uom else "°C",
+                            "entity_id": entity_id,
+                            "source": "sensor",
+                            "location_id": loc_id
+                        }
+                        logger.debug(f"Temperature for '{room}': {result['temperature']}{result['unit']} from sensor {entity_id}")
+                        return result
+            except Exception as e:
+                logger.debug(f"Sensor entity fetch failed for {entity_id}: {e}")
                 _temp_entity_cache.pop(cache_key, None)
 
     # --- FULL SEARCH (bulk fetch — only when entity not yet resolved) ---
@@ -1838,14 +1844,13 @@ async def get_room_temperature(room: str, location_id: str = None):
                         pass
 
             if best_match:
-                # Cache result + entity resolution
-                _temp_cache[cache_key] = {"result": best_match, "timestamp": now}
+                # Cache entity resolution (24h) — valore letto live ogni volta
                 _temp_entity_cache[cache_key] = {
                     "entity_id": best_entity_id,
                     "source": "sensor",
                     "timestamp": now
                 }
-                logger.info(f"Temperature for '{room}': {best_match['temperature']}{best_match['unit']} from {best_match['entity_id']} (entity cached)")
+                logger.info(f"Temperature for '{room}': {best_match['temperature']}{best_match['unit']} from {best_match['entity_id']} (entity resolved, cached 24h)")
                 return best_match
 
             # --- STRATEGIA 2: Fallback su weather entity ---
@@ -1866,14 +1871,14 @@ async def get_room_temperature(room: str, location_id: str = None):
                             "source": "weather",
                             "location_id": loc_id
                         }
-                        # Cache result + entity resolution
-                        _temp_cache[cache_key] = {"result": result, "timestamp": now}
+                        # Cache entity resolution (24h) + weather value (12h)
                         _temp_entity_cache[cache_key] = {
                             "entity_id": entity_id,
                             "source": "weather",
                             "timestamp": now
                         }
-                        logger.info(f"Temperature for '{room}': {temp_float}°C from weather {entity_id} (entity cached)")
+                        _temp_weather_cache[cache_key] = {"result": result, "timestamp": now}
+                        logger.info(f"Temperature for '{room}': {temp_float}°C from weather {entity_id} (entity resolved, value cached 12h)")
                         return result
                     except (ValueError, TypeError):
                         continue
