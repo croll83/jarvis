@@ -354,7 +354,7 @@ LOCATION_MEMORY_DEFAULTS = {
 # VOICE RECOGNITION
 # ===========================================================================
 VOICE_MODELS_DIR = os.getenv("VOICE_MODELS_DIR", "/app/data/voice_models")
-VOICE_SIMILARITY_THRESHOLD = float(os.getenv("VOICE_SIMILARITY_THRESHOLD", "0.75"))
+VOICE_SIMILARITY_THRESHOLD = float(os.getenv("VOICE_SIMILARITY_THRESHOLD", "0.70"))
 VOICE_MIN_ENROLLMENT_SAMPLES = int(os.getenv("VOICE_MIN_ENROLLMENT_SAMPLES", "10"))
 
 # ===========================================================================
