@@ -72,6 +72,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("JARVIS_MAIN")
 
+# Filtro per nascondere le richieste frequenti dall'access log di uvicorn
+# (device_status polling ogni 2s, heartbeat ogni 5min — inquinano il log)
+class _QuietDevicePollingFilter(logging.Filter):
+    _QUIET_PATHS = ("/device_status", "/heartbeat", "/room_temperature/")
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(p in msg for p in self._QUIET_PATHS)
+
+logging.getLogger("uvicorn.access").addFilter(_QuietDevicePollingFilter())
+
 # Tracking stato "speaking" per room (per notificare AtomS3R)
 # Struttura: {"salotto": {"speaking": True, "started_at": timestamp, "device_id": "..."}}
 speaking_state: dict = {}
