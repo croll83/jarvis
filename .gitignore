@@ -19,6 +19,11 @@ wheels/
 #ESPIF
 managed_components/
 build/
+sdkconfig
+sdkconfig.old
+
+# ESP-IDF local credentials (non committare!)
+atoms3r-jarvis/sdkconfig.local
 
 # Bytecode (compilati) - come i file di build
 __pycache__/

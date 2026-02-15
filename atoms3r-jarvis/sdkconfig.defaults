@@ -45,14 +45,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # =============================================================================
 # ESP-SR WakeNet Configuration
 # =============================================================================
-CONFIG_SR_WN_WN9_JARVIS=y
+CONFIG_SR_WN_WN9_JARVIS_TTS=y
 CONFIG_AFE_INTERFACE_V1=y
 
-# Disable unused models to save flash space
-CONFIG_SR_MN_EN_MULTINET6_QUANT=n
-CONFIG_SR_MN_CN_MULTINET6_QUANT=n
-CONFIG_SR_MN_EN_MULTINET5_QUANT=n
-CONFIG_SR_MN_CN_MULTINET5_QUANT=n
+# Disable ALL MultiNet models (not needed - JARVIS uses only WakeNet)
+CONFIG_SR_MN_CN_NONE=y
+CONFIG_SR_MN_EN_NONE=y
 
 # =============================================================================
 # CPU and FreeRTOS
@@ -61,8 +59,11 @@ CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
 CONFIG_FREERTOS_HZ=1000
 
 # Stack sizes
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
+
+# Task Watchdog (più tollerante durante init pesante)
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 
 # =============================================================================
 # WiFi
@@ -98,11 +99,11 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # =============================================================================
 # Device Configuration (da personalizzare via menuconfig)
 # =============================================================================
-CONFIG_WIFI_SSID="Vodafone-Nostra"
-CONFIG_WIFI_PASSWORD="zanzara+"
-CONFIG_JARVIS_SERVER_HOST="jarvis.mintwork.it"
-CONFIG_JARVIS_SERVER_PORT=443
-CONFIG_JARVIS_API_TOKEN="_OLaYAqx4vq8g-twdejnci1S8GoGzWGisx5sQuFbiLc"
+CONFIG_WIFI_SSID="YOUR_WIFI_SSID"
+CONFIG_WIFI_PASSWORD="YOUR_WIFI_PASSWORD"
+CONFIG_JARVIS_SERVER_HOST="jarvis.local"
+CONFIG_JARVIS_SERVER_PORT=5000
+CONFIG_JARVIS_API_TOKEN=""
 # NOTA: DEVICE_ROOM e DEVICE_ID rimossi.
 # Il device_id è ora il MAC address (letto a runtime).
 # La configurazione viene recuperata dal server via /device_config.

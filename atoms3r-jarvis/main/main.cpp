@@ -481,17 +481,24 @@ extern "C" void app_main(void) {
 
     // Initialize NVS
     init_nvs();
+    vTaskDelay(pdMS_TO_TICKS(10));  // Yield to WDT
 
     // Initialize button
     init_button();
 
-    // Initialize display
-    jarvis_display_init();
+    // Initialize display (SPI bus + panel reset/init — può richiedere tempo)
+    ESP_LOGI(TAG, "Initializing display...");
+    if (!jarvis_display_init()) {
+        ESP_LOGE(TAG, "Display init failed - continuing without display");
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));  // Yield dopo display init (pesante)
+
     jarvis_display_set_state(STATE_IDLE);
     jarvis_display_set_temperature(-99);
     jarvis_display_set_time(0, 0);
     jarvis_display_update();
     jarvis_display_show_message("Connecting...");
+    vTaskDelay(pdMS_TO_TICKS(10));  // Yield to WDT
 
     // Initialize network (WiFi)
     if (!jarvis_network_init()) {
@@ -499,6 +506,7 @@ extern "C" void app_main(void) {
         ESP_LOGE(TAG, "WiFi failed - halting");
         while (1) vTaskDelay(pdMS_TO_TICKS(1000));
     }
+    vTaskDelay(pdMS_TO_TICKS(10));  // Yield to WDT
 
     // Get device MAC address
     if (!jarvis_network_get_device_id(device_config.device_id)) {
@@ -530,6 +538,7 @@ extern "C" void app_main(void) {
         ESP_LOGW(TAG, "Failed to fetch config - using defaults");
         jarvis_display_set_friendly_name("Offline");
     }
+    vTaskDelay(pdMS_TO_TICKS(10));  // Yield to WDT
 
     // Set network callbacks
     jarvis_network_set_callbacks(on_server_response, on_busy_state);
@@ -541,19 +550,23 @@ extern "C" void app_main(void) {
             ESP_LOGI(TAG, "Initial temperature: %.1f°C", cached_temperature);
         }
     }
+    vTaskDelay(pdMS_TO_TICKS(10));  // Yield prima di init audio pesante
 
-    // Initialize audio with ESP-SR
+    // Initialize audio with ESP-SR (PESANTE: carica modello WakeNet da SPIFFS)
+    ESP_LOGI(TAG, "Initializing audio + WakeNet (may take a few seconds)...");
     if (!jarvis_audio_init()) {
         jarvis_display_show_message("MIC FAILED");
         ESP_LOGE(TAG, "Audio init failed - halting");
         while (1) vTaskDelay(pdMS_TO_TICKS(1000));
     }
+    vTaskDelay(pdMS_TO_TICKS(50));  // Yield dopo init audio pesante
 
     // Initialize speaker (Atomic SPK Base NS4168)
     if (!jarvis_speaker_init()) {
         ESP_LOGW(TAG, "Speaker init failed - wake sound feedback disabled");
         // Non è fatale: il device funziona senza speaker feedback
     }
+    vTaskDelay(pdMS_TO_TICKS(10));  // Yield to WDT
 
     // Set audio callbacks
     jarvis_audio_set_callbacks(on_wake_word_detected, on_stream_chunk, on_stream_end);
@@ -581,6 +594,6 @@ extern "C" void app_main(void) {
     // Create heartbeat task
     xTaskCreatePinnedToCore(heartbeat_task, "heartbeat_task", 4096, NULL, 3, NULL, 1);
 
-    // Create main task
-    xTaskCreatePinnedToCore(main_task, "main_task", 4096, NULL, 5, NULL, 0);
+    // Create main task (stack 8KB per sicurezza)
+    xTaskCreatePinnedToCore(main_task, "main_task", 8192, NULL, 5, NULL, 0);
 }

@@ -216,9 +216,11 @@ static bool init_wakenet(void) {
     afe_config.pcm_config.ref_num = 0;
     afe_config.pcm_config.sample_rate = MIC_SAMPLE_RATE;
 
-    // Enable WakeNet with "jarvis" model from SPIFFS
+    // Enable WakeNet
+    // TODO: Generare modello custom "wn9_jarvis" con ESP-SR model training
+    // Per ora usiamo wn9_hilexin (wake word "Hi Lexin") che è incluso di default
     afe_config.wakenet_init = true;
-    afe_config.wakenet_model_name = "wn9_jarvis";
+    afe_config.wakenet_model_name = esp_srmodel_filter(sr_models, ESP_WN_PREFIX, NULL);
     afe_config.wakenet_mode = DET_MODE_95;  // Medium sensitivity
 
     // Enable VAD
@@ -258,14 +260,15 @@ static bool init_wakenet(void) {
     xTaskCreatePinnedToCore(
         afe_feed_task,
         "afe_feed",
-        4096,
+        8192,
         NULL,
         5,
         &afe_task_handle,
         1  // Core 1
     );
 
-    ESP_LOGI(TAG, "WakeNet initialized: model=wn9_jarvis (from SPIFFS), VAD=ON");
+    ESP_LOGI(TAG, "WakeNet initialized: model=%s (from SPIFFS), VAD=ON",
+             afe_config.wakenet_model_name ? afe_config.wakenet_model_name : "unknown");
     return true;
 }
 
@@ -377,123 +380,157 @@ bool jarvis_audio_is_streaming(void) {
 // AUDIO PROCESSING
 // =============================================================================
 
-static bool check_vad(void) {
-    if (!afe_data || !afe_handle) {
-        // Fallback: use energy threshold
-        return audio_level > 0.15f;
-    }
-
-    afe_fetch_result_t* result = afe_handle->fetch(afe_data);
-    if (result == NULL) {
-        return audio_level > 0.15f;
-    }
-
-    return result->vad_state == 1;
-}
-
-static bool detect_wake_word(void) {
-    if (!afe_data || !afe_handle) return false;
-
-    afe_fetch_result_t* result = afe_handle->fetch(afe_data);
-    if (result == NULL) return false;
-
-    if (result->wakeup_state == WAKENET_DETECTED) {
-        ESP_LOGI(TAG, "WakeNet detected: word_index=%d, channel=%d",
-                 result->wake_word_index, result->trigger_channel_id);
-        return true;
-    }
-
-    return false;
-}
-
 void jarvis_audio_process(void) {
     if (!i2s_initialized) return;
 
-    // Read audio chunk
+    // When AFE is active, use fetch() to get processed audio + wake/VAD results.
+    // The afe_feed_task handles I2S reading and feeding the AFE pipeline.
+    if (wakenet_initialized && afe_data && afe_handle) {
+        afe_fetch_result_t* result = afe_handle->fetch(afe_data);
+        if (result == NULL) return;
+
+        // Update audio level from AFE processed data
+        if (result->data && result->data_size > 0) {
+            size_t samples = result->data_size / sizeof(int16_t);
+            audio_level = calculate_rms(result->data, samples);
+        }
+
+        // Update VAD state
+        voice_active = (result->vad_state == AFE_VAD_SPEECH);
+
+        // === STREAMING MODE ===
+        if (stream_state != STREAM_IDLE) {
+            int64_t elapsed = (esp_timer_get_time() / 1000) - stream_start_time;
+
+            if (elapsed > STREAM_MAX_DURATION_MS) {
+                ESP_LOGW(TAG, "Streaming safety timeout");
+                jarvis_audio_stop_streaming();
+                return;
+            }
+
+            // Use AFE processed audio for streaming
+            int16_t* audio_data = result->data;
+            size_t samples_read = result->data_size / sizeof(int16_t);
+
+            switch (stream_state) {
+                case STREAM_STARTING:
+                    if (voice_active) voice_chunk_count++;
+
+                    if (chunk_callback) {
+                        if (!chunk_callback(audio_data, samples_read)) {
+                            jarvis_audio_stop_streaming();
+                            return;
+                        }
+                    }
+
+                    if (elapsed >= STREAM_MIN_AUDIO_MS) {
+                        stream_state = STREAM_ACTIVE;
+                        ESP_LOGI(TAG, "Streaming active (VAD monitoring)");
+                    }
+                    break;
+
+                case STREAM_ACTIVE:
+                    if (chunk_callback) {
+                        if (!chunk_callback(audio_data, samples_read)) {
+                            jarvis_audio_stop_streaming();
+                            return;
+                        }
+                    }
+
+                    if (voice_active) {
+                        voice_chunk_count++;
+                        silence_chunk_count = 0;
+                    } else {
+                        silence_chunk_count++;
+                        if (silence_chunk_count >= VAD_SILENCE_CHUNKS) {
+                            ESP_LOGI(TAG, "VAD: silence detected (%d chunks)", silence_chunk_count);
+                            stream_state = STREAM_ENDING;
+                        }
+                    }
+                    break;
+
+                case STREAM_ENDING:
+                    if (chunk_callback) {
+                        chunk_callback(audio_data, samples_read);
+                    }
+                    jarvis_audio_stop_streaming();
+                    break;
+
+                default:
+                    break;
+            }
+
+            return;  // Don't process wake word while streaming
+        }
+
+        // === LISTENING MODE (wake word detection) ===
+        if (listening) {
+            if (result->wakeup_state == WAKENET_DETECTED) {
+                ESP_LOGI(TAG, ">>> WAKE WORD 'JARVIS' DETECTED! <<<");
+                ESP_LOGI(TAG, "WakeNet: word_index=%d, channel=%d",
+                         result->wake_word_index, result->trigger_channel_id);
+                if (wake_callback) {
+                    wake_callback();
+                }
+            }
+        }
+
+        return;
+    }
+
+    // === FALLBACK: No AFE, read I2S directly ===
     size_t bytes_read = 0;
     esp_err_t ret = i2s_channel_read(rx_chan, chunk_buffer, STREAM_CHUNK_SAMPLES * sizeof(int16_t), &bytes_read, 10);
     if (ret != ESP_OK || bytes_read == 0) return;
 
     size_t samples_read = bytes_read / sizeof(int16_t);
-
-    // Calculate audio level
     audio_level = calculate_rms(chunk_buffer, samples_read);
+    voice_active = audio_level > 0.15f;
 
-    // Check VAD
-    voice_active = check_vad();
-
-    // === STREAMING MODE ===
+    // Streaming in fallback mode
     if (stream_state != STREAM_IDLE) {
         int64_t elapsed = (esp_timer_get_time() / 1000) - stream_start_time;
 
-        // Safety timeout
         if (elapsed > STREAM_MAX_DURATION_MS) {
-            ESP_LOGW(TAG, "Streaming safety timeout");
             jarvis_audio_stop_streaming();
             return;
         }
 
         switch (stream_state) {
             case STREAM_STARTING:
-                if (voice_active) {
-                    voice_chunk_count++;
+                if (voice_active) voice_chunk_count++;
+                if (chunk_callback && !chunk_callback(chunk_buffer, samples_read)) {
+                    jarvis_audio_stop_streaming();
+                    return;
                 }
-
-                if (chunk_callback) {
-                    if (!chunk_callback(chunk_buffer, samples_read)) {
-                        jarvis_audio_stop_streaming();
-                        return;
-                    }
-                }
-
                 if (elapsed >= STREAM_MIN_AUDIO_MS) {
                     stream_state = STREAM_ACTIVE;
-                    ESP_LOGI(TAG, "Streaming active (VAD monitoring)");
                 }
                 break;
 
             case STREAM_ACTIVE:
-                if (chunk_callback) {
-                    if (!chunk_callback(chunk_buffer, samples_read)) {
-                        jarvis_audio_stop_streaming();
-                        return;
-                    }
+                if (chunk_callback && !chunk_callback(chunk_buffer, samples_read)) {
+                    jarvis_audio_stop_streaming();
+                    return;
                 }
-
                 if (voice_active) {
                     voice_chunk_count++;
                     silence_chunk_count = 0;
                 } else {
                     silence_chunk_count++;
-
                     if (silence_chunk_count >= VAD_SILENCE_CHUNKS) {
-                        ESP_LOGI(TAG, "VAD: silence detected (%d chunks)", silence_chunk_count);
                         stream_state = STREAM_ENDING;
                     }
                 }
                 break;
 
             case STREAM_ENDING:
-                if (chunk_callback) {
-                    chunk_callback(chunk_buffer, samples_read);
-                }
+                if (chunk_callback) chunk_callback(chunk_buffer, samples_read);
                 jarvis_audio_stop_streaming();
                 break;
 
             default:
                 break;
-        }
-
-        return;  // Don't process wake word while streaming
-    }
-
-    // === LISTENING MODE ===
-    if (listening && wakenet_initialized) {
-        if (detect_wake_word()) {
-            ESP_LOGI(TAG, ">>> WAKE WORD 'JARVIS' DETECTED! <<<");
-            if (wake_callback) {
-                wake_callback();
-            }
         }
     }
 }

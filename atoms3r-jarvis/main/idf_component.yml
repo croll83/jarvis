@@ -10,5 +10,4 @@ dependencies:
   espressif/cjson:
     version: "^1.7.15"
 
-  # LVGL per display (opzionale, usiamo driver diretto)
-  # espressif/esp_lvgl_port: "^1.0.0"
+  # GC9107: usa esp_lcd_panel_st7789 con init commands custom (compatibile IDF 6.1)
