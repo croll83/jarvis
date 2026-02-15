@@ -1179,6 +1179,8 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
 
     # Build message with context for OpenClaw
     speaker_name = context.get("speaker_name", "Sconosciuto")
+    speaker_id = context.get("speaker_id")
+    speaker_identified = context.get("speaker_identified", False)
     source = context.get("source", "unknown")
     location = context.get("location", "")
     room = context.get("room", "")
@@ -1186,7 +1188,9 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
     # Compose context-enriched message
     context_parts = []
     if speaker_name and speaker_name != "Sconosciuto":
-        context_parts.append(f"speaker: {speaker_name}")
+        context_parts.append(f"user: {speaker_name}")
+    elif not speaker_identified:
+        context_parts.append("user: non identificato")
     if location:
         context_parts.append(f"location: {location}")
     if room:
@@ -1220,6 +1224,13 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
         "model": "openclaw:main",
         "stream": True,
     }
+    # User metadata per OpenClaw (identità parlante)
+    if speaker_id or (speaker_name and speaker_name != "Sconosciuto"):
+        payload["metadata"] = {
+            "user_id": speaker_id,
+            "user_name": speaker_name,
+            "identified": speaker_identified,
+        }
     if tts_instructions:
         payload["instructions"] = tts_instructions
 
@@ -1305,8 +1316,9 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "") -> str:
     except asyncio.TimeoutError:
         logger.warning(
             f"OpenClaw stream timeout (total={config.OPENCLAW_TIMEOUT_TOTAL}s, "
-            f"read={config.OPENCLAW_TIMEOUT_READ}s), falling back to local"
+            f"read={config.OPENCLAW_TIMEOUT_READ}s)"
         )
+        return "Mi dispiace, l'operazione sta richiedendo più tempo del previsto. Riprova tra poco."
     except aiohttp.ClientConnectorError:
         logger.warning("OpenClaw unreachable, falling back to local")
         service_status.set_offline("openclaw")
@@ -1898,10 +1910,19 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     save_chat_message("user", text, context.get("source", "AtomS3R"),
                       context.get("speaker_id"), context.get("speaker_name", "Sconosciuto"))
 
-    # Feedback TTS immediato per voice sources (come GEMINI intent)
+    # Feedback audio immediato: suono "thinking" (no TTS, meno invasivo)
     source = context.get("source", "")
     if source in ("AtomS3R", "VirtualMic"):
-        await deliver_final_response("Hmm... ci penso!", context)
+        device_cfg = context.get("device_config")
+        if device_cfg:
+            target_speaker = device_cfg.get("output_speaker")
+            loc = device_cfg.get("location_id", context.get("location", get_default_location_id()))
+        else:
+            loc = context.get("location", get_default_location_id())
+            room_speakers = get_room_speakers(loc)
+            target_speaker = room_speakers.get(context.get("room", ""), None)
+        if target_speaker:
+            asyncio.create_task(play_feedback_sound("neutral", target_speaker, loc))
 
     response = await forward_to_openclaw(text, context, hint=hint)
 
