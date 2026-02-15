@@ -5,6 +5,7 @@ idf_component_register(
         jarvis_display
         jarvis_audio
         jarvis_network
+        jarvis_speaker
         esp_wifi
         esp_event
         nvs_flash

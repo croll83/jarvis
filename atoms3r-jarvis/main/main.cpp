@@ -38,6 +38,7 @@ extern "C" {
 #include "jarvis_display.h"
 #include "jarvis_audio.h"
 #include "jarvis_network.h"
+#include "jarvis_speaker.h"
 }
 
 static const char *TAG = "JARVIS";
@@ -54,7 +55,7 @@ static bool dnd_mode = false;
 static bool streaming_active = false;
 
 // Device configuration (from server)
-static device_config_t device_config = {0};
+static device_config_t device_config = {};
 static bool config_loaded = false;
 
 // Timing
@@ -70,9 +71,17 @@ static float cached_temperature = -99.0f;
 static int current_hour = 0;
 static int current_minute = 0;
 
+// Forward declarations (per risolvere dipendenze circolari tra button handler e audio callbacks)
+static void on_wake_word_detected(void);
+static void handle_short_press(void);
+static void handle_long_press(void);
+
 // =============================================================================
-// BUTTON HANDLER
+// BUTTON HANDLER (short press = manual activate, long press = DND toggle)
 // =============================================================================
+
+// Long press threshold (ms)
+#define LONG_PRESS_MS 800
 
 static void IRAM_ATTR button_isr_handler(void* arg) {
     // Just set a flag, handle in main loop
@@ -80,16 +89,77 @@ static void IRAM_ATTR button_isr_handler(void* arg) {
     // Could use a queue here for more robust handling
 }
 
-static void handle_button(void) {
-    int64_t now = esp_timer_get_time() / 1000;  // Convert to ms
-    if (now - last_button_press < BUTTON_DEBOUNCE_MS) return;
-    last_button_press = now;
+// Stato interno del pulsante
+static bool button_was_pressed = false;
+static int64_t button_press_start = 0;
+static bool long_press_handled = false;
 
-    ESP_LOGI(TAG, "Button pressed!");
+static void handle_button_down(void) {
+    // Primo frame in cui il pulsante è premuto
+    if (!button_was_pressed) {
+        button_was_pressed = true;
+        button_press_start = esp_timer_get_time() / 1000;
+        long_press_handled = false;
+    }
 
-    // If streaming, stop it
+    // Controlla long press mentre il pulsante è ancora premuto
+    if (!long_press_handled) {
+        int64_t held_ms = (esp_timer_get_time() / 1000) - button_press_start;
+        if (held_ms >= LONG_PRESS_MS) {
+            long_press_handled = true;
+            handle_long_press();
+        }
+    }
+}
+
+static void handle_button_up(void) {
+    if (!button_was_pressed) return;
+
+    int64_t held_ms = (esp_timer_get_time() / 1000) - button_press_start;
+    button_was_pressed = false;
+
+    // Se il long press è già stato gestito, ignora il rilascio
+    if (long_press_handled) return;
+
+    // Debounce: ignora press troppo brevi (< 50ms, probabilmente rumore)
+    if (held_ms < 50) return;
+
+    // Short press!
+    handle_short_press();
+}
+
+static void handle_short_press(void) {
+    ESP_LOGI(TAG, "🔘 Short press detected!");
+
+    // Se in streaming, stop (comportamento esistente)
     if (jarvis_audio_is_streaming()) {
-        ESP_LOGI(TAG, "Button pressed during streaming - stopping");
+        ESP_LOGI(TAG, "Button during streaming - stopping");
+        jarvis_audio_stop_streaming();
+        return;
+    }
+
+    // Se in DND, esci prima da DND poi attiva
+    if (dnd_mode) {
+        dnd_mode = false;
+        ESP_LOGI(TAG, "DND mode DISABLED (via button activate)");
+        jarvis_audio_start_listening();
+        jarvis_network_notify_dnd(device_config.device_id, false);
+    }
+
+    // Se idle/busy/dnd → attiva manualmente (stesso flusso della wake word)
+    if (current_state == STATE_IDLE || current_state == STATE_DND ||
+        current_state == STATE_BUSY || current_state == STATE_ERROR) {
+        ESP_LOGI(TAG, ">>> MANUAL ACTIVATION (button) <<<");
+        on_wake_word_detected();  // Riusa lo stesso flusso: flash + sound + suppress + listen
+    }
+}
+
+static void handle_long_press(void) {
+    ESP_LOGI(TAG, "🔘 Long press detected!");
+
+    // Se in streaming, stop
+    if (jarvis_audio_is_streaming()) {
+        ESP_LOGI(TAG, "Long press during streaming - stopping");
         jarvis_audio_stop_streaming();
         return;
     }
@@ -140,6 +210,18 @@ static void on_config_update(const char* friendly_name, const char* location_id)
 }
 
 // =============================================================================
+// SPEAKER SUPPRESS TASK (fire-and-forget, asincrono)
+// =============================================================================
+
+static void suppress_speaker_task(void* arg) {
+    char* device_id = (char*)arg;
+    ESP_LOGI(TAG, "🔉 Sending speaker suppress for %s", device_id);
+    jarvis_network_suppress_speaker(device_id);
+    ESP_LOGI(TAG, "🔉 Speaker suppress sent");
+    vTaskDelete(NULL);
+}
+
+// =============================================================================
 // AUDIO CALLBACKS
 // =============================================================================
 
@@ -151,9 +233,29 @@ static void on_wake_word_detected(void) {
 
     ESP_LOGI(TAG, ">>> WAKE WORD 'JARVIS' DETECTED! <<<");
 
+    // 1. Flash bianco immediato (feedback visivo ~80ms)
+    jarvis_display_flash_white();
+
+    // 2. Suono feedback (non-bloccante, task separato)
+    jarvis_speaker_play_wake_sound();
+
+    // 3. Speaker suppress (fire-and-forget HTTP, task separato)
+    //    Usa il device_id statico (vive per tutta la sessione)
+    xTaskCreatePinnedToCore(
+        suppress_speaker_task,
+        "suppress_spk",
+        4096,
+        (void*)device_config.device_id,  // Puntatore a stringa statica
+        3,      // Priorità media
+        NULL,
+        1       // Core 1
+    );
+
+    // 4. Transizione a stato LISTENING
     current_state = STATE_LISTENING;
     jarvis_display_set_state(STATE_LISTENING);
 
+    // 5. Avvia registrazione audio
     jarvis_audio_stop_listening();
     streaming_active = true;
     jarvis_audio_start_streaming();
@@ -283,7 +385,7 @@ static void heartbeat_task(void* arg) {
             continue;
         }
 
-        device_config_t new_config = {0};
+        device_config_t new_config = {};
         if (jarvis_network_send_heartbeat(device_config.device_id, FIRMWARE_VERSION, &new_config)) {
             // Verifica se la config è cambiata
             if (new_config.friendly_name[0] != '\0' &&
@@ -307,10 +409,11 @@ static void main_task(void* arg) {
     while (1) {
         int64_t now = esp_timer_get_time() / 1000;
 
-        // Check button
+        // Check button (short press / long press detection)
         if (gpio_get_level((gpio_num_t)BUTTON_PIN) == 0) {
-            handle_button();
-            vTaskDelay(pdMS_TO_TICKS(50));  // Simple debounce
+            handle_button_down();
+        } else {
+            handle_button_up();
         }
 
         // Process audio
@@ -444,6 +547,12 @@ extern "C" void app_main(void) {
         jarvis_display_show_message("MIC FAILED");
         ESP_LOGE(TAG, "Audio init failed - halting");
         while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
+    // Initialize speaker (Atomic SPK Base NS4168)
+    if (!jarvis_speaker_init()) {
+        ESP_LOGW(TAG, "Speaker init failed - wake sound feedback disabled");
+        // Non è fatale: il device funziona senza speaker feedback
     }
 
     // Set audio callbacks

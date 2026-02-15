@@ -28,29 +28,41 @@ static const char *TAG = "NETWORK";
 // CONFIGURATION (should match jarvis_config.h)
 // =============================================================================
 
+// WiFi credentials (from menuconfig or fallback defaults)
+#ifdef CONFIG_WIFI_SSID
 #define WIFI_SSID           CONFIG_WIFI_SSID
-#define WIFI_PASSWORD       CONFIG_WIFI_PASSWORD
-#define JARVIS_SERVER_HOST  CONFIG_JARVIS_SERVER_HOST
-#define JARVIS_SERVER_PORT  CONFIG_JARVIS_SERVER_PORT
-#define DEVICE_ROOM         CONFIG_DEVICE_ROOM
-#define DEVICE_ID           CONFIG_DEVICE_ID
-
-#ifndef CONFIG_WIFI_SSID
+#else
 #define WIFI_SSID           "YOUR_WIFI_SSID"
 #endif
-#ifndef CONFIG_WIFI_PASSWORD
+
+#ifdef CONFIG_WIFI_PASSWORD
+#define WIFI_PASSWORD       CONFIG_WIFI_PASSWORD
+#else
 #define WIFI_PASSWORD       "YOUR_WIFI_PASSWORD"
 #endif
-#ifndef CONFIG_JARVIS_SERVER_HOST
+
+#ifdef CONFIG_JARVIS_SERVER_HOST
+#define JARVIS_SERVER_HOST  CONFIG_JARVIS_SERVER_HOST
+#else
 #define JARVIS_SERVER_HOST  "jarvis.local"
 #endif
-#ifndef CONFIG_JARVIS_SERVER_PORT
+
+#ifdef CONFIG_JARVIS_SERVER_PORT
+#define JARVIS_SERVER_PORT  CONFIG_JARVIS_SERVER_PORT
+#else
 #define JARVIS_SERVER_PORT  5000
 #endif
-#ifndef CONFIG_DEVICE_ROOM
+
+// Device room/id (legacy, kept for backwards compatibility)
+#ifdef CONFIG_DEVICE_ROOM
+#define DEVICE_ROOM         CONFIG_DEVICE_ROOM
+#else
 #define DEVICE_ROOM         "salotto"
 #endif
-#ifndef CONFIG_DEVICE_ID
+
+#ifdef CONFIG_DEVICE_ID
+#define DEVICE_ID           CONFIG_DEVICE_ID
+#else
 #define DEVICE_ID           "atoms3r_salotto"
 #endif
 
@@ -72,6 +84,7 @@ static int retry_count = 0;
 // Callbacks
 static server_response_callback_t response_callback = NULL;
 static busy_state_callback_t busy_callback = NULL;
+static config_update_callback_t config_callback = NULL;
 
 // Streaming state
 typedef enum {
@@ -195,6 +208,185 @@ void jarvis_network_deinit(void) {
 
 bool jarvis_network_is_connected(void) {
     return wifi_connected;
+}
+
+// =============================================================================
+// DEVICE ID & CONFIGURATION
+// =============================================================================
+
+bool jarvis_network_get_device_id(char* out_device_id) {
+    if (!out_device_id) return false;
+
+    uint8_t mac[6];
+    esp_err_t err = esp_wifi_get_mac(WIFI_IF_STA, mac);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get MAC: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    snprintf(out_device_id, 13, "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    ESP_LOGI(TAG, "Device ID (MAC): %s", out_device_id);
+    return true;
+}
+
+bool jarvis_network_fetch_config(const char* device_id, device_config_t* out_config) {
+    if (!wifi_connected || !device_id || !out_config) return false;
+
+    char url[192];
+    snprintf(url, sizeof(url), "http://%s:%d/device_config?device_id=%s",
+             JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, device_id);
+
+    esp_http_client_config_t config = {
+        .url = url,
+        .timeout_ms = 5000,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) return false;
+
+    esp_err_t err = esp_http_client_perform(client);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Fetch config failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    int status = esp_http_client_get_status_code(client);
+    if (status != 200) {
+        ESP_LOGW(TAG, "Fetch config: HTTP %d", status);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    int content_length = esp_http_client_get_content_length(client);
+    if (content_length <= 0 || content_length > 512) {
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    char* buffer = malloc(content_length + 1);
+    if (!buffer) {
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    int read_len = esp_http_client_read(client, buffer, content_length);
+    buffer[read_len] = '\0';
+    esp_http_client_cleanup(client);
+
+    cJSON* json = cJSON_Parse(buffer);
+    free(buffer);
+    if (!json) return false;
+
+    // Copia device_id nella config
+    strncpy(out_config->device_id, device_id, sizeof(out_config->device_id) - 1);
+
+    cJSON* friendly = cJSON_GetObjectItem(json, "friendly_name");
+    cJSON* location = cJSON_GetObjectItem(json, "location_id");
+
+    if (friendly && cJSON_IsString(friendly) && strlen(friendly->valuestring) > 0) {
+        strncpy(out_config->friendly_name, friendly->valuestring, sizeof(out_config->friendly_name) - 1);
+        out_config->is_configured = true;
+    } else {
+        out_config->is_configured = false;
+    }
+
+    if (location && cJSON_IsString(location)) {
+        strncpy(out_config->location_id, location->valuestring, sizeof(out_config->location_id) - 1);
+    }
+
+    ESP_LOGI(TAG, "Config fetched: name=%s, location=%s, configured=%d",
+             out_config->friendly_name, out_config->location_id, out_config->is_configured);
+
+    cJSON_Delete(json);
+    return true;
+}
+
+bool jarvis_network_send_heartbeat(const char* device_id, const char* firmware_version, device_config_t* out_config) {
+    if (!wifi_connected || !device_id) return false;
+
+    char url[128];
+    snprintf(url, sizeof(url), "http://%s:%d/heartbeat",
+             JARVIS_SERVER_HOST, JARVIS_SERVER_PORT);
+
+    cJSON* json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "device_id", device_id);
+    if (firmware_version) {
+        cJSON_AddStringToObject(json, "firmware_version", firmware_version);
+    }
+
+    char* payload = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+    if (!payload) return false;
+
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 5000,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        free(payload);
+        return false;
+    }
+
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, payload, strlen(payload));
+
+    esp_err_t err = esp_http_client_perform(client);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Heartbeat failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        free(payload);
+        return false;
+    }
+
+    int status = esp_http_client_get_status_code(client);
+    bool success = (status == 200);
+
+    // Parse response per eventuali aggiornamenti config
+    if (success && out_config) {
+        int content_length = esp_http_client_get_content_length(client);
+        if (content_length > 0 && content_length < 512) {
+            char* resp_buf = malloc(content_length + 1);
+            if (resp_buf) {
+                int read_len = esp_http_client_read(client, resp_buf, content_length);
+                resp_buf[read_len] = '\0';
+
+                cJSON* resp_json = cJSON_Parse(resp_buf);
+                if (resp_json) {
+                    cJSON* friendly = cJSON_GetObjectItem(resp_json, "friendly_name");
+                    cJSON* location = cJSON_GetObjectItem(resp_json, "location_id");
+
+                    if (friendly && cJSON_IsString(friendly)) {
+                        strncpy(out_config->friendly_name, friendly->valuestring,
+                                sizeof(out_config->friendly_name) - 1);
+                        out_config->is_configured = true;
+                    }
+                    if (location && cJSON_IsString(location)) {
+                        strncpy(out_config->location_id, location->valuestring,
+                                sizeof(out_config->location_id) - 1);
+                    }
+
+                    cJSON_Delete(resp_json);
+                }
+                free(resp_buf);
+            }
+        }
+    }
+
+    esp_http_client_cleanup(client);
+    free(payload);
+
+    ESP_LOGD(TAG, "Heartbeat: HTTP %d", status);
+    return success;
+}
+
+void jarvis_network_set_config_callback(config_update_callback_t config_cb) {
+    config_callback = config_cb;
 }
 
 // =============================================================================
@@ -357,7 +549,11 @@ bool jarvis_network_send_chunk(int16_t* chunk, size_t samples) {
     return true;
 }
 
-bool jarvis_network_end_stream(void) {
+bool jarvis_network_end_stream(bool* use_local_speaker) {
+    if (use_local_speaker) {
+        *use_local_speaker = false;  // Default: non usare speaker locale
+    }
+
     if (stream_state != STREAM_NET_SENDING) {
         stream_state = STREAM_NET_IDLE;
         return false;
@@ -409,6 +605,13 @@ bool jarvis_network_end_stream(void) {
                          status ? status->valuestring : "unknown",
                          speaker ? speaker->valuestring : "");
 
+                // Controlla se il server richiede playback locale
+                if (use_local_speaker && speaker && cJSON_IsString(speaker)) {
+                    if (strcmp(speaker->valuestring, "local") == 0) {
+                        *use_local_speaker = true;
+                    }
+                }
+
                 if (response_callback) {
                     response_callback(success, status ? status->valuestring : "unknown");
                 }
@@ -436,12 +639,13 @@ bool jarvis_network_is_streaming(void) {
 // TEMPERATURE
 // =============================================================================
 
-bool jarvis_network_fetch_temperature(float* temp) {
+bool jarvis_network_fetch_temperature(const char* room, float* temp) {
     if (!wifi_connected) return false;
+    if (!room || room[0] == '\0') return false;
 
     char url[128];
     snprintf(url, sizeof(url), "http://%s:%d/room_temperature/%s",
-             JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, DEVICE_ROOM);
+             JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, room);
 
     esp_http_client_config_t config = {
         .url = url,
@@ -499,16 +703,16 @@ bool jarvis_network_fetch_temperature(float* temp) {
 // DND & STATE POLLING
 // =============================================================================
 
-void jarvis_network_notify_dnd(bool enabled) {
+void jarvis_network_notify_dnd(const char* device_id, bool enabled) {
     if (!wifi_connected) return;
+    if (!device_id || device_id[0] == '\0') return;
 
     char url[128];
     snprintf(url, sizeof(url), "http://%s:%d/device_status",
              JARVIS_SERVER_HOST, JARVIS_SERVER_PORT);
 
     cJSON* json = cJSON_CreateObject();
-    cJSON_AddStringToObject(json, "device_id", DEVICE_ID);
-    cJSON_AddStringToObject(json, "room", DEVICE_ROOM);
+    cJSON_AddStringToObject(json, "device_id", device_id);
     cJSON_AddBoolToObject(json, "dnd", enabled);
 
     char* payload = cJSON_PrintUnformatted(json);
@@ -531,13 +735,14 @@ void jarvis_network_notify_dnd(bool enabled) {
     free(payload);
 }
 
-void jarvis_network_poll_state(void) {
+void jarvis_network_poll_state(const char* device_id) {
     if (!wifi_connected) return;
     if (stream_state != STREAM_NET_IDLE) return;
+    if (!device_id || device_id[0] == '\0') return;
 
     char url[256];
-    snprintf(url, sizeof(url), "http://%s:%d/device_status?device_id=%s&room=%s",
-             JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, DEVICE_ID, DEVICE_ROOM);
+    snprintf(url, sizeof(url), "http://%s:%d/device_status?device_id=%s",
+             JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, device_id);
 
     esp_http_client_config_t config = {
         .url = url,
@@ -599,4 +804,54 @@ void jarvis_network_set_callbacks(
 ) {
     response_callback = response_cb;
     busy_callback = busy_cb;
+}
+
+// =============================================================================
+// SPEAKER SUPPRESS (fire-and-forget)
+// =============================================================================
+
+void jarvis_network_suppress_speaker(const char* device_id) {
+    if (!wifi_connected) {
+        ESP_LOGW(TAG, "Cannot suppress speaker: no WiFi");
+        return;
+    }
+
+    char url[128];
+    snprintf(url, sizeof(url), "http://%s:%d/speaker/suppress",
+             JARVIS_SERVER_HOST, JARVIS_SERVER_PORT);
+
+    cJSON* json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "device_id", device_id);
+
+    char* payload = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+
+    if (!payload) {
+        ESP_LOGE(TAG, "Failed to create suppress payload");
+        return;
+    }
+
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 3000,  // Timeout breve: fire-and-forget
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client) {
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+        esp_http_client_set_post_field(client, payload, strlen(payload));
+
+        esp_err_t err = esp_http_client_perform(client);
+        if (err == ESP_OK) {
+            int status = esp_http_client_get_status_code(client);
+            ESP_LOGI(TAG, "Speaker suppress sent (HTTP %d)", status);
+        } else {
+            ESP_LOGW(TAG, "Speaker suppress failed: %s", esp_err_to_name(err));
+        }
+
+        esp_http_client_cleanup(client);
+    }
+
+    free(payload);
 }
