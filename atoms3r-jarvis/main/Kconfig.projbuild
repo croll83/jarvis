@@ -24,6 +24,14 @@ menu "JARVIS Configuration"
         help
             Porta del server JARVIS Orchestrator
 
+    config JARVIS_API_TOKEN
+        string "JARVIS API Bearer Token"
+        default ""
+        help
+            Token statico per autenticazione Bearer.
+            Deve corrispondere al token configurato nell'orchestrator.
+            Se vuoto, nessun header Authorization viene inviato.
+
     # NOTA: DEVICE_ROOM e DEVICE_ID sono stati rimossi.
     # Il device_id è ora il MAC address (letto a runtime).
     # La configurazione viene recuperata dinamicamente dal server.
