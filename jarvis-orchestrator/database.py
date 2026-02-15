@@ -3005,6 +3005,7 @@ def upsert_voice_device(
         if output_speaker:
             updates.append("output_speaker = ?")
             params.append(output_speaker)
+
         if fallback_speaker is not None:
             updates.append("fallback_speaker = ?")
             params.append(fallback_speaker if fallback_speaker else None)
