@@ -7,18 +7,25 @@ Flusso:
   3. Risponde con SDP answer
   4. Audio Opus arriva via RTP/UDP — aiortc decodifica a PCM 48 kHz
   5. Resample 48 kHz → 16 kHz, accumula buffer
-  6. Silero VAD detecta speech-start → speech-end
+  6. Silero VAD (ONNX) detecta speech-start → speech-end
   7. callback on_speech_complete(device_id, pcm_bytes_16k)
   8. Server chiude PeerConnection
+
+Note:
+  - Silero VAD caricato direttamente via onnxruntime (no torch.hub, no torchaudio)
+    per evitare problemi con libtorchaudio.so / CUDA stub nel container CPU-only.
+  - Ogni sessione ha il proprio stato RNN (h/c) per isolamento thread-safe.
 """
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from typing import Callable, Awaitable, Optional, Dict
 
 import numpy as np
+import onnxruntime as ort
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from scipy.signal import resample_poly
 
@@ -27,41 +34,89 @@ import config
 logger = logging.getLogger("JARVIS_WEBRTC")
 
 # ---------------------------------------------------------------------------
-# Silero VAD globals (pre-loaded once at startup)
+# Silero VAD via ONNX Runtime (no torch dependency)
 # ---------------------------------------------------------------------------
-_vad_model = None
-_vad_utils = None
+_vad_onnx_path: Optional[str] = None
+
+
+class SileroVADOnnx:
+    """
+    Wrapper leggero per Silero VAD ONNX.
+    Mantiene lo stato RNN (h, c) internamente.
+    Ogni sessione deve avere la propria istanza.
+    """
+
+    def __init__(self, model_path: str):
+        self._sess = ort.InferenceSession(
+            model_path,
+            providers=["CPUExecutionProvider"],
+        )
+        # Stato RNN iniziale: shape (2, 1, 128) — [h, c] per 1 batch
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._sr = np.array(16000, dtype=np.int64)
+
+    def __call__(self, audio_chunk: np.ndarray) -> float:
+        """
+        Esegui VAD su un chunk audio float32 (512 samples @ 16kHz).
+        Ritorna probabilità di speech [0.0, 1.0].
+        """
+        # Input shape: (1, num_samples)
+        inp = audio_chunk.reshape(1, -1).astype(np.float32)
+
+        out, new_state = self._sess.run(
+            ["output", "stateN"],
+            {
+                "input": inp,
+                "state": self._state,
+                "sr": self._sr,
+            },
+        )
+        self._state = new_state
+        return float(out[0, 0])
+
+    def reset(self):
+        """Reset stato RNN (per nuova sessione/utterance)."""
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
 
 
 def init_vad():
-    """Pre-carica modello Silero VAD all'avvio (chiamato dal lifespan di main.py)."""
-    global _vad_model, _vad_utils
-    try:
-        import torch
-        model, utils = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
-            model="silero_vad",
-            trust_repo=True,
-            onnx=True,
-        )
-        _vad_model = model
-        _vad_utils = utils
-        logger.info("Silero VAD model pre-loaded (ONNX)")
-    except Exception as e:
-        logger.error(f"Failed to load Silero VAD model: {e}")
-        raise
+    """
+    Pre-carica path modello Silero VAD ONNX e verifica che funzioni.
+    Chiamato dal lifespan di main.py.
+    """
+    global _vad_onnx_path
+
+    # Cerca il modello ONNX nel package silero_vad installato
+    import site
+    candidates = []
+    for sp in site.getsitepackages():
+        p = os.path.join(sp, "silero_vad", "data", "silero_vad.onnx")
+        if os.path.isfile(p):
+            candidates.append(p)
+
+    # Fallback: cerca in paths comuni
+    if not candidates:
+        common = "/usr/local/lib/python3.11/site-packages/silero_vad/data/silero_vad.onnx"
+        if os.path.isfile(common):
+            candidates.append(common)
+
+    if not candidates:
+        raise FileNotFoundError("Silero VAD ONNX model not found. Is silero-vad installed?")
+
+    _vad_onnx_path = candidates[0]
+
+    # Verifica che il modello si carichi correttamente
+    test_vad = SileroVADOnnx(_vad_onnx_path)
+    test_chunk = np.zeros(512, dtype=np.float32)
+    prob = test_vad(test_chunk)
+    logger.info(f"Silero VAD model pre-loaded (ONNX): {_vad_onnx_path} (test prob={prob:.4f})")
 
 
-def _new_vad_instance():
-    """Crea una nuova istanza VAD con stato RNN fresco (thread-safe)."""
-    import torch
-    model, utils = torch.hub.load(
-        repo_or_dir="snakers4/silero-vad",
-        model="silero_vad",
-        trust_repo=True,
-        onnx=True,
-    )
-    return model
+def _new_vad_instance() -> SileroVADOnnx:
+    """Crea una nuova istanza VAD con stato RNN fresco."""
+    if _vad_onnx_path is None:
+        raise RuntimeError("VAD not initialized. Call init_vad() first.")
+    return SileroVADOnnx(_vad_onnx_path)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +165,7 @@ class WebRTCSession:
         self._min_silence_ms = config.WEBRTC_VAD_MIN_SILENCE_MS
         self._min_speech_ms = config.WEBRTC_VAD_MIN_SPEECH_MS
 
-        # VAD state (per-session instance per RNN state isolation)
+        # VAD state (per-session ONNX instance per RNN state isolation)
         self._vad = _new_vad_instance()
 
         # Audio buffer (16 kHz PCM float32)
@@ -227,8 +282,6 @@ class WebRTCSession:
 
     async def _consume_audio(self, track):
         """Loop principale: riceve frame audio, resampla, esegue VAD."""
-        import torch
-
         # VAD chunk size: 512 samples @ 16 kHz = 32ms
         VAD_CHUNK_SIZE = 512
         # Calcolo frame duration a 16 kHz per speech/silence detection
@@ -271,9 +324,8 @@ class WebRTCSession:
                     chunk = self._vad_chunk_buffer[:VAD_CHUNK_SIZE]
                     self._vad_chunk_buffer = self._vad_chunk_buffer[VAD_CHUNK_SIZE:]
 
-                    # Silero VAD inference
-                    chunk_tensor = torch.from_numpy(chunk).unsqueeze(0)
-                    speech_prob = self._vad(chunk_tensor, 16000).item()
+                    # Silero VAD inference (ONNX, no torch)
+                    speech_prob = self._vad(chunk)
 
                     is_speech = speech_prob > self._vad_threshold
 
