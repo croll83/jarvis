@@ -33,6 +33,38 @@ import config
 
 logger = logging.getLogger("JARVIS_WEBRTC")
 
+# Prefissi IP da escludere dai candidate ICE nella SDP answer.
+# Docker bridge (172.17.x) e Tailscale (100.x) non sono raggiungibili
+# dal firmware AtomS3R che è dietro NAT residenziale.
+_ICE_CANDIDATE_BLOCKED_PREFIXES = ("172.17.", "172.18.", "100.")
+
+
+def _filter_sdp_candidates(sdp: str) -> str:
+    """
+    Rimuove dalla SDP le righe a=candidate con IP Docker/Tailscale.
+    Mantiene solo candidate con IP pubblico (realmente raggiungibili).
+    """
+    import re
+    filtered_lines = []
+    removed = 0
+    for line in sdp.splitlines():
+        if line.startswith("a=candidate:"):
+            # Formato: a=candidate:... <priority> <ip> <port> ...
+            # L'IP è il 5° campo (indice 4) separato da spazi
+            parts = line.split()
+            if len(parts) >= 5:
+                ip = parts[4]
+                if any(ip.startswith(prefix) for prefix in _ICE_CANDIDATE_BLOCKED_PREFIXES):
+                    removed += 1
+                    logger.debug(f"Filtered SDP candidate: {ip}")
+                    continue
+        filtered_lines.append(line)
+
+    if removed:
+        logger.info(f"Filtered {removed} unreachable ICE candidates from SDP answer")
+    return "\r\n".join(filtered_lines)
+
+
 # ---------------------------------------------------------------------------
 # Silero VAD via ONNX Runtime (no torch dependency)
 # ---------------------------------------------------------------------------
@@ -219,11 +251,16 @@ class WebRTCSession:
         # Aspetta ICE gathering complete (full ICE, no trickle)
         await self._wait_ice_gathering()
 
+        # Filtra SDP: rimuovi candidate Docker bridge (172.17.x) e Tailscale (100.x)
+        # che non sono raggiungibili dal firmware dietro NAT
+        sdp = self._pc.localDescription.sdp
+        sdp = _filter_sdp_candidates(sdp)
+
         # Avvia timeout task
         self._timeout_task = asyncio.create_task(self._session_timeout())
 
         logger.info(f"WebRTC session {self.session_id} created for device {self.device_id}")
-        return self._pc.localDescription.sdp
+        return sdp
 
     async def _wait_ice_gathering(self):
         """Aspetta che ICE gathering sia completo (max 10s)."""
