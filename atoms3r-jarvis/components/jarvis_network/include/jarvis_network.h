@@ -133,4 +133,15 @@ void jarvis_network_set_callbacks(
     busy_state_callback_t busy_cb
 );
 
+/**
+ * @brief Send speaker suppress request to server (fire-and-forget)
+ *
+ * Chiamato alla wake word detection per abbassare il volume dello speaker
+ * Echo associato a questo device. Il server ripristinerà il volume
+ * automaticamente dopo lo STT.
+ *
+ * @param device_id MAC address del device
+ */
+void jarvis_network_suppress_speaker(const char* device_id);
+
 #endif // JARVIS_NETWORK_H

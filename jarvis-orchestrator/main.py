@@ -55,6 +55,7 @@ from user_api import router as user_router, web_router
 from admin_api import router as admin_router, metrics as admin_metrics
 from auth_api import router as auth_router
 from device_api import router as device_router, get_device_speaker_config
+from speaker_suppress import suppress_speaker, restore_speaker, get_suppressed_speakers
 from image_api import router as image_router
 from service_status import service_status, ServiceState
 from multi_ha import multi_ha
@@ -1512,6 +1513,58 @@ async def update_device_status(request: Request):
     return {"status": "ok"}
 
 
+# ===========================================================================
+# SPEAKER SUPPRESS/RESTORE (per wake word noise reduction)
+# ===========================================================================
+
+@app.post("/speaker/suppress")
+async def speaker_suppress_endpoint(request: Request):
+    """
+    Endpoint chiamato dall'AtomS3R appena rileva la wake word.
+    Abbassa il volume dello speaker Echo associato al device al 10%.
+
+    Flusso:
+    1. Lookup device_id → output_speaker + location_id
+    2. Controlla se lo speaker sta riproducendo (se idle → skip)
+    3. Salva volume corrente, imposta 10%
+    4. Avvia safety timeout (30s auto-restore)
+
+    Il restore avviene automaticamente nel /voice_stream dopo lo STT,
+    oppure può essere chiamato esplicitamente via /speaker/restore.
+    """
+    data = await request.json()
+    device_id = data.get("device_id", "").upper().strip()
+
+    if not device_id:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "device_id required"})
+
+    result = await suppress_speaker(device_id)
+    return result
+
+
+@app.post("/speaker/restore")
+async def speaker_restore_endpoint(request: Request):
+    """
+    Endpoint per ripristinare manualmente il volume dello speaker.
+    Normalmente il restore è automatico (dopo STT o safety timeout),
+    ma questo endpoint serve come fallback esplicito.
+    """
+    data = await request.json()
+    device_id = data.get("device_id", "").upper().strip()
+
+    if not device_id:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "device_id required"})
+
+    result = await restore_speaker(device_id)
+    return result
+
+
+@app.get("/speaker/suppressed")
+async def speaker_suppressed_status():
+    """Debug endpoint: mostra tutti gli speaker attualmente soppressi."""
+    return get_suppressed_speakers()
+
+
 @app.get("/room_temperature/{room}")
 async def get_room_temperature(room: str):
     """
@@ -1645,6 +1698,19 @@ async def voice_stream(
         stt_start = time.time()
         text = await transcribe_audio(clean_audio)
         admin_metrics.record_stt((time.time() - stt_start) * 1000)
+
+        # ── AUTO-RESTORE speaker volume dopo STT ──
+        # Il firmware ha chiamato /speaker/suppress alla wake word,
+        # ora che la registrazione è finita, ripristiniamo il volume
+        # prima di qualsiasi altra operazione (routing, TTS, ecc.)
+        if device_id_value and not is_virtual_mic:
+            try:
+                restore_result = await restore_speaker(device_id_value)
+                if restore_result.get("status") == "restored":
+                    logger.info(f"🔊 Auto-restore volume per {device_id_value}: "
+                                f"{restore_result.get('original_volume', '?')}")
+            except Exception as e:
+                logger.error(f"Auto-restore fallito per {device_id_value}: {e}")
 
         if not text:
             return {"status": "no_speech_detected", "use_local_speaker": False}

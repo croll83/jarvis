@@ -440,3 +440,17 @@ void jarvis_display_set_friendly_name(const char* name) {
         friendly_name[0] = '\0';
     }
 }
+
+void jarvis_display_flash_white(void) {
+    if (!frame_buffer || !panel_handle) return;
+
+    // Flash bianco
+    fb_clear(COLOR_WHITE);
+    flush_buffer();
+
+    // Durata flash: 80ms
+    vTaskDelay(pdMS_TO_TICKS(80));
+
+    // Torna allo stato corrente (il chiamante imposterà LISTENING subito dopo)
+    jarvis_display_update();
+}

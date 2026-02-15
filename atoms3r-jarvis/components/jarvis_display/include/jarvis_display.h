@@ -89,4 +89,12 @@ void jarvis_display_clear(void);
  */
 void jarvis_display_set_friendly_name(const char* name);
 
+/**
+ * @brief Flash display white briefly (wake word feedback)
+ *
+ * Riempie lo schermo di bianco per ~80ms, poi torna allo stato corrente.
+ * Fornisce feedback visivo immediato della wake word detection.
+ */
+void jarvis_display_flash_white(void);
+
 #endif // JARVIS_DISPLAY_H
