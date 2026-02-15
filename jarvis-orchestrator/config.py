@@ -60,8 +60,8 @@ DEVICE_API_TOKEN = os.getenv("DEVICE_API_TOKEN", "")
 OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://localhost:18789")
 OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "")
 OPENCLAW_TIMEOUT = int(os.getenv("OPENCLAW_TIMEOUT", "30"))  # legacy (non-streaming fallback)
-OPENCLAW_TIMEOUT_TOTAL = int(os.getenv("OPENCLAW_TIMEOUT_TOTAL", "120"))  # Max totale streaming SSE
-OPENCLAW_TIMEOUT_READ = int(os.getenv("OPENCLAW_TIMEOUT_READ", "45"))     # Max silenzio tra chunk SSE
+OPENCLAW_TIMEOUT_TOTAL = int(os.getenv("OPENCLAW_TIMEOUT_TOTAL", "300"))  # Max totale streaming SSE (5 min)
+OPENCLAW_TIMEOUT_READ = int(os.getenv("OPENCLAW_TIMEOUT_READ", "90"))     # Max silenzio tra chunk SSE
 
 # OpenClaw Gateway WebSocket (operator mode for exec approvals)
 # Connect as operator to receive exec.approval.requested events and resolve them.
