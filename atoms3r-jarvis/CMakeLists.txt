@@ -35,6 +35,7 @@ project(jarvis_atoms3r)
 #
 # We use cmake_language(DEFER) to run after all components are registered.
 cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL _fix_esp_dsp_cxx26)
+cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL _suppress_submodule_warnings)
 
 function(_fix_esp_dsp_cxx26)
     # Check if esp-dsp component exists
@@ -44,6 +45,39 @@ function(_fix_esp_dsp_cxx26)
             $<$<COMPILE_LANGUAGE:CXX>:-include$<SEMICOLON>cmath>
         )
         message(STATUS "Applied esp-dsp C++26 fix (-include cmath for CXX only)")
+    endif()
+endfunction()
+
+# =============================================================================
+# Suppress warnings in WebRTC submodule components (peer, srtp, esp-libopus)
+# These are third-party libraries with known type mismatches on Xtensa targets.
+# Matches the approach used by OpenAI's reference embedded SDK.
+# =============================================================================
+function(_suppress_submodule_warnings)
+    if(TARGET __idf_peer)
+        target_compile_options(__idf_peer PRIVATE
+            -Wno-error=restrict
+            -Wno-error=stringop-truncation
+            -Wno-error=discarded-qualifiers
+            -Wno-error=implicit-function-declaration
+            -Wno-error=int-conversion
+        )
+        message(STATUS "Suppressed warnings for peer component")
+    endif()
+
+    if(TARGET __idf_srtp)
+        target_compile_options(__idf_srtp PRIVATE
+            -Wno-error=incompatible-pointer-types
+        )
+        message(STATUS "Suppressed warnings for srtp component")
+    endif()
+
+    if(TARGET __idf_esp-libopus)
+        target_compile_options(__idf_esp-libopus PRIVATE
+            -Wno-error=maybe-uninitialized
+            -Wno-error=stringop-overread
+        )
+        message(STATUS "Suppressed warnings for esp-libopus component")
     endif()
 endfunction()
 

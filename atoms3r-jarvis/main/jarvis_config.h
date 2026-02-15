@@ -22,7 +22,6 @@
 #define JARVIS_SERVER_HOST  "jarvis.local"  // O IP: "192.168.1.100"
 #define JARVIS_SERVER_PORT  5000
 #define JARVIS_ENDPOINT     "/voice_command"
-#define JARVIS_STREAM_ENDPOINT  "/voice_stream"
 
 // Home Assistant (per temperatura, opzionale)
 #define HASS_HOST           "homeassistant.local"
@@ -98,16 +97,16 @@
 #define DND_BORDER_COLOR    COLOR_RED
 
 // =============================================================================
-// AUDIO CONFIGURATION (AtomS3R: PDM Microphone)
+// AUDIO CONFIGURATION (Atomic Echo Base: ES8311 codec + NS4150B amp)
 // =============================================================================
+// L'audio è gestito dal codec ES8311 sull'Atomic Echo Base.
+// I2S standard full-duplex su un singolo port:
+//   BCLK=GPIO8, WS=GPIO6, DIN=GPIO7 (mic), DOUT=GPIO5 (spk)
+// ES8311 controllato via I2C: SDA=GPIO38, SCL=GPIO39, addr=0x18
 
 #define MIC_SAMPLE_RATE     16000
 #define MIC_BITS_PER_SAMPLE 16
 #define MIC_CHANNEL_NUM     1
-
-// Pin microfono PDM AtomS3R
-#define MIC_CLK_PIN         1
-#define MIC_DATA_PIN        2
 
 // Buffer audio
 #define AUDIO_CHUNK_SIZE    512
@@ -122,13 +121,21 @@
 #define BUTTON_DEBOUNCE_MS      200
 
 // =============================================================================
-// STREAMING AUDIO CONFIGURATION (VAD-based)
+// WEBRTC + OPUS CONFIGURATION
 // =============================================================================
 
-#define STREAM_CHUNK_SAMPLES    512     // 32ms di audio per chunk
-#define VAD_SILENCE_CHUNKS      30      // ~1 secondo di silenzio
-#define STREAM_MAX_DURATION_MS  60000   // 60s safety timeout
-#define STREAM_MIN_AUDIO_MS     500     // Minimo audio prima di VAD check
+#define WEBRTC_SIGNALING_PATH       "/webrtc/offer"
+#define WEBRTC_SESSION_TIMEOUT_MS   120000  // 120s max session
+#define WEBRTC_TICK_INTERVAL_MS     15      // peer_connection_loop interval
+
+// Opus codec
+#define OPUS_BITRATE                30000
+#define OPUS_COMPLEXITY             0       // Lowest CPU usage
+#define OPUS_FRAME_SAMPLES          320     // 20ms @ 16kHz
+#define OPUS_MAX_PACKET_SIZE        1276
+
+// Raw audio ring buffer (for WebRTC streaming path)
+#define RAW_RINGBUF_SIZE            (16000 * 2)  // 1s = 32KB @ 16kHz 16-bit
 
 // =============================================================================
 // WAKE WORD CONFIGURATION (ESP-SR WakeNet)

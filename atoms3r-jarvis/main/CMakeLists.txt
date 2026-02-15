@@ -1,11 +1,13 @@
 idf_component_register(
-    SRCS "main.cpp"
+    SRCS "main.cpp" "compat_stub.c"
     INCLUDE_DIRS "."
     REQUIRES
         jarvis_display
+        jarvis_codec
         jarvis_audio
         jarvis_network
         jarvis_speaker
+        jarvis_webrtc
         esp_wifi
         esp_event
         nvs_flash
@@ -14,3 +16,8 @@ idf_component_register(
         cjson
         esp_timer
 )
+
+# Force linker to pull in __getreent from compat_stub.c
+# Required because esp-sr pre-compiled libs reference this symbol
+# which was removed (replaced by macro) in ESP-IDF v6.1
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,-u,__getreent")

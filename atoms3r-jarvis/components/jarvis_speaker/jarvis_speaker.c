@@ -1,45 +1,33 @@
 /**
  * =============================================================================
- * JARVIS AtomS3R - Speaker Module Implementation (ESP-IDF)
+ * JARVIS AtomS3R - Speaker Module Implementation
  * =============================================================================
  *
- * Output audio via I2S TX su Atomic SPK Base (NS4168 amplifier).
- * Pin I2S: BCLK=GPIO5, DATA=GPIO38, LRCK=GPIO39
+ * Output audio via jarvis_codec (shared I2S TX bus).
+ * Hardware init (I2S, ES8311, PI4IOE5V6408 amp) is handled by jarvis_codec.
+ * This module only handles PCM playback logic.
  *
- * Il suono wake word (harmonic_rise) è embedded come array const in flash.
- * Il playback è non-bloccante (FreeRTOS task separato).
+ * The wake sound (harmonic_rise) is embedded as const array in flash.
+ * Playback is non-blocking (FreeRTOS task).
  */
 
 #include "jarvis_speaker.h"
+#include "jarvis_codec.h"
 #include "wake_sound_data.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "driver/i2s_std.h"
 
 static const char *TAG = "SPEAKER";
-
-// =============================================================================
-// CONFIGURATION - Atomic SPK Base (NS4168)
-// =============================================================================
-
-#define SPK_BCLK_PIN    5
-#define SPK_DATA_PIN    38
-#define SPK_LRCK_PIN    39
-
-#define SPK_SAMPLE_RATE 16000
-#define SPK_DMA_DESC    8
-#define SPK_DMA_FRAME   256
 
 // =============================================================================
 // STATE
 // =============================================================================
 
-static i2s_chan_handle_t tx_chan = NULL;
 static bool speaker_initialized = false;
-static bool playing = false;
+static volatile bool playing = false;
 static volatile bool stop_requested = false;
 
 static TaskHandle_t playback_task_handle = NULL;
@@ -49,68 +37,17 @@ static TaskHandle_t playback_task_handle = NULL;
 // =============================================================================
 
 bool jarvis_speaker_init(void) {
-    ESP_LOGI(TAG, "Initializing speaker (NS4168 via I2S)...");
+    ESP_LOGI(TAG, "Initializing speaker (using jarvis_codec for I2S TX)...");
 
-    // Create I2S TX channel on I2S_NUM_1 (I2S_NUM_0 is used by PDM mic RX)
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
-    chan_cfg.auto_clear = true;
-    chan_cfg.dma_desc_num = SPK_DMA_DESC;
-    chan_cfg.dma_frame_num = SPK_DMA_FRAME;
-
-    esp_err_t ret = i2s_new_channel(&chan_cfg, &tx_chan, NULL);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create I2S TX channel: %s", esp_err_to_name(ret));
-        return false;
-    }
-
-    // Configure standard I2S mode for NS4168
-    i2s_std_config_t std_cfg = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SPK_SAMPLE_RATE),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
-            .bclk = SPK_BCLK_PIN,
-            .ws = SPK_LRCK_PIN,
-            .dout = SPK_DATA_PIN,
-            .din = I2S_GPIO_UNUSED,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false,
-            },
-        },
-    };
-
-    ret = i2s_channel_init_std_mode(tx_chan, &std_cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to init I2S STD TX: %s", esp_err_to_name(ret));
-        i2s_del_channel(tx_chan);
-        tx_chan = NULL;
-        return false;
-    }
-
-    ret = i2s_channel_enable(tx_chan);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to enable I2S TX: %s", esp_err_to_name(ret));
-        i2s_del_channel(tx_chan);
-        tx_chan = NULL;
-        return false;
-    }
-
+    // jarvis_codec handles all hardware: I2S, ES8311, PI4IOE5V6408 amp.
+    // Nothing to init here — just verify codec is available.
     speaker_initialized = true;
-    ESP_LOGI(TAG, "Speaker initialized (BCLK=%d, DATA=%d, LRCK=%d, %dHz)",
-             SPK_BCLK_PIN, SPK_DATA_PIN, SPK_LRCK_PIN, SPK_SAMPLE_RATE);
+    ESP_LOGI(TAG, "Speaker initialized");
     return true;
 }
 
 void jarvis_speaker_deinit(void) {
     jarvis_speaker_stop();
-
-    if (tx_chan) {
-        i2s_channel_disable(tx_chan);
-        i2s_del_channel(tx_chan);
-        tx_chan = NULL;
-    }
     speaker_initialized = false;
     ESP_LOGI(TAG, "Speaker deinitialized");
 }
@@ -120,7 +57,7 @@ void jarvis_speaker_deinit(void) {
 // =============================================================================
 
 void jarvis_speaker_play_pcm(const int16_t* pcm_data, size_t num_samples) {
-    if (!speaker_initialized || !tx_chan) {
+    if (!speaker_initialized) {
         ESP_LOGW(TAG, "Speaker not initialized");
         return;
     }
@@ -128,39 +65,31 @@ void jarvis_speaker_play_pcm(const int16_t* pcm_data, size_t num_samples) {
     playing = true;
     stop_requested = false;
 
-    size_t bytes_written = 0;
-    size_t total_bytes = num_samples * sizeof(int16_t);
-    size_t offset = 0;
+    // Write in blocks via jarvis_codec_write (handles mono→stereo interleave)
+    const size_t BLOCK_SIZE = 256;  // mono samples per block
+    size_t sample_offset = 0;
 
-    // Scrivi in blocchi per permettere stop
-    const size_t block_size = 512 * sizeof(int16_t);  // 512 samples per blocco
+    while (sample_offset < num_samples && !stop_requested) {
+        size_t remaining = num_samples - sample_offset;
+        size_t block = remaining < BLOCK_SIZE ? remaining : BLOCK_SIZE;
 
-    while (offset < total_bytes && !stop_requested) {
-        size_t remaining = total_bytes - offset;
-        size_t to_write = remaining < block_size ? remaining : block_size;
-
-        esp_err_t ret = i2s_channel_write(tx_chan,
-                                           (const uint8_t*)pcm_data + offset,
-                                           to_write,
-                                           &bytes_written,
-                                           pdMS_TO_TICKS(1000));
-
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "I2S write error: %s", esp_err_to_name(ret));
+        int written = jarvis_codec_write(&pcm_data[sample_offset], block);
+        if (written < 0) {
+            ESP_LOGE(TAG, "Codec write error");
             break;
         }
 
-        offset += bytes_written;
+        sample_offset += block;
     }
 
-    // Silenzio finale per flush DMA
-    int16_t silence[128] = {0};
-    i2s_channel_write(tx_chan, silence, sizeof(silence), &bytes_written, pdMS_TO_TICKS(100));
+    // Flush: write silence to push DMA buffers
+    int16_t silence[256] = {0};
+    jarvis_codec_write(silence, 256);
 
     playing = false;
 }
 
-// FreeRTOS task per playback non-bloccante
+// FreeRTOS task for non-blocking playback
 static void wake_sound_task(void* arg) {
     ESP_LOGI(TAG, "Playing wake sound (%d samples, %dms)",
              WAKE_SOUND_SAMPLES, WAKE_SOUND_DURATION_MS);
@@ -183,15 +112,14 @@ void jarvis_speaker_play_wake_sound(void) {
         return;
     }
 
-    // Crea un task separato per il playback non-bloccante
     BaseType_t ret = xTaskCreatePinnedToCore(
         wake_sound_task,
         "wake_sound",
         4096,
         NULL,
-        4,      // Priorità medio-alta
+        4,
         &playback_task_handle,
-        1       // Core 1
+        1  // Core 1
     );
 
     if (ret != pdPASS) {
@@ -206,11 +134,22 @@ bool jarvis_speaker_is_playing(void) {
 void jarvis_speaker_stop(void) {
     stop_requested = true;
 
-    // Aspetta che il task finisca
     if (playback_task_handle) {
         int timeout = 50;  // 500ms max
         while (playing && timeout-- > 0) {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
     }
+}
+
+bool jarvis_speaker_wait_done(uint32_t timeout_ms) {
+    uint32_t elapsed = 0;
+    const uint32_t step = 10;
+
+    while (playing && elapsed < timeout_ms) {
+        vTaskDelay(pdMS_TO_TICKS(step));
+        elapsed += step;
+    }
+
+    return !playing;
 }

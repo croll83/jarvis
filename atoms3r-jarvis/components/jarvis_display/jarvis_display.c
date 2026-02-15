@@ -46,12 +46,26 @@ static const char *TAG = "DISPLAY";
 #define BL_I2C_SCL          0
 #define BL_I2C_FREQ_HZ      400000
 
-// Colors (RGB565)
+// Colors — pre-calcolati per il GC9107 su AtomS3R.
+// Il display ha i canali colore ruotati: R_inviato→B_display, G_inviato→R_display, B_inviato→G_display.
+// Per ottenere il colore desiderato, invertiamo: sent_R=desired_B, sent_G=desired_R, sent_B=desired_G.
+//
+// Calcolo manuale per ogni colore (RGB565 = RRRRR_GGGGGG_BBBBB):
+//
+// Rosso puro (desired R=31,G=0,B=0):
+//   sent_R=B=0, sent_G=R=31→6bit=62, sent_B=G=0 → 00000_111110_00000 = 0x07C0
+//
+// Blu elettrico (desired R=0,G=8,B=31):
+//   sent_R=B=31, sent_G=R=0, sent_B=G=8→5bit=4 → 11111_000000_00100 = 0xF804
+//
+// Blu scuro (desired R=0,G=4,B=15):
+//   sent_R=B=15, sent_G=R=0, sent_B=G=4→5bit=2 → 01111_000000_00010 = 0x7802
+//
 #define COLOR_BLACK         0x0000
 #define COLOR_WHITE         0xFFFF
-#define COLOR_RED           0xF800
-#define JARVIS_BLUE         0x041F
-#define JARVIS_BLUE_DARK    0x020F
+#define COLOR_RED           0x07C0
+#define JARVIS_BLUE         0xF804
+#define JARVIS_BLUE_DARK    0x7802
 
 #define DND_BORDER_WIDTH    4
 #define DND_BORDER_COLOR    COLOR_RED
@@ -318,17 +332,24 @@ static void render_idle(bool with_border) {
     snprintf(time_str, sizeof(time_str), "%02d:%02d", current_hour, current_minute);
     fb_draw_string_centered(time_y, time_str, JARVIS_BLUE, 2);
 
-    // Temperature in center
+    // Temperature in center (scale 3 per evitare overlap con "C")
     char temp_str[8];
     if (current_temp > -50 && current_temp < 100) {
         snprintf(temp_str, sizeof(temp_str), "%.1f", current_temp);
     } else {
         snprintf(temp_str, sizeof(temp_str), "--.-");
     }
-    fb_draw_string_centered(DISPLAY_HEIGHT / 2 - 14, temp_str, JARVIS_BLUE, 4);
+    int temp_scale = 3;
+    int temp_char_w = 6 * temp_scale;  // 18px per char
+    int temp_y = DISPLAY_HEIGHT / 2 - 11;
+    fb_draw_string_centered(temp_y, temp_str, JARVIS_BLUE, temp_scale);
 
-    // Celsius symbol
-    fb_draw_string(DISPLAY_WIDTH / 2 + 35, DISPLAY_HEIGHT / 2 - 20, "C", JARVIS_BLUE, 2);
+    // "°C" symbol posizionato subito dopo l'ultima cifra della temperatura
+    int temp_len = strlen(temp_str);
+    int temp_total_w = temp_len * temp_char_w - temp_scale;  // larghezza totale testo
+    int temp_start_x = (DISPLAY_WIDTH - temp_total_w) / 2;
+    int celsius_x = temp_start_x + temp_total_w + 2;  // 2px gap dopo cifre
+    fb_draw_string(celsius_x, temp_y - 2, "'C", JARVIS_BLUE, 2);
 
     // DND indicator
     if (with_border) {
@@ -350,8 +371,8 @@ static void draw_wave_animation(void) {
         switch (ring) {
             case 0: color = JARVIS_BLUE; break;
             case 1: color = JARVIS_BLUE_DARK; break;
-            case 2: color = 0x010F; break;
-            default: color = 0x0007; break;
+            case 2: color = 0x7804; break;   // Blu medio (color-rotated)
+            default: color = 0x3800; break;  // Blu scuro (color-rotated)
         }
 
         for (int angle = 0; angle < 360; angle += 15) {
