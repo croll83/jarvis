@@ -12,7 +12,7 @@ import uuid
 import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
-from typing import Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple
 
 from fastapi import FastAPI, Request, UploadFile, File, Form, Query
 from fastapi.responses import JSONResponse
@@ -1688,22 +1688,35 @@ async def speaker_suppressed_status():
     return get_suppressed_speakers()
 
 
+# Temperature cache: (room, location) -> {"result": dict, "timestamp": float, "source": str}
+# TTL: sensor=300s (5 min), weather=43200s (12h)
+_temp_cache: Dict[str, dict] = {}
+_TEMP_CACHE_TTL_SENSOR = 300       # 5 minuti per sensori reali
+_TEMP_CACHE_TTL_WEATHER = 43200    # 12 ore per weather entity (cambio lento)
+
+# Entity resolution cache: (room, location) -> {"entity_id": str, "source": str, "timestamp": float}
+# Evita di fare get_states_bulk per risolvere quale entity corrisponde alla stanza
+_temp_entity_cache: Dict[str, dict] = {}
+_TEMP_ENTITY_CACHE_TTL = 86400     # 24 ore — la mappatura stanza→entity non cambia quasi mai
+
+
 @app.get("/room_temperature/{room}")
 async def get_room_temperature(room: str, location_id: str = None):
     """
     Endpoint per ottenere la temperatura di una stanza da Home Assistant.
 
-    Ricerca intelligente:
-    1. Cerca sensore con nome che contiene il room name (case-insensitive)
-       - sensor.temperatura_soggiorno, sensor.temp_soggiorno, etc.
-    2. Se non trova sensore specifico, cerca un'entità weather.* e usa la temperatura da lì
-    3. Cerca in tutte le location se location_id non specificato
+    Ricerca intelligente con caching:
+    1. Cerca in cache: se il risultato è ancora valido (sensor: 5 min, weather: 12h), ritorna subito
+    2. Se entity già risolta (cache 24h), fetch diretto solo di quella entity
+    3. Altrimenti: cerca sensore con nome che matcha la stanza (bulk fetch)
+    4. Fallback: weather.* entity
 
     Args:
         room: nome della stanza (friendly_name dal device)
         location_id: opzionale, filtra per location specifica
     """
     room_lower = room.lower().strip()
+    now = time.time()
 
     # Determina le location da cercare
     if location_id:
@@ -1711,9 +1724,66 @@ async def get_room_temperature(room: str, location_id: str = None):
     else:
         location_ids = multi_ha.get_location_ids()
 
+    # --- CHECK CACHED RESULT ---
     for loc_id in location_ids:
+        cache_key = f"{room_lower}:{loc_id}"
+        cached = _temp_cache.get(cache_key)
+        if cached:
+            ttl = _TEMP_CACHE_TTL_WEATHER if cached["result"].get("source") == "weather" else _TEMP_CACHE_TTL_SENSOR
+            if now - cached["timestamp"] < ttl:
+                logger.debug(f"Temperature cache hit for '{room}' ({loc_id}): {cached['result']['temperature']}")
+                return cached["result"]
+
+    # --- CHECK ENTITY RESOLUTION CACHE (avoid bulk fetch) ---
+    for loc_id in location_ids:
+        cache_key = f"{room_lower}:{loc_id}"
+        entity_cached = _temp_entity_cache.get(cache_key)
+        if entity_cached and now - entity_cached["timestamp"] < _TEMP_ENTITY_CACHE_TTL:
+            # Entity already resolved — fetch only that one entity's state
+            entity_id = entity_cached["entity_id"]
+            source_type = entity_cached["source"]
+            try:
+                states = await multi_ha.get_states_bulk(loc_id, [entity_id])
+                state_data = states.get(entity_id)
+                if state_data:
+                    if source_type == "sensor":
+                        state_val = state_data.get("state", "unavailable")
+                        if state_val not in ("unavailable", "unknown", ""):
+                            attrs = state_data.get("attributes", {})
+                            uom = attrs.get("unit_of_measurement", "°C")
+                            result = {
+                                "temperature": float(state_val),
+                                "unit": uom if uom else "°C",
+                                "entity_id": entity_id,
+                                "source": "sensor",
+                                "location_id": loc_id
+                            }
+                            _temp_cache[cache_key] = {"result": result, "timestamp": now}
+                            logger.debug(f"Temperature for '{room}': {result['temperature']}{result['unit']} from cached entity {entity_id}")
+                            return result
+                    elif source_type == "weather":
+                        attrs = state_data.get("attributes", {})
+                        weather_temp = attrs.get("temperature")
+                        if weather_temp is not None:
+                            result = {
+                                "temperature": float(weather_temp),
+                                "unit": attrs.get("temperature_unit", "°C"),
+                                "entity_id": entity_id,
+                                "source": "weather",
+                                "location_id": loc_id
+                            }
+                            _temp_cache[cache_key] = {"result": result, "timestamp": now}
+                            logger.debug(f"Temperature for '{room}': {result['temperature']}°C from cached weather {entity_id}")
+                            return result
+            except Exception as e:
+                logger.debug(f"Cached entity fetch failed for {entity_id}, falling back to full search: {e}")
+                # Invalidate entity cache and fall through to full search
+                _temp_entity_cache.pop(cache_key, None)
+
+    # --- FULL SEARCH (bulk fetch — only when entity not yet resolved) ---
+    for loc_id in location_ids:
+        cache_key = f"{room_lower}:{loc_id}"
         try:
-            # Fetch tutti gli stati dalla location
             all_states = await multi_ha.get_states_bulk(loc_id)
             if not all_states:
                 continue
@@ -1721,6 +1791,7 @@ async def get_room_temperature(room: str, location_id: str = None):
             # --- STRATEGIA 1: Cerca sensore temperatura con nome che matcha la stanza ---
             best_match = None
             best_score = 0
+            best_entity_id = None
 
             for entity_id, state_data in all_states.items():
                 if not entity_id.startswith("sensor."):
@@ -1743,12 +1814,10 @@ async def get_room_temperature(room: str, location_id: str = None):
                 friendly = attrs.get("friendly_name", "").lower()
 
                 score = 0
-                # Match esatto nel nome
                 if room_lower in eid_lower:
                     score = 10
                 if room_lower in friendly:
                     score = max(score, 8)
-                # Match parziale (es. "soggiorno" in "temperatura soggiorno")
                 if any(word in eid_lower for word in room_lower.split()):
                     score = max(score, 5)
                 if any(word in friendly for word in room_lower.split()):
@@ -1756,6 +1825,7 @@ async def get_room_temperature(room: str, location_id: str = None):
 
                 if score > best_score:
                     best_score = score
+                    best_entity_id = entity_id
                     try:
                         best_match = {
                             "temperature": float(state_val),
@@ -1768,7 +1838,14 @@ async def get_room_temperature(room: str, location_id: str = None):
                         pass
 
             if best_match:
-                logger.info(f"Temperature for '{room}': {best_match['temperature']}{best_match['unit']} from {best_match['entity_id']}")
+                # Cache result + entity resolution
+                _temp_cache[cache_key] = {"result": best_match, "timestamp": now}
+                _temp_entity_cache[cache_key] = {
+                    "entity_id": best_entity_id,
+                    "source": "sensor",
+                    "timestamp": now
+                }
+                logger.info(f"Temperature for '{room}': {best_match['temperature']}{best_match['unit']} from {best_match['entity_id']} (entity cached)")
                 return best_match
 
             # --- STRATEGIA 2: Fallback su weather entity ---
@@ -1782,14 +1859,22 @@ async def get_room_temperature(room: str, location_id: str = None):
                 if weather_temp is not None:
                     try:
                         temp_float = float(weather_temp)
-                        logger.info(f"Temperature for '{room}': {temp_float}°C from weather entity {entity_id}")
-                        return {
+                        result = {
                             "temperature": temp_float,
                             "unit": attrs.get("temperature_unit", "°C"),
                             "entity_id": entity_id,
                             "source": "weather",
                             "location_id": loc_id
                         }
+                        # Cache result + entity resolution
+                        _temp_cache[cache_key] = {"result": result, "timestamp": now}
+                        _temp_entity_cache[cache_key] = {
+                            "entity_id": entity_id,
+                            "source": "weather",
+                            "timestamp": now
+                        }
+                        logger.info(f"Temperature for '{room}': {temp_float}°C from weather {entity_id} (entity cached)")
+                        return result
                     except (ValueError, TypeError):
                         continue
 

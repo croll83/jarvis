@@ -84,8 +84,11 @@ class OllamaEmbeddingFunction:
     def embed_documents(self, documents: List[str]) -> List[List[float]]:
         return self(documents)
 
-    def embed_query(self, query: str) -> List[float]:
-        return self([query])[0]
+    def embed_query(self, input: str = None, query: str = None) -> List[float]:
+        text = input or query
+        if text is None:
+            raise ValueError("Either 'input' or 'query' must be provided")
+        return self([text])[0]
 
 
 class GeminiEmbeddingFunction:
@@ -136,8 +139,11 @@ class GeminiEmbeddingFunction:
     def embed_documents(self, documents: List[str]) -> List[List[float]]:
         return self(documents)
 
-    def embed_query(self, query: str) -> List[float]:
-        return self([query])[0]
+    def embed_query(self, input: str = None, query: str = None) -> List[float]:
+        text = input or query
+        if text is None:
+            raise ValueError("Either 'input' or 'query' must be provided")
+        return self([text])[0]
 
 
 def get_embedding_function():
