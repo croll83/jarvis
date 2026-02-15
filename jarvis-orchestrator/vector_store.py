@@ -65,6 +65,14 @@ class OllamaEmbeddingFunction:
         import requests
         embeddings = []
         for text in input:
+            # Guard: ensure text is a string (ChromaDB may nest lists)
+            if isinstance(text, list):
+                text = " ".join(str(t) for t in text)
+            if not isinstance(text, str):
+                text = str(text)
+            if not text.strip():
+                embeddings.append([0.0] * EMBEDDING_DIM)
+                continue
             try:
                 response = requests.post(
                     self.url,
@@ -112,6 +120,14 @@ class GeminiEmbeddingFunction:
         import requests
         embeddings = []
         for text in input:
+            # Guard: ensure text is a string (ChromaDB may nest lists)
+            if isinstance(text, list):
+                text = " ".join(str(t) for t in text)
+            if not isinstance(text, str):
+                text = str(text)
+            if not text.strip():
+                embeddings.append([0.0] * EMBEDDING_DIM)
+                continue
             try:
                 response = requests.post(
                     self.GEMINI_EMBED_URL,
