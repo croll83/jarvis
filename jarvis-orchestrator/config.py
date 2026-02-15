@@ -390,3 +390,12 @@ PROACTIVE_NO_MOTION_HOURS = int(os.getenv("PROACTIVE_NO_MOTION_HOURS", "12"))
 PROACTIVE_NIGHT_START = int(os.getenv("PROACTIVE_NIGHT_START", "2"))
 PROACTIVE_NIGHT_END = int(os.getenv("PROACTIVE_NIGHT_END", "5"))
 SECURITY_ANIMAL_LABELS = os.getenv("SECURITY_ANIMAL_LABELS", "cat,dog").split(",")
+
+# ===========================================================================
+# WEBRTC + VAD (server-side audio reception)
+# ===========================================================================
+STUN_SERVER = os.getenv("STUN_SERVER", "stun:stun.l.google.com:19302")
+WEBRTC_SESSION_TIMEOUT = int(os.getenv("WEBRTC_SESSION_TIMEOUT", "60"))
+WEBRTC_VAD_THRESHOLD = float(os.getenv("WEBRTC_VAD_THRESHOLD", "0.5"))
+WEBRTC_VAD_MIN_SILENCE_MS = int(os.getenv("WEBRTC_VAD_MIN_SILENCE_MS", "700"))
+WEBRTC_VAD_MIN_SPEECH_MS = int(os.getenv("WEBRTC_VAD_MIN_SPEECH_MS", "250"))

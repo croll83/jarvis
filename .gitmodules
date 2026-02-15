@@ -1,0 +1,9 @@
+[submodule "atoms3r-jarvis/deps/libpeer"]
+	path = atoms3r-jarvis/deps/libpeer
+	url = https://github.com/sean-der/libpeer
+[submodule "atoms3r-jarvis/components/srtp"]
+	path = atoms3r-jarvis/components/srtp
+	url = https://github.com/sepfy/esp_ports
+[submodule "atoms3r-jarvis/components/esp-libopus"]
+	path = atoms3r-jarvis/components/esp-libopus
+	url = https://github.com/XasWorks/esp-libopus.git

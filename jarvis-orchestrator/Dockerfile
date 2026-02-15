@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     ffmpeg \
     cmake \
+    libopus-dev \
+    libsrtp2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copia requirements prima (per cache Docker)
