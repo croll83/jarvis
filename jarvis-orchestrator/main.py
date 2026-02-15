@@ -1565,40 +1565,116 @@ async def speaker_suppressed_status():
 
 
 @app.get("/room_temperature/{room}")
-async def get_room_temperature(room: str):
+async def get_room_temperature(room: str, location_id: str = None):
     """
-    Proxy endpoint per ottenere temperatura da HA.
-    Cerca sensori con pattern: sensor.temperatura_{room}
+    Endpoint per ottenere la temperatura di una stanza da Home Assistant.
+
+    Ricerca intelligente:
+    1. Cerca sensore con nome che contiene il room name (case-insensitive)
+       - sensor.temperatura_soggiorno, sensor.temp_soggiorno, etc.
+    2. Se non trova sensore specifico, cerca un'entità weather.* e usa la temperatura da lì
+    3. Cerca in tutte le location se location_id non specificato
+
+    Args:
+        room: nome della stanza (friendly_name dal device)
+        location_id: opzionale, filtra per location specifica
     """
-    import aiohttp
+    room_lower = room.lower().strip()
 
-    entity_id = f"sensor.temperatura_{room}"
+    # Determina le location da cercare
+    if location_id:
+        location_ids = [location_id]
+    else:
+        location_ids = multi_ha.get_location_ids()
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {
-                "Authorization": f"Bearer {config.HASS_TOKEN}",
-                "Content-Type": "application/json"
-            }
-            url = f"{config.HASS_URL}/api/states/{entity_id}"
+    for loc_id in location_ids:
+        try:
+            # Fetch tutti gli stati dalla location
+            all_states = await multi_ha.get_states_bulk(loc_id)
+            if not all_states:
+                continue
 
-            async with session.get(url, headers=headers, timeout=config.TIMEOUTS["ha_read"]) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    state = data.get("state", "unavailable")
+            # --- STRATEGIA 1: Cerca sensore temperatura con nome che matcha la stanza ---
+            best_match = None
+            best_score = 0
 
-                    if state not in ["unavailable", "unknown"]:
-                        return {
-                            "temperature": float(state),
-                            "unit": data.get("attributes", {}).get("unit_of_measurement", "°C"),
-                            "entity_id": entity_id
+            for entity_id, state_data in all_states.items():
+                if not entity_id.startswith("sensor."):
+                    continue
+
+                state_val = state_data.get("state", "unavailable")
+                if state_val in ("unavailable", "unknown", ""):
+                    continue
+
+                attrs = state_data.get("attributes", {})
+                uom = attrs.get("unit_of_measurement", "")
+                device_class = attrs.get("device_class", "")
+
+                # Deve essere un sensore di temperatura
+                if device_class != "temperature" and uom not in ("°C", "°F", "C", "F"):
+                    continue
+
+                # Controlla match nel nome entity o friendly_name
+                eid_lower = entity_id.lower()
+                friendly = attrs.get("friendly_name", "").lower()
+
+                score = 0
+                # Match esatto nel nome
+                if room_lower in eid_lower:
+                    score = 10
+                if room_lower in friendly:
+                    score = max(score, 8)
+                # Match parziale (es. "soggiorno" in "temperatura soggiorno")
+                if any(word in eid_lower for word in room_lower.split()):
+                    score = max(score, 5)
+                if any(word in friendly for word in room_lower.split()):
+                    score = max(score, 4)
+
+                if score > best_score:
+                    best_score = score
+                    try:
+                        best_match = {
+                            "temperature": float(state_val),
+                            "unit": uom if uom else "°C",
+                            "entity_id": entity_id,
+                            "source": "sensor",
+                            "location_id": loc_id
                         }
+                    except (ValueError, TypeError):
+                        pass
 
-                return {"temperature": None, "error": "unavailable", "entity_id": entity_id}
+            if best_match:
+                logger.info(f"Temperature for '{room}': {best_match['temperature']}{best_match['unit']} from {best_match['entity_id']}")
+                return best_match
 
-    except Exception as e:
-        logger.error(f"Error fetching temperature for {room}: {e}")
-        return {"temperature": None, "error": str(e), "entity_id": entity_id}
+            # --- STRATEGIA 2: Fallback su weather entity ---
+            for entity_id, state_data in all_states.items():
+                if not entity_id.startswith("weather."):
+                    continue
+
+                attrs = state_data.get("attributes", {})
+                weather_temp = attrs.get("temperature")
+
+                if weather_temp is not None:
+                    try:
+                        temp_float = float(weather_temp)
+                        logger.info(f"Temperature for '{room}': {temp_float}°C from weather entity {entity_id}")
+                        return {
+                            "temperature": temp_float,
+                            "unit": attrs.get("temperature_unit", "°C"),
+                            "entity_id": entity_id,
+                            "source": "weather",
+                            "location_id": loc_id
+                        }
+                    except (ValueError, TypeError):
+                        continue
+
+        except Exception as e:
+            logger.error(f"Error fetching temperature for '{room}' from location '{loc_id}': {e}")
+            continue
+
+    logger.warning(f"No temperature found for room '{room}' in any location")
+    return {"temperature": None, "error": f"no_sensor_found_for_{room}"}
 
 
 @app.post("/voice_stream")

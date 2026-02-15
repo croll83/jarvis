@@ -40,9 +40,9 @@ static const char *TAG = "AUDIO";
 #define STREAM_CHUNK_SAMPLES 512
 
 // VAD configuration
-#define VAD_SILENCE_CHUNKS      30      // ~1 second of silence
+#define VAD_SILENCE_CHUNKS      60      // ~2 seconds of silence (each chunk ~32ms)
 #define STREAM_MAX_DURATION_MS  60000   // 60s safety timeout
-#define STREAM_MIN_AUDIO_MS     500     // Minimum audio before VAD check
+#define STREAM_MIN_AUDIO_MS     1500    // 1.5s minimum before VAD can cut
 
 // Model partition name
 #define MODEL_PARTITION_LABEL   "model"
@@ -123,11 +123,15 @@ static void deinit_models(void) {
 // =============================================================================
 
 static void afe_feed_task(void* arg) {
+    // Il feed richiede esattamente get_feed_chunksize() samples per chiamata
+    int feed_chunksize = afe_handle->get_feed_chunksize(afe_data);
+    ESP_LOGI(TAG, "AFE feed chunksize: %d samples", feed_chunksize);
+
     size_t bytes_read = 0;
-    int16_t* i2s_buff = heap_caps_malloc(AUDIO_CHUNK_SIZE * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int16_t* i2s_buff = heap_caps_malloc(feed_chunksize * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     if (!i2s_buff) {
-        i2s_buff = malloc(AUDIO_CHUNK_SIZE * sizeof(int16_t));
+        i2s_buff = malloc(feed_chunksize * sizeof(int16_t));
     }
 
     if (!i2s_buff) {
@@ -138,13 +142,14 @@ static void afe_feed_task(void* arg) {
 
     while (1) {
         if (rx_chan && afe_data) {
-            esp_err_t ret = i2s_channel_read(rx_chan, i2s_buff, AUDIO_CHUNK_SIZE * sizeof(int16_t), &bytes_read, portMAX_DELAY);
+            esp_err_t ret = i2s_channel_read(rx_chan, i2s_buff, feed_chunksize * sizeof(int16_t), &bytes_read, portMAX_DELAY);
 
             if (ret == ESP_OK && bytes_read > 0 && afe_handle) {
                 afe_handle->feed(afe_data, i2s_buff);
             }
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
-        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
     free(i2s_buff);
@@ -267,8 +272,12 @@ static bool init_wakenet(void) {
         1  // Core 1
     );
 
+    int fetch_chunksize = afe_handle->get_fetch_chunksize(afe_data);
+    int feed_chunksize_log = afe_handle->get_feed_chunksize(afe_data);
     ESP_LOGI(TAG, "WakeNet initialized: model=%s (from SPIFFS), VAD=ON",
              afe_config.wakenet_model_name ? afe_config.wakenet_model_name : "unknown");
+    ESP_LOGI(TAG, "AFE: feed_chunksize=%d, fetch_chunksize=%d (%.1fms per fetch)",
+             feed_chunksize_log, fetch_chunksize, (float)fetch_chunksize / MIC_SAMPLE_RATE * 1000.0f);
     return true;
 }
 
@@ -337,12 +346,20 @@ void jarvis_audio_deinit(void) {
 
 void jarvis_audio_start_listening(void) {
     listening = true;
-    ESP_LOGI(TAG, "Listening started");
+    // Riabilita WakeNet dopo lo streaming
+    if (afe_handle && afe_data) {
+        afe_handle->enable_wakenet(afe_data);
+    }
+    ESP_LOGI(TAG, "Listening started (WakeNet enabled)");
 }
 
 void jarvis_audio_stop_listening(void) {
     listening = false;
-    ESP_LOGI(TAG, "Listening stopped");
+    // Disabilita WakeNet quando non stiamo ascoltando (es. durante streaming)
+    if (afe_handle && afe_data) {
+        afe_handle->disable_wakenet(afe_data);
+    }
+    ESP_LOGI(TAG, "Listening stopped (WakeNet disabled)");
 }
 
 bool jarvis_audio_is_listening(void) {
@@ -354,6 +371,17 @@ bool jarvis_audio_is_listening(void) {
 // =============================================================================
 
 void jarvis_audio_start_streaming(void) {
+    // CRITICO: svuota il ringbuffer AFE prima di iniziare lo streaming.
+    // Senza questo, i primi fetch() restituiscono audio VECCHIO (pre-wake/pre-button)
+    // che il server trascrive come spazzatura (es. "Grazie..." invece del parlato reale).
+    if (afe_handle && afe_data) {
+        // Disabilita WakeNet durante streaming per evitare interferenze
+        afe_handle->disable_wakenet(afe_data);
+
+        int ret = afe_handle->reset_buffer(afe_data);
+        ESP_LOGI(TAG, "AFE ringbuffer reset: %s", ret == 1 ? "OK" : "FAIL");
+    }
+
     stream_state = STREAM_STARTING;
     stream_start_time = esp_timer_get_time() / 1000;
     silence_chunk_count = 0;
@@ -412,6 +440,19 @@ void jarvis_audio_process(void) {
             int16_t* audio_data = result->data;
             size_t samples_read = result->data_size / sizeof(int16_t);
 
+            // Log primo e ogni ~50 chunk per diagnostica
+            static int stream_chunk_counter = 0;
+            if (stream_state == STREAM_STARTING && voice_chunk_count == 0 && silence_chunk_count == 0) {
+                stream_chunk_counter = 0;
+            }
+            stream_chunk_counter++;
+            if (stream_chunk_counter <= 3 || stream_chunk_counter % 50 == 0) {
+                float rms = calculate_rms(audio_data, samples_read);
+                ESP_LOGI(TAG, "Stream chunk #%d: %d samples, RMS=%.4f, VAD=%s",
+                         stream_chunk_counter, (int)samples_read, rms,
+                         voice_active ? "SPEECH" : "SILENCE");
+            }
+
             switch (stream_state) {
                 case STREAM_STARTING:
                     if (voice_active) voice_chunk_count++;
@@ -425,7 +466,7 @@ void jarvis_audio_process(void) {
 
                     if (elapsed >= STREAM_MIN_AUDIO_MS) {
                         stream_state = STREAM_ACTIVE;
-                        ESP_LOGI(TAG, "Streaming active (VAD monitoring)");
+                        ESP_LOGI(TAG, "Streaming active (VAD monitoring, voice_chunks=%d)", voice_chunk_count);
                     }
                     break;
 

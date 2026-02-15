@@ -21,6 +21,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 
 extern "C" {
 #include "freertos/FreeRTOS.h"
@@ -31,6 +32,7 @@ extern "C" {
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_sntp.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 
@@ -75,6 +77,41 @@ static int current_minute = 0;
 static void on_wake_word_detected(void);
 static void handle_short_press(void);
 static void handle_long_press(void);
+
+// =============================================================================
+// SNTP TIME SYNC
+// =============================================================================
+
+static bool sntp_initialized = false;
+
+static void init_sntp(void) {
+    ESP_LOGI(TAG, "Initializing SNTP...");
+
+    // Timezone: CET-1CEST,M3.5.0,M10.5.0/3 = Central European Time con DST automatico
+    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+    tzset();
+
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(1, "time.google.com");
+    esp_sntp_init();
+
+    sntp_initialized = true;
+    ESP_LOGI(TAG, "SNTP initialized (pool.ntp.org + time.google.com)");
+}
+
+static void update_local_time(void) {
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+
+    // Se l'anno è > 2024 vuol dire che SNTP ha sincronizzato
+    if (timeinfo.tm_year > (2024 - 1900)) {
+        current_hour = timeinfo.tm_hour;
+        current_minute = timeinfo.tm_min;
+    }
+}
 
 // =============================================================================
 // BUTTON HANDLER (short press = manual activate, long press = DND toggle)
@@ -278,20 +315,15 @@ static bool on_stream_chunk(int16_t* chunk, size_t samples) {
     return true;
 }
 
-static void on_stream_end(void) {
-    ESP_LOGI(TAG, "Stream end callback - finalizing");
-
-    current_state = STATE_PROCESSING;
-    jarvis_display_set_state(STATE_PROCESSING);
-
+// Task separato per finalizzare lo stream (bloccante: aspetta risposta HTTP)
+// Così il main loop continua a fare fetch() dall'AFE e non riempie il ringbuffer
+static void stream_finalize_task(void* arg) {
     bool use_local_speaker = false;
     bool success = jarvis_network_end_stream(&use_local_speaker);
 
     if (success) {
         if (use_local_speaker) {
             ESP_LOGI(TAG, "Server requested local speaker playback");
-            // TODO: Implementare playback su speaker locale Atomic Base
-            // Per ora, mostriamo solo un feedback visivo
             jarvis_display_show_message("Local audio");
             vTaskDelay(pdMS_TO_TICKS(500));
         }
@@ -310,6 +342,27 @@ static void on_stream_end(void) {
 
     streaming_active = false;
     jarvis_audio_start_listening();
+
+    vTaskDelete(NULL);
+}
+
+static void on_stream_end(void) {
+    ESP_LOGI(TAG, "Stream end callback - finalizing in background");
+
+    current_state = STATE_PROCESSING;
+    jarvis_display_set_state(STATE_PROCESSING);
+
+    // Lancia il finalize in un task separato per non bloccare il main loop
+    // Il main loop deve continuare a fare fetch() dall'AFE
+    xTaskCreatePinnedToCore(
+        stream_finalize_task,
+        "stream_fin",
+        4096,
+        NULL,
+        3,
+        NULL,
+        1  // Core 1
+    );
 }
 
 // =============================================================================
@@ -423,6 +476,7 @@ static void main_task(void* arg) {
         if (current_state == STATE_IDLE || current_state == STATE_DND) {
             if (now - last_display_update > DISPLAY_UPDATE_IDLE_MS) {
                 last_display_update = now;
+                update_local_time();  // Legge ora corrente da RTC (sincronizzato via SNTP)
                 jarvis_display_set_time(current_hour, current_minute);
                 jarvis_display_set_temperature(cached_temperature);
                 jarvis_display_update();
@@ -516,6 +570,10 @@ extern "C" void app_main(void) {
     }
 
     ESP_LOGI(TAG, "Device ID (MAC): %s", device_config.device_id);
+
+    // Initialize SNTP for time sync (needs WiFi)
+    init_sntp();
+
     jarvis_display_show_message("Fetching config...");
 
     // Fetch configuration from server
