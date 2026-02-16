@@ -304,7 +304,14 @@ static void on_audio_track(uint8_t *data, size_t size, void *userdata) {
 static void audio_send_task(void *arg) {
     ESP_LOGI(TAG, "Audio send task started");
 
+    uint32_t packets_sent = 0;
+    uint32_t read_failures = 0;
+    uint32_t encode_failures = 0;
+    uint32_t send_failures = 0;
+    uint32_t loop_count = 0;
+
     while (session_active) {
+        loop_count++;
         // Read raw mono audio from ring buffer
         size_t samples_read = jarvis_audio_read_raw(enc_input_buffer,
                                                       BUFFER_SAMPLES,
@@ -317,14 +324,33 @@ static void audio_send_task(void *arg) {
                                             enc_output_buffer,
                                             OPUS_MAX_PACKET_SIZE);
             if (encoded_size > 0 && pc) {
-                peer_connection_send_audio(pc, enc_output_buffer, encoded_size);
+                int send_ret = peer_connection_send_audio(pc, enc_output_buffer, encoded_size);
+                if (send_ret >= 0) {
+                    packets_sent++;
+                } else {
+                    send_failures++;
+                }
+            } else if (encoded_size <= 0) {
+                encode_failures++;
             }
+        } else {
+            read_failures++;
+        }
+
+        // Log stats every 500 iterations (~7.5 seconds)
+        if (loop_count % 500 == 0) {
+            ESP_LOGI(TAG, "Audio send stats: loops=%lu sent=%lu read_fail=%lu enc_fail=%lu send_fail=%lu",
+                     (unsigned long)loop_count, (unsigned long)packets_sent,
+                     (unsigned long)read_failures, (unsigned long)encode_failures,
+                     (unsigned long)send_failures);
         }
 
         vTaskDelay(pdMS_TO_TICKS(TICK_INTERVAL_MS));
     }
 
-    ESP_LOGI(TAG, "Audio send task ended");
+    ESP_LOGI(TAG, "Audio send task ended (sent=%lu, read_fail=%lu, enc_fail=%lu, send_fail=%lu)",
+             (unsigned long)packets_sent, (unsigned long)read_failures,
+             (unsigned long)encode_failures, (unsigned long)send_failures);
     audio_send_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -494,7 +520,12 @@ static void webrtc_session_task(void *arg) {
 // =============================================================================
 
 bool jarvis_webrtc_init(void) {
-    ESP_LOGI(TAG, "Initializing WebRTC module (Opus encoder/decoder)...");
+    ESP_LOGI(TAG, "Initializing WebRTC module (libpeer + Opus)...");
+
+    // Initialize libpeer (calls srtp_init() internally)
+    // MUST be called before any PeerConnection/DTLS-SRTP operations
+    peer_init();
+    ESP_LOGI(TAG, "libpeer/libsrtp initialized");
 
     if (!init_opus_encoder()) {
         ESP_LOGE(TAG, "Opus encoder init failed");

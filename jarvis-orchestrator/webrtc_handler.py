@@ -29,6 +29,10 @@ import onnxruntime as ort
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from scipy.signal import resample_poly
 
+# Temporary debug: enable DEBUG logging for aiortc RTP/DTLS to diagnose audio not arriving
+logging.getLogger("aiortc.rtcrtpreceiver").setLevel(logging.DEBUG)
+logging.getLogger("aiortc.rtcdtlstransport").setLevel(logging.DEBUG)
+
 import config
 
 logger = logging.getLogger("JARVIS_WEBRTC")
@@ -272,7 +276,11 @@ class WebRTCSession:
         return sdp
 
     async def _wait_ice_gathering(self):
-        """Aspetta che ICE gathering sia completo (max 10s)."""
+        """Aspetta che ICE gathering sia completo (max 2s).
+
+        Il STUN server risponde in ~200ms, quindi 2s è più che sufficiente.
+        Se scade, procede con i candidati parziali (solitamente già sufficienti).
+        """
         if self._pc.iceGatheringState == "complete":
             return
 
@@ -284,7 +292,7 @@ class WebRTCSession:
                 ice_complete.set()
 
         try:
-            await asyncio.wait_for(ice_complete.wait(), timeout=10.0)
+            await asyncio.wait_for(ice_complete.wait(), timeout=2.0)
         except asyncio.TimeoutError:
             logger.warning(f"ICE gathering timeout for session {self.session_id}, proceeding with partial candidates")
 
@@ -359,6 +367,19 @@ class WebRTCSession:
             return
 
         logger.info(f"[{self.session_id}] Connection established, consuming audio frames...")
+
+        # Debug: log DTLS/RTP transport state
+        try:
+            dtls = self._pc._dtlsTransports
+            if dtls:
+                for t in dtls:
+                    logger.info(f"[{self.session_id}] DTLS transport state: {t.state}")
+            receivers = self._pc.getReceivers()
+            for r in receivers:
+                logger.info(f"[{self.session_id}] Receiver track: kind={r.track.kind if r.track else 'None'}, "
+                            f"readyState={r.track.readyState if r.track else 'N/A'}")
+        except Exception as e:
+            logger.debug(f"[{self.session_id}] Debug info error: {e}")
 
         try:
             while not self._closed:
