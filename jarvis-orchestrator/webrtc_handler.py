@@ -329,23 +329,44 @@ class WebRTCSession:
         # Calcolo frame duration a 16 kHz per speech/silence detection
         chunk_duration_ms = (VAD_CHUNK_SIZE / 16000) * 1000  # 32ms
 
+        frame_count = 0
+        no_audio_count = 0
+
+        logger.info(f"[{self.session_id}] _consume_audio started, waiting for frames...")
+
         try:
             while not self._closed:
                 try:
                     frame = await asyncio.wait_for(track.recv(), timeout=5.0)
                 except asyncio.TimeoutError:
+                    no_audio_count += 1
+                    logger.warning(f"[{self.session_id}] No audio for 5s (attempt #{no_audio_count}, "
+                                   f"frames_received={frame_count}, speech_started={self._speech_started})")
                     # Nessun audio per 5s — potrebbe essere disconnesso
                     if self._speech_started and self._audio_buffer:
                         logger.info(f"No audio for 5s, delivering accumulated speech")
                         await self._deliver_speech()
                         await self.close()
+                        return
+                    if no_audio_count >= 3:
+                        logger.error(f"[{self.session_id}] No audio received after {no_audio_count * 5}s, closing")
+                        await self.close()
+                        return
                     continue
                 except Exception as e:
                     if not self._closed:
-                        logger.debug(f"Track recv error: {e}")
+                        logger.error(f"[{self.session_id}] Track recv error: {e}")
                     break
 
+                frame_count += 1
+                no_audio_count = 0  # reset on successful recv
                 self._last_audio_at = time.time()
+
+                # Log primi frame per debug
+                if frame_count <= 3 or frame_count % 500 == 0:
+                    logger.info(f"[{self.session_id}] Frame #{frame_count}: "
+                                f"samples={frame.samples}, rate={frame.sample_rate}, "
+                                f"channels={frame.layout.channels}, format={frame.format}")
 
                 # aiortc AudioFrame → numpy float32
                 # frame.to_ndarray() ritorna int16, shape (samples, channels)
