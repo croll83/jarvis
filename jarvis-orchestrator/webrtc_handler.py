@@ -222,6 +222,7 @@ class WebRTCSession:
 
         # Lifecycle
         self._closed = False
+        self._connected = asyncio.Event()  # Set when ICE+DTLS connected
         self._timeout_task: Optional[asyncio.Task] = None
         self._consume_task: Optional[asyncio.Task] = None
 
@@ -284,7 +285,10 @@ class WebRTCSession:
         state = self._pc.connectionState
         logger.info(f"WebRTC session {self.session_id} connection state: {state}")
 
-        if state in ("failed", "disconnected", "closed"):
+        if state == "connected":
+            self._connected.set()
+        elif state in ("failed", "disconnected", "closed"):
+            self._connected.set()  # Unblock any waiter so it can exit
             asyncio.ensure_future(self._handle_disconnect(state))
 
     async def _handle_disconnect(self, reason: str):
@@ -332,7 +336,21 @@ class WebRTCSession:
         frame_count = 0
         no_audio_count = 0
 
-        logger.info(f"[{self.session_id}] _consume_audio started, waiting for frames...")
+        # Aspetta che ICE+DTLS siano connessi prima di consumare frame
+        # Il track viene creato subito al setRemoteDescription (prima di ICE),
+        # ma i frame audio arrivano solo dopo che la connessione è stabilita.
+        logger.info(f"[{self.session_id}] _consume_audio waiting for connection...")
+        try:
+            await asyncio.wait_for(self._connected.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.error(f"[{self.session_id}] Connection timeout in consume_audio, closing")
+            await self.close()
+            return
+
+        if self._closed:
+            return
+
+        logger.info(f"[{self.session_id}] Connection established, consuming audio frames...")
 
         try:
             while not self._closed:
