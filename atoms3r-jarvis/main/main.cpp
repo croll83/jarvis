@@ -77,6 +77,10 @@ static int64_t error_clear_time = 0;
 
 // Deferred display update flag (avoids SPI race between ws_audio task and main task)
 static volatile bool display_state_dirty = false;
+static volatile device_state_t display_state_value = STATE_IDLE;  // snapshot of state to display
+
+// Deferred wake word flag (wake callback runs in afe_detect_task, must not block it)
+static volatile bool wake_word_pending = false;
 
 // Forward declarations
 static void on_wake_word_detected(void);
@@ -177,10 +181,11 @@ static void handle_short_press(void) {
         jarvis_network_notify_dnd(device_config.device_id, false);
     }
 
-    // If idle/busy/dnd/error -> manual activation
+    // If idle/busy/dnd/error/listening(stuck) -> manual activation
     if (current_state == STATE_IDLE || current_state == STATE_DND ||
-        current_state == STATE_BUSY || current_state == STATE_ERROR) {
-        ESP_LOGI(TAG, ">>> MANUAL ACTIVATION (button) <<<");
+        current_state == STATE_BUSY || current_state == STATE_ERROR ||
+        (current_state == STATE_LISTENING && !jarvis_ws_audio_is_active())) {
+        ESP_LOGI(TAG, ">>> MANUAL ACTIVATION (button) <<< (from state=%d)", current_state);
         on_wake_word_detected();
     }
 }
@@ -259,6 +264,16 @@ static void on_wake_word_detected(void) {
         return;
     }
 
+    // Guard: don't activate if already in a session
+    if (current_state == STATE_LISTENING || current_state == STATE_PROCESSING) {
+        ESP_LOGW(TAG, "Wake word ignored (already in state=%d)", current_state);
+        return;
+    }
+    if (jarvis_ws_audio_is_active()) {
+        ESP_LOGW(TAG, "Wake word ignored (WS session active)");
+        return;
+    }
+
     ESP_LOGI(TAG, ">>> WAKE WORD 'JARVIS' DETECTED! <<<");
 
     // 1. Flash white (visual feedback)
@@ -306,9 +321,9 @@ static void on_wake_word_detected(void) {
 // =============================================================================
 
 static void on_session_done(bool success) {
-    ESP_LOGI(TAG, "WS audio session done: %s", success ? "OK" : "FAIL");
+    ESP_LOGI(TAG, "WS audio session done: %s (was state=%d)", success ? "OK" : "FAIL", current_state);
 
-    // Stop streaming ring buffer, restore PGA gain
+    // Stop streaming ring buffer
     jarvis_audio_set_streaming(false);
 
     // NOTE: This callback runs in ws_audio task (Core 0, pri 6).
@@ -316,10 +331,14 @@ static void on_session_done(bool success) {
     // Just set state + dirty flag; main_task will update display safely.
     if (success) {
         current_state = STATE_BUSY;
+        display_state_value = STATE_BUSY;
         busy_state_start = esp_timer_get_time() / 1000;
+        ESP_LOGI(TAG, "State -> BUSY (display_dirty=true)");
     } else {
         current_state = STATE_ERROR;
+        display_state_value = STATE_ERROR;
         error_clear_time = esp_timer_get_time() / 1000 + 2000;  // clear after 2s
+        ESP_LOGI(TAG, "State -> ERROR (display_dirty=true)");
     }
     display_state_dirty = true;
 
@@ -416,12 +435,22 @@ static void main_task(void* arg) {
             handle_button_up();
         }
 
-        // Process audio (wake word detection)
+        // Process audio (wake word detection — now a no-op, detection via flag)
         jarvis_audio_process();
 
+        // Deferred wake word activation (set by afe_detect_task callback)
+        if (wake_word_pending) {
+            wake_word_pending = false;
+            ESP_LOGI(TAG, "Wake word flag processed by main_task");
+            on_wake_word_detected();
+        }
+
         // Deferred display state update (from callbacks running in other tasks)
+        // Uses saved display_state_value to prevent race with busy poll
         if (display_state_dirty) {
             display_state_dirty = false;
+            current_state = display_state_value;  // restore intended state (poll may have overwritten)
+            ESP_LOGI(TAG, "Display dirty: setting state=%d", current_state);
             jarvis_display_set_state(current_state);
             if (current_state == STATE_ERROR) {
                 jarvis_display_set_error("Session error");
@@ -602,8 +631,10 @@ extern "C" void app_main(void) {
     }
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // Set wake word callback
-    jarvis_audio_set_wake_callback(on_wake_word_detected);
+    // Set wake word callback (lightweight — just sets flag, main_task processes it)
+    jarvis_audio_set_wake_callback([]() {
+        wake_word_pending = true;
+    });
 
     // Start listening
     jarvis_audio_start_listening();

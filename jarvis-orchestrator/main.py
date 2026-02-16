@@ -1170,7 +1170,8 @@ def build_speaker_context(audio_bytes: Optional[bytes], source: str, explicit_sp
 # ===========================================================================
 
 async def forward_to_openclaw(text: str, context: dict, hint: str = "",
-                              stream_tts_callback=None) -> str:
+                              stream_tts_callback=None,
+                              session_user: str = None) -> tuple:
     """
     Forward request to OpenClaw Gateway via OpenResponses API (POST /v1/responses).
 
@@ -1189,13 +1190,18 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
         hint: Optional hint for OpenClaw (e.g. "domotics")
         stream_tts_callback: Optional async callable(chunk: str, is_first: bool) -> None
                              Called for each complete sentence during streaming.
+        session_user: Optional stable user identifier for OpenClaw multi-turn sessions.
+                      When provided, OpenClaw maintains conversation history across calls.
+
+    Returns:
+        tuple: (response_text: str, response_id: str | None)
     """
     import aiohttp
     import json as _json
 
     if not config.OPENCLAW_URL or not config.OPENCLAW_TOKEN:
         logger.warning("OpenClaw not configured, falling back to local response")
-        return await get_quick_response(text, context)
+        return await get_quick_response(text, context), None
 
     # Build message with context for OpenClaw
     speaker_name = context.get("speaker_name", "Sconosciuto")
@@ -1244,12 +1250,15 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
         "model": "openclaw:main",
         "stream": True,
     }
+    # Multi-turn session: 'user' param enables stable session routing in OpenClaw
+    if session_user:
+        payload["user"] = str(session_user)
     # User metadata per OpenClaw (identità parlante)
     if speaker_id or (speaker_name and speaker_name != "Sconosciuto"):
         payload["metadata"] = {
-            "user_id": speaker_id,
-            "user_name": speaker_name,
-            "identified": speaker_identified,
+            "user_id": str(speaker_id) if speaker_id is not None else None,
+            "user_name": str(speaker_name) if speaker_name else None,
+            "identified": str(speaker_identified),
         }
     if tts_instructions:
         payload["instructions"] = tts_instructions
@@ -1273,13 +1282,14 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
                 if resp.status != 200:
                     body = await resp.text()
                     logger.error(f"OpenClaw error {resp.status}: {body[:200]}")
-                    return await get_quick_response(text, context)
+                    return await get_quick_response(text, context), None
 
                 # Parse SSE stream
                 accumulated_text = ""  # Tutto il testo ricevuto finora
                 pending_chunk = ""     # Buffer per sentence splitting (solo con callback)
                 event_count = 0
                 final_status = None
+                response_id = None     # OpenClaw response ID for session tracking
                 is_first_chunk = True  # Per sound_type solo sul primo chunk
                 chunks_sent = 0
 
@@ -1337,6 +1347,7 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
                     elif event_type == "response.completed":
                         resp_data = event.get("response", {})
                         final_status = resp_data.get("status")
+                        response_id = resp_data.get("id")
                         if not accumulated_text:
                             accumulated_text = _extract_openclaw_response(resp_data)
 
@@ -1344,7 +1355,7 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
                     elif event_type == "response.failed":
                         error = event.get("response", {}).get("error", {})
                         logger.error(f"OpenClaw stream failed: {error.get('code', '?')}: {error.get('message', '?')}")
-                        return await get_quick_response(text, context)
+                        return await get_quick_response(text, context), None
 
                 # Flush remaining pending chunk (coda che non termina con .!?\n)
                 if stream_tts_callback and pending_chunk.strip():
@@ -1358,9 +1369,10 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
                     logger.info(
                         f"OpenClaw stream response ({len(accumulated_text)} chars, "
                         f"{event_count} events, status={final_status}, "
+                        f"resp_id={response_id[:20] + '...' if response_id and len(response_id) > 20 else response_id}, "
                         f"tts_chunks={_flush_tts_sentences.chunks_sent if stream_tts_callback else 'n/a'})"
                     )
-                    return accumulated_text
+                    return accumulated_text, response_id
 
                 logger.warning(f"OpenClaw stream ended with no text ({event_count} events, status={final_status})")
 
@@ -1369,7 +1381,7 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
             f"OpenClaw stream timeout (total={config.OPENCLAW_TIMEOUT_TOTAL}s, "
             f"read={config.OPENCLAW_TIMEOUT_READ}s)"
         )
-        return "Mi dispiace, l'operazione sta richiedendo più tempo del previsto. Riprova tra poco."
+        return "Mi dispiace, l'operazione sta richiedendo più tempo del previsto. Riprova tra poco.", None
     except aiohttp.ClientConnectorError:
         logger.warning("OpenClaw unreachable, falling back to local")
         service_status.set_offline("openclaw")
@@ -1377,7 +1389,7 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
         logger.error(f"OpenClaw stream error: {e}")
 
     # Fallback: local Qwen quick response
-    return await get_quick_response(text, context)
+    return await get_quick_response(text, context), None
 
 
 # Sentence boundary regex: split at ". " "! " "? " or "\n" (keeping the delimiter)
@@ -1949,8 +1961,16 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         logger.warning(f"WS device {device_id} not configured, using legacy mode")
 
     try:
-        # Denoise + STT
-        clean_audio = await denoise_audio(audio_bytes)
+        # Normalizzazione audio (il mic ES8311 ha output basso ~RMS 0.02)
+        import numpy as _np2
+        _raw = _np2.frombuffer(audio_bytes, dtype=_np2.int16).astype(_np2.float32)
+        _peak = _np2.max(_np2.abs(_raw))
+        if _peak > 0:
+            _target_peak = 28000.0  # ~85% di 32768, lascia headroom
+            _gain = min(_target_peak / _peak, 20.0)  # max 20x gain (~26dB)
+            _raw = (_raw * _gain).clip(-32768, 32767)
+            logger.info(f"Audio normalized: peak={_peak:.0f} gain={_gain:.1f}x ({20*_np2.log10(_gain):.1f}dB)")
+        clean_audio = _raw.astype(_np2.int16).tobytes()
         stt_start = time.time()
         text = await transcribe_audio(clean_audio)
         admin_metrics.record_stt((time.time() - stt_start) * 1000)
@@ -2231,9 +2251,25 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     reduces perceived latency.
 
     For other sources (Telegram, etc.): waits for full response, then delivers.
+
+    Multi-turn: uses OpenClaw 'user' parameter for stable session routing.
+    If the speaker is identified, session key = "speaker-{speaker_id}".
+    Otherwise, session key = "device-{device_id}" to group anonymous interactions per device.
     """
     context["_user_text"] = text  # Per VirtualMic response tracking
     context["_intent"] = f"OPENCLAW:{hint}" if hint else "OPENCLAW"
+
+    # Build stable session user key for OpenClaw multi-turn
+    speaker_id = context.get("speaker_id")
+    device_cfg = context.get("device_config")
+    room = (device_cfg.get("room") if device_cfg else None) or context.get("room", "")
+    if speaker_id:
+        session_user = f"speaker-{speaker_id}"
+    elif room:
+        session_user = f"device-{room.lower()}"
+    else:
+        session_user = f"source-{context.get('source', 'unknown')}"
+    logger.info(f"OpenClaw multi-turn session_user={session_user}")
 
     save_chat_message("user", text, context.get("source", "AtomS3R"),
                       context.get("speaker_id"), context.get("speaker_name", "Sconosciuto"))
@@ -2291,8 +2327,14 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
             except Exception as e:
                 logger.error(f"TTS stream chunk delivery error: {e}")
 
-        # Forward to OpenClaw with streaming callback
-        response = await forward_to_openclaw(text, context, hint=hint, stream_tts_callback=_stream_tts_chunk)
+        # Forward to OpenClaw with streaming callback + multi-turn session
+        response, response_id = await forward_to_openclaw(
+            text, context, hint=hint,
+            stream_tts_callback=_stream_tts_chunk,
+            session_user=session_user
+        )
+        if response_id:
+            logger.debug(f"OpenClaw response_id={response_id[:30]}... for session={session_user}")
 
         # Post-streaming: save chat, update speaking state, VirtualMic tracking
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
@@ -2352,7 +2394,7 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
             if fb_speaker:
                 asyncio.create_task(play_feedback_sound("neutral", fb_speaker, fb_loc))
 
-        response = await forward_to_openclaw(text, context, hint=hint)
+        response, _ = await forward_to_openclaw(text, context, hint=hint, session_user=session_user)
 
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
         await deliver_final_response(response, context, sound_type="neutral")
@@ -3062,7 +3104,7 @@ async def process_jarvis_logic(text: str, context: dict):
         if not config.GEMINI_ENABLED:
             # Gemini non configurato, forward a OpenClaw
             logger.warning("GEMINI intent but Gemini not enabled, forwarding to OpenClaw")
-            response = await forward_to_openclaw(text, context, hint="gemini_fallback")
+            response, _ = await forward_to_openclaw(text, context, hint="gemini_fallback")
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context, sound_type="neutral")
             return
@@ -3263,7 +3305,7 @@ async def process_jarvis_logic(text: str, context: dict):
     # --- LOW CONFIDENCE: forward to OpenClaw ---
     elif conf < conf_low:
         logger.info(f"Low confidence ({conf:.2f} < {conf_low}), forwarding to OpenClaw")
-        response = await forward_to_openclaw(text, context, hint=f"low_confidence_{intent}")
+        response, _ = await forward_to_openclaw(text, context, hint=f"low_confidence_{intent}")
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
         await deliver_final_response(response, context, sound_type="neutral")
 

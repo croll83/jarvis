@@ -153,7 +153,8 @@ static bool init_es8311(void) {
         .sample_frequency = MIC_SAMPLE_RATE,
     };
 
-    // Initialize codec with 32-bit resolution (same as OpenAI reference)
+    // Initialize codec with 32-bit resolution — MCLK requires 32-bit for clock dividers.
+    // I2S is also set to 32-bit. jarvis_codec_read() extracts int16 from int32 samples.
     esp_err_t ret = es8311_init(es8311_handle, &clk_cfg,
                                  ES8311_RESOLUTION_32, ES8311_RESOLUTION_32);
     if (ret != ESP_OK) {
@@ -167,13 +168,28 @@ static bool init_es8311(void) {
         ESP_LOGW(TAG, "ES8311 volume set failed: %s", esp_err_to_name(ret));
     }
 
-    // Configure microphone (false = not differential, single-ended MIC1P)
+    // Configure microphone (false = not digital, analog MIC1P)
+    // Sets PGA=+30dB (max analog) and ADC volume=+16dB (digital)
     ret = es8311_microphone_config(es8311_handle, false);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "ES8311 mic config failed: %s", esp_err_to_name(ret));
     }
 
-    ESP_LOGI(TAG, "ES8311 codec initialized (16kHz, 32-bit res, volume=80%%)");
+    // Set ADC scale gain (REG16 bits[2:0]): 0=0dB, 1=6dB, ..., 7=42dB
+    // +18dB digital gain for ambient mic use — enough to bring speech to
+    // usable levels without clipping at close range. Total hardware chain:
+    // PGA +30dB (analog) + ADC scale +18dB (digital) + ADC vol +16dB = +64dB
+    ret = es8311_microphone_gain_set(es8311_handle, ES8311_MIC_GAIN_18DB);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "ES8311 mic gain set failed: %s", esp_err_to_name(ret));
+    }
+
+    // Verify register values via readback
+    ESP_LOGI(TAG, "ES8311 register dump (mic gain verification):");
+    es8311_register_dump(es8311_handle);
+
+    ESP_LOGI(TAG, "ES8311 codec initialized (16kHz, 16-bit res, volume=80%%, "
+             "PGA=+30dB, ADC_vol=+16dB, ADC_scale=+18dB)");
     return true;
 }
 
@@ -213,16 +229,14 @@ static bool init_i2s(void) {
     ESP_LOGI(TAG, "Initializing I2S (legacy API, BCLK=%d, WS=%d, DIN=%d, DOUT=%d)...",
              I2S_BCLK_PIN, I2S_WS_PIN, I2S_DIN_PIN, I2S_DOUT_PIN);
 
-    // Legacy I2S config — exact copy from OpenAI reference SDK media.cpp (ATOMS3R)
-    // Key settings:
-    //   - I2S_CHANNEL_FMT_ALL_LEFT: mono audio on left channel (no stereo de-interleave needed)
-    //   - use_apll = 1: precise clock generation (falls back to PLL on ESP32-S3)
-    //   - Full duplex: both TX (speaker) and RX (mic) on same port
+    // Legacy I2S config for ES8311 on AtomS3R
+    // Stereo format: ES8311 sends L+R interleaved frames.
+    // codec_read() de-interleaves to extract mono (left channel only).
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX),
         .sample_rate = MIC_SAMPLE_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format = I2S_CHANNEL_FMT_ALL_LEFT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // Stereo: L+R interleaved
         .communication_format = I2S_COMM_FORMAT_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
         .dma_buf_count = 8,
@@ -253,7 +267,7 @@ static bool init_i2s(void) {
 
     i2s_zero_dma_buffer(I2S_PORT);
 
-    ESP_LOGI(TAG, "I2S initialized (legacy API, 16kHz, 16-bit, ALL_LEFT, APLL, port %d)",
+    ESP_LOGI(TAG, "I2S initialized (legacy API, 16kHz, 16-bit, STEREO, APLL, port %d)",
              I2S_PORT);
     return true;
 }
@@ -287,7 +301,7 @@ bool jarvis_codec_init(void) {
         ESP_LOGW(TAG, "Amplifier enable failed - speaker may not work");
     }
 
-    // 4. I2S full-duplex (legacy API with APLL + ALL_LEFT)
+    // 4. I2S full-duplex (legacy API with APLL + stereo RIGHT_LEFT)
     if (!init_i2s()) {
         ESP_LOGE(TAG, "I2S init failed");
         return false;
@@ -330,33 +344,67 @@ void jarvis_codec_deinit(void) {
     ESP_LOGI(TAG, "Codec deinitialized");
 }
 
-// With I2S_CHANNEL_FMT_ALL_LEFT, data is already mono — no de-interleave needed!
+// Stereo I2S (RIGHT_LEFT): de-interleave L+R to extract mono (left channel)
 int jarvis_codec_read(int16_t *buf, size_t num_samples) {
     if (!initialized || !buf || num_samples == 0) return -1;
 
-    size_t bytes_to_read = num_samples * sizeof(int16_t);
+    // Read stereo (L+R interleaved) and extract left channel as mono
+    // Need 2x samples because stereo has L,R,L,R,...
+    size_t stereo_samples = num_samples * 2;
+    size_t bytes_to_read = stereo_samples * sizeof(int16_t);
+
+    int16_t stack_buf[640];  // enough for typical 160*2=320 stereo samples
+    int16_t *stereo_buf = (stereo_samples <= 640) ? stack_buf :
+                          (int16_t *)malloc(bytes_to_read);
+    if (!stereo_buf) return -1;
+
     size_t bytes_read = 0;
+    esp_err_t ret = i2s_read(I2S_PORT, stereo_buf, bytes_to_read, &bytes_read, portMAX_DELAY);
+    if (ret != ESP_OK || bytes_read == 0) {
+        if (stereo_buf != stack_buf) free(stereo_buf);
+        return -1;
+    }
 
-    esp_err_t ret = i2s_read(I2S_PORT, buf, bytes_to_read, &bytes_read, portMAX_DELAY);
-    if (ret != ESP_OK || bytes_read == 0) return -1;
+    // De-interleave: take every other sample (left channel = even indices)
+    size_t total_samples = bytes_read / sizeof(int16_t);
+    size_t mono_count = total_samples / 2;
 
-    return (int)(bytes_read / sizeof(int16_t));
+    for (size_t i = 0; i < mono_count; i++) {
+        buf[i] = stereo_buf[i * 2];  // Left channel
+    }
+
+    if (stereo_buf != stack_buf) free(stereo_buf);
+    return (int)mono_count;
 }
 
-// With I2S_CHANNEL_FMT_ALL_LEFT, write mono directly — no stereo duplication needed!
+// Write mono samples as stereo (duplicate L=R) for ES8311
 int jarvis_codec_write(const int16_t *buf, size_t num_samples) {
     if (!initialized || !buf || num_samples == 0) return -1;
 
-    size_t bytes_to_write = num_samples * sizeof(int16_t);
-    size_t bytes_written = 0;
+    // Expand mono to stereo: L,R,L,R,...  (L=R=same sample)
+    size_t stereo_samples = num_samples * 2;
+    size_t bytes_to_write = stereo_samples * sizeof(int16_t);
 
-    esp_err_t ret = i2s_write(I2S_PORT, buf, bytes_to_write, &bytes_written, pdMS_TO_TICKS(1000));
+    int16_t stack_buf[640];
+    int16_t *stereo_buf = (stereo_samples <= 640) ? stack_buf :
+                          (int16_t *)malloc(bytes_to_write);
+    if (!stereo_buf) return -1;
+
+    for (size_t i = 0; i < num_samples; i++) {
+        stereo_buf[i * 2] = buf[i];      // Left
+        stereo_buf[i * 2 + 1] = buf[i];  // Right = same
+    }
+
+    size_t bytes_written = 0;
+    esp_err_t ret = i2s_write(I2S_PORT, stereo_buf, bytes_to_write, &bytes_written, pdMS_TO_TICKS(1000));
+    if (stereo_buf != stack_buf) free(stereo_buf);
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S write error: %s", esp_err_to_name(ret));
         return -1;
     }
 
-    return (int)(bytes_written / sizeof(int16_t));
+    return (int)(bytes_written / sizeof(int16_t) / 2);  // return mono sample count
 }
 
 void jarvis_codec_set_volume(int volume) {
