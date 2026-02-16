@@ -23,6 +23,7 @@ soundfile==0.12.1
 
 # Audio Processing
 numpy>=1.24.0
+scipy>=1.11.0
 pyrnnoise>=0.0.2
 
 # Google Gemini (for image generation)

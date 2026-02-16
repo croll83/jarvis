@@ -49,6 +49,76 @@ static const char *TAG = "AUDIO";
 // Model partition name
 #define MODEL_PARTITION_LABEL   "model"
 
+// WakeNet detection threshold override.
+// Default for wn9_jarvis_tts DET_MODE_90 is 0.627 — too strict for Italian pronunciation.
+// Lower value = more false positives but better sensitivity to pronunciation variations.
+// Range: 0.5 ~ 0.9999 (per ESP-SR docs). Start at 0.5 (most sensitive allowed).
+#define WAKENET_DET_THRESHOLD   0.5f
+
+// =============================================================================
+// AFE INTERNAL WakeNet ACCESS (layout-independent pointer scan)
+// =============================================================================
+// The AFE doesn't expose set_det_threshold publicly. Instead of mirroring the
+// internal struct (fragile, caused crash), we scan the AFE data blob for the
+// known WakeNet interface pointer obtained from esp_wn_handle_from_name().
+// The model_data pointer is at the next word position in the struct.
+// This works regardless of struct layout or padding changes.
+
+/**
+ * @brief Find WakeNet interface and model_data pointers inside AFE data blob.
+ *
+ * Scans first 256 bytes (64 words) of afe_data looking for a pointer that
+ * matches the known WakeNet interface. The next word is model_data.
+ *
+ * @param afe_data       Opaque AFE data pointer
+ * @param known_wn_iface The WakeNet interface pointer from esp_wn_handle_from_name()
+ * @param out_wn         Output: WakeNet interface pointer (or NULL)
+ * @param out_model_data Output: model_iface_data_t pointer (or NULL)
+ * @return true if found
+ */
+static bool find_wakenet_in_afe(esp_afe_sr_data_t *afe_data_ptr,
+                                const esp_wn_iface_t *known_wn_iface,
+                                esp_wn_iface_t **out_wn,
+                                model_iface_data_t **out_model_data)
+{
+    *out_wn = NULL;
+    *out_model_data = NULL;
+
+    // Scan first 64 words (256 bytes) of AFE data blob
+    // On ESP32-S3 (Xtensa, 32-bit), all struct fields are word-aligned
+    uint32_t *words = (uint32_t *)afe_data_ptr;
+    const int scan_words = 64;
+
+    for (int i = 0; i < scan_words - 1; i++) {
+        if (words[i] == (uint32_t)known_wn_iface) {
+            ESP_LOGI(TAG, "WakeNet iface found at word[%d]=0x%08lx", i, (unsigned long)words[i]);
+
+            // Dump next 8 words for debugging
+            for (int d = 1; d <= 8 && (i + d) < scan_words; d++) {
+                ESP_LOGI(TAG, "  word[%d]=0x%08lx", i + d, (unsigned long)words[i + d]);
+            }
+
+            // model_data may be at offset +1 or further (struct padding differs between
+            // .ref source and compiled binary). Search next 4 words for a valid heap pointer.
+            for (int offset = 1; offset <= 4 && (i + offset) < scan_words; offset++) {
+                uint32_t md_addr = words[i + offset];
+                // Valid heap pointer: non-zero, word-aligned, in DRAM or PSRAM range
+                if (md_addr != 0 && (md_addr & 0x3) == 0 && md_addr >= 0x3C000000) {
+                    *out_wn = (esp_wn_iface_t *)words[i];
+                    *out_model_data = (model_iface_data_t *)md_addr;
+                    ESP_LOGI(TAG, "model_data at word[%d]=0x%08lx (offset +%d from wakenet)",
+                             i + offset, (unsigned long)md_addr, offset);
+                    return true;
+                }
+            }
+
+            ESP_LOGW(TAG, "WakeNet at word[%d] but no valid model_data in next 4 words", i);
+        }
+    }
+
+    return false;
+}
+
 // =============================================================================
 // STATE
 // =============================================================================
@@ -138,13 +208,23 @@ static void afe_feed_task(void* arg) {
                              feed_count, samples, rms);
                 }
 
-                // PATH 1: Raw ring buffer (when streaming is active)
+                // PATH 1: Raw ring buffer with digital gain (when streaming is active)
+                // Apply 8x gain ONLY for WS streaming (STT needs louder signal)
+                // WakeNet gets the original signal (its AGC handles low levels)
                 if (streaming_to_ringbuf && raw_ringbuf) {
-                    xRingbufferSend(raw_ringbuf, mono_buff,
-                                    samples * sizeof(int16_t), 0);
+                    int16_t amplified[320];  // max feed_chunksize typically 256 or 160
+                    int copy_len = (samples <= 320) ? samples : 320;
+                    for (int j = 0; j < copy_len; j++) {
+                        int32_t v = (int32_t)mono_buff[j] * 4;  // 4x = ~12dB (hardware at +64dB, extra boost for speaker ID)
+                        if (v > 32767) v = 32767;
+                        else if (v < -32768) v = -32768;
+                        amplified[j] = (int16_t)v;
+                    }
+                    xRingbufferSend(raw_ringbuf, amplified,
+                                    copy_len * sizeof(int16_t), 0);
                 }
 
-                // PATH 2: AFE feed (always — keeps WakeNet running)
+                // PATH 2: AFE feed (always — keeps WakeNet running, NO gain applied)
                 afe_handle->feed(afe_data, mono_buff);
             }
         } else {
@@ -234,7 +314,9 @@ static bool init_wakenet(void) {
     // Disable AEC (no reference speaker)
     afe_config.aec_init = false;
 
-    // Disable Speech Enhancement — SE suppresses weak/distant speech
+    // DISABLE Speech Enhancement for single-mic setup
+    // BSS (Blind Source Separation) requires 2+ mics. With 1 mic, SE can
+    // attenuate weak speech signals, making WakeNet detection worse.
     afe_config.se_init = false;
 
     // Low-cost mode for AtomS3R
@@ -248,8 +330,14 @@ static bool init_wakenet(void) {
     afe_config.afe_perferred_priority = 5;
     afe_config.afe_ringbuf_size = 50;
 
-    // AGC
-    afe_config.agc_mode = AFE_MN_PEAK_AGC_MODE_2;
+    // Linear gain: amplify weak mic signal BEFORE AFE processing.
+    // ES8311 mic output is very weak (RMS ~0.007 at silence, ~0.02-0.04 speech).
+    // 2x gain brings speech to ~0.04-0.08 while keeping noise manageable.
+    // Higher values (4.0+) amplify background noise too much, reducing detection range.
+    afe_config.afe_linear_gain = 2.0;
+
+    // Most aggressive peak AGC (-3dB) for MultiNet path
+    afe_config.agc_mode = AFE_MN_PEAK_AGC_MODE_3;
 
     // Create AFE handle
     afe_handle = (esp_afe_sr_iface_t *)&ESP_AFE_SR_HANDLE;
@@ -259,6 +347,48 @@ static bool init_wakenet(void) {
         ESP_LOGE(TAG, "Failed to create AFE - model may not be found in partition");
         deinit_models();
         return false;
+    }
+
+    // =========================================================================
+    // LOWER WakeNet DETECTION THRESHOLD
+    // =========================================================================
+    // Scan AFE data blob to find WakeNet interface and model_data pointers.
+    // This allows calling set_det_threshold() to make detection more sensitive
+    // for Italian pronunciation of "Jarvis" (model trained for American English).
+    {
+        // Get the known WakeNet interface pointer for comparison
+        const char *wn_model_name = afe_config.wakenet_model_name;
+        const esp_wn_iface_t *known_wn = esp_wn_handle_from_name(wn_model_name);
+
+        if (known_wn) {
+            esp_wn_iface_t *wn = NULL;
+            model_iface_data_t *md = NULL;
+
+            if (find_wakenet_in_afe(afe_data, known_wn, &wn, &md)) {
+                // Log current threshold before changing
+                float old_threshold = wn->get_det_threshold(md, 1);
+                ESP_LOGI(TAG, "WakeNet threshold BEFORE: %.4f (word_index=1)", old_threshold);
+
+                // Set new lower threshold
+                int ret = wn->set_det_threshold(md, WAKENET_DET_THRESHOLD, 1);
+                float new_threshold = wn->get_det_threshold(md, 1);
+                ESP_LOGI(TAG, "WakeNet threshold AFTER: %.4f (ret=%d, target=%.2f)",
+                         new_threshold, ret, WAKENET_DET_THRESHOLD);
+
+                // Log model info
+                int word_num = wn->get_word_num(md);
+                for (int i = 1; i <= word_num; i++) {
+                    char *name = wn->get_word_name(md, i);
+                    float thresh = wn->get_det_threshold(md, i);
+                    ESP_LOGI(TAG, "  Word %d: '%s' threshold=%.4f",
+                             i, name ? name : "?", thresh);
+                }
+            } else {
+                ESP_LOGW(TAG, "Could not find WakeNet in AFE data (scanned 64 words)");
+            }
+        } else {
+            ESP_LOGW(TAG, "esp_wn_handle_from_name('%s') returned NULL", wn_model_name);
+        }
     }
 
     // Start AFE feed task (Core 1, priority 5 — continuous I2S read + AFE feed)
@@ -287,10 +417,11 @@ static bool init_wakenet(void) {
 
     int fetch_chunksize = afe_handle->get_fetch_chunksize(afe_data);
     int feed_chunksize_log = afe_handle->get_feed_chunksize(afe_data);
-    ESP_LOGI(TAG, "WakeNet initialized: model=%s (from SPIFFS), VAD=ON",
+    ESP_LOGI(TAG, "WakeNet initialized: model=%s (from SPIFFS), VAD=ON, SE=OFF",
              afe_config.wakenet_model_name ? afe_config.wakenet_model_name : "unknown");
-    ESP_LOGI(TAG, "AFE: feed_chunksize=%d, fetch_chunksize=%d (%.1fms per fetch)",
-             feed_chunksize_log, fetch_chunksize, (float)fetch_chunksize / MIC_SAMPLE_RATE * 1000.0f);
+    ESP_LOGI(TAG, "AFE: feed=%d, fetch=%d (%.1fms), linear_gain=%.1f, AGC=MODE_3(-3dB)",
+             feed_chunksize_log, fetch_chunksize, (float)fetch_chunksize / MIC_SAMPLE_RATE * 1000.0f,
+             afe_config.afe_linear_gain);
     ESP_LOGI(TAG, "AFE detect task: Core 0, priority 6 (dedicated fetch loop)");
     return true;
 }

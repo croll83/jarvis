@@ -38,7 +38,7 @@ static const char *TAG = "WS_AUDIO";
 
 #define SAMPLE_RATE             16000
 #define OPUS_FRAME_SAMPLES      320     // 20ms @ 16kHz
-#define BUFFER_SAMPLES          (OPUS_FRAME_SAMPLES * 2)  // 640 samples for read
+#define BUFFER_SAMPLES          OPUS_FRAME_SAMPLES        // Read exactly one Opus frame (320 samples)
 #define OPUS_MAX_PACKET_SIZE    1276
 #define OPUS_BITRATE            30000
 #define OPUS_COMPLEXITY         0
@@ -46,7 +46,7 @@ static const char *TAG = "WS_AUDIO";
 #define TICK_INTERVAL_MS        15      // Audio read/send interval
 #define SESSION_TIMEOUT_MS      30000   // 30 seconds max session
 #define WS_CONNECT_TIMEOUT_MS   5000    // 5 seconds to connect + get "ready"
-#define WS_TASK_STACK_SIZE      16384   // 16KB (no DTLS/ECDSA overhead)
+#define WS_TASK_STACK_SIZE      32768   // 32KB in SPIRAM (opus_encode needs deep stack)
 
 // =============================================================================
 // INTERNAL STATE MACHINE
@@ -144,11 +144,16 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
 
     switch (event_id) {
         case WEBSOCKET_EVENT_CONNECTED:
-            ESP_LOGI(TAG, "WebSocket connected");
-            ws_state = WS_STATE_WAIT_READY;
+            ESP_LOGI(TAG, "WebSocket connected — starting audio immediately");
+            // Skip waiting for "ready" JSON — start streaming right away.
+            // The server sends {"type":"ready"} but esp_websocket_client
+            // may not deliver DATA events reliably right after handshake.
+            ws_state = WS_STATE_STREAMING;
             break;
 
         case WEBSOCKET_EVENT_DATA:
+            ESP_LOGI(TAG, "WS DATA: op=0x%02x len=%d payload_len=%d payload_offset=%d",
+                     data->op_code, data->data_len, data->payload_len, data->payload_offset);
             if (data->op_code == 0x01) {
                 // Text frame: parse JSON control message
                 if (data->data_ptr && data->data_len > 0) {
@@ -165,9 +170,9 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
                             if (type) {
                                 if (strcmp(type, "ready") == 0) {
                                     cJSON *sid = cJSON_GetObjectItem(msg, "session_id");
-                                    ESP_LOGI(TAG, "Server ready (session_id=%s)",
+                                    ESP_LOGI(TAG, "Server ready confirmed (session_id=%s)",
                                              sid && cJSON_IsString(sid) ? sid->valuestring : "?");
-                                    ws_state = WS_STATE_STREAMING;
+                                    // State already STREAMING from CONNECTED event
                                 } else if (strcmp(type, "speech_end") == 0) {
                                     ESP_LOGI(TAG, "Server detected speech end");
                                     ws_state = WS_STATE_DONE;
@@ -276,7 +281,20 @@ static void ws_audio_task(void *arg) {
     int64_t ready_time = (esp_timer_get_time() / 1000) - connect_start;
     ESP_LOGI(TAG, "Server ready in %lldms, starting audio stream", ready_time);
 
-    // --- 3. Audio send loop ---
+    // --- 3. Drain stale audio from ring buffer (wake sound echo) ---
+    {
+        size_t drained = 0;
+        size_t drain_samples;
+        while ((drain_samples = jarvis_audio_read_raw(enc_input_buffer,
+                    BUFFER_SAMPLES, 0)) > 0) {
+            drained += drain_samples;
+        }
+        if (drained > 0) {
+            ESP_LOGI(TAG, "Drained %zu stale samples from ring buffer", drained);
+        }
+    }
+
+    // --- 4. Audio send loop ---
     int64_t session_start = esp_timer_get_time() / 1000;
 
     while (session_active && ws_state == WS_STATE_STREAMING) {

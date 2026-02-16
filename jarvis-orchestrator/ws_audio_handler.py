@@ -55,17 +55,27 @@ _vad_onnx_path: Optional[str] = None
 class SileroVADOnnx:
     """
     Wrapper leggero per Silero VAD ONNX.
-    Mantiene lo stato RNN (h, c) internamente.
+    Mantiene lo stato RNN (h, c) e il context buffer internamente.
     Ogni sessione deve avere la propria istanza.
+
+    IMPORTANTE: il modello Silero VAD richiede un context di 64 campioni
+    prepeso all'input (per 16kHz). L'input effettivo è (1, 576) non (1, 512).
+    Vedi silero_vad/utils_vad.py OnnxWrapper.__call__ per riferimento.
     """
 
+    CONTEXT_SIZE = 64  # 64 samples context per 16kHz
+
     def __init__(self, model_path: str):
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
         self._sess = ort.InferenceSession(
             model_path,
             providers=["CPUExecutionProvider"],
+            sess_options=opts,
         )
-        # Stato RNN iniziale: shape (2, 1, 128) -- [h, c] per 1 batch
         self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, self.CONTEXT_SIZE), dtype=np.float32)
         self._sr = np.array(16000, dtype=np.int64)
 
     def __call__(self, audio_chunk: np.ndarray) -> float:
@@ -73,23 +83,28 @@ class SileroVADOnnx:
         Esegui VAD su un chunk audio float32 (512 samples @ 16kHz).
         Ritorna probabilita di speech [0.0, 1.0].
         """
-        # Input shape: (1, num_samples)
         inp = audio_chunk.reshape(1, -1).astype(np.float32)
+
+        # Prepend context (last 64 samples from previous chunk)
+        inp_with_ctx = np.concatenate([self._context, inp], axis=1)
 
         out, new_state = self._sess.run(
             ["output", "stateN"],
             {
-                "input": inp,
+                "input": inp_with_ctx,
                 "state": self._state,
                 "sr": self._sr,
             },
         )
         self._state = new_state
+        # Save last CONTEXT_SIZE samples as context for next call
+        self._context = inp[:, -self.CONTEXT_SIZE:]
         return float(out[0, 0])
 
     def reset(self):
-        """Reset stato RNN (per nuova sessione/utterance)."""
+        """Reset stato RNN e context (per nuova sessione/utterance)."""
         self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, self.CONTEXT_SIZE), dtype=np.float32)
 
 
 def init_vad():
@@ -222,7 +237,16 @@ class WsAudioSession:
             # frame_size=320 (20ms @ 16kHz)
             pcm_bytes = self._opus_decoder.decode(opus_data, self.OPUS_FRAME_SAMPLES)
             pcm_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
-            return pcm_int16.astype(np.float32) / 32768.0
+            pcm_float = pcm_int16.astype(np.float32) / 32768.0
+
+            # Debug: log RMS of decoded audio every 50 frames
+            if self._opus_frames_received % 50 == 1:
+                rms = float(np.sqrt(np.mean(pcm_float ** 2)))
+                logger.info(f"[{self.session_id}] Decoded frame #{self._opus_frames_received}: "
+                            f"{len(pcm_bytes)} bytes -> {len(pcm_int16)} samples, "
+                            f"RMS={rms:.4f}, max={float(np.max(np.abs(pcm_float))):.4f}")
+
+            return pcm_float
         except Exception as e:
             if self._opus_frames_received <= 3:
                 logger.warning(f"[{self.session_id}] Opus decode error on frame "
@@ -252,6 +276,13 @@ class WsAudioSession:
             speech_prob = self._vad(chunk)
             is_speech = speech_prob > self._vad_threshold
 
+            # Debug: log every 50th VAD chunk (~1.6s) to monitor
+            if self._opus_frames_received % 50 == 1:
+                logger.info(f"[{self.session_id}] VAD prob={speech_prob:.3f} "
+                            f"thresh={self._vad_threshold} is_speech={is_speech} "
+                            f"started={self._speech_started} "
+                            f"speech_f={self._speech_frames} sil_f={self._silence_frames}")
+
             if is_speech:
                 self._silence_frames = 0
                 self._speech_frames += 1
@@ -265,7 +296,7 @@ class WsAudioSession:
                     if total_speech_ms >= self._min_speech_ms:
                         self._speech_started = True
                         self._speech_start_time = time.time()
-                        logger.debug(f"Speech started in session {self.session_id}")
+                        logger.info(f"Speech started in session {self.session_id}")
             else:
                 self._speech_frames = 0
 
@@ -371,10 +402,10 @@ async def ws_audio_endpoint(
     logger.info(f"WS audio session {session.session_id} started for device {device_id}")
 
     # 4. Send ready signal
-    await websocket.send_json({
-        "type": "ready",
-        "session_id": session.session_id,
-    })
+    ready_msg = {"type": "ready", "session_id": session.session_id}
+    logger.info(f"Sending ready signal to {device_id}: {ready_msg}")
+    await websocket.send_json(ready_msg)
+    logger.info(f"Ready signal sent to {device_id}")
 
     # 5. Receive and process audio
     try:

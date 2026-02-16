@@ -310,7 +310,10 @@ esp_err_t es8311_microphone_config(es8311_handle_t dev, bool digital_mic)
     if (digital_mic) {
         reg14 |= BIT(6);
     }
-    es8311_write_reg(dev, ES8311_ADC_REG17, 0xC8); // Set ADC gain @todo move this to ADC config section
+    // ADC digital volume: 0xBF=0dB, 0.5dB/step, 0xFF=+32dB
+    // Was 0xC8 (+4.5dB) — too low, speech at 10cm gives RMS=0.039
+    // Set to 0xDF (+16dB) for better speech levels
+    es8311_write_reg(dev, ES8311_ADC_REG17, 0xDF);
 
     return es8311_write_reg(dev, ES8311_SYSTEM_REG14, reg14);
 }
@@ -427,11 +430,21 @@ esp_err_t es8311_microphone_fade(es8311_handle_t dev, const es8311_fade_t fade)
 
 void es8311_register_dump(es8311_handle_t dev)
 {
-    for (int reg = 0; reg < 0x4A; reg++) {
-        uint8_t value;
-        ESP_ERROR_CHECK(es8311_read_reg(dev, reg, &value));
-        printf("REG:%02x: %02x", reg, value);
-    }
+    // Dump key ADC/mic registers
+    uint8_t reg14, reg16, reg17, reg15, reg18;
+    es8311_read_reg(dev, 0x14, &reg14);
+    es8311_read_reg(dev, 0x15, &reg15);
+    es8311_read_reg(dev, 0x16, &reg16);
+    es8311_read_reg(dev, 0x17, &reg17);
+    es8311_read_reg(dev, 0x18, &reg18);
+    ESP_LOGI("ES8311", "REG14(PGA)=0x%02X REG15(ADC)=0x%02X REG16(scale)=0x%02X "
+             "REG17(vol)=0x%02X REG18(ALC)=0x%02X",
+             reg14, reg15, reg16, reg17, reg18);
+    // PGA: bits[3:0] of REG14, 3dB/step: 0=0dB, A=30dB, F=45dB
+    ESP_LOGI("ES8311", "PGA gain=+%ddB, ADC scale=+%ddB, ADC vol=%+.1fdB",
+             (reg14 & 0x0F) * 3,
+             (reg16 & 0x07) * 6,
+             (int)(reg17) > 0xBF ? ((float)(reg17 - 0xBF)) * 0.5f : -((float)(0xBF - reg17)) * 0.5f);
 }
 
 es8311_handle_t es8311_create(i2c_master_dev_handle_t i2c_dev)
