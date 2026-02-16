@@ -43,11 +43,8 @@ static const char *TAG = "AUDIO";
 // Raw ring buffer for WebRTC streaming (1 second @ 16kHz mono 16-bit = 32KB)
 #define RAW_RINGBUF_SIZE        (16000 * 2)
 
-// ES8311 PGA gain levels (register 0x14)
-// Bits[7:4] = input select (0x1 = MIC1P single-ended)
-// Bits[3:0] = gain: 0x0=0dB, 0x1=+3dB, 0x2=+6dB, 0x3=+9dB, 0x4=+12dB, ...
-#define PGA_GAIN_LISTEN         0x14   // MIC1P + 12dB → good sensitivity for wake word
-#define PGA_GAIN_STREAM         0x10   // MIC1P + 0dB  → clean audio for transcription
+// ES8311 PGA gain: left at default from es8311_microphone_config() = 0x1A (+30dB)
+// No override needed — 30dB provides good sensitivity without clipping at normal distances.
 
 // Model partition name
 #define MODEL_PARTITION_LABEL   "model"
@@ -115,7 +112,7 @@ static void afe_feed_task(void* arg) {
     int feed_chunksize = afe_handle->get_feed_chunksize(afe_data);
     ESP_LOGI(TAG, "AFE feed chunksize: %d mono samples", feed_chunksize);
 
-    // Allocate mono buffer (jarvis_codec_read already returns mono)
+    // Allocate mono buffer (jarvis_codec_read returns mono directly with ALL_LEFT)
     int16_t* mono_buff = heap_caps_malloc(feed_chunksize * sizeof(int16_t),
                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!mono_buff) {
@@ -130,12 +127,12 @@ static void afe_feed_task(void* arg) {
     int feed_count = 0;
     while (1) {
         if (afe_data && afe_handle) {
-            // Read mono audio from codec (handles stereo→mono de-interleave)
+            // Read mono audio from codec (legacy I2S with ALL_LEFT = already mono)
             int samples = jarvis_codec_read(mono_buff, feed_chunksize);
 
             if (samples > 0) {
                 feed_count++;
-                if (feed_count <= 5 || feed_count % 500 == 0) {
+                if (feed_count <= 10 || feed_count % 500 == 0) {
                     float rms = calculate_rms(mono_buff, samples);
                     ESP_LOGI(TAG, "Feed #%d: %d samples, RMS=%.4f",
                              feed_count, samples, rms);
@@ -364,14 +361,11 @@ void jarvis_audio_deinit(void) {
 void jarvis_audio_start_listening(void) {
     listening = true;
 
-    // Ensure PGA is at +12dB for wake word detection
-    jarvis_codec_set_mic_gain(PGA_GAIN_LISTEN);
-
     if (afe_handle && afe_data) {
         afe_handle->reset_buffer(afe_data);
         afe_handle->enable_wakenet(afe_data);
     }
-    ESP_LOGI(TAG, "Listening started (WakeNet enabled, PGA=+12dB)");
+    ESP_LOGI(TAG, "Listening started (WakeNet enabled)");
 }
 
 void jarvis_audio_stop_listening(void) {
@@ -392,9 +386,6 @@ bool jarvis_audio_is_listening(void) {
 
 void jarvis_audio_set_streaming(bool enable) {
     if (enable) {
-        // Switch PGA to 0dB for clean audio
-        jarvis_codec_set_mic_gain(PGA_GAIN_STREAM);
-
         // Clear any stale data in ring buffer
         if (raw_ringbuf) {
             size_t item_size;
@@ -405,14 +396,10 @@ void jarvis_audio_set_streaming(bool enable) {
         }
 
         streaming_to_ringbuf = true;
-        ESP_LOGI(TAG, "Streaming enabled (ring buffer active, PGA=0dB)");
+        ESP_LOGI(TAG, "Streaming enabled (ring buffer active)");
     } else {
         streaming_to_ringbuf = false;
-
-        // Restore PGA to +12dB for wake word sensitivity
-        jarvis_codec_set_mic_gain(PGA_GAIN_LISTEN);
-
-        ESP_LOGI(TAG, "Streaming disabled (ring buffer inactive, PGA=+12dB)");
+        ESP_LOGI(TAG, "Streaming disabled (ring buffer inactive)");
     }
 }
 
