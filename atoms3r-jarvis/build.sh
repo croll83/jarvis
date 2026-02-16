@@ -16,11 +16,20 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Source ESP-IDF environment
-if [ -f ~/esp/esp-idf/export.sh ]; then
-    source ~/esp/esp-idf/export.sh >/dev/null 2>&1
+# Source ESP-IDF 5.5 environment
+# Must fully clean any previously loaded IDF (e.g. 6.1 from shell profile)
+if [ -f ~/esp/esp-idf-v5.5/export.sh ]; then
+    # Remove any existing IDF/espressif paths from PATH to avoid conflicts
+    export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "esp-idf" | grep -v "espressif" | tr '\n' ':' | sed 's/:$//')
+    unset IDF_PATH
+    unset IDF_PYTHON_ENV_PATH
+    unset IDF_TOOLS_PATH
+    export IDF_PATH="$HOME/esp/esp-idf-v5.5"
+    set +e
+    source "$HOME/esp/esp-idf-v5.5/export.sh" >/dev/null 2>&1
+    set -e
 else
-    echo "❌ ESP-IDF non trovato in ~/esp/esp-idf/"
+    echo "ESP-IDF v5.5 non trovato in ~/esp/esp-idf-v5.5/"
     exit 1
 fi
 
@@ -56,7 +65,7 @@ fi
 
 # Build
 echo "🔨 Building firmware..."
-python ~/esp/esp-idf/tools/idf.py build
+python ~/esp/esp-idf-v5.5/tools/idf.py build
 
 # Flash e/o Monitor se richiesto
 if [[ "$*" == *"flash"* ]]; then
@@ -69,7 +78,7 @@ if [[ "$*" == *"flash"* ]]; then
         exit 1
     fi
     echo "📡 Flashing to $PORT..."
-    python ~/esp/esp-idf/tools/idf.py -p "$PORT" flash
+    python ~/esp/esp-idf-v5.5/tools/idf.py -p "$PORT" flash
 fi
 
 if [[ "$*" == *"monitor"* ]]; then
@@ -78,5 +87,5 @@ if [[ "$*" == *"monitor"* ]]; then
         PORT=$(ls /dev/cu.usbserial* 2>/dev/null | head -1)
     fi
     echo "📺 Starting monitor on $PORT... (Ctrl+] to exit)"
-    python ~/esp/esp-idf/tools/idf.py -p "$PORT" monitor
+    python ~/esp/esp-idf-v5.5/tools/idf.py -p "$PORT" monitor
 fi

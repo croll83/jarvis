@@ -41,12 +41,13 @@ _ICE_CANDIDATE_BLOCKED_PREFIXES = ("172.17.", "172.18.", "100.")
 
 def _filter_sdp_candidates(sdp: str) -> str:
     """
-    Rimuove dalla SDP le righe a=candidate con IP Docker/Tailscale.
-    Mantiene solo candidate con IP pubblico (realmente raggiungibili).
+    Filtra dalla SDP:
+    1. Righe a=candidate con IP Docker/Tailscale (non raggiungibili)
+    2. Fingerprint non-SHA-256 (libpeer supporta solo SHA-256)
     """
-    import re
     filtered_lines = []
-    removed = 0
+    removed_candidates = 0
+    removed_fingerprints = 0
     for line in sdp.splitlines():
         if line.startswith("a=candidate:"):
             # Formato: a=candidate:... <priority> <ip> <port> ...
@@ -55,13 +56,20 @@ def _filter_sdp_candidates(sdp: str) -> str:
             if len(parts) >= 5:
                 ip = parts[4]
                 if any(ip.startswith(prefix) for prefix in _ICE_CANDIDATE_BLOCKED_PREFIXES):
-                    removed += 1
+                    removed_candidates += 1
                     logger.debug(f"Filtered SDP candidate: {ip}")
                     continue
+        # Keep only sha-256 fingerprints (libpeer uses SHA-256 for DTLS cert verification)
+        if line.startswith("a=fingerprint:") and "sha-256" not in line:
+            removed_fingerprints += 1
+            logger.debug(f"Filtered non-SHA-256 fingerprint: {line[:50]}...")
+            continue
         filtered_lines.append(line)
 
-    if removed:
-        logger.info(f"Filtered {removed} unreachable ICE candidates from SDP answer")
+    if removed_candidates:
+        logger.info(f"Filtered {removed_candidates} unreachable ICE candidates from SDP answer")
+    if removed_fingerprints:
+        logger.info(f"Filtered {removed_fingerprints} non-SHA-256 fingerprints from SDP answer")
     return "\r\n".join(filtered_lines)
 
 

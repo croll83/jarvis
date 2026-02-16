@@ -29,17 +29,8 @@ idf_component_register(
   REQUIRES mbedtls srtp json esp_netif lwip
 )
 
-# mbedTLS 4.x compat shims (ctr_drbg.h, entropy.h, sha256.h -> private headers)
-# Plus mbedtls_v4_compat.h for removed/changed API functions
-target_include_directories(${COMPONENT_LIB} BEFORE PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/mbedtls_compat"
-)
-
-# Force-include mbedTLS 4.x compat header for all C files in this component
-# This provides shims for mbedtls_ssl_conf_rng() and mbedtls_ssl_cookie_setup()
-target_compile_options(${COMPONENT_LIB} PRIVATE
-  "-include${CMAKE_CURRENT_SOURCE_DIR}/mbedtls_compat/mbedtls_v4_compat.h"
-)
+# NOTE: mbedTLS 4.x compat shims (mbedtls_compat/) are NOT needed in IDF 5.5
+# which uses mbedTLS 3.x with standard header paths.
 
 # Disable KeepAlives (set to 0 in config.h)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../../deps/libpeer/src/config.h INPUT_CONTENT)

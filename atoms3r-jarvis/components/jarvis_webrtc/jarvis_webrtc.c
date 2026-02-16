@@ -46,7 +46,8 @@ static const char *TAG = "WEBRTC";
 #define OPUS_COMPLEXITY         0
 
 #define TICK_INTERVAL_MS        15
-#define SESSION_TIMEOUT_MS      120000  // 2 minutes
+#define SESSION_TIMEOUT_MS      30000   // 30 seconds (was 2 min — too long if ICE fails)
+#define ICE_CONNECT_TIMEOUT_MS  15000   // 15 seconds max to go from checking → connected
 #define MAX_SDP_BUFFER_SIZE     4096
 
 // =============================================================================
@@ -63,10 +64,15 @@ static int16_t *dec_output_buffer = NULL;
 // PeerConnection
 static PeerConnection *pc = NULL;
 static volatile bool session_active = false;
+static volatile bool ice_connected = false;
+static volatile int64_t ice_checking_since = 0;  // timestamp when checking started
 static webrtc_session_done_callback_t session_done_cb = NULL;
 
 // Tasks
 static TaskHandle_t webrtc_task_handle = NULL;
+static StaticTask_t webrtc_task_buffer;
+static StackType_t *webrtc_task_stack = NULL;
+
 static TaskHandle_t audio_send_task_handle = NULL;
 static StaticTask_t audio_send_task_buffer;
 static StackType_t *audio_send_task_stack = NULL;
@@ -331,7 +337,11 @@ static void on_connection_state_change(PeerConnectionState state, void *user_dat
     ESP_LOGI(TAG, "PeerConnectionState: %s",
              peer_connection_state_to_string(state));
 
-    if (state == PEER_CONNECTION_CONNECTED) {
+    if (state == PEER_CONNECTION_CHECKING) {
+        ice_checking_since = esp_timer_get_time() / 1000;
+        ESP_LOGI(TAG, "ICE checking started (timeout=%dms)", ICE_CONNECT_TIMEOUT_MS);
+    } else if (state == PEER_CONNECTION_CONNECTED) {
+        ice_connected = true;
         ESP_LOGI(TAG, "WebRTC connected! Starting audio send task");
 
         // Create audio send task with SPIRAM stack
@@ -386,7 +396,9 @@ static void webrtc_session_task(void *arg) {
 
     // Create PeerConnection
     PeerConfiguration config = {
-        .ice_servers = {},
+        .ice_servers = {
+            {.urls = "stun:stun.l.google.com:19302"},
+        },
         .audio_codec = CODEC_OPUS,
         .video_codec = CODEC_NONE,
         .datachannel = DATA_CHANNEL_NONE,
@@ -413,13 +425,28 @@ static void webrtc_session_task(void *arg) {
     int64_t start_time = esp_timer_get_time() / 1000;
     bool timed_out = false;
 
+    ice_connected = false;
+    ice_checking_since = 0;
+
     // Main loop: drive PeerConnection
     while (session_active) {
         peer_connection_loop(pc);
         vTaskDelay(pdMS_TO_TICKS(TICK_INTERVAL_MS));
 
-        // Check timeout
-        int64_t elapsed = (esp_timer_get_time() / 1000) - start_time;
+        int64_t now = esp_timer_get_time() / 1000;
+
+        // ICE connection timeout: if stuck in checking for too long, abort
+        if (!ice_connected && ice_checking_since > 0) {
+            int64_t ice_elapsed = now - ice_checking_since;
+            if (ice_elapsed > ICE_CONNECT_TIMEOUT_MS) {
+                ESP_LOGE(TAG, "ICE connection timeout (%lldms) — firewall or NAT issue?", ice_elapsed);
+                timed_out = true;
+                session_active = false;
+            }
+        }
+
+        // Overall session timeout
+        int64_t elapsed = now - start_time;
         if (elapsed > SESSION_TIMEOUT_MS) {
             ESP_LOGW(TAG, "WebRTC session timeout (%lldms)", elapsed);
             timed_out = true;
@@ -442,6 +469,15 @@ static void webrtc_session_task(void *arg) {
         peer_connection_destroy(pc);
         pc = NULL;
     }
+
+    // Free audio send task stack (allocated in on_connection_state_change)
+    if (audio_send_task_stack) {
+        free(audio_send_task_stack);
+        audio_send_task_stack = NULL;
+    }
+
+    ESP_LOGI(TAG, "WebRTC resources freed, heap free: %lu",
+             (unsigned long)esp_get_free_heap_size());
 
     // Notify caller
     bool success = !timed_out;
@@ -491,18 +527,30 @@ bool jarvis_webrtc_start_session(const char *signaling_url,
     session_active = true;
 
     // Create WebRTC session task on Core 0
-    // Stack must be large enough for DTLS handshake + ECDSA key gen (~20KB)
-    BaseType_t ret = xTaskCreatePinnedToCore(
+    // Stack allocated from PSRAM (32KB needed for DTLS handshake + ECDSA key gen)
+    #define WEBRTC_TASK_STACK_SIZE 32768
+    if (!webrtc_task_stack) {
+        webrtc_task_stack = heap_caps_malloc(WEBRTC_TASK_STACK_SIZE * sizeof(StackType_t),
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!webrtc_task_stack) {
+            ESP_LOGE(TAG, "Failed to allocate PSRAM stack for WebRTC task");
+            session_active = false;
+            return false;
+        }
+    }
+
+    webrtc_task_handle = xTaskCreateStaticPinnedToCore(
         webrtc_session_task,
         "webrtc_sess",
-        32768,
+        WEBRTC_TASK_STACK_SIZE,
         NULL,
         6,
-        &webrtc_task_handle,
+        webrtc_task_stack,
+        &webrtc_task_buffer,
         0  // Core 0
     );
 
-    if (ret != pdPASS) {
+    if (!webrtc_task_handle) {
         ESP_LOGE(TAG, "Failed to create WebRTC session task");
         session_active = false;
         return false;

@@ -80,6 +80,12 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
 # =============================================================================
+# I2S/I2C Legacy API (suppress deprecation warnings)
+# =============================================================================
+CONFIG_I2S_SUPPRESS_DEPRECATE_WARN=y
+CONFIG_I2C_SUPPRESS_DEPRECATE_WARN=y
+
+# =============================================================================
 # Log Level
 # =============================================================================
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y

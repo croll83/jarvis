@@ -6,13 +6,13 @@
  * Initializes and manages all audio hardware on the Atomic Echo Base:
  *   - ES8311 audio codec via local ES8311 driver (new I2C master API)
  *   - PI4IOE5V6408 GPIO expander for NS4150B speaker amplifier enable
- *   - I2S full-duplex (TX+RX) on I2S_NUM_0
+ *   - I2S full-duplex (TX+RX) on I2S_NUM_1 using legacy I2S API
  *
- * Uses new I2C master API (driver/i2c_master.h) — must match jarvis_display
- * to avoid ESP-IDF v6.x "CONFLICT! driver_ng" abort.
- * Uses new I2S API (driver/i2s_std.h) for full-duplex.
+ * Uses new I2C master API (driver/i2c_master.h) — same as jarvis_display.
+ * Uses legacy I2S API (driver/i2s.h) with I2S_CHANNEL_FMT_ALL_LEFT + APLL,
+ * matching the proven OpenAI reference SDK configuration for AtomS3R.
  *
- * Pin mapping (Atomic Echo Base → AtomS3R):
+ * Pin mapping (Atomic Echo Base -> AtomS3R):
  *   I2C: SDA=GPIO38, SCL=GPIO39  (I2C_NUM_1, shared ES8311 + PI4IOE5V6408)
  *   I2S: BCLK=GPIO8, WS=GPIO6, DIN=GPIO7 (mic), DOUT=GPIO5 (speaker)
  *
@@ -27,10 +27,10 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 
-// I2S new API (full-duplex)
-#include "driver/i2s_std.h"
+// Legacy I2S API (proven working with ES8311 on AtomS3R)
+#include "driver/i2s.h"
 
-// New I2C master API (must match jarvis_display to avoid driver conflict)
+// New I2C master API (compatible with jarvis_display, available since IDF 5.0)
 #include "driver/i2c_master.h"
 
 // ES8311 driver (ported to new I2C API)
@@ -42,11 +42,14 @@ static const char *TAG = "CODEC";
 // HARDWARE CONFIGURATION
 // =============================================================================
 
-// I2S pins (Atomic Echo Base → AtomS3R)
+// I2S pins (Atomic Echo Base -> AtomS3R)
 #define I2S_BCLK_PIN        8
 #define I2S_WS_PIN          6
-#define I2S_DIN_PIN         7   // ES8311 ADC → ESP32 (microphone)
-#define I2S_DOUT_PIN        5   // ESP32 → ES8311 DAC (speaker)
+#define I2S_DIN_PIN         7   // ES8311 ADC -> ESP32 (microphone)
+#define I2S_DOUT_PIN        5   // ESP32 -> ES8311 DAC (speaker)
+
+// I2S port (same as OpenAI reference SDK for AtomS3R)
+#define I2S_PORT            I2S_NUM_1
 
 // I2C bus (shared ES8311 + PI4IOE5V6408)
 #define CODEC_I2C_SDA       38
@@ -60,14 +63,11 @@ static const char *TAG = "CODEC";
 
 // Audio settings
 #define MIC_SAMPLE_RATE     16000  // EchoBase requires 16kHz
+#define BUFFER_SAMPLES      640    // 320 * 2 (same as OpenAI reference SDK)
 
 // =============================================================================
 // STATE
 // =============================================================================
-
-// I2S handles (full-duplex: TX + RX on same port)
-static i2s_chan_handle_t rx_chan = NULL;
-static i2s_chan_handle_t tx_chan = NULL;
 
 // I2C bus and device handles (new master API)
 static i2c_master_bus_handle_t codec_i2c_bus = NULL;
@@ -154,7 +154,6 @@ static bool init_es8311(void) {
     };
 
     // Initialize codec with 32-bit resolution (same as OpenAI reference)
-    // The driver handles: clock dividers, power sequencing, codec mode
     esp_err_t ret = es8311_init(es8311_handle, &clk_cfg,
                                  ES8311_RESOLUTION_32, ES8311_RESOLUTION_32);
     if (ret != ESP_OK) {
@@ -162,7 +161,7 @@ static bool init_es8311(void) {
         return false;
     }
 
-    // Set DAC volume (0-100, driver handles proper register mapping)
+    // Set DAC volume (0-100)
     ret = es8311_voice_volume_set(es8311_handle, 80, NULL);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "ES8311 volume set failed: %s", esp_err_to_name(ret));
@@ -207,70 +206,55 @@ static bool init_amplifier(void) {
 }
 
 // =============================================================================
-// I2S FULL-DUPLEX INIT (New API)
+// I2S INIT (Legacy API — proven working on AtomS3R + Echo Base)
 // =============================================================================
 
 static bool init_i2s(void) {
-    ESP_LOGI(TAG, "Initializing I2S full-duplex (BCLK=%d, WS=%d, DIN=%d, DOUT=%d)...",
+    ESP_LOGI(TAG, "Initializing I2S (legacy API, BCLK=%d, WS=%d, DIN=%d, DOUT=%d)...",
              I2S_BCLK_PIN, I2S_WS_PIN, I2S_DIN_PIN, I2S_DOUT_PIN);
 
-    // Create TX + RX channels on same port (full-duplex)
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.auto_clear = true;
-
-    esp_err_t ret = i2s_new_channel(&chan_cfg, &tx_chan, &rx_chan);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2S channel create failed: %s", esp_err_to_name(ret));
-        return false;
-    }
-
-    // I2S standard mode config
-    // EchoBase ES8311 operates with data on LEFT channel only.
-    // Using MONO slot mode to match (equivalent to I2S_CHANNEL_FMT_ALL_LEFT in legacy API).
-    i2s_std_config_t std_cfg = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(MIC_SAMPLE_RATE),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
-            .bclk = I2S_BCLK_PIN,
-            .ws = I2S_WS_PIN,
-            .dout = I2S_DOUT_PIN,
-            .din = I2S_DIN_PIN,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false,
-            },
-        },
+    // Legacy I2S config — exact copy from OpenAI reference SDK media.cpp (ATOMS3R)
+    // Key settings:
+    //   - I2S_CHANNEL_FMT_ALL_LEFT: mono audio on left channel (no stereo de-interleave needed)
+    //   - use_apll = 1: precise clock generation (falls back to PLL on ESP32-S3)
+    //   - Full duplex: both TX (speaker) and RX (mic) on same port
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX),
+        .sample_rate = MIC_SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_ALL_LEFT,
+        .communication_format = I2S_COMM_FORMAT_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 8,
+        .dma_buf_len = BUFFER_SAMPLES,
+        .use_apll = 1,
+        .tx_desc_auto_clear = true,
     };
-    std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
 
-    // Init both channels with same config (shared bus)
-    ret = i2s_channel_init_std_mode(tx_chan, &std_cfg);
+    esp_err_t ret = i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2S TX init failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "I2S driver install failed: %s", esp_err_to_name(ret));
         return false;
     }
 
-    ret = i2s_channel_init_std_mode(rx_chan, &std_cfg);
+    i2s_pin_config_t pin_config = {
+        .mck_io_num   = -1,            // no MCLK pin (derived from BCLK)
+        .bck_io_num   = I2S_BCLK_PIN,  // GPIO8
+        .ws_io_num    = I2S_WS_PIN,    // GPIO6
+        .data_out_num = I2S_DOUT_PIN,  // GPIO5 (speaker)
+        .data_in_num  = I2S_DIN_PIN,   // GPIO7 (microphone)
+    };
+
+    ret = i2s_set_pin(I2S_PORT, &pin_config);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2S RX init failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "I2S set pin failed: %s", esp_err_to_name(ret));
         return false;
     }
 
-    ret = i2s_channel_enable(tx_chan);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2S TX enable failed: %s", esp_err_to_name(ret));
-        return false;
-    }
+    i2s_zero_dma_buffer(I2S_PORT);
 
-    ret = i2s_channel_enable(rx_chan);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2S RX enable failed: %s", esp_err_to_name(ret));
-        return false;
-    }
-
-    ESP_LOGI(TAG, "I2S full-duplex initialized (16kHz, 16-bit, MONO/LEFT)");
+    ESP_LOGI(TAG, "I2S initialized (legacy API, 16kHz, 16-bit, ALL_LEFT, APLL, port %d)",
+             I2S_PORT);
     return true;
 }
 
@@ -284,15 +268,15 @@ bool jarvis_codec_init(void) {
         return true;
     }
 
-    ESP_LOGI(TAG, "Initializing codec (ES8311 component + PI4IOE5V6408 + I2S)...");
+    ESP_LOGI(TAG, "Initializing codec (ES8311 + PI4IOE5V6408 + I2S legacy)...");
 
-    // 1. I2C bus (legacy API, must be before ES8311 and amp)
+    // 1. I2C bus (new master API, must be before ES8311 and amp)
     if (!init_i2c()) {
         ESP_LOGE(TAG, "I2C bus init failed");
         return false;
     }
 
-    // 2. ES8311 codec via component (handles clock, power, volume)
+    // 2. ES8311 codec (handles clock, power, volume)
     if (!init_es8311()) {
         ESP_LOGE(TAG, "ES8311 codec init failed");
         return false;
@@ -303,7 +287,7 @@ bool jarvis_codec_init(void) {
         ESP_LOGW(TAG, "Amplifier enable failed - speaker may not work");
     }
 
-    // 4. I2S full-duplex
+    // 4. I2S full-duplex (legacy API with APLL + ALL_LEFT)
     if (!init_i2s()) {
         ESP_LOGE(TAG, "I2S init failed");
         return false;
@@ -317,23 +301,16 @@ bool jarvis_codec_init(void) {
 void jarvis_codec_deinit(void) {
     if (!initialized) return;
 
-    if (rx_chan) {
-        i2s_channel_disable(rx_chan);
-        i2s_del_channel(rx_chan);
-        rx_chan = NULL;
-    }
+    // Uninstall I2S driver
+    i2s_driver_uninstall(I2S_PORT);
 
-    if (tx_chan) {
-        i2s_channel_disable(tx_chan);
-        i2s_del_channel(tx_chan);
-        tx_chan = NULL;
-    }
-
+    // Clean up ES8311
     if (es8311_handle) {
         es8311_delete(es8311_handle);
         es8311_handle = NULL;
     }
 
+    // Clean up I2C devices
     if (es8311_i2c_dev) {
         i2c_master_bus_rm_device(es8311_i2c_dev);
         es8311_i2c_dev = NULL;
@@ -353,31 +330,27 @@ void jarvis_codec_deinit(void) {
     ESP_LOGI(TAG, "Codec deinitialized");
 }
 
+// With I2S_CHANNEL_FMT_ALL_LEFT, data is already mono — no de-interleave needed!
 int jarvis_codec_read(int16_t *buf, size_t num_samples) {
-    if (!initialized || !rx_chan || !buf || num_samples == 0) return -1;
+    if (!initialized || !buf || num_samples == 0) return -1;
 
-    // I2S MONO mode → read directly, no de-interleave needed
-    size_t bytes_needed = num_samples * sizeof(int16_t);
+    size_t bytes_to_read = num_samples * sizeof(int16_t);
     size_t bytes_read = 0;
 
-    esp_err_t ret = i2s_channel_read(rx_chan, buf, bytes_needed, &bytes_read, portMAX_DELAY);
-
-    if (ret != ESP_OK || bytes_read == 0) {
-        return -1;
-    }
+    esp_err_t ret = i2s_read(I2S_PORT, buf, bytes_to_read, &bytes_read, portMAX_DELAY);
+    if (ret != ESP_OK || bytes_read == 0) return -1;
 
     return (int)(bytes_read / sizeof(int16_t));
 }
 
+// With I2S_CHANNEL_FMT_ALL_LEFT, write mono directly — no stereo duplication needed!
 int jarvis_codec_write(const int16_t *buf, size_t num_samples) {
-    if (!initialized || !tx_chan || !buf || num_samples == 0) return -1;
+    if (!initialized || !buf || num_samples == 0) return -1;
 
-    // I2S MONO mode → write directly, no stereo interleave needed
-    size_t bytes_needed = num_samples * sizeof(int16_t);
+    size_t bytes_to_write = num_samples * sizeof(int16_t);
     size_t bytes_written = 0;
 
-    esp_err_t ret = i2s_channel_write(tx_chan, buf, bytes_needed,
-                                       &bytes_written, pdMS_TO_TICKS(1000));
+    esp_err_t ret = i2s_write(I2S_PORT, buf, bytes_to_write, &bytes_written, pdMS_TO_TICKS(1000));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S write error: %s", esp_err_to_name(ret));
         return -1;

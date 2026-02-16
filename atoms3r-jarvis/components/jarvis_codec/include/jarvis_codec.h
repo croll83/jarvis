@@ -6,7 +6,7 @@
  * Shared audio hardware layer for the Atomic Echo Base:
  *   - ES8311 audio codec (I2C addr 0x18): ADC (mic) + DAC (speaker)
  *   - PI4IOE5V6408 I/O expander (I2C addr 0x43): controls NS4150B amp enable
- *   - I2S full-duplex on I2S_NUM_0: RX (mic) + TX (speaker) shared bus
+ *   - I2S full-duplex on I2S_NUM_1: RX (mic) + TX (speaker) via legacy I2S API
  *
  * This component owns all hardware init/deinit. Other components (jarvis_audio,
  * jarvis_speaker, jarvis_webrtc) use this API to read/write audio.
@@ -37,7 +37,7 @@ void jarvis_codec_deinit(void);
 
 /**
  * Read audio from microphone (I2S RX).
- * Reads stereo I2S, de-interleaves to mono LEFT channel.
+ * With I2S_CHANNEL_FMT_ALL_LEFT, data is already mono — direct read.
  *
  * @param buf       Output buffer for mono 16-bit PCM samples
  * @param num_samples Number of mono samples to read
@@ -47,7 +47,7 @@ int jarvis_codec_read(int16_t *buf, size_t num_samples);
 
 /**
  * Write audio to speaker (I2S TX).
- * Converts mono input to stereo interleaved, writes to I2S TX.
+ * With I2S_CHANNEL_FMT_ALL_LEFT, mono data is written directly.
  *
  * @param buf       Input buffer of mono 16-bit PCM samples
  * @param num_samples Number of mono samples to write

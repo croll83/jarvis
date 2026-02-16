@@ -72,6 +72,12 @@ static float cached_temperature = -99.0f;
 static int current_hour = 0;
 static int current_minute = 0;
 
+// Error state auto-clear
+static int64_t error_clear_time = 0;
+
+// Deferred display update flag (avoids SPI race between webrtc task and main task)
+static volatile bool display_state_dirty = false;
+
 // Forward declarations
 static void on_wake_word_detected(void);
 static void handle_short_press(void);
@@ -141,11 +147,23 @@ static void handle_button_up(void) {
     handle_short_press();
 }
 
+// Minimum time (ms) to wait after activation before allowing button-stop.
+// This prevents accidental double-press from killing the WebRTC handshake.
+static int64_t activation_time = 0;
+#define MIN_SESSION_LIFETIME_MS  3000   // 3 seconds: enough for SDP exchange, short enough for user cancel
+
 static void handle_short_press(void) {
     ESP_LOGI(TAG, "Short press detected!");
 
-    // If WebRTC session is active, stop it
+    // If WebRTC session is active, stop it (but only after minimum lifetime)
     if (jarvis_webrtc_is_active()) {
+        int64_t now = esp_timer_get_time() / 1000;
+        int64_t elapsed = now - activation_time;
+        if (elapsed < MIN_SESSION_LIFETIME_MS) {
+            ESP_LOGW(TAG, "Button ignored - WebRTC handshake in progress (%lldms < %dms)",
+                     elapsed, MIN_SESSION_LIFETIME_MS);
+            return;
+        }
         ESP_LOGI(TAG, "Button during WebRTC session - stopping");
         jarvis_webrtc_stop_session();
         return;
@@ -170,8 +188,15 @@ static void handle_short_press(void) {
 static void handle_long_press(void) {
     ESP_LOGI(TAG, "Long press detected!");
 
-    // If WebRTC session is active, stop it
+    // If WebRTC session is active, stop it (but only after minimum lifetime)
     if (jarvis_webrtc_is_active()) {
+        int64_t now = esp_timer_get_time() / 1000;
+        int64_t elapsed = now - activation_time;
+        if (elapsed < MIN_SESSION_LIFETIME_MS) {
+            ESP_LOGW(TAG, "Long press ignored - WebRTC handshake in progress (%lldms < %dms)",
+                     elapsed, MIN_SESSION_LIFETIME_MS);
+            return;
+        }
         ESP_LOGI(TAG, "Long press during WebRTC session - stopping");
         jarvis_webrtc_stop_session();
         return;
@@ -260,6 +285,8 @@ static void on_wake_word_detected(void) {
     jarvis_audio_set_streaming(true);
 
     // 7. Start WebRTC session
+    activation_time = esp_timer_get_time() / 1000;
+
     char webrtc_url[256];
     jarvis_network_get_webrtc_url(webrtc_url, sizeof(webrtc_url));
 
@@ -271,9 +298,7 @@ static void on_wake_word_detected(void) {
         current_state = STATE_ERROR;
         jarvis_display_set_state(STATE_ERROR);
         jarvis_display_set_error("WebRTC failed");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        current_state = STATE_IDLE;
-        jarvis_display_set_state(STATE_IDLE);
+        error_clear_time = esp_timer_get_time() / 1000 + 2000;
         jarvis_audio_start_listening();
     }
 }
@@ -288,20 +313,19 @@ static void on_webrtc_done(bool success) {
     // Stop streaming ring buffer, restore PGA gain
     jarvis_audio_set_streaming(false);
 
+    // NOTE: This callback runs in webrtc_session_task (Core 0, pri 6).
+    // Do NOT call jarvis_display_* here — it causes SPI bus race with main_task.
+    // Just set state + dirty flag; main_task will update display safely.
     if (success) {
         current_state = STATE_BUSY;
-        jarvis_display_set_state(STATE_BUSY);
         busy_state_start = esp_timer_get_time() / 1000;
     } else {
         current_state = STATE_ERROR;
-        jarvis_display_set_state(STATE_ERROR);
-        jarvis_display_set_error("Session error");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        current_state = dnd_mode ? STATE_DND : STATE_IDLE;
-        jarvis_display_set_state(current_state);
+        error_clear_time = esp_timer_get_time() / 1000 + 2000;  // clear after 2s
     }
+    display_state_dirty = true;
 
-    // Re-enable wake word listening
+    // Re-enable wake word listening (always — even on error, so it can hear "Jarvis" again)
     if (!dnd_mode) {
         jarvis_audio_start_listening();
     }
@@ -397,6 +421,16 @@ static void main_task(void* arg) {
         // Process audio (wake word detection)
         jarvis_audio_process();
 
+        // Deferred display state update (from callbacks running in other tasks)
+        if (display_state_dirty) {
+            display_state_dirty = false;
+            jarvis_display_set_state(current_state);
+            if (current_state == STATE_ERROR) {
+                jarvis_display_set_error("Session error");
+            }
+            jarvis_display_update();
+        }
+
         // Update display in IDLE/DND
         if (current_state == STATE_IDLE || current_state == STATE_DND) {
             if (now - last_display_update > DISPLAY_UPDATE_IDLE_MS) {
@@ -420,6 +454,14 @@ static void main_task(void* arg) {
                 current_state = dnd_mode ? STATE_DND : STATE_IDLE;
                 jarvis_display_set_state(current_state);
             }
+        }
+
+        // Error state auto-clear (non-blocking replacement for vTaskDelay in callbacks)
+        if (current_state == STATE_ERROR && error_clear_time > 0 && now >= error_clear_time) {
+            ESP_LOGI(TAG, "Error display timeout - returning to IDLE");
+            error_clear_time = 0;
+            current_state = dnd_mode ? STATE_DND : STATE_IDLE;
+            jarvis_display_set_state(current_state);
         }
 
         // Poll server state

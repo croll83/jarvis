@@ -28,31 +28,12 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(jarvis_atoms3r)
 
 # =============================================================================
-# Fix esp-dsp C++26 compatibility
-# =============================================================================
-# esp-dsp uses std::cos/std::sin without #include <cmath>, which worked in C++20
-# but fails in C++26 (ESP-IDF 6.x default). This applies the fix only to C++ files.
-#
-# We use cmake_language(DEFER) to run after all components are registered.
-cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL _fix_esp_dsp_cxx26)
-cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL _suppress_submodule_warnings)
-
-function(_fix_esp_dsp_cxx26)
-    # Check if esp-dsp component exists
-    if(TARGET __idf_espressif__esp-dsp)
-        # Apply -include cmath only to C++ files via generator expression
-        target_compile_options(__idf_espressif__esp-dsp PRIVATE
-            $<$<COMPILE_LANGUAGE:CXX>:-include$<SEMICOLON>cmath>
-        )
-        message(STATUS "Applied esp-dsp C++26 fix (-include cmath for CXX only)")
-    endif()
-endfunction()
-
-# =============================================================================
 # Suppress warnings in WebRTC submodule components (peer, srtp, esp-libopus)
 # These are third-party libraries with known type mismatches on Xtensa targets.
 # Matches the approach used by OpenAI's reference embedded SDK.
 # =============================================================================
+cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL _suppress_submodule_warnings)
+
 function(_suppress_submodule_warnings)
     if(TARGET __idf_peer)
         target_compile_options(__idf_peer PRIVATE
