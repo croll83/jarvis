@@ -14,7 +14,7 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, List, Tuple
 
-from fastapi import FastAPI, Request, UploadFile, File, Form, Query
+from fastapi import FastAPI, Request, UploadFile, File, Form, Query, WebSocket
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -64,7 +64,7 @@ from location_memory import load_memory_services_from_db
 from context_builder import build_full_context, build_routing_context, build_reasoning_context
 from proactive import proactive_check_loop
 from vector_store import init_vector_store
-from webrtc_handler import init_vad, handle_offer as webrtc_handle_offer, get_active_session_count
+from ws_audio_handler import init_vad, get_active_session_count
 
 # Logging setup
 logging.basicConfig(
@@ -746,11 +746,11 @@ async def lifespan(app: FastAPI):
     # Approval Bot: webhook (preferred) or polling fallback
     _keep(asyncio.create_task(approval_bot_setup()))
 
-    # Pre-load Silero VAD model for WebRTC audio reception
+    # Pre-load Silero VAD model for WS audio reception
     try:
         init_vad()
     except Exception as e:
-        logger.error(f"Silero VAD init failed (WebRTC disabled): {e}")
+        logger.error(f"Silero VAD init failed (WS audio disabled): {e}")
 
     logger.info("✅ JARVIS Core ready!")
     yield
@@ -768,7 +768,8 @@ DEVICE_AUTH_PATHS = {
     "/voice_command", "/voice_stream", "/device_config", "/device_status", "/heartbeat",
     "/device/config", "/device/heartbeat",
     "/room_temperature", "/speaker/suppress", "/speaker/restore", "/speaker/suppressed",
-    "/webrtc/offer",
+    # Note: /ws/audio WebSocket auth is handled inside the endpoint (query params)
+    # because FastAPI HTTP middleware does not intercept WebSocket connections.
 }
 
 @app.middleware("http")
@@ -1900,68 +1901,52 @@ async def get_room_temperature(room: str, location_id: str = None):
 
 
 # ===========================================================================
-# WEBRTC OFFER — SDP signaling per ricezione audio Opus via WebRTC
+# WS AUDIO — WebSocket endpoint per ricezione audio Opus
 # ===========================================================================
 
-@app.post("/webrtc/offer")
-async def webrtc_offer(request: Request):
+@app.websocket("/ws/audio")
+async def ws_audio(websocket: WebSocket):
     """
-    Riceve SDP offer dal firmware AtomS3R, crea PeerConnection recvonly,
-    ritorna SDP answer. L'audio Opus arriva via UDP (WebRTC), il server
-    esegue VAD Silero e, a fine speech, processa con la stessa pipeline
-    di /voice_stream (denoise → STT → speaker ID → pre-route → dispatch).
+    WebSocket endpoint per streaming audio Opus dal firmware AtomS3R.
+    Protocollo:
+      - Client invia frame Opus binari (20ms, ~30-80 bytes ciascuno)
+      - Server decodifica Opus a PCM 16kHz, esegue VAD Silero
+      - A fine speech, processa con la stessa pipeline di /voice_stream
+        (denoise -> STT -> speaker ID -> pre-route -> dispatch)
+    Auth via query params: ?device_id=XX&token=YY
     """
-    device_id = request.headers.get("X-Device-ID", "").upper().strip()
-    if not device_id:
-        return JSONResponse(status_code=400, content={"error": "X-Device-ID header required"})
+    device_id = websocket.query_params.get("device_id", "").upper().strip()
+    token = websocket.query_params.get("token", "")
 
-    try:
-        body = await request.json()
-        sdp_offer = body.get("sdp", "")
-        sdp_type = body.get("type", "")
-        if sdp_type != "offer" or not sdp_offer:
-            return JSONResponse(status_code=400, content={"error": "Invalid SDP offer"})
-    except Exception:
-        return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
-
-    logger.info(f"WebRTC offer from device {device_id}")
-
-    try:
-        sdp_answer, session_id = await webrtc_handle_offer(
-            device_id=device_id,
-            sdp_offer=sdp_offer,
-            on_speech_complete=_process_webrtc_audio,
-        )
-        return JSONResponse(content={
-            "sdp": sdp_answer,
-            "type": "answer",
-            "session_id": session_id,
-        })
-    except Exception as e:
-        logger.error(f"WebRTC offer failed for {device_id}: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+    from ws_audio_handler import ws_audio_endpoint
+    await ws_audio_endpoint(
+        websocket=websocket,
+        device_id=device_id,
+        token=token,
+        on_speech_complete=_process_ws_audio,
+    )
 
 
-async def _process_webrtc_audio(device_id: str, audio_bytes: bytes):
+async def _process_ws_audio(device_id: str, audio_bytes: bytes):
     """
-    Callback da WebRTCSession a fine speech.
+    Callback da WsAudioSession a fine speech.
     Stessa pipeline di /voice_stream: device config → denoise → STT →
     restore speaker → speaker ID → panic check → pre-route → dispatch.
 
     audio_bytes: PCM 16-bit mono 16 kHz
     """
-    logger.info(f"WebRTC speech received from {device_id}: {len(audio_bytes)} bytes")
+    logger.info(f"WS speech received from {device_id}: {len(audio_bytes)} bytes")
 
     # Recupera configurazione device
     device_config = get_device_speaker_config(device_id)
     if device_config:
         location = device_config.get("location_id", get_default_location_id())
         room_value = device_config.get("friendly_name", "Unknown")
-        logger.info(f"WebRTC device {device_id} configured as '{room_value}' in '{location}'")
+        logger.info(f"WS device {device_id} configured as '{room_value}' in '{location}'")
     else:
         location = extract_location_from_device(device_id) or get_default_location_id()
         room_value = "Unknown"
-        logger.warning(f"WebRTC device {device_id} not configured, using legacy mode")
+        logger.warning(f"WS device {device_id} not configured, using legacy mode")
 
     try:
         # Denoise + STT
@@ -1980,10 +1965,10 @@ async def _process_webrtc_audio(device_id: str, audio_bytes: bytes):
             logger.error(f"Auto-restore fallito per {device_id}: {e}")
 
         if not text:
-            logger.info(f"WebRTC: no speech detected from {device_id}")
+            logger.info(f"WS: no speech detected from {device_id}")
             return
 
-        logger.info(f"WebRTC transcribed: '{text[:120]}...' from {device_id}")
+        logger.info(f"WS transcribed: '{text[:120]}...' from {device_id}")
 
         # Speaker identification
         speaker_start = time.time()
@@ -2006,11 +1991,11 @@ async def _process_webrtc_audio(device_id: str, audio_bytes: bytes):
 
         # Panic stop check
         if _is_panic_command(text):
-            logger.warning(f"PANIC STOP triggered by WebRTC: '{text}' (location={location})")
+            logger.warning(f"PANIC STOP triggered by WS audio: '{text}' (location={location})")
             count, stopped_ids = await _panic_stop_all_speakers(location)
             response_text = f"Ok, ho fermato {count} speaker." if count > 0 else "Non ho trovato speaker attivi."
             log_event("panic_stop", {
-                "source": "webrtc",
+                "source": "ws_audio",
                 "text": text,
                 "location": location,
                 "speakers_stopped": count,
@@ -2024,7 +2009,7 @@ async def _process_webrtc_audio(device_id: str, audio_bytes: bytes):
         pre_result = await pre_route(text)
         pre_route_ms = (time.time() - pre_route_start) * 1000
         classification = pre_result.get("classification", "ALTRO")
-        logger.info(f"WebRTC pre-route: {classification} (conf={pre_result.get('confidence', 0):.2f}, {pre_route_ms:.0f}ms)")
+        logger.info(f"WS pre-route: {classification} (conf={pre_result.get('confidence', 0):.2f}, {pre_route_ms:.0f}ms)")
 
         if classification == "DOMOTICA_CERTA":
             await process_jarvis_logic(text, context)
@@ -2034,7 +2019,7 @@ async def _process_webrtc_audio(device_id: str, audio_bytes: bytes):
             await _handle_openclaw_voice(text, context, hint="")
 
     except Exception as e:
-        logger.error(f"Error processing WebRTC audio from {device_id}: {e}")
+        logger.error(f"Error processing WS audio from {device_id}: {e}")
 
 
 @app.post("/voice_stream")

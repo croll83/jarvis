@@ -9,7 +9,7 @@
  *   - I2S full-duplex on I2S_NUM_1: RX (mic) + TX (speaker) via legacy I2S API
  *
  * This component owns all hardware init/deinit. Other components (jarvis_audio,
- * jarvis_speaker, jarvis_webrtc) use this API to read/write audio.
+ * jarvis_speaker, jarvis_ws_audio) use this API to read/write audio.
  */
 
 #ifndef JARVIS_CODEC_H

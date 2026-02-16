@@ -121,12 +121,11 @@
 #define BUTTON_DEBOUNCE_MS      200
 
 // =============================================================================
-// WEBRTC + OPUS CONFIGURATION
+// WEBSOCKET AUDIO + OPUS CONFIGURATION
 // =============================================================================
 
-#define WEBRTC_SIGNALING_PATH       "/webrtc/offer"
-#define WEBRTC_SESSION_TIMEOUT_MS   120000  // 120s max session
-#define WEBRTC_TICK_INTERVAL_MS     15      // peer_connection_loop interval
+#define WS_AUDIO_PATH               "/ws/audio"
+#define WS_SESSION_TIMEOUT_MS       30000   // 30s max session
 
 // Opus codec
 #define OPUS_BITRATE                30000
@@ -134,7 +133,7 @@
 #define OPUS_FRAME_SAMPLES          320     // 20ms @ 16kHz
 #define OPUS_MAX_PACKET_SIZE        1276
 
-// Raw audio ring buffer (for WebRTC streaming path)
+// Raw audio ring buffer (for WS audio streaming path)
 #define RAW_RINGBUF_SIZE            (16000 * 2)  // 1s = 32KB @ 16kHz 16-bit
 
 // =============================================================================

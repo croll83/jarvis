@@ -4,7 +4,7 @@
  * =============================================================================
  *
  * WiFi, config fetch, heartbeat, temperature, DND, state polling.
- * Audio streaming removed — now handled by jarvis_webrtc (WebRTC + Opus).
+ * Audio streaming removed — now handled by jarvis_ws_audio (WebSocket + Opus).
  */
 
 #include "jarvis_network.h"
@@ -79,7 +79,7 @@ static const char *TAG = "NETWORK";
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
 
-#define WEBRTC_SIGNALING_PATH "/webrtc/offer"
+#define WS_AUDIO_PATH "/ws/audio"
 
 // =============================================================================
 // HTTP RESPONSE BUFFER
@@ -639,13 +639,21 @@ void jarvis_network_suppress_speaker(const char* device_id) {
 }
 
 // =============================================================================
-// WEBRTC HELPERS
+// WEBSOCKET AUDIO HELPERS
 // =============================================================================
 
-void jarvis_network_get_webrtc_url(char *buf, size_t size) {
+void jarvis_network_get_ws_audio_url(const char *device_id, char *buf, size_t size) {
     if (!buf || size == 0) return;
-    snprintf(buf, size, JARVIS_URL_SCHEME "://%s:%d%s",
-             JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, WEBRTC_SIGNALING_PATH);
+    const char *token = jarvis_network_get_api_token();
+    if (token && token[0]) {
+        snprintf(buf, size, "ws://%s:%d%s?device_id=%s&token=%s",
+                 JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, WS_AUDIO_PATH,
+                 device_id ? device_id : "", token);
+    } else {
+        snprintf(buf, size, "ws://%s:%d%s?device_id=%s",
+                 JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, WS_AUDIO_PATH,
+                 device_id ? device_id : "");
+    }
 }
 
 const char* jarvis_network_get_api_token(void) {

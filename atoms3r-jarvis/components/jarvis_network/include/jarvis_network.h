@@ -9,9 +9,9 @@
  * - Heartbeat
  * - Temperature reading from Home Assistant
  * - Server state polling
- * - WebRTC signaling URL helper
+ * - WebSocket audio URL helper
  *
- * Audio streaming is now handled by jarvis_webrtc (WebRTC + Opus).
+ * Audio streaming is handled by jarvis_ws_audio (WebSocket + Opus).
  */
 
 #ifndef JARVIS_NETWORK_H
@@ -105,11 +105,13 @@ void jarvis_network_set_callbacks(
 void jarvis_network_suppress_speaker(const char* device_id);
 
 /**
- * @brief Build WebRTC signaling URL from configured server host/port.
- * @param buf Output buffer
+ * @brief Build WebSocket audio URL with device_id and token in query params.
+ * @param device_id Device MAC address
+ * @param buf Output buffer (at least 384 bytes)
  * @param size Buffer size
+ * Produces: "ws://host:port/ws/audio?device_id=XX&token=YY"
  */
-void jarvis_network_get_webrtc_url(char *buf, size_t size);
+void jarvis_network_get_ws_audio_url(const char *device_id, char *buf, size_t size);
 
 /**
  * @brief Get the configured API token.

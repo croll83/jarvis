@@ -103,17 +103,6 @@ CONFIG_BOOTLOADER_SKIP_VALIDATE_ON_POWER_ON=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
 # =============================================================================
-# DTLS for WebRTC (SRTP key exchange)
-# =============================================================================
-CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
-CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
-CONFIG_MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA=y
-
-# X.509 certificate creation (needed by libpeer for DTLS self-signed cert)
-CONFIG_MBEDTLS_X509_CREATE_C=y
-CONFIG_MBEDTLS_X509_CRT_WRITE_C=y
-
-# =============================================================================
 # Device Configuration (da personalizzare via menuconfig)
 # =============================================================================
 CONFIG_WIFI_SSID="YOUR_WIFI_SSID"
