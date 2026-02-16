@@ -5,7 +5,7 @@
  *
  * Manages:
  * - Wake word detection with ESP-SR WakeNet (model "jarvis")
- * - Dual-path audio feed: raw ring buffer (for WebRTC) + AFE (for WakeNet)
+ * - Dual-path audio feed: raw ring buffer (for WS audio) + AFE (for WakeNet)
  *
  * Hardware init (I2S, I2C, ES8311, amplifier) is handled by jarvis_codec.
  * This module only handles ESP-SR (AFE/WakeNet) and the raw audio ring buffer.
@@ -53,9 +53,9 @@ void jarvis_audio_stop_listening(void);
 bool jarvis_audio_is_listening(void);
 
 /**
- * @brief Enable/disable raw audio ring buffer for WebRTC streaming.
+ * @brief Enable/disable raw audio ring buffer for audio streaming.
  * When enabled, the feed task writes raw mic audio to a ring buffer
- * that jarvis_webrtc can read from. Also switches PGA gain:
+ * that jarvis_ws_audio can read from. Also switches PGA gain:
  *   true  → 0dB  (clean audio for transcription)
  *   false → +12dB (sensitive for wake word detection)
  *
@@ -65,7 +65,7 @@ void jarvis_audio_set_streaming(bool enable);
 
 /**
  * @brief Read raw mono PCM samples from the ring buffer.
- * Used by jarvis_webrtc to feed the Opus encoder.
+ * Used by jarvis_ws_audio to feed the Opus encoder.
  *
  * @param buf       Output buffer for mono 16-bit PCM
  * @param num_samples Number of samples to read

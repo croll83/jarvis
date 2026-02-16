@@ -28,31 +28,12 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(jarvis_atoms3r)
 
 # =============================================================================
-# Suppress warnings in WebRTC submodule components (peer, srtp, esp-libopus)
-# These are third-party libraries with known type mismatches on Xtensa targets.
-# Matches the approach used by OpenAI's reference embedded SDK.
+# Suppress warnings in third-party components (esp-libopus)
+# Known type mismatches on Xtensa targets.
 # =============================================================================
 cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL _suppress_submodule_warnings)
 
 function(_suppress_submodule_warnings)
-    if(TARGET __idf_peer)
-        target_compile_options(__idf_peer PRIVATE
-            -Wno-error=restrict
-            -Wno-error=stringop-truncation
-            -Wno-error=discarded-qualifiers
-            -Wno-error=implicit-function-declaration
-            -Wno-error=int-conversion
-        )
-        message(STATUS "Suppressed warnings for peer component")
-    endif()
-
-    if(TARGET __idf_srtp)
-        target_compile_options(__idf_srtp PRIVATE
-            -Wno-error=incompatible-pointer-types
-        )
-        message(STATUS "Suppressed warnings for srtp component")
-    endif()
-
     if(TARGET __idf_esp-libopus)
         target_compile_options(__idf_esp-libopus PRIVATE
             -Wno-error=maybe-uninitialized

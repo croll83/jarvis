@@ -7,7 +7,7 @@ idf_component_register(
         jarvis_audio
         jarvis_network
         jarvis_speaker
-        jarvis_webrtc
+        jarvis_ws_audio
         esp_wifi
         esp_event
         nvs_flash

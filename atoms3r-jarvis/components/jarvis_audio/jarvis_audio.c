@@ -5,7 +5,7 @@
  *
  * Manages:
  * - Wake word detection with ESP-SR WakeNet (model "jarvis")
- * - Dual-path audio feed: raw ring buffer (for WebRTC) + AFE (for WakeNet)
+ * - Dual-path audio feed: raw ring buffer (for WS audio) + AFE (for WakeNet)
  *
  * Hardware init (I2S, I2C, ES8311, amplifier) is handled by jarvis_codec.
  * This module only handles ESP-SR (AFE/WakeNet) and the raw audio ring buffer.
@@ -40,7 +40,7 @@ static const char *TAG = "AUDIO";
 
 #define MIC_SAMPLE_RATE         16000
 
-// Raw ring buffer for WebRTC streaming (1 second @ 16kHz mono 16-bit = 32KB)
+// Raw ring buffer for WS audio streaming (1 second @ 16kHz mono 16-bit = 32KB)
 #define RAW_RINGBUF_SIZE        (16000 * 2)
 
 // ES8311 PGA gain: left at default from es8311_microphone_config() = 0x1A (+30dB)
@@ -70,7 +70,7 @@ static bool wakenet_initialized = false;
 static TaskHandle_t afe_feed_task_handle = NULL;
 static TaskHandle_t afe_detect_task_handle = NULL;
 
-// Raw audio ring buffer for WebRTC
+// Raw audio ring buffer for WS audio streaming
 static RingbufHandle_t raw_ringbuf = NULL;
 static volatile bool streaming_to_ringbuf = false;
 

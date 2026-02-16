@@ -392,10 +392,9 @@ PROACTIVE_NIGHT_END = int(os.getenv("PROACTIVE_NIGHT_END", "5"))
 SECURITY_ANIMAL_LABELS = os.getenv("SECURITY_ANIMAL_LABELS", "cat,dog").split(",")
 
 # ===========================================================================
-# WEBRTC + VAD (server-side audio reception)
+# WS AUDIO + VAD (server-side audio reception via WebSocket + Opus)
 # ===========================================================================
-STUN_SERVER = os.getenv("STUN_SERVER", "stun:stun.l.google.com:19302")
-WEBRTC_SESSION_TIMEOUT = int(os.getenv("WEBRTC_SESSION_TIMEOUT", "60"))
-WEBRTC_VAD_THRESHOLD = float(os.getenv("WEBRTC_VAD_THRESHOLD", "0.5"))
-WEBRTC_VAD_MIN_SILENCE_MS = int(os.getenv("WEBRTC_VAD_MIN_SILENCE_MS", "700"))
-WEBRTC_VAD_MIN_SPEECH_MS = int(os.getenv("WEBRTC_VAD_MIN_SPEECH_MS", "250"))
+WS_AUDIO_SESSION_TIMEOUT = int(os.getenv("WS_AUDIO_SESSION_TIMEOUT", "60"))
+VAD_THRESHOLD = float(os.getenv("WEBRTC_VAD_THRESHOLD", os.getenv("VAD_THRESHOLD", "0.5")))
+VAD_MIN_SILENCE_MS = int(os.getenv("WEBRTC_VAD_MIN_SILENCE_MS", os.getenv("VAD_MIN_SILENCE_MS", "700")))
+VAD_MIN_SPEECH_MS = int(os.getenv("WEBRTC_VAD_MIN_SPEECH_MS", os.getenv("VAD_MIN_SPEECH_MS", "250")))

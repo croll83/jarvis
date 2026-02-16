@@ -7,7 +7,7 @@
  * - Legge MAC address come device_id
  * - Recupera configurazione dal server (friendly_name, location)
  * - Ascolta wake word "Jarvis" (ESP-SR WakeNet)
- * - Audio streaming via WebRTC + Opus
+ * - Audio streaming via WebSocket + Opus
  * - Mostra stato su display TFT 128x128
  * - Gestisce DND mode con click sul display
  * - Invia heartbeat periodico al server
@@ -42,13 +42,13 @@ extern "C" {
 #include "jarvis_audio.h"
 #include "jarvis_network.h"
 #include "jarvis_speaker.h"
-#include "jarvis_webrtc.h"
+#include "jarvis_ws_audio.h"
 }
 
 static const char *TAG = "JARVIS";
 
 // Firmware version
-#define FIRMWARE_VERSION "3.0.0-webrtc"
+#define FIRMWARE_VERSION "4.0.0-ws"
 
 // =============================================================================
 // GLOBAL STATE
@@ -75,14 +75,14 @@ static int current_minute = 0;
 // Error state auto-clear
 static int64_t error_clear_time = 0;
 
-// Deferred display update flag (avoids SPI race between webrtc task and main task)
+// Deferred display update flag (avoids SPI race between ws_audio task and main task)
 static volatile bool display_state_dirty = false;
 
 // Forward declarations
 static void on_wake_word_detected(void);
 static void handle_short_press(void);
 static void handle_long_press(void);
-static void on_webrtc_done(bool success);
+static void on_session_done(bool success);
 
 // =============================================================================
 // SNTP TIME SYNC
@@ -148,24 +148,24 @@ static void handle_button_up(void) {
 }
 
 // Minimum time (ms) to wait after activation before allowing button-stop.
-// This prevents accidental double-press from killing the WebRTC handshake.
+// This prevents accidental double-press from killing the WS handshake.
 static int64_t activation_time = 0;
-#define MIN_SESSION_LIFETIME_MS  3000   // 3 seconds: enough for SDP exchange, short enough for user cancel
+#define MIN_SESSION_LIFETIME_MS  1000   // 1 second: WS connects in < 500ms
 
 static void handle_short_press(void) {
     ESP_LOGI(TAG, "Short press detected!");
 
-    // If WebRTC session is active, stop it (but only after minimum lifetime)
-    if (jarvis_webrtc_is_active()) {
+    // If WS session is active, stop it (but only after minimum lifetime)
+    if (jarvis_ws_audio_is_active()) {
         int64_t now = esp_timer_get_time() / 1000;
         int64_t elapsed = now - activation_time;
         if (elapsed < MIN_SESSION_LIFETIME_MS) {
-            ESP_LOGW(TAG, "Button ignored - WebRTC handshake in progress (%lldms < %dms)",
+            ESP_LOGW(TAG, "Button ignored - WS session in progress (%lldms < %dms)",
                      elapsed, MIN_SESSION_LIFETIME_MS);
             return;
         }
-        ESP_LOGI(TAG, "Button during WebRTC session - stopping");
-        jarvis_webrtc_stop_session();
+        ESP_LOGI(TAG, "Button during WS session - stopping");
+        jarvis_ws_audio_stop_session();
         return;
     }
 
@@ -188,17 +188,17 @@ static void handle_short_press(void) {
 static void handle_long_press(void) {
     ESP_LOGI(TAG, "Long press detected!");
 
-    // If WebRTC session is active, stop it (but only after minimum lifetime)
-    if (jarvis_webrtc_is_active()) {
+    // If WS session is active, stop it (but only after minimum lifetime)
+    if (jarvis_ws_audio_is_active()) {
         int64_t now = esp_timer_get_time() / 1000;
         int64_t elapsed = now - activation_time;
         if (elapsed < MIN_SESSION_LIFETIME_MS) {
-            ESP_LOGW(TAG, "Long press ignored - WebRTC handshake in progress (%lldms < %dms)",
+            ESP_LOGW(TAG, "Long press ignored - WS session in progress (%lldms < %dms)",
                      elapsed, MIN_SESSION_LIFETIME_MS);
             return;
         }
-        ESP_LOGI(TAG, "Long press during WebRTC session - stopping");
-        jarvis_webrtc_stop_session();
+        ESP_LOGI(TAG, "Long press during WS session - stopping");
+        jarvis_ws_audio_stop_session();
         return;
     }
 
@@ -284,36 +284,34 @@ static void on_wake_word_detected(void) {
     jarvis_audio_stop_listening();
     jarvis_audio_set_streaming(true);
 
-    // 7. Start WebRTC session
+    // 7. Start WebSocket audio session
     activation_time = esp_timer_get_time() / 1000;
 
-    char webrtc_url[256];
-    jarvis_network_get_webrtc_url(webrtc_url, sizeof(webrtc_url));
+    char ws_url[384];
+    jarvis_network_get_ws_audio_url(device_config.device_id, ws_url, sizeof(ws_url));
 
-    if (!jarvis_webrtc_start_session(webrtc_url, device_config.device_id,
-                                      jarvis_network_get_api_token(),
-                                      on_webrtc_done)) {
-        ESP_LOGE(TAG, "Failed to start WebRTC session");
+    if (!jarvis_ws_audio_start_session(ws_url, on_session_done)) {
+        ESP_LOGE(TAG, "Failed to start WS audio session");
         jarvis_audio_set_streaming(false);
         current_state = STATE_ERROR;
         jarvis_display_set_state(STATE_ERROR);
-        jarvis_display_set_error("WebRTC failed");
+        jarvis_display_set_error("WS audio failed");
         error_clear_time = esp_timer_get_time() / 1000 + 2000;
         jarvis_audio_start_listening();
     }
 }
 
 // =============================================================================
-// WEBRTC SESSION DONE CALLBACK
+// WS AUDIO SESSION DONE CALLBACK
 // =============================================================================
 
-static void on_webrtc_done(bool success) {
-    ESP_LOGI(TAG, "WebRTC session done: %s", success ? "OK" : "FAIL");
+static void on_session_done(bool success) {
+    ESP_LOGI(TAG, "WS audio session done: %s", success ? "OK" : "FAIL");
 
     // Stop streaming ring buffer, restore PGA gain
     jarvis_audio_set_streaming(false);
 
-    // NOTE: This callback runs in webrtc_session_task (Core 0, pri 6).
+    // NOTE: This callback runs in ws_audio task (Core 0, pri 6).
     // Do NOT call jarvis_display_* here — it causes SPI bus race with main_task.
     // Just set state + dirty flag; main_task will update display safely.
     if (success) {
@@ -389,7 +387,7 @@ static void heartbeat_task(void* arg) {
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_INTERVAL_MS));
         if (!jarvis_network_is_connected()) continue;
-        if (jarvis_webrtc_is_active()) continue;
+        if (jarvis_ws_audio_is_active()) continue;
 
         device_config_t new_config = {};
         if (jarvis_network_send_heartbeat(device_config.device_id, FIRMWARE_VERSION, &new_config)) {
@@ -465,7 +463,7 @@ static void main_task(void* arg) {
         }
 
         // Poll server state
-        if (!dnd_mode && !jarvis_webrtc_is_active() &&
+        if (!dnd_mode && !jarvis_ws_audio_is_active() &&
             current_state != STATE_LISTENING && current_state != STATE_PROCESSING) {
             if (now - last_busy_poll > BUSY_POLL_INTERVAL_MS) {
                 last_busy_poll = now;
@@ -476,7 +474,7 @@ static void main_task(void* arg) {
         // Fetch temperature periodically
         if (now - last_temp_fetch > TEMP_REFRESH_MS) {
             last_temp_fetch = now;
-            if (!jarvis_webrtc_is_active() && device_config.friendly_name[0] != '\0') {
+            if (!jarvis_ws_audio_is_active() && device_config.friendly_name[0] != '\0') {
                 float new_temp;
                 if (jarvis_network_fetch_temperature(device_config.friendly_name, &new_temp)) {
                     cached_temperature = new_temp;
@@ -496,7 +494,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "=================================");
     ESP_LOGI(TAG, "JARVIS AtomS3R Starting...");
     ESP_LOGI(TAG, "Firmware: %s", FIRMWARE_VERSION);
-    ESP_LOGI(TAG, "(WebRTC + Opus + ESP-SR)");
+    ESP_LOGI(TAG, "(WebSocket + Opus + ESP-SR)");
     ESP_LOGI(TAG, "=================================");
 
     // Initialize NVS
@@ -598,9 +596,9 @@ extern "C" void app_main(void) {
     }
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // Initialize WebRTC module (Opus encoder/decoder)
-    if (!jarvis_webrtc_init()) {
-        ESP_LOGW(TAG, "WebRTC init failed - voice streaming disabled");
+    // Initialize WS Audio module (Opus encoder/decoder)
+    if (!jarvis_ws_audio_init()) {
+        ESP_LOGW(TAG, "WS Audio init failed - voice streaming disabled");
     }
     vTaskDelay(pdMS_TO_TICKS(10));
 
