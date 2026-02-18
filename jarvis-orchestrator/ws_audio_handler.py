@@ -1,21 +1,35 @@
 """
-WebSocket Audio Handler -- Server-side Opus reception via WebSocket + Silero VAD.
+WebSocket Audio Handler -- Persistent bidirectional WebSocket for AtomS3R devices.
 
-Flusso:
-  1. Firmware connette a ws://.../ws/audio?device_id=...&token=...
-  2. Server accetta, invia {"type":"ready","session_id":"..."}
-  3. Firmware invia frame Opus binari (20ms each, ~30-80 bytes)
-  4. Server decodifica Opus a PCM 16 kHz via opuslib (NO resampling)
-  5. Silero VAD (ONNX) detecta speech-start -> speech-end
-  6. callback on_speech_complete(device_id, pcm_bytes_16k)
-  7. Server invia {"type":"speech_end"}, chiude WebSocket
+Protocol (unified: control + audio on a single persistent connection):
+  1. Device connects: ws://.../ws/audio?device_id=...&token=...
+  2. Server accepts, sends {"type":"welcome", "server_time": ...}
+  3. Device sends {"type":"hello", "fw":"...", "device_id":"..."}
+  4. Connection stays open (idle: only JSON keepalive / state updates)
 
-Note:
-  - Silero VAD caricato direttamente via onnxruntime (no torch.hub, no torchaudio)
-    per evitare problemi con libtorchaudio.so / CUDA stub nel container CPU-only.
-  - Ogni sessione ha il proprio stato RNN (h/c) per isolamento thread-safe.
-  - Opus decodificato a 16 kHz direttamente (il firmware encoda a 16 kHz).
-    Con WebRTC/aiortc serviva resample 48->16 kHz via scipy. Eliminato.
+  Audio session (within the persistent connection):
+  5. Device sends {"type":"audio_start"} when wake word detected or trigger_listen received
+  6. Server creates WsAudioSession, sends {"type":"ready","session_id":"..."}
+  7. Device sends binary Opus frames (20ms each, ~30-80 bytes)
+  8. Silero VAD detects speech end → server sends {"type":"speech_end"}
+  9. Callback on_speech_complete(device_id, pcm_bytes_16k)
+  10. Audio session destroyed, but WebSocket stays open → back to step 4
+
+  Server → Device commands:
+  - {"type":"trigger_listen","silent":true}  -- trigger mic activation
+  - {"type":"ping"}                          -- keepalive
+
+  Device → Server state:
+  - {"type":"state","state":"idle|listening|busy|dnd|error"}
+
+  Backward compatibility:
+  - If device sends binary Opus frames without "audio_start" first,
+    auto-create audio session (legacy ephemeral protocol).
+
+Notes:
+  - Silero VAD loaded via onnxruntime (no torch dependency).
+  - Each audio session gets its own RNN state for isolation.
+  - Opus decoded to 16 kHz directly (firmware encodes at 16 kHz).
 """
 
 import asyncio
@@ -47,7 +61,6 @@ except ImportError:
 
 # ---------------------------------------------------------------------------
 # Silero VAD via ONNX Runtime (no torch dependency)
-# Silero VAD ONNX implementation for speech detection
 # ---------------------------------------------------------------------------
 _vad_onnx_path: Optional[str] = None
 
@@ -148,27 +161,19 @@ def _new_vad_instance() -> SileroVADOnnx:
 
 
 # ---------------------------------------------------------------------------
-# Active sessions tracking
+# Persistent connections registry
 # ---------------------------------------------------------------------------
-_active_sessions: Dict[str, "WsAudioSession"] = {}
-_sessions_lock = asyncio.Lock()
-
-
-async def _cleanup_previous_session(device_id: str):
-    """Chiude sessione precedente dello stesso device (se esiste)."""
-    async with _sessions_lock:
-        old = _active_sessions.pop(device_id, None)
-    if old:
-        logger.info(f"Closing previous WS audio session for device {device_id}")
-        old._closed = True
+_persistent_connections: Dict[str, "PersistentDeviceConnection"] = {}
+_connections_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
-# WsAudioSession
+# WsAudioSession -- handles one speech utterance within a persistent connection
 # ---------------------------------------------------------------------------
 class WsAudioSession:
     """
-    Gestisce una singola sessione audio WebSocket.
+    Gestisce una singola sessione audio (un utterance) all'interno di una
+    connessione WS persistente.
 
     - Riceve frame Opus binari via WebSocket
     - Decodifica Opus -> PCM 16 kHz mono (opuslib)
@@ -233,13 +238,10 @@ class WsAudioSession:
         if not self._opus_decoder:
             return None
         try:
-            # opuslib.Decoder.decode() returns bytes (int16 PCM)
-            # frame_size=320 (20ms @ 16kHz)
             pcm_bytes = self._opus_decoder.decode(opus_data, self.OPUS_FRAME_SAMPLES)
             pcm_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
             pcm_float = pcm_int16.astype(np.float32) / 32768.0
 
-            # Debug: log RMS of decoded audio every 50 frames
             if self._opus_frames_received % 50 == 1:
                 rms = float(np.sqrt(np.mean(pcm_float ** 2)))
                 logger.info(f"[{self.session_id}] Decoded frame #{self._opus_frames_received}: "
@@ -256,27 +258,18 @@ class WsAudioSession:
     def process_audio(self, pcm_float: np.ndarray) -> bool:
         """
         Feed PCM float32 to VAD. Returns True when speech is complete.
-
-        VAD logic identical to WebRTCSession._consume_audio inner loop:
-        - Pre-speech lead-in (300ms buffer)
-        - min_speech_ms consecutive speech to confirm start
-        - min_silence_ms consecutive silence after speech to confirm end
         """
         chunk_duration_ms = (self.VAD_CHUNK_SIZE / 16000) * 1000  # 32ms
 
-        # Accumulate in VAD chunk buffer
         self._vad_chunk_buffer = np.concatenate([self._vad_chunk_buffer, pcm_float])
 
-        # Process all available 512-sample chunks
         while len(self._vad_chunk_buffer) >= self.VAD_CHUNK_SIZE:
             chunk = self._vad_chunk_buffer[:self.VAD_CHUNK_SIZE]
             self._vad_chunk_buffer = self._vad_chunk_buffer[self.VAD_CHUNK_SIZE:]
 
-            # Silero VAD inference (ONNX)
             speech_prob = self._vad(chunk)
             is_speech = speech_prob > self._vad_threshold
 
-            # Debug: log every 50th VAD chunk (~1.6s) to monitor
             if self._opus_frames_received % 50 == 1:
                 logger.info(f"[{self.session_id}] VAD prob={speech_prob:.3f} "
                             f"thresh={self._vad_threshold} is_speech={is_speech} "
@@ -286,11 +279,8 @@ class WsAudioSession:
             if is_speech:
                 self._silence_frames = 0
                 self._speech_frames += 1
-
-                # Accumula audio
                 self._audio_buffer.append(chunk)
 
-                # Verifica speech start (min durata consecutiva)
                 if not self._speech_started:
                     total_speech_ms = self._speech_frames * chunk_duration_ms
                     if total_speech_ms >= self._min_speech_ms:
@@ -301,31 +291,27 @@ class WsAudioSession:
                 self._speech_frames = 0
 
                 if self._speech_started:
-                    # Accumula anche il silenzio (padding naturale)
                     self._audio_buffer.append(chunk)
                     self._silence_frames += 1
 
-                    # Verifica speech end (silenzio sufficiente)
                     total_silence_ms = self._silence_frames * chunk_duration_ms
                     if total_silence_ms >= self._min_silence_ms:
                         logger.info(f"Speech ended in session {self.session_id} "
                                     f"(silence {total_silence_ms:.0f}ms)")
-                        return True  # Speech complete
+                        return True
                 else:
-                    # Pre-speech: mantieni ultimi 300ms come lead-in
                     lead_in_chunks = int(300 / chunk_duration_ms)
                     self._audio_buffer.append(chunk)
                     if len(self._audio_buffer) > lead_in_chunks:
                         self._audio_buffer = self._audio_buffer[-lead_in_chunks:]
 
-        return False  # Speech not complete yet
+        return False
 
     async def deliver_speech(self):
         """Concatena buffer, converte a PCM 16-bit bytes, chiama callback."""
         if not self._audio_buffer:
             return
 
-        # Concatena tutti i chunk
         full_pcm = np.concatenate(self._audio_buffer)
         duration_s = len(full_pcm) / 16000
 
@@ -333,17 +319,15 @@ class WsAudioSession:
                     f"{duration_s:.1f}s, {len(full_pcm)} samples, "
                     f"opus_frames_received={self._opus_frames_received}")
 
-        # Converti float32 -> int16 -> bytes (formato atteso dalla pipeline STT)
         pcm_int16 = (full_pcm * 32767).clip(-32768, 32767).astype(np.int16)
         pcm_bytes = pcm_int16.tobytes()
 
-        # Svuota buffer
+        # Reset audio state for potential next utterance on same connection
         self._audio_buffer = []
         self._speech_started = False
         self._speech_frames = 0
         self._silence_frames = 0
 
-        # Callback asincrono
         try:
             await self.on_speech_complete(self.device_id, pcm_bytes)
         except Exception as e:
@@ -351,7 +335,67 @@ class WsAudioSession:
 
 
 # ---------------------------------------------------------------------------
-# WebSocket endpoint handler
+# PersistentDeviceConnection
+# ---------------------------------------------------------------------------
+class PersistentDeviceConnection:
+    """
+    Represents a persistent WebSocket connection to one AtomS3R device.
+    Manages the lifecycle of multiple audio sessions over a single connection.
+    """
+
+    def __init__(self, device_id: str, websocket, on_speech_complete):
+        self.device_id = device_id
+        self.websocket = websocket
+        self.on_speech_complete = on_speech_complete
+        self.connected_at = time.time()
+        self.last_state: Optional[str] = None
+        self.last_state_at: Optional[float] = None
+        self.last_pong_at: Optional[float] = None
+        self.firmware_version: Optional[str] = None
+        self.audio_session: Optional[WsAudioSession] = None
+        self._closed = False
+
+    async def send_command(self, command: dict) -> bool:
+        """Send a JSON command to the device. Returns False if send fails."""
+        if self._closed:
+            return False
+        try:
+            await self.websocket.send_json(command)
+            return True
+        except Exception as e:
+            logger.warning(f"Control WS send failed for {self.device_id}: {e}")
+            self._closed = True
+            return False
+
+    async def trigger_listen(self, silent: bool = True) -> bool:
+        """
+        Send trigger_listen command to device.
+        silent=True: multi-turn follow-up (no wake sound, no speaker suppress)
+        silent=False: remote enrollment (play wake sound)
+        """
+        return await self.send_command({
+            "type": "trigger_listen",
+            "silent": silent,
+        })
+
+    def start_audio_session(self) -> WsAudioSession:
+        """Create a new audio session within this persistent connection."""
+        session = WsAudioSession(
+            device_id=self.device_id,
+            on_speech_complete=self.on_speech_complete,
+        )
+        self.audio_session = session
+        return session
+
+    def end_audio_session(self):
+        """End the current audio session (connection stays open)."""
+        if self.audio_session:
+            self.audio_session._closed = True
+            self.audio_session = None
+
+
+# ---------------------------------------------------------------------------
+# WebSocket endpoint handler (persistent)
 # ---------------------------------------------------------------------------
 async def ws_audio_endpoint(
     websocket,
@@ -360,12 +404,11 @@ async def ws_audio_endpoint(
     on_speech_complete: Callable[[str, bytes], Awaitable[None]],
 ):
     """
-    FastAPI WebSocket endpoint handler for Opus audio streaming.
+    FastAPI WebSocket endpoint handler for persistent device connection.
 
-    Protocol:
-      - Client sends binary messages (raw Opus frames, 20ms each)
-      - Server sends JSON text messages for control
-      - Server closes WebSocket after speech detected or timeout
+    Supports both:
+    - New persistent protocol (hello → idle → audio_start → opus → speech_end → idle → ...)
+    - Legacy ephemeral protocol (connect → opus frames immediately → speech_end → disconnect)
     """
     from starlette.websockets import WebSocketState
 
@@ -384,48 +427,95 @@ async def ws_audio_endpoint(
         await websocket.close(code=4003, reason="Opus decoder not available")
         return
 
-    # 2. Cleanup previous session for this device
-    await _cleanup_previous_session(device_id)
+    # 2. Close previous connection for this device (if any)
+    async with _connections_lock:
+        old_conn = _persistent_connections.pop(device_id, None)
+    if old_conn:
+        old_conn._closed = True
+        logger.info(f"Replacing previous persistent connection for device {device_id}")
 
-    # 3. Accept WebSocket and create session
+    # 3. Accept WebSocket and create persistent connection
     await websocket.accept()
 
-    session = WsAudioSession(
+    conn = PersistentDeviceConnection(
         device_id=device_id,
+        websocket=websocket,
         on_speech_complete=on_speech_complete,
     )
 
-    # Register in active sessions
-    async with _sessions_lock:
-        _active_sessions[device_id] = session
+    # Register in persistent connections
+    async with _connections_lock:
+        _persistent_connections[device_id] = conn
 
-    logger.info(f"WS audio session {session.session_id} started for device {device_id}")
+    logger.info(f"Persistent WS connection established for device {device_id}")
 
-    # 4. Send ready signal
-    ready_msg = {"type": "ready", "session_id": session.session_id}
-    logger.info(f"Sending ready signal to {device_id}: {ready_msg}")
-    await websocket.send_json(ready_msg)
-    logger.info(f"Ready signal sent to {device_id}")
+    # 4. Send welcome
+    await conn.send_command({"type": "welcome", "server_time": time.time()})
 
-    # 5. Receive and process audio
+    # 5. Main receive loop (persistent — stays open until device disconnects)
+    is_persistent = False  # Will be set to True when we receive "hello" or "audio_start"
+    legacy_session_started = False  # For backward compat with ephemeral protocol
+
     try:
-        start_time = time.time()
-        last_audio_time = time.time()
+        last_activity = time.time()
 
-        while not session._closed:
-            # Check session timeout
-            elapsed = time.time() - start_time
-            if elapsed > session._timeout:
-                logger.warning(f"WS audio session {session.session_id} timed out "
-                               f"after {elapsed:.0f}s")
-                break
+        while not conn._closed:
+            # Keepalive timeout: 120s of no activity → send ping
+            # Hard timeout: 300s of no activity → close
+            now = time.time()
+            idle_seconds = now - last_activity
 
-            # Check no-audio timeout (10 seconds)
-            silence = time.time() - last_audio_time
-            if silence > 10.0:
-                logger.warning(f"WS audio session {session.session_id}: no audio "
-                               f"for {silence:.0f}s")
-                break
+            # Audio session timeout check
+            if conn.audio_session and not conn.audio_session._closed:
+                session_elapsed = now - conn.audio_session._created_at
+                if session_elapsed > conn.audio_session._timeout:
+                    logger.warning(f"Audio session {conn.audio_session.session_id} timed out "
+                                   f"after {session_elapsed:.0f}s")
+                    # Deliver partial speech if any
+                    had_speech = (conn.audio_session._speech_started
+                                  and conn.audio_session._audio_buffer)
+                    if had_speech:
+                        try:
+                            await websocket.send_json({"type": "speech_end"})
+                        except Exception:
+                            pass
+                        await conn.audio_session.deliver_speech()
+                    conn.end_audio_session()
+                    # No speech delivered → tell device to go back to IDLE
+                    if not had_speech:
+                        await conn.send_command({"type": "tts_done"})
+                        logger.info(f"Device {device_id}: session timeout without speech → tts_done")
+                    if not is_persistent:
+                        break  # Legacy mode: close after session ends
+
+                # No-audio timeout within session (10s)
+                if conn.audio_session and conn.audio_session._last_audio_at:
+                    audio_silence = now - conn.audio_session._last_audio_at
+                    if audio_silence > 10.0:
+                        logger.warning(f"Audio session {conn.audio_session.session_id}: "
+                                       f"no audio for {audio_silence:.0f}s")
+                        had_speech = (conn.audio_session._speech_started
+                                      and conn.audio_session._audio_buffer)
+                        if had_speech:
+                            try:
+                                await websocket.send_json({"type": "speech_end"})
+                            except Exception:
+                                pass
+                            await conn.audio_session.deliver_speech()
+                        conn.end_audio_session()
+                        # No speech delivered → tell device to go back to IDLE
+                        if not had_speech:
+                            await conn.send_command({"type": "tts_done"})
+                            logger.info(f"Device {device_id}: no-audio timeout → tts_done")
+                        if not is_persistent:
+                            break
+
+            # Keepalive for persistent connections
+            if is_persistent and idle_seconds > 120:
+                sent = await conn.send_command({"type": "ping"})
+                if not sent:
+                    break
+                last_activity = time.time()
 
             # Receive message with timeout
             try:
@@ -435,94 +525,282 @@ async def ws_audio_endpoint(
             except asyncio.TimeoutError:
                 continue
 
+            last_activity = time.time()
+
             # Handle WebSocket disconnect
             if message.get("type") == "websocket.disconnect":
-                logger.info(f"WS audio session {session.session_id}: client disconnected")
+                logger.info(f"Device {device_id}: WebSocket disconnected")
                 break
 
             # Handle binary message (Opus frame)
             if "bytes" in message and message["bytes"]:
                 opus_data = message["bytes"]
-                last_audio_time = time.time()
-                session._opus_frames_received += 1
 
-                # Log first few frames for debug
-                if session._opus_frames_received <= 3 or session._opus_frames_received % 500 == 0:
-                    logger.info(f"[{session.session_id}] Opus frame "
-                                f"#{session._opus_frames_received}: "
-                                f"{len(opus_data)} bytes")
+                # Auto-create session if binary arrives without audio_start (legacy compat)
+                if not conn.audio_session:
+                    if not legacy_session_started:
+                        logger.info(f"Device {device_id}: legacy mode — auto-creating audio session on first binary frame")
+                        legacy_session_started = True
+                    session = conn.start_audio_session()
+                    await websocket.send_json({"type": "ready", "session_id": session.session_id})
+                    logger.info(f"Audio session {session.session_id} auto-started for device {device_id}")
 
-                # Decode Opus -> PCM float32 @ 16kHz
-                pcm_float = session.decode_opus_frame(opus_data)
-                if pcm_float is None:
-                    continue
+                session = conn.audio_session
+                if session and not session._closed:
+                    session._last_audio_at = time.time()
+                    session._opus_frames_received += 1
 
-                # Feed to VAD
-                speech_complete = session.process_audio(pcm_float)
+                    if session._opus_frames_received <= 3 or session._opus_frames_received % 500 == 0:
+                        logger.info(f"[{session.session_id}] Opus frame "
+                                    f"#{session._opus_frames_received}: "
+                                    f"{len(opus_data)} bytes")
 
-                if speech_complete:
-                    # Notify client
-                    try:
-                        await websocket.send_json({"type": "speech_end"})
-                    except Exception:
-                        pass  # Client may have already disconnected
+                    pcm_float = session.decode_opus_frame(opus_data)
+                    if pcm_float is None:
+                        continue
 
-                    # Deliver speech to pipeline
-                    await session.deliver_speech()
-                    break
+                    speech_complete = session.process_audio(pcm_float)
 
-            # Handle text message (control)
+                    if speech_complete:
+                        try:
+                            await websocket.send_json({"type": "speech_end"})
+                        except Exception:
+                            pass
+
+                        await session.deliver_speech()
+                        conn.end_audio_session()
+
+                        if not is_persistent:
+                            break  # Legacy mode: close after speech
+
+            # Handle text message (JSON control)
             elif "text" in message and message["text"]:
                 try:
                     ctrl = json.loads(message["text"])
                     msg_type = ctrl.get("type", "")
-                    if msg_type == "end":
-                        logger.info(f"WS audio session {session.session_id}: "
-                                    f"client requested end")
+
+                    if msg_type == "hello":
+                        # Device announces persistent mode
+                        is_persistent = True
+                        conn.firmware_version = ctrl.get("fw", "unknown")
+                        logger.info(f"Device {device_id}: persistent mode (fw={conn.firmware_version})")
+
+                        # Push saved config to device (sensitivity etc.)
+                        try:
+                            from database import get_voice_device
+                            dev = get_voice_device(device_id)
+                            if dev and dev.wake_word_sensitivity is not None:
+                                await conn.send_command({
+                                    "type": "config_update",
+                                    "wake_word_sensitivity": dev.wake_word_sensitivity
+                                })
+                                logger.info(f"Device {device_id}: pushed saved config "
+                                            f"(sensitivity={dev.wake_word_sensitivity})")
+                        except Exception as e:
+                            logger.debug(f"Device {device_id}: config push on hello failed: {e}")
+
+                    elif msg_type == "audio_start":
+                        # Device wants to start an audio session
+                        is_persistent = True  # Confirm persistent mode
+                        if conn.audio_session and not conn.audio_session._closed:
+                            logger.warning(f"Device {device_id}: audio_start while session active — ending previous")
+                            # Don't send tts_done here — device is already starting a new session
+                            conn.end_audio_session()
+
+                        session = conn.start_audio_session()
+                        await websocket.send_json({"type": "ready", "session_id": session.session_id})
+                        logger.info(f"Audio session {session.session_id} started for device {device_id}")
+
+                    elif msg_type == "audio_end":
+                        # Device voluntarily ends audio session (user pressed button)
+                        # Kill immediately — do NOT process/deliver any speech
+                        if conn.audio_session and not conn.audio_session._closed:
+                            conn.end_audio_session()
+                            await conn.send_command({"type": "tts_done"})
+                            logger.info(f"Device {device_id}: audio session killed by device (audio_end)")
+
+                    elif msg_type == "speaker_stop":
+                        # Triple-tap emergency stop: stop the speaker associated with this device
+                        logger.info(f"Device {device_id}: speaker_stop (triple-tap)")
+                        try:
+                            from database import get_voice_device
+                            from integrations import call_hass_service
+                            dev = get_voice_device(device_id)
+                            if dev and dev.output_speaker and dev.location_id:
+                                success, msg = await call_hass_service(
+                                    dev.location_id,
+                                    "media_player",
+                                    "media_stop",
+                                    {"entity_id": dev.output_speaker}
+                                )
+                                logger.info(f"🛑 speaker_stop: {dev.output_speaker} → "
+                                            f"{'OK' if success else msg}")
+                                # Clear speaking_state for this device's room
+                                from main import speaking_state, speaking_state_lock
+                                async with speaking_state_lock:
+                                    room = dev.friendly_name
+                                    if room and room in speaking_state:
+                                        del speaking_state[room]
+                                        logger.info(f"Cleared speaking_state for room: {room}")
+                            else:
+                                logger.warning(f"speaker_stop: device {device_id} has no output_speaker configured")
+                        except Exception as e:
+                            logger.error(f"speaker_stop failed for device {device_id}: {e}")
+                        # Tell device to go back to IDLE
+                        await conn.send_command({"type": "tts_done"})
+
+                    elif msg_type == "state":
+                        state = ctrl.get("state", "unknown")
+                        conn.last_state = state
+                        conn.last_state_at = time.time()
+                        logger.debug(f"Device {device_id} state: {state}")
+
+                    elif msg_type == "pong":
+                        conn.last_pong_at = time.time()
+
+                    elif msg_type == "end":
+                        # Legacy: client requested end
+                        logger.info(f"Device {device_id}: end requested")
                         break
+
                 except json.JSONDecodeError:
                     pass
 
     except Exception as e:
-        if not session._closed:
-            logger.error(f"WS audio error for session {session.session_id}: {e}")
+        if not conn._closed:
+            logger.error(f"WS error for device {device_id}: {e}")
 
     finally:
-        # If speech was in progress, deliver it
-        if session._speech_started and session._audio_buffer and not session._closed:
-            logger.info(f"WS audio session {session.session_id}: delivering "
-                        f"partial speech on disconnect")
+        # Deliver partial speech if audio session was active
+        if conn.audio_session and conn.audio_session._speech_started and conn.audio_session._audio_buffer:
+            logger.info(f"Device {device_id}: delivering partial speech on disconnect")
             try:
                 await websocket.send_json({"type": "speech_end"})
             except Exception:
                 pass
-            await session.deliver_speech()
+            await conn.audio_session.deliver_speech()
 
-        # Mark closed
-        session._closed = True
+        conn._closed = True
+        conn.end_audio_session()
 
-        # Remove from active sessions
-        async with _sessions_lock:
-            if _active_sessions.get(device_id) is session:
-                del _active_sessions[device_id]
+        # Remove from persistent connections
+        async with _connections_lock:
+            if _persistent_connections.get(device_id) is conn:
+                del _persistent_connections[device_id]
 
-        # Close WebSocket if still open
+        # Close WebSocket
         try:
             if websocket.client_state == WebSocketState.CONNECTED:
                 await websocket.close()
         except Exception:
             pass
 
-        duration = time.time() - session._created_at
-        logger.info(f"WS audio session {session.session_id} closed "
-                    f"(duration: {duration:.1f}s, "
-                    f"opus_frames: {session._opus_frames_received})")
+        duration = time.time() - conn.connected_at
+        logger.info(f"Device {device_id} disconnected "
+                    f"(was connected {duration:.0f}s, persistent={is_persistent})")
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+async def trigger_device_listen(device_id: str, silent: bool = True) -> bool:
+    """
+    Trigger a device to start listening via persistent WS.
+
+    Args:
+        device_id: MAC address of target device (uppercase)
+        silent: True for multi-turn follow-up (no wake sound),
+                False for enrollment/manual trigger (with wake sound)
+
+    Returns:
+        True if command was sent successfully, False if device not connected.
+    """
+    device_id = device_id.upper().strip()
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id)
+
+    if not conn:
+        logger.warning(f"trigger_device_listen: device {device_id} not connected")
+        return False
+
+    result = await conn.trigger_listen(silent=silent)
+    logger.info(f"trigger_device_listen({device_id}, silent={silent}): {'OK' if result else 'FAILED'}")
+    return result
+
+
+async def get_connected_devices() -> list:
+    """Return list of currently connected device_ids."""
+    async with _connections_lock:
+        return list(_persistent_connections.keys())
+
+
+async def get_device_state(device_id: str) -> Optional[str]:
+    """Get last reported state of a device, or None if not connected."""
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id.upper().strip())
+    return conn.last_state if conn else None
+
+
 async def get_active_session_count() -> int:
-    """Ritorna numero di sessioni WS audio attive (per health/metrics)."""
-    async with _sessions_lock:
-        return len(_active_sessions)
+    """Ritorna numero di sessioni audio attive (per health/metrics)."""
+    async with _connections_lock:
+        count = 0
+        for conn in _persistent_connections.values():
+            if conn.audio_session and not conn.audio_session._closed:
+                count += 1
+        return count
+
+
+async def get_persistent_connection_count() -> int:
+    """Ritorna numero di connessioni persistenti attive."""
+    async with _connections_lock:
+        return len(_persistent_connections)
+
+
+async def notify_tts_done(device_id: str) -> bool:
+    """
+    Notify a device that TTS playback is complete (response delivered).
+    Device uses this to transition from BUSY → IDLE state.
+
+    Returns True if command was sent, False if device not connected.
+    """
+    device_id = device_id.upper().strip()
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id)
+
+    if not conn:
+        return False
+
+    result = await conn.send_command({"type": "tts_done"})
+    if result:
+        logger.info(f"notify_tts_done({device_id}): sent")
+    return result
+
+
+async def push_config_to_device(device_id: str, config: dict) -> bool:
+    """
+    Push configuration update to a connected device via WebSocket.
+    The device applies the config at runtime without reboot.
+
+    Args:
+        device_id: MAC address of target device
+        config: dict with config keys to update, e.g.:
+                {"wake_word_sensitivity": 0.82}
+
+    Returns True if sent, False if device not connected.
+    """
+    device_id = device_id.upper().strip()
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id)
+
+    if not conn:
+        logger.warning(f"push_config_to_device: device {device_id} not connected")
+        return False
+
+    result = await conn.send_command({
+        "type": "config_update",
+        **config
+    })
+    if result:
+        logger.info(f"push_config_to_device({device_id}): {config}")
+    return result

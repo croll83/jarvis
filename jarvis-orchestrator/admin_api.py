@@ -97,6 +97,7 @@ class VoiceDeviceCreate(BaseModel):
     fallback_local_speaker: bool = True
     enabled: bool = True
     notes: Optional[str] = None
+    wake_word_sensitivity: Optional[float] = 0.82
 
 
 class VoiceDeviceUpdate(BaseModel):
@@ -108,6 +109,7 @@ class VoiceDeviceUpdate(BaseModel):
     fallback_local_speaker: Optional[bool] = None
     enabled: Optional[bool] = None
     notes: Optional[str] = None
+    wake_word_sensitivity: Optional[float] = None
 
 
 # ===========================================================================
@@ -1850,8 +1852,19 @@ async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, An
         fallback_telegram=data.fallback_telegram,
         fallback_local_speaker=data.fallback_local_speaker,
         enabled=data.enabled,
-        notes=data.notes
+        notes=data.notes,
+        wake_word_sensitivity=data.wake_word_sensitivity
     )
+
+    # Push config update to device via WebSocket if sensitivity specified
+    if data.wake_word_sensitivity is not None:
+        try:
+            from ws_audio_handler import push_config_to_device
+            await push_config_to_device(device_id, {
+                "wake_word_sensitivity": data.wake_word_sensitivity
+            })
+        except Exception:
+            pass  # Device may not be connected
 
     device = get_voice_device(device_id)
 
@@ -1897,9 +1910,21 @@ async def update_voice_device_endpoint(
         update_params['enabled'] = data.enabled
     if data.notes is not None:
         update_params['notes'] = data.notes
+    if data.wake_word_sensitivity is not None:
+        update_params['wake_word_sensitivity'] = data.wake_word_sensitivity
 
     if update_params:
         upsert_voice_device(device_id=device_id, **update_params)
+
+    # Push config update to device via WebSocket if sensitivity changed
+    if data.wake_word_sensitivity is not None:
+        try:
+            from ws_audio_handler import push_config_to_device
+            await push_config_to_device(device_id, {
+                "wake_word_sensitivity": data.wake_word_sensitivity
+            })
+        except Exception:
+            pass  # Device may not be connected
 
     device = get_voice_device(device_id)
 

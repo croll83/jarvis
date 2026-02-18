@@ -343,8 +343,15 @@ def init_db():
         last_seen_at REAL,
         firmware_version TEXT,
         ip_address TEXT,
-        notes TEXT
+        notes TEXT,
+        wake_word_sensitivity REAL DEFAULT 0.82
     )''')
+
+    # Migration: add wake_word_sensitivity column for existing DBs
+    try:
+        c.execute("ALTER TABLE voice_devices ADD COLUMN wake_word_sensitivity REAL DEFAULT 0.82")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
 
     # 19. USER MEMORY HOURLY (warm layer - summaries orari per utente)
     c.execute('''CREATE TABLE IF NOT EXISTS user_memory_hourly (
@@ -2857,6 +2864,7 @@ class VoiceDevice:
     firmware_version: Optional[str]
     ip_address: Optional[str]
     notes: Optional[str]
+    wake_word_sensitivity: float = 0.82
 
     @property
     def is_configured(self) -> bool:
@@ -2885,6 +2893,7 @@ class VoiceDevice:
             "firmware_version": self.firmware_version,
             "ip_address": self.ip_address,
             "notes": self.notes,
+            "wake_word_sensitivity": self.wake_word_sensitivity,
             "is_configured": self.is_configured,
             "is_online": self.is_online
         }
@@ -2905,7 +2914,8 @@ def _row_to_voice_device(row) -> VoiceDevice:
         last_seen_at=row['last_seen_at'],
         firmware_version=row['firmware_version'],
         ip_address=row['ip_address'],
-        notes=row['notes']
+        notes=row['notes'],
+        wake_word_sensitivity=row['wake_word_sensitivity'] if 'wake_word_sensitivity' in row.keys() else 0.82
     )
 
 
@@ -2977,7 +2987,8 @@ def upsert_voice_device(
     fallback_telegram: bool = True,
     fallback_local_speaker: bool = True,
     enabled: bool = True,
-    notes: Optional[str] = None
+    notes: Optional[str] = None,
+    wake_word_sensitivity: Optional[float] = None
 ) -> bool:
     """
     Crea o aggiorna un voice device.
@@ -3020,6 +3031,10 @@ def upsert_voice_device(
         if notes is not None:
             updates.append("notes = ?")
             params.append(notes)
+
+        if wake_word_sensitivity is not None:
+            updates.append("wake_word_sensitivity = ?")
+            params.append(wake_word_sensitivity)
 
         params.append(device_id)
         c.execute(

@@ -34,6 +34,9 @@ Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA r
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
 |  |  SQLite + ChromaDB                                              | |
+|  |                                                                 | |
+|  |  ontology-server:8100 (127.0.0.1 only)                         | |
+|  |  Knowledge Graph API — SQLite + ACL (X-Speaker-Id)             | |
 |  +----------------------------------------------------------------+ |
 |                                                                      |
 |  GPU VRAM Budget:                                                    |

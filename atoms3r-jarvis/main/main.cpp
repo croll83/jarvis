@@ -6,11 +6,12 @@
  * Firmware per AtomS3R che:
  * - Legge MAC address come device_id
  * - Recupera configurazione dal server (friendly_name, location)
- * - Ascolta wake word "Jarvis" (ESP-SR WakeNet)
- * - Audio streaming via WebSocket + Opus
+ * - Mantiene WebSocket persistente verso il server (audio + controllo)
+ * - Ascolta wake word "Jarvis" (microWakeWord TFLite)
+ * - Audio streaming via Opus su WebSocket persistente
+ * - Supporta trigger_listen dal server (multi-turn, enrollment)
  * - Mostra stato su display TFT 128x128
  * - Gestisce DND mode con click sul display
- * - Invia heartbeat periodico al server
  *
  * Hardware: M5Stack AtomS3R (ESP32-S3-PICO-1-N8R8)
  * - ESP32-S3 + 8MB PSRAM OPI
@@ -48,7 +49,7 @@ extern "C" {
 static const char *TAG = "JARVIS";
 
 // Firmware version
-#define FIRMWARE_VERSION "4.0.0-ws"
+#define FIRMWARE_VERSION "5.0.0-ws"
 
 // =============================================================================
 // GLOBAL STATE
@@ -64,8 +65,7 @@ static bool config_loaded = false;
 // Timing
 static int64_t last_display_update = 0;
 static int64_t last_temp_fetch = 0;
-static int64_t busy_state_start = 0;
-static int64_t last_busy_poll = 0;
+// busy_state_start removed — no more HTTP polling, state comes via WS
 
 // Cached data
 static float cached_temperature = -99.0f;
@@ -75,18 +75,70 @@ static int current_minute = 0;
 // Error state auto-clear
 static int64_t error_clear_time = 0;
 
+// Screensaver
+static int64_t last_activity_time = 0;
+static bool screensaver_active = false;
+static int64_t screensaver_start_time = 0;
+
 // Deferred display update flag (avoids SPI race between ws_audio task and main task)
 static volatile bool display_state_dirty = false;
-static volatile device_state_t display_state_value = STATE_IDLE;  // snapshot of state to display
+static volatile device_state_t display_state_value = STATE_IDLE;
 
 // Deferred wake word flag (wake callback runs in afe_detect_task, must not block it)
 static volatile bool wake_word_pending = false;
 
+// Deferred remote-trigger listen flag (set by WS control callback, processed in main_task)
+static volatile bool remote_trigger_pending = false;
+static volatile bool remote_trigger_silent = true;
+
+// Deferred tts_done flag (set by WS tts_done callback, processed in main_task)
+static volatile bool tts_done_pending = false;
+
+// Deferred config_update flag (set by WS config_update callback, processed in main_task)
+static volatile bool config_update_pending = false;
+static volatile float config_new_sensitivity = 0.82f;
+
 // Forward declarations
 static void on_wake_word_detected(void);
+static void activate_listening(bool silent);
 static void handle_short_press(void);
 static void handle_long_press(void);
+static void handle_triple_tap(void);
 static void on_session_done(bool success);
+static void on_remote_trigger(bool silent);
+static void on_tts_done(void);
+static void on_config_update_ws(float wake_word_sensitivity);
+static void reset_activity_timer(void);
+
+// Helper: update state and notify server
+static void set_state(device_state_t new_state) {
+    reset_activity_timer();
+    current_state = new_state;
+    jarvis_display_set_state(new_state);
+
+    // Notify server via persistent WS
+    const char *state_str = "unknown";
+    switch (new_state) {
+        case STATE_IDLE:       state_str = "idle"; break;
+        case STATE_LISTENING:  state_str = "listening"; break;
+        case STATE_PROCESSING: state_str = "processing"; break;
+        case STATE_BUSY:       state_str = "busy"; break;
+        case STATE_DND:        state_str = "dnd"; break;
+        case STATE_ERROR:      state_str = "error"; break;
+    }
+    jarvis_ws_audio_send_state(state_str);
+}
+
+// Helper: reset inactivity timer (exits screensaver if active)
+static void reset_activity_timer(void) {
+    last_activity_time = esp_timer_get_time() / 1000;
+    if (screensaver_active) {
+        screensaver_active = false;
+        jarvis_display_screensaver_stop();
+        jarvis_display_update();  // Restore IDLE display
+        ESP_LOGI(TAG, "Screensaver exited (activity)");
+    }
+}
 
 // =============================================================================
 // SNTP TIME SYNC
@@ -118,16 +170,39 @@ static void update_local_time(void) {
 }
 
 // =============================================================================
-// BUTTON HANDLER
+// BUTTON HANDLER (single tap, long press, triple-tap)
 // =============================================================================
+//
+// State machine:
+//   button_down → start hold timer
+//   button_held > 800ms → LONG PRESS (DND toggle), consume gesture
+//   button_up (< 800ms) → tap_count++
+//     tap_count == 3 within 600ms → TRIPLE TAP (speaker stop)
+//     no more taps within 300ms → SINGLE TAP (activate/stop listening)
+//
 
-#define LONG_PRESS_MS 800
+#define LONG_PRESS_MS       800
+#define MULTI_TAP_WINDOW_MS 300   // Max ms between consecutive taps
+#define TRIPLE_TAP_COUNT    3
+#define TAP_DEBOUNCE_MS     50    // Ignore taps shorter than this
 
 static bool button_was_pressed = false;
 static int64_t button_press_start = 0;
 static bool long_press_handled = false;
 
+// Multi-tap state
+static int tap_count = 0;
+static int64_t first_tap_time = 0;
+static int64_t last_tap_time = 0;
+
+// Deferred single-tap flag (processed in main_task after MULTI_TAP_WINDOW_MS)
+static volatile bool single_tap_pending = false;
+static int64_t single_tap_deadline = 0;
+
+static void handle_triple_tap(void);
+
 static void handle_button_down(void) {
+    reset_activity_timer();
     if (!button_was_pressed) {
         button_was_pressed = true;
         button_press_start = esp_timer_get_time() / 1000;
@@ -137,6 +212,9 @@ static void handle_button_down(void) {
         int64_t held_ms = (esp_timer_get_time() / 1000) - button_press_start;
         if (held_ms >= LONG_PRESS_MS) {
             long_press_handled = true;
+            // Long press cancels any pending tap sequence
+            tap_count = 0;
+            single_tap_pending = false;
             handle_long_press();
         }
     }
@@ -147,19 +225,45 @@ static void handle_button_up(void) {
     int64_t held_ms = (esp_timer_get_time() / 1000) - button_press_start;
     button_was_pressed = false;
     if (long_press_handled) return;
-    if (held_ms < 50) return;
-    handle_short_press();
+    if (held_ms < TAP_DEBOUNCE_MS) return;
+
+    int64_t now = esp_timer_get_time() / 1000;
+
+    // Check if this tap is within the multi-tap window
+    if (tap_count > 0 && (now - last_tap_time) > MULTI_TAP_WINDOW_MS) {
+        // Previous tap sequence expired — that was a single tap we missed
+        // (shouldn't happen because main_task processes the deadline, but safety)
+        tap_count = 0;
+    }
+
+    tap_count++;
+    last_tap_time = now;
+    if (tap_count == 1) {
+        first_tap_time = now;
+    }
+
+    if (tap_count >= TRIPLE_TAP_COUNT) {
+        // Triple tap detected!
+        ESP_LOGI(TAG, ">>> TRIPLE TAP DETECTED! <<< (speaker stop)");
+        tap_count = 0;
+        single_tap_pending = false;
+        handle_triple_tap();
+        return;
+    }
+
+    // Set deadline for single-tap (wait for more taps)
+    single_tap_pending = true;
+    single_tap_deadline = now + MULTI_TAP_WINDOW_MS;
 }
 
 // Minimum time (ms) to wait after activation before allowing button-stop.
-// This prevents accidental double-press from killing the WS handshake.
 static int64_t activation_time = 0;
-#define MIN_SESSION_LIFETIME_MS  1000   // 1 second: WS connects in < 500ms
+#define MIN_SESSION_LIFETIME_MS  1000
 
 static void handle_short_press(void) {
     ESP_LOGI(TAG, "Short press detected!");
 
-    // If WS session is active, stop it (but only after minimum lifetime)
+    // If WS audio session is active, stop it (but only after minimum lifetime)
     if (jarvis_ws_audio_is_active()) {
         int64_t now = esp_timer_get_time() / 1000;
         int64_t elapsed = now - activation_time;
@@ -186,14 +290,13 @@ static void handle_short_press(void) {
         current_state == STATE_BUSY || current_state == STATE_ERROR ||
         (current_state == STATE_LISTENING && !jarvis_ws_audio_is_active())) {
         ESP_LOGI(TAG, ">>> MANUAL ACTIVATION (button) <<< (from state=%d)", current_state);
-        on_wake_word_detected();
+        activate_listening(false);  // Button press = not silent (play wake sound)
     }
 }
 
 static void handle_long_press(void) {
     ESP_LOGI(TAG, "Long press detected!");
 
-    // If WS session is active, stop it (but only after minimum lifetime)
     if (jarvis_ws_audio_is_active()) {
         int64_t now = esp_timer_get_time() / 1000;
         int64_t elapsed = now - activation_time;
@@ -212,15 +315,29 @@ static void handle_long_press(void) {
     if (dnd_mode) {
         ESP_LOGI(TAG, "DND mode ENABLED");
         jarvis_audio_stop_listening();
-        current_state = STATE_DND;
+        set_state(STATE_DND);
         jarvis_network_notify_dnd(device_config.device_id, true);
     } else {
         ESP_LOGI(TAG, "DND mode DISABLED");
         jarvis_audio_start_listening();
-        current_state = STATE_IDLE;
+        set_state(STATE_IDLE);
         jarvis_network_notify_dnd(device_config.device_id, false);
     }
-    jarvis_display_set_state(current_state);
+}
+
+static void handle_triple_tap(void) {
+    ESP_LOGI(TAG, "🛑 TRIPLE TAP — SPEAKER STOP");
+
+    // Flash red for visual feedback
+    jarvis_display_flash_red();
+
+    // Send speaker_stop to server via persistent WS
+    jarvis_ws_audio_send_speaker_stop();
+
+    // If we were in BUSY (waiting for TTS), go back to IDLE
+    if (current_state == STATE_BUSY) {
+        set_state(dnd_mode ? STATE_DND : STATE_IDLE);
+    }
 }
 
 // =============================================================================
@@ -255,65 +372,92 @@ static void suppress_speaker_task(void* arg) {
 }
 
 // =============================================================================
-// WAKE WORD / ACTIVATION HANDLER
+// ACTIVATION HANDLER (shared by wake word, button, and remote trigger)
 // =============================================================================
 
-static void on_wake_word_detected(void) {
+static void activate_listening(bool silent) {
     if (dnd_mode) {
-        ESP_LOGI(TAG, "Wake word ignored (DND mode)");
+        ESP_LOGI(TAG, "Activation ignored (DND mode)");
+        jarvis_ws_audio_send_state("dnd");
         return;
     }
 
     // Guard: don't activate if already in a session
     if (current_state == STATE_LISTENING || current_state == STATE_PROCESSING) {
-        ESP_LOGW(TAG, "Wake word ignored (already in state=%d)", current_state);
+        ESP_LOGW(TAG, "Activation ignored (already in state=%d)", current_state);
         return;
     }
     if (jarvis_ws_audio_is_active()) {
-        ESP_LOGW(TAG, "Wake word ignored (WS session active)");
+        ESP_LOGW(TAG, "Activation ignored (WS audio session active)");
         return;
     }
 
-    ESP_LOGI(TAG, ">>> WAKE WORD 'JARVIS' DETECTED! <<<");
+    ESP_LOGI(TAG, ">>> ACTIVATING (silent=%d) <<<", silent);
 
-    // 1. Flash white (visual feedback)
-    jarvis_display_flash_white();
+    if (!silent) {
+        // Non-silent: flash + wake sound + speaker suppress
+        jarvis_display_flash_white();
+        jarvis_speaker_play_wake_sound();
 
-    // 2. Wake sound (non-blocking)
-    jarvis_speaker_play_wake_sound();
+        xTaskCreatePinnedToCore(
+            suppress_speaker_task, "suppress_spk", 4096,
+            (void*)device_config.device_id, 3, NULL, 1
+        );
 
-    // 3. Speaker suppress (fire-and-forget HTTP)
-    xTaskCreatePinnedToCore(
-        suppress_speaker_task, "suppress_spk", 4096,
-        (void*)device_config.device_id, 3, NULL, 1
-    );
+        jarvis_speaker_wait_done(500);
+    }
+    // Silent mode (multi-turn): skip wake sound + speaker suppress
+    // User is already in conversation, speaker just finished TTS
 
-    // 4. Wait for wake sound to finish (max 500ms)
-    jarvis_speaker_wait_done(500);
+    // Transition to LISTENING state
+    set_state(STATE_LISTENING);
 
-    // 5. Transition to LISTENING state
-    current_state = STATE_LISTENING;
-    jarvis_display_set_state(STATE_LISTENING);
-
-    // 6. Stop wake word detection, enable raw audio streaming to ring buffer
+    // Stop wake word detection, enable raw audio streaming to ring buffer
     jarvis_audio_stop_listening();
     jarvis_audio_set_streaming(true);
 
-    // 7. Start WebSocket audio session
+    // Start audio session on persistent WS
     activation_time = esp_timer_get_time() / 1000;
 
-    char ws_url[384];
-    jarvis_network_get_ws_audio_url(device_config.device_id, ws_url, sizeof(ws_url));
-
-    if (!jarvis_ws_audio_start_session(ws_url, on_session_done)) {
+    if (!jarvis_ws_audio_start_session()) {
         ESP_LOGE(TAG, "Failed to start WS audio session");
         jarvis_audio_set_streaming(false);
-        current_state = STATE_ERROR;
-        jarvis_display_set_state(STATE_ERROR);
+        set_state(STATE_ERROR);
         jarvis_display_set_error("WS audio failed");
         error_clear_time = esp_timer_get_time() / 1000 + 2000;
         jarvis_audio_start_listening();
     }
+}
+
+static void on_wake_word_detected(void) {
+    ESP_LOGI(TAG, ">>> WAKE WORD 'JARVIS' DETECTED! <<<");
+    activate_listening(false);  // Wake word = not silent (play sound)
+}
+
+// =============================================================================
+// REMOTE TRIGGER CALLBACK (called from WS task context — lightweight!)
+// =============================================================================
+
+static void on_remote_trigger(bool silent) {
+    remote_trigger_pending = true;
+    remote_trigger_silent = silent;
+}
+
+// =============================================================================
+// TTS DONE CALLBACK (called from WS task — set flag, main_task processes)
+// =============================================================================
+
+static void on_tts_done(void) {
+    tts_done_pending = true;
+}
+
+// =============================================================================
+// CONFIG UPDATE CALLBACK (called from WS task — set flag, main_task processes)
+// =============================================================================
+
+static void on_config_update_ws(float wake_word_sensitivity) {
+    config_new_sensitivity = wake_word_sensitivity;
+    config_update_pending = true;
 }
 
 // =============================================================================
@@ -332,17 +476,19 @@ static void on_session_done(bool success) {
     if (success) {
         current_state = STATE_BUSY;
         display_state_value = STATE_BUSY;
-        busy_state_start = esp_timer_get_time() / 1000;
         ESP_LOGI(TAG, "State -> BUSY (display_dirty=true)");
     } else {
         current_state = STATE_ERROR;
         display_state_value = STATE_ERROR;
-        error_clear_time = esp_timer_get_time() / 1000 + 2000;  // clear after 2s
+        error_clear_time = esp_timer_get_time() / 1000 + 2000;
         ESP_LOGI(TAG, "State -> ERROR (display_dirty=true)");
     }
     display_state_dirty = true;
 
-    // Re-enable wake word listening (always — even on error, so it can hear "Jarvis" again)
+    // Send state to server (safe from any context — just sets a JSON send flag)
+    jarvis_ws_audio_send_state(success ? "busy" : "error");
+
+    // Re-enable wake word listening
     if (!dnd_mode) {
         jarvis_audio_start_listening();
     }
@@ -356,23 +502,7 @@ static void on_server_response(bool success, const char* message) {
     ESP_LOGI(TAG, "Server response: %s - %s", success ? "OK" : "FAIL", message);
 }
 
-static void on_busy_state(bool busy) {
-    if (busy) {
-        if (current_state != STATE_BUSY && current_state != STATE_DND &&
-            current_state != STATE_LISTENING && current_state != STATE_PROCESSING) {
-            current_state = STATE_BUSY;
-            jarvis_display_set_state(STATE_BUSY);
-            busy_state_start = esp_timer_get_time() / 1000;
-        } else if (current_state == STATE_BUSY) {
-            busy_state_start = esp_timer_get_time() / 1000;
-        }
-    } else {
-        if (current_state == STATE_BUSY) {
-            current_state = dnd_mode ? STATE_DND : STATE_IDLE;
-            jarvis_display_set_state(current_state);
-        }
-    }
-}
+// on_busy_state removed — no more HTTP polling, state transitions via WS
 
 // =============================================================================
 // INITIALIZATION
@@ -398,7 +528,7 @@ static void init_nvs(void) {
 }
 
 // =============================================================================
-// HEARTBEAT TASK
+// HEARTBEAT TASK (still uses HTTP for backward compat — config updates)
 // =============================================================================
 
 static void heartbeat_task(void* arg) {
@@ -435,21 +565,57 @@ static void main_task(void* arg) {
             handle_button_up();
         }
 
+        // Deferred single-tap: fire after MULTI_TAP_WINDOW_MS with no more taps
+        if (single_tap_pending && !button_was_pressed && now >= single_tap_deadline) {
+            single_tap_pending = false;
+            tap_count = 0;
+            handle_short_press();
+        }
+
         // Process audio (wake word detection — now a no-op, detection via flag)
         jarvis_audio_process();
 
         // Deferred wake word activation (set by afe_detect_task callback)
         if (wake_word_pending) {
             wake_word_pending = false;
+            reset_activity_timer();
             ESP_LOGI(TAG, "Wake word flag processed by main_task");
             on_wake_word_detected();
         }
 
+        // Deferred remote trigger activation (set by WS control callback)
+        if (remote_trigger_pending) {
+            remote_trigger_pending = false;
+            reset_activity_timer();
+            bool silent = remote_trigger_silent;
+            ESP_LOGI(TAG, "Remote trigger flag processed by main_task (silent=%d)", silent);
+            activate_listening(silent);
+        }
+
+        // Deferred tts_done (server finished TTS playback → return to IDLE)
+        if (tts_done_pending) {
+            tts_done_pending = false;
+            if (current_state == STATE_BUSY) {
+                ESP_LOGI(TAG, "TTS done received - BUSY -> IDLE");
+                set_state(dnd_mode ? STATE_DND : STATE_IDLE);
+            } else {
+                ESP_LOGD(TAG, "TTS done received but state=%d (ignored)", current_state);
+            }
+        }
+
+        // Deferred config_update (server pushed new sensitivity via WS)
+        if (config_update_pending) {
+            config_update_pending = false;
+            float new_sens = config_new_sensitivity;
+            ESP_LOGI(TAG, "Config update: wake_word_sensitivity=%.2f", new_sens);
+            jarvis_audio_set_sensitivity(new_sens);
+        }
+
         // Deferred display state update (from callbacks running in other tasks)
-        // Uses saved display_state_value to prevent race with busy poll
         if (display_state_dirty) {
             display_state_dirty = false;
-            current_state = display_state_value;  // restore intended state (poll may have overwritten)
+            reset_activity_timer();
+            current_state = display_state_value;
             ESP_LOGI(TAG, "Display dirty: setting state=%d", current_state);
             jarvis_display_set_state(current_state);
             if (current_state == STATE_ERROR) {
@@ -458,8 +624,31 @@ static void main_task(void* arg) {
             jarvis_display_update();
         }
 
-        // Update display in IDLE/DND
-        if (current_state == STATE_IDLE || current_state == STATE_DND) {
+        // Screensaver: activate after inactivity (only in IDLE, not DND)
+        if (!screensaver_active && current_state == STATE_IDLE &&
+            last_activity_time > 0 && (now - last_activity_time > SCREENSAVER_TIMEOUT_MS)) {
+            screensaver_active = true;
+            screensaver_start_time = now;
+            jarvis_display_screensaver_start();
+            ESP_LOGI(TAG, "Screensaver activated (inactivity %llds)", (now - last_activity_time) / 1000);
+        }
+
+        // Screensaver: tick animation or auto-exit after duration
+        if (screensaver_active) {
+            if (now - screensaver_start_time > SCREENSAVER_DURATION_MS) {
+                // Duration expired — exit screensaver, return to IDLE
+                screensaver_active = false;
+                jarvis_display_screensaver_stop();
+                last_activity_time = now;  // Reset timer to prevent immediate re-trigger
+                jarvis_display_update();
+                ESP_LOGI(TAG, "Screensaver finished (duration)");
+            } else {
+                jarvis_display_screensaver_tick();
+            }
+        }
+
+        // Update display in IDLE/DND (skip if screensaver is running)
+        if (!screensaver_active && (current_state == STATE_IDLE || current_state == STATE_DND)) {
             if (now - last_display_update > DISPLAY_UPDATE_IDLE_MS) {
                 last_display_update = now;
                 update_local_time();
@@ -474,30 +663,26 @@ static void main_task(void* arg) {
             jarvis_display_update();
         }
 
-        // Busy state timeout
+        // Busy state safety timeout (in case server never responds)
+        // Note: with persistent WS, state transitions come via WebSocket,
+        // but we keep a generous timeout as safety net
+        static int64_t busy_entered_at = 0;
         if (current_state == STATE_BUSY) {
-            if (now - busy_state_start > BUSY_STATE_TIMEOUT_MS) {
-                ESP_LOGI(TAG, "BUSY timeout - returning to IDLE");
-                current_state = dnd_mode ? STATE_DND : STATE_IDLE;
-                jarvis_display_set_state(current_state);
+            if (busy_entered_at == 0) busy_entered_at = now;
+            if (now - busy_entered_at > BUSY_STATE_TIMEOUT_MS) {
+                ESP_LOGW(TAG, "BUSY safety timeout - returning to IDLE");
+                set_state(dnd_mode ? STATE_DND : STATE_IDLE);
+                busy_entered_at = 0;
             }
+        } else {
+            busy_entered_at = 0;
         }
 
-        // Error state auto-clear (non-blocking replacement for vTaskDelay in callbacks)
+        // Error state auto-clear
         if (current_state == STATE_ERROR && error_clear_time > 0 && now >= error_clear_time) {
             ESP_LOGI(TAG, "Error display timeout - returning to IDLE");
             error_clear_time = 0;
-            current_state = dnd_mode ? STATE_DND : STATE_IDLE;
-            jarvis_display_set_state(current_state);
-        }
-
-        // Poll server state
-        if (!dnd_mode && !jarvis_ws_audio_is_active() &&
-            current_state != STATE_LISTENING && current_state != STATE_PROCESSING) {
-            if (now - last_busy_poll > BUSY_POLL_INTERVAL_MS) {
-                last_busy_poll = now;
-                jarvis_network_poll_state(device_config.device_id);
-            }
+            set_state(dnd_mode ? STATE_DND : STATE_IDLE);
         }
 
         // Fetch temperature periodically
@@ -523,7 +708,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "=================================");
     ESP_LOGI(TAG, "JARVIS AtomS3R Starting...");
     ESP_LOGI(TAG, "Firmware: %s", FIRMWARE_VERSION);
-    ESP_LOGI(TAG, "(WebSocket + Opus + ESP-SR)");
+    ESP_LOGI(TAG, "(Persistent WS + Opus + microWakeWord)");
     ESP_LOGI(TAG, "=================================");
 
     // Initialize NVS
@@ -599,7 +784,7 @@ extern "C" void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(10));
 
     // Set network callbacks
-    jarvis_network_set_callbacks(on_server_response, on_busy_state);
+    jarvis_network_set_callbacks(on_server_response, NULL);  // No busy polling — state via WS
     jarvis_network_set_config_callback(on_config_update);
 
     // Fetch initial temperature
@@ -610,8 +795,8 @@ extern "C" void app_main(void) {
     }
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // Initialize audio module (ESP-SR WakeNet + ring buffer)
-    ESP_LOGI(TAG, "Initializing audio + WakeNet (may take a few seconds)...");
+    // Initialize audio module (microWakeWord TFLite + ring buffer)
+    ESP_LOGI(TAG, "Initializing audio + microWakeWord...");
     if (!jarvis_audio_init()) {
         jarvis_display_show_message("MIC FAILED");
         ESP_LOGE(TAG, "Audio init failed - halting");
@@ -630,6 +815,19 @@ extern "C" void app_main(void) {
         ESP_LOGW(TAG, "WS Audio init failed - voice streaming disabled");
     }
     vTaskDelay(pdMS_TO_TICKS(10));
+
+    // Start persistent WebSocket connection (audio + control on single channel)
+    ESP_LOGI(TAG, "Starting persistent WebSocket connection...");
+    if (!jarvis_ws_audio_connect(device_config.device_id, on_session_done, on_remote_trigger)) {
+        ESP_LOGW(TAG, "Persistent WS connect failed - will retry in background");
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    // Register tts_done callback (server signals TTS playback complete → BUSY → IDLE)
+    jarvis_ws_audio_set_tts_done_callback(on_tts_done);
+
+    // Register config_update callback (server pushes new sensitivity from dashboard)
+    jarvis_ws_audio_set_config_update_callback(on_config_update_ws);
 
     // Set wake word callback (lightweight — just sets flag, main_task processes it)
     jarvis_audio_set_wake_callback([]() {
@@ -653,7 +851,10 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Say 'Jarvis' to activate");
     ESP_LOGI(TAG, "=================================");
 
-    // Create heartbeat task
+    // Initialize screensaver inactivity timer
+    last_activity_time = esp_timer_get_time() / 1000;
+
+    // Create heartbeat task (still uses HTTP for config updates)
     xTaskCreatePinnedToCore(heartbeat_task, "heartbeat_task", 4096, NULL, 3, NULL, 1);
 
     // Create main task

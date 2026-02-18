@@ -1,0 +1,21 @@
+menu "Recorder Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "YOUR_WIFI_SSID"
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "YOUR_WIFI_PASSWORD"
+
+    config RECORDER_SERVER_HOST
+        string "Recording Server IP"
+        default "192.168.1.100"
+        help
+            IP del Mac su cui gira record_from_atom.py
+
+    config RECORDER_SERVER_PORT
+        int "Recording Server Port"
+        default 5555
+
+endmenu

@@ -50,11 +50,18 @@ class VoiceRecognizer:
         self._load_all_embeddings()
     
     def _load_encoder(self):
-        """Carica il modello Resemblyzer."""
+        """Carica il modello Resemblyzer e fa warm-up per eliminare JIT overhead."""
         try:
+            import time as _t
             from resemblyzer import VoiceEncoder
             self.encoder = VoiceEncoder()
-            logger.info("Voice encoder loaded successfully")
+            # Warm-up: il primo embed_utterance è ~2.5s (PyTorch JIT/alloc),
+            # i successivi sono ~100-200ms. Facciamolo ora al boot.
+            t0 = _t.monotonic()
+            _dummy = np.random.randn(16000 * 3).astype(np.float32) * 0.01
+            self.encoder.embed_utterance(_dummy)
+            t1 = _t.monotonic()
+            logger.info(f"Voice encoder loaded + warm-up in {t1-t0:.2f}s")
         except ImportError:
             logger.warning("Resemblyzer not installed. Voice recognition disabled.")
             self.encoder = None
@@ -83,25 +90,74 @@ class VoiceRecognizer:
             except Exception as e:
                 logger.error(f"Failed to load voice model {model_file}: {e}")
     
-    def _audio_to_embedding(self, audio_data: np.ndarray, sample_rate: int = 16000) -> Optional[np.ndarray]:
-        """Converte audio in embedding vocale."""
+    @staticmethod
+    def _fast_preprocess(audio_data: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
+        """Preprocessing veloce: normalizza + trim silenzio.
+
+        Sostituisce resemblyzer.preprocess_wav (che usa librosa, ~20s su CPU!)
+        con operazioni numpy pure (~3ms). Il nostro audio è già 16kHz mono.
+        """
+        # Assicura float32
+        if audio_data.dtype != np.float32:
+            audio_data = audio_data.astype(np.float32) / 32768.0
+
+        # Normalizza picco
+        peak = np.max(np.abs(audio_data))
+        if peak > 0:
+            audio_data = audio_data / peak
+
+        # Energy-based VAD trim (rimuovi silenzio iniziale/finale)
+        frame_len = int(0.01 * sample_rate)  # 10ms frames
+        n_frames = len(audio_data) // frame_len
+        if n_frames > 0:
+            frames = audio_data[:n_frames * frame_len].reshape(n_frames, frame_len)
+            energy = np.sum(frames ** 2, axis=1)
+            threshold = np.mean(energy) * 0.1
+            active = np.where(energy > threshold)[0]
+            if len(active) > 0:
+                margin = int(0.1 * sample_rate)  # 100ms margin
+                start = max(0, active[0] * frame_len - margin)
+                end = min(len(audio_data), (active[-1] + 1) * frame_len + margin)
+                audio_data = audio_data[start:end]
+
+        return audio_data
+
+    def _audio_to_embedding(self, audio_data: np.ndarray, sample_rate: int = 16000,
+                             max_duration_s: float = 0) -> Optional[np.ndarray]:
+        """Converte audio in embedding vocale.
+
+        Args:
+            max_duration_s: Se > 0, taglia l'audio a max N secondi (prende la parte centrale).
+                           Utile per speaker ID dove bastano pochi secondi.
+        """
         if self.encoder is None:
             return None
-        
+
         try:
-            from resemblyzer import preprocess_wav
-            
-            # Normalizza audio
-            if audio_data.dtype != np.float32:
-                audio_data = audio_data.astype(np.float32) / 32768.0
-            
-            # Preprocessa
-            wav = preprocess_wav(audio_data, source_sr=sample_rate)
-            
-            # Genera embedding
+            import time as _t
+
+            # Taglia audio se richiesto (per speaker ID bastano pochi secondi)
+            if max_duration_s > 0:
+                max_samples = int(max_duration_s * sample_rate)
+                if len(audio_data) > max_samples:
+                    # Prendi la parte centrale (più probabile che contenga speech)
+                    start = (len(audio_data) - max_samples) // 2
+                    audio_data = audio_data[start:start + max_samples]
+
+            # Preprocessing veloce (numpy, ~3ms) — NO librosa/preprocess_wav (~20s!)
+            t0 = _t.monotonic()
+            wav = self._fast_preprocess(audio_data, sample_rate)
+            t1 = _t.monotonic()
+
+            # Genera embedding (dopo warm-up: ~100-200ms)
             embedding = self.encoder.embed_utterance(wav)
+            t2 = _t.monotonic()
+
+            logger.info(f"Embedding timing: preprocess={((t1-t0)*1000):.0f}ms, "
+                        f"inference={((t2-t1)*1000):.0f}ms, "
+                        f"audio={len(wav)/sample_rate:.1f}s")
             return embedding
-            
+
         except Exception as e:
             logger.error(f"Failed to create embedding: {e}")
             return None
@@ -126,8 +182,8 @@ class VoiceRecognizer:
         audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
         logger.debug(f"Speaker ID: audio {len(audio_data)} samples, dtype={audio_data.dtype}")
 
-        # Genera embedding
-        query_embedding = self._audio_to_embedding(audio_data, sample_rate)
+        # Genera embedding (trimma a max 8s — bastano per speaker ID)
+        query_embedding = self._audio_to_embedding(audio_data, sample_rate, max_duration_s=8.0)
         if query_embedding is None:
             logger.warning("Speaker ID: failed to generate embedding from audio")
             return SpeakerMatch(None, None, 0.0, False)
@@ -194,21 +250,33 @@ class VoiceRecognizer:
                 "Cerca di registrare in ambienti diversi se possibile."
             ],
             "phrases": [
-                "Jarvis, accendi le luci del salotto.",
-                "Che ore sono e che tempo fa oggi?",
-                "Ricordami di chiamare il dentista domani.",
-                "Qual è la temperatura in camera da letto?",
-                "Buongiorno Jarvis, come stai oggi?",
-                "Spegni tutte le luci di casa.",
+                # Frasi corte (1-3 parole) — simili a comandi reali rapidi
+                "Chi sono?",
+                "Jarvis!",
+                "Ciao!",
+                "Spegni tutto.",
+                "Ancora.",
+                "Continua.",
+                "Stop.",
+                "Grazie Jarvis.",
+                "Buongiorno!",
+                # Frasi medie (4-7 parole) — comandi tipici
+                "Accendi le luci del salotto.",
+                "Che tempo fa oggi?",
+                "Spegni tutte le luci.",
+                "Alza il volume.",
+                "Apri le tapparelle della cucina.",
+                "Quanto manca alla riunione?",
+                "Dimmi le notizie di oggi.",
+                "Qual è la temperatura?",
+                # Frasi lunghe (8+ parole) — domande articolate
+                "Ricordami di chiamare il dentista domani mattina.",
+                "Imposta una sveglia per domani alle sette.",
                 "Che programmi ci sono stasera in televisione?",
-                "Imposta una sveglia per domani mattina alle sette.",
-                "Jarvis, apri le tapparelle della cucina.",
-                "Quanto manca alla prossima riunione?",
                 "Abbassa il volume della musica in soggiorno.",
-                "Dimmi le ultime notizie di oggi.",
                 "Jarvis, qual è il meteo per il weekend?",
                 "Aggiungi il latte alla lista della spesa.",
-                "Chiudi la porta del garage per favore."
+                "Chiudi la porta del garage per favore.",
             ]
         }
     
@@ -341,6 +409,90 @@ class VoiceRecognizer:
             "user_id": user_id,
             "has_model": False
         }
+
+    def quick_enroll_from_session(self, user_id: int, audio_bytes: bytes,
+                                   sample_rate: int = 16000) -> dict:
+        """
+        Aggiunge un campione di enrollment da una sessione audio live.
+
+        Pensato per auto-enrollment dall'AtomS3R: ogni volta che l'utente parla
+        durante un enrollment in corso, l'audio della sessione viene usato come
+        campione. Skippa audio troppo corto (< 0.5s). Auto-completa quando
+        raggiunge MIN_ENROLLMENT_SAMPLES.
+
+        Args:
+            user_id: ID utente con enrollment in corso
+            audio_bytes: PCM 16-bit mono bytes
+            sample_rate: Sample rate (default 16000)
+
+        Returns:
+            dict con status, samples_collected, auto_completed flag
+        """
+        if self.encoder is None:
+            return {"status": "error", "message": "Voice encoder not available"}
+
+        # Verifica che ci sia enrollment in corso per questo utente
+        enrollment_dir = VOICE_MODELS_DIR / f"enrollment_{user_id}"
+        if not enrollment_dir.exists():
+            # Auto-crea directory enrollment se non esiste
+            enrollment_dir.mkdir(exist_ok=True)
+            logger.info(f"Quick enroll: auto-created enrollment dir for user {user_id}")
+
+        # Skippa audio troppo corto (< 0.5s)
+        audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
+        duration_s = len(audio_data) / sample_rate
+        if duration_s < 0.5:
+            logger.debug(f"Quick enroll: audio too short ({duration_s:.2f}s < 0.5s), skipping")
+            return {"status": "skipped", "reason": "audio_too_short",
+                    "duration": round(duration_s, 2)}
+
+        # Genera embedding
+        embedding = self._audio_to_embedding(audio_data, sample_rate)
+        if embedding is None:
+            return {"status": "error", "message": "Failed to process audio"}
+
+        # Salva il campione
+        existing_samples = list(enrollment_dir.glob("sample_*.npy"))
+        sample_num = len(existing_samples)
+        np.save(enrollment_dir / f"sample_{sample_num}.npy", embedding)
+        samples_collected = sample_num + 1
+
+        logger.info(f"Quick enroll: user {user_id} sample {samples_collected}/{MIN_ENROLLMENT_SAMPLES} "
+                     f"({duration_s:.1f}s)")
+
+        # Auto-completa se abbiamo abbastanza campioni
+        if samples_collected >= MIN_ENROLLMENT_SAMPLES:
+            logger.info(f"Quick enroll: auto-completing enrollment for user {user_id}")
+            result = self.complete_enrollment(user_id)
+            result["auto_completed"] = True
+            result["samples_collected"] = samples_collected
+            return result
+
+        return {
+            "status": "sample_added",
+            "samples_collected": samples_collected,
+            "samples_required": MIN_ENROLLMENT_SAMPLES,
+            "auto_completed": False,
+            "duration": round(duration_s, 2)
+        }
+
+    def has_active_enrollment(self, user_id: int) -> bool:
+        """Controlla se un utente ha un enrollment in corso."""
+        enrollment_dir = VOICE_MODELS_DIR / f"enrollment_{user_id}"
+        return enrollment_dir.exists()
+
+    def get_all_active_enrollments(self) -> list:
+        """Ritorna tutti gli user_id con enrollment in corso."""
+        active = []
+        if VOICE_MODELS_DIR.exists():
+            for d in VOICE_MODELS_DIR.iterdir():
+                if d.is_dir() and d.name.startswith("enrollment_"):
+                    try:
+                        uid = int(d.name.split("_", 1)[1])
+                        active.append(uid)
+                    except (ValueError, IndexError):
+                        pass
+        return active
 
 
 # Istanza globale

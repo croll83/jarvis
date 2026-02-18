@@ -4,7 +4,7 @@
 #
 # Hardware: M5Stack AtomS3R (ESP32-S3 + PSRAM)
 # Features:
-#   - Wake Word Detection (ESP-SR WakeNet "jarvis")
+#   - Wake Word Detection (microWakeWord TFLite "jarvis")
 #   - Streaming Audio with VAD
 #   - Display TFT 128x128 (ST7789)
 #   - WiFi connectivity to JARVIS Orchestrator

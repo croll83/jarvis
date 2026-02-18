@@ -228,6 +228,129 @@ async def is_safe(text: str, source: str = "unknown") -> tuple[bool, str]:
 
 
 # ===========================================================================
+# STT NORMALIZATION (Qwen 7B — fix trascrizione Whisper)
+# ===========================================================================
+# Corregge errori comuni di Whisper: nomi entità, lingua mista, punteggiatura.
+# Chiamata dopo STT e prima del pre-route. Se fallisce, ritorna testo originale.
+# ===========================================================================
+
+_STT_NORMALIZE_SYSTEM = (
+    "Sei un normalizzatore di testo trascritto da un sistema di riconoscimento vocale (Whisper) "
+    "per un assistente domotico italiano chiamato JARVIS.\n"
+    "Il tuo compito:\n"
+    "1. Correggi errori di trascrizione: parole storpiate, lingue sbagliate, punteggiatura errata\n"
+    "2. NON cambiare il significato o aggiungere parole\n"
+    "3. NON aggiungere formattazione, virgolette o commenti\n"
+    "4. Se il testo è già corretto, restituiscilo identico\n"
+    "5. Rispondi SOLO con il testo corretto, nient'altro\n\n"
+    "Contesto — entità domotiche note:\n"
+    "Stanze: Ingresso, Soggiorno, Cucina, Lavanderia, Disimpegno, Camera, "
+    "Cabina armadio, Cameretta, Bagno grande, Bagno piccolo, Balcone interno, Balcone esterno, Garage, Box\n"
+    "Device: TV, Cam, Lampada, Lampada Giorgio, Luce, Luci, Porta, Soundbar, Echo\n"
+    "Luci: Centro Block, Strip Led, Divano, Faretto, Tavola, Braava, Roomba, Letto, Specchio\n"
+    "Persone: Marco, Ada, Giorgio, Sofia, Loredana, Mario, Melina\n"
+    "Azioni: accendi, spegni, apri, chiudi, alza, abbassa, muta, stop, silenzio"
+)
+
+
+async def normalize_stt_text(text: str) -> str:
+    """
+    Normalizza il testo STT via Qwen per correggere errori di trascrizione.
+    Se la chiamata LLM fallisce, ritorna il testo originale (fail-safe).
+    Disabilitabile via config.STT_NORMALIZE_ENABLED = false.
+    """
+    if not config.STT_NORMALIZE_ENABLED:
+        return text
+    if not text or len(text.strip()) < 3:
+        return text
+
+    _rp = get_llm_params("routing")
+
+    try:
+        if config.AI_BACKEND == "api" and config.OPENROUTER_API_KEY:
+            result = await _normalize_openrouter(text, _rp)
+        else:
+            result = await _normalize_ollama(text, _rp)
+
+        if result and len(result.strip()) >= 2:
+            # Sanity check: normalizzazione non dovrebbe stravolgere il testo
+            if len(result) < len(text) * 3:
+                if result.strip() != text.strip():
+                    logger.info(f"STT normalized: '{text}' → '{result}'")
+                return result.strip()
+            else:
+                logger.warning(f"STT normalize output troppo lungo, ignored: {len(result)} vs {len(text)}")
+                return text
+        return text
+
+    except Exception as e:
+        logger.warning(f"STT normalize failed (using original): {e}")
+        return text
+
+
+async def _normalize_ollama(text: str, llm_params: dict) -> Optional[str]:
+    """Normalizzazione STT via Ollama (Qwen local)."""
+    payload = {
+        "model": config.ROUTER_MODEL,
+        "messages": [
+            {"role": "system", "content": _STT_NORMALIZE_SYSTEM},
+            {"role": "user", "content": text}
+        ],
+        "options": {
+            "temperature": 0.1,
+            "num_predict": 150
+        },
+        "stream": False
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                config.OLLAMA_CHAT_URL, json=payload,
+                timeout=aiohttp.ClientTimeout(total=llm_params["timeout"])
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                return data.get("message", {}).get("content", "")
+    except Exception as e:
+        logger.warning(f"STT normalize ollama error: {e}")
+        return None
+
+
+async def _normalize_openrouter(text: str, llm_params: dict) -> Optional[str]:
+    """Normalizzazione STT via OpenRouter API."""
+    headers = {
+        "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": config.OPENROUTER_REFERER,
+        "X-Title": config.OPENROUTER_TITLE
+    }
+    payload = {
+        "model": config.OPENROUTER_ROUTER_MODEL,
+        "messages": [
+            {"role": "system", "content": _STT_NORMALIZE_SYSTEM},
+            {"role": "user", "content": text}
+        ],
+        "temperature": 0.1,
+        "max_tokens": 150,
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{config.OPENROUTER_API_URL}/chat/completions",
+                headers=headers, json=payload,
+                timeout=aiohttp.ClientTimeout(total=llm_params["timeout"])
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"STT normalize openrouter error: {e}")
+        return None
+
+
+# ===========================================================================
 # PRE-ROUTE  (Qwen 7B  3-way classification)
 # ===========================================================================
 # Classifies a voice command into one of:
@@ -593,14 +716,44 @@ def _fallback_routing() -> dict:
 
 async def get_quick_response(text: str, context: dict) -> str:
     """
-    Risposta rapida per SIMPLE_CHAT usando Qwen.
+    Risposta rapida per SIMPLE_CHAT.
+    - AI_BACKEND=api: OpenRouter (Qwen API) → Gemini fallback
+    - AI_BACKEND=local: Ollama (Qwen locale)
+    Questo è il fallback quando OpenClaw è down, quindi NON usa OpenClaw.
     """
+    system_prompt = load_prompt(
+        "quick_response_system",
+        "Sei Jarvis, un assistente domestico amichevole. Rispondi in modo conciso e naturale in italiano."
+    )
+    _rp = get_llm_params("quick_response")
+
+    # ── CLOUD MODE: OpenRouter → Gemini fallback ──
+    if config.AI_BACKEND == "api":
+        # Tentativo 1: OpenRouter (Qwen via API)
+        if config.OPENROUTER_API_KEY:
+            try:
+                result = await _quick_response_openrouter(text, system_prompt, _rp)
+                if result:
+                    return result
+            except Exception as e:
+                logger.warning(f"Quick response OpenRouter failed: {e}")
+
+        # Tentativo 2: Gemini API (solo testo semplice)
+        if config.GEMINI_API_KEY:
+            try:
+                result = await get_gemini_response(f"[Rispondi brevemente in italiano] {text}")
+                if result and not result.startswith("Errore"):
+                    return result
+            except Exception as e:
+                logger.warning(f"Quick response Gemini failed: {e}")
+
+        return "Mi dispiace, c'è stato un problema. Puoi ripetere?"
+
+    # ── LOCAL MODE: Ollama ──
     messages = [
-        {"role": "system", "content": load_prompt("quick_response_system", "Sei Jarvis, un assistente domestico amichevole. Rispondi in modo conciso e naturale in italiano.")},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": text}
     ]
-    
-    _rp = get_llm_params("quick_response")
     payload = {
         "model": config.ROUTER_MODEL,
         "messages": messages,
@@ -623,6 +776,38 @@ async def get_quick_response(text: str, context: dict) -> str:
         logger.error(f"Quick response error: {e}")
 
     return "Mi dispiace, c'è stato un problema. Puoi ripetere?"
+
+
+async def _quick_response_openrouter(text: str, system_prompt: str, llm_params: dict) -> Optional[str]:
+    """Quick response via OpenRouter API (Qwen). Text-only, no JSON parsing."""
+    headers = {
+        "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": config.OPENROUTER_REFERER,
+        "X-Title": config.OPENROUTER_TITLE
+    }
+    payload = {
+        "model": config.OPENROUTER_ROUTER_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text}
+        ],
+        "temperature": llm_params.get("temperature", 0.7),
+        "max_tokens": llm_params.get("max_tokens", 300),
+    }
+    timeout = aiohttp.ClientTimeout(total=llm_params.get("timeout", 15))
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{config.OPENROUTER_API_URL}/chat/completions",
+            headers=headers, json=payload, timeout=timeout
+        ) as resp:
+            if resp.status == 200:
+                result = await resp.json()
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return content.strip() if content else None
+            else:
+                logger.error(f"Quick response OpenRouter HTTP {resp.status}")
+                return None
 
 
 # ===========================================================================

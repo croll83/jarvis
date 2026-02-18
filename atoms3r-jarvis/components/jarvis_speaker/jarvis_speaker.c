@@ -16,6 +16,7 @@
 #include "wake_sound_data.h"
 
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -125,6 +126,47 @@ void jarvis_speaker_play_wake_sound(void) {
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create wake sound task");
     }
+}
+
+// =============================================================================
+// REJECT BUZZ (short low-frequency tone for wake reject feedback)
+// =============================================================================
+
+#define BUZZ_FREQ_HZ    400
+#define BUZZ_DURATION_MS 80
+#define BUZZ_SAMPLE_RATE 16000
+#define BUZZ_SAMPLES     (BUZZ_SAMPLE_RATE * BUZZ_DURATION_MS / 1000)  // 1280
+#define BUZZ_AMPLITUDE   4000  // quiet buzz, not startling
+
+static void buzz_task(void* arg) {
+    // Generate 400Hz sine wave, 80ms, low amplitude
+    int16_t buzz_buf[BUZZ_SAMPLES];
+    for (int i = 0; i < BUZZ_SAMPLES; i++) {
+        float t = (float)i / BUZZ_SAMPLE_RATE;
+        // Apply quick fade-in/fade-out (first/last 10ms) to avoid click
+        float env = 1.0f;
+        int fade_samples = BUZZ_SAMPLE_RATE / 100;  // 10ms = 160 samples
+        if (i < fade_samples) {
+            env = (float)i / fade_samples;
+        } else if (i > BUZZ_SAMPLES - fade_samples) {
+            env = (float)(BUZZ_SAMPLES - i) / fade_samples;
+        }
+        buzz_buf[i] = (int16_t)(sinf(2.0f * 3.14159265f * BUZZ_FREQ_HZ * t) * BUZZ_AMPLITUDE * env);
+    }
+
+    jarvis_speaker_play_pcm(buzz_buf, BUZZ_SAMPLES);
+    playback_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+void jarvis_speaker_play_buzz(void) {
+    if (!speaker_initialized) return;
+    if (playing) return;
+
+    xTaskCreatePinnedToCore(
+        buzz_task, "buzz", 4096 + 2560,  // extra stack for 1280 int16 on stack
+        NULL, 4, &playback_task_handle, 1
+    );
 }
 
 bool jarvis_speaker_is_playing(void) {

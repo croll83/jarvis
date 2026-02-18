@@ -2,10 +2,6 @@
 ## https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/tools/idf-component-manager.html
 
 dependencies:
-  # ESP-SR per wake word detection
-  espressif/esp-sr:
-    version: "^1.4.2"
-
   # cJSON per parsing JSON
   espressif/cjson:
     version: "^1.7.15"

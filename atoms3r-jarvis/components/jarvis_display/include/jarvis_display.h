@@ -97,4 +97,31 @@ void jarvis_display_set_friendly_name(const char* name);
  */
 void jarvis_display_flash_white(void);
 
+/**
+ * @brief Flash display red briefly (speaker stop / emergency feedback)
+ *
+ * Riempie lo schermo di rosso per ~120ms, poi torna allo stato corrente.
+ * Fornisce feedback visivo del triple-tap speaker stop.
+ */
+void jarvis_display_flash_red(void);
+
+/**
+ * @brief Start screensaver (Matrix rain animation)
+ * Resets animation state. Call once when entering screensaver.
+ */
+void jarvis_display_screensaver_start(void);
+
+/**
+ * @brief Render one screensaver frame (self-throttled to ~20 FPS)
+ * Call from main loop every iteration. Returns early if not time to render.
+ * @return true if a frame was rendered, false if throttled
+ */
+bool jarvis_display_screensaver_tick(void);
+
+/**
+ * @brief Stop screensaver, clear display
+ * Caller should then call jarvis_display_update() to restore normal state.
+ */
+void jarvis_display_screensaver_stop(void);
+
 #endif // JARVIS_DISPLAY_H

@@ -42,6 +42,16 @@ void jarvis_speaker_deinit(void);
 void jarvis_speaker_play_wake_sound(void);
 
 /**
+ * @brief Play a short reject buzz (non-blocking)
+ *
+ * Brief low-frequency buzz (~80ms, 400Hz) as feedback when
+ * a wake word trigger is rejected by the false-positive filter.
+ * Useful for tuning without serial monitor.
+ * If playback is already in progress, does nothing.
+ */
+void jarvis_speaker_play_buzz(void);
+
+/**
  * @brief Play raw PCM data (blocking)
  * @param pcm_data PCM 16-bit signed mono samples
  * @param num_samples Number of samples

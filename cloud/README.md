@@ -36,11 +36,13 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
               |                                                     |
               |  docker-compose.cloud.yml                           |
               |  +-----------------------------------------------+ |
-              |  |              jarvis_cloud                      | |
-              |  |                                                | |
               |  |  orchestrator (network_mode: host)             | |
-              |  |  :5000 (FastAPI)                               | |
-              |  |  AI_BACKEND=api                                | |
+              |  |  :5000 (FastAPI) — AI_BACKEND=api              | |
+              |  +-----------------------------------------------+ |
+              |  +-----------------------------------------------+ |
+              |  |  ontology-server (Docker)                      | |
+              |  |  127.0.0.1:8100 (FastAPI) — Knowledge Graph   | |
+              |  |  SQLite + ACL (X-Speaker-Id)                   | |
               |  +-----------------------------------------------+ |
               +--------+-------------------------------------------+
                        | Tailscale (100.x.x.x)
@@ -54,10 +56,12 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
 ### Ordine di boot
 
 ```
-1. tailscale (systemd)  → servizio host-level, parte al boot del VPS, si connette alla tailnet
-2. openclaw (systemd)   → servizio bare-metal, parte al boot del VPS
-3. orchestrator (Docker) → network_mode: host, vede Tailscale direttamente
-                           raggiunge OpenClaw via localhost:18789
+1. tailscale (systemd)     → servizio host-level, parte al boot del VPS, si connette alla tailnet
+2. openclaw (systemd)      → servizio bare-metal, parte al boot del VPS
+3. ontology-server (Docker) → Knowledge Graph API, 127.0.0.1:8100
+4. orchestrator (Docker)    → network_mode: host, vede Tailscale direttamente
+                              raggiunge OpenClaw via localhost:18789
+                              raggiunge ontology via localhost:8100
 ```
 
 Tailscale e OpenClaw sono processi systemd che partono prima di Docker.
@@ -127,14 +131,21 @@ git clone https://github.com/croll83/jarvis.git /opt/jarvis
 ### STEP 3 — Copia skill per OpenClaw
 
 ```bash
+# Skill orchestrator (domotica, TTS, security, memory)
 mkdir -p ~/.openclaw/workspace/skills/jarvis-orchestrator
 cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
 cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
+
+# Skill ontology (knowledge graph — crea/query/relate entita)
+mkdir -p ~/.openclaw/workspace/skills/ontology
+cp -r /opt/jarvis/ontology-server/skill/* ~/.openclaw/workspace/skills/ontology/
 ```
 
-Questo rende la skill JARVIS visibile a OpenClaw. Dopo ogni `git pull` che modifica la skill, riesegui i `cp`.
+Questo rende le skill visibili a OpenClaw. Dopo ogni `git pull` che modifica le skill, riesegui i `cp`.
 
-La skill espone 11 tool REST, tra cui `entity_bulk` per query/azioni di gruppo su entita HA (elimina il problema N+1 delle query multi-entita).
+La skill orchestrator espone 11 tool REST, tra cui `entity_bulk` per query/azioni di gruppo su entita HA (elimina il problema N+1 delle query multi-entita).
+
+La skill ontology espone il Knowledge Graph API (CRUD entita, relazioni, query, bulk) con ACL basata su `X-Speaker-Id`.
 
 > **Nota**: non usare symlink — il file watcher di OpenClaw va in ELOOP con i link simbolici.
 
@@ -286,6 +297,7 @@ Variabili obbligatorie da compilare:
 | `JARVIS_APPROVAL_CHAT_ID` | Scrivi al bot, poi `curl https://api.telegram.org/bot<TOKEN>/getUpdates` |
 | `HASS_URL` | `http://100.x.x.x:8123` (IP Tailscale del tuo HA, senza `/api`) |
 | `JARVIS_HASS_TOKEN` | HA → Profilo → Token di lunga durata |
+| `ONTOLOGY_API_TOKEN` | (opzionale) `openssl rand -hex 32` — protegge l'API ontology |
 
 > **Nota**: OpenClaw gira bare-metal, NON in Docker. Tailscale gira host-level, NON in Docker. Il `.env` viene letto solo dal container Docker (orchestrator). OpenClaw ha la sua configurazione in `~/.openclaw/`. Tailscale si autentica con `tailscale up --hostname=jarvis-cloud`.
 
@@ -301,7 +313,7 @@ sudo systemctl start openclaw
 # 3. Verifica che OpenClaw sia attivo (bind=tailnet → usa IP Tailscale)
 curl http://$(tailscale ip -4):18789/health
 
-# 4. Avvia lo stack Docker (solo orchestrator, con network_mode: host)
+# 4. Avvia lo stack Docker (orchestrator + ontology-server)
 cd /opt/jarvis/cloud
 docker compose -f docker-compose.cloud.yml up -d
 ```
@@ -314,6 +326,9 @@ curl http://$(tailscale ip -4):18789/health
 
 # Tailscale connesso alla tailnet? (host-level)
 tailscale status
+
+# Ontology Server healthy?
+curl http://127.0.0.1:8100/health
 
 # Orchestrator healthy?
 curl http://localhost:5000/health
@@ -530,6 +545,7 @@ La porta 18789 NON e esposta su internet (non e in Docker, e un processo locale)
 | Porta | Servizio | Accesso |
 |-------|----------|---------|
 | 5000 | Orchestrator + Admin UI | Pubblico (dietro nginx) |
+| 8100 | Ontology Server (Knowledge Graph) | Solo localhost (Docker, 127.0.0.1 bind) |
 | 18789 | OpenClaw (bare-metal) | Solo localhost + Tailscale (NO Docker, NO internet) |
 | 18800 | Chrome CDP (headless) | Solo localhost (browser-dom plugin) |
 | 41641/udp | Tailscale NAT traversal | WAN (host-level, servizio systemd) |
@@ -539,6 +555,11 @@ La porta 18789 NON e esposta su internet (non e in Docker, e un processo locale)
 ## Monitoring
 
 ```bash
+# Stato Ontology Server (Docker)
+docker inspect --format='{{.State.Health.Status}}' jarvis_ontology
+curl -s http://127.0.0.1:8100/health
+docker compose -f docker-compose.cloud.yml logs --tail=20 ontology-server
+
 # Stato Chrome headless (browser-dom)
 systemctl status openclaw-chrome
 curl -s http://127.0.0.1:18800/json/version | head -3
@@ -571,6 +592,27 @@ ps aux | grep openclaw
 ---
 
 ## Troubleshooting
+
+### Ontology Server non risponde
+
+```bash
+# Verifica stato container
+docker compose -f docker-compose.cloud.yml ps ontology-server
+docker compose -f docker-compose.cloud.yml logs --tail=30 ontology-server
+
+# Healthcheck
+curl -v http://127.0.0.1:8100/health
+
+# Se il DB e corrotto, il volume persiste — basta ricreare il container
+docker compose -f docker-compose.cloud.yml restart ontology-server
+
+# Se hai configurato ONTOLOGY_API_TOKEN, verifica che il token sia corretto
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:8100/entities?limit=1
+
+# Verifica che la porta sia raggiungibile dall'orchestrator (network_mode: host)
+docker exec jarvis_orchestrator curl -s http://127.0.0.1:8100/health 2>/dev/null || \
+  curl -s http://127.0.0.1:8100/health
+```
 
 ### Chrome headless / browser-dom non funziona
 
@@ -721,6 +763,8 @@ cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/j
 cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
 # NOTA: la copia sovrascrive le credenziali in skill.json — riesegui lo script:
 bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
+# Skill ontology (se cambiata)
+cp -r /opt/jarvis/ontology-server/skill/* ~/.openclaw/workspace/skills/ontology/
 sudo systemctl restart openclaw
 
 # 5. Se exec-approvals.json e cambiato
@@ -733,7 +777,7 @@ cd ~/.openclaw/extensions/browser-dom && npm install
 sudo systemctl restart openclaw-chrome openclaw
 ```
 
-> **Nota**: l'aggiornamento di OpenClaw non richiede rebuild Docker. L'aggiornamento Docker non tocca OpenClaw. L'aggiornamento di Tailscale non tocca ne Docker ne OpenClaw. Se cambiano solo file Python dell'orchestrator, basta rebuild Docker. Se cambia la skill definition, serve anche la copia + restart OpenClaw.
+> **Nota**: l'aggiornamento di OpenClaw non richiede rebuild Docker. L'aggiornamento Docker non tocca OpenClaw. L'aggiornamento di Tailscale non tocca ne Docker ne OpenClaw. Se cambiano solo file Python dell'orchestrator, basta rebuild Docker. Se cambia la skill definition, serve anche la copia + restart OpenClaw. Il database ontology (`graph.db`) persiste nel volume Docker `ontology_data` ed e indipendente dal rebuild.
 
 ---
 
@@ -741,9 +785,9 @@ sudo systemctl restart openclaw-chrome openclaw
 
 Dopo 2 settimane di testing cloud, per passare al deploy locale (con GPU):
 
-1. Esporta il database: `cp data/jarvis_state.db ~/jarvis_backup.db`
+1. Esporta i database: `cp data/jarvis_state.db ~/jarvis_backup.db` e `docker cp jarvis_ontology:/app/data/graph.db ~/ontology_backup.db`
 2. Sul server locale, segui la guida in [`infrastructure/README.md`](../infrastructure/README.md)
-3. Copia il database: `cp ~/jarvis_backup.db data/jarvis_state.db`
+3. Copia i database: `cp ~/jarvis_backup.db data/jarvis_state.db` e copia `ontology_backup.db` nel volume ontology
 4. Cambia `AI_BACKEND=local` nel `.env` locale
 5. Spegni il VPS cloud
 

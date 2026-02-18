@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 import json
 import logging
+import re
 from typing import Dict, List, Tuple, Optional, Any
 
 import config
@@ -513,15 +514,40 @@ async def denoise_audio(audio_bytes: bytes) -> bytes:
 # SPEECH-TO-TEXT (faster-whisper locale o Groq API)
 # ===========================================================================
 
+def _clean_stt_text(text: str) -> str:
+    """
+    Pulizia leggera dell'output Whisper: rimuove punteggiatura spuria
+    che Whisper può inserire copiando lo stile del initial_prompt.
+    Es. "accendi, luce, box" → "accendi luce box"
+    NON tocca apostrofi (l'ingresso) né trattini composti (Strip Led).
+    """
+    if not text:
+        return text
+    # Rimuove virgole e punti e virgola isolati tra parole
+    # (mantiene quelli in numeri tipo "3.14" o "1,5")
+    cleaned = re.sub(r'(?<=[a-zA-ZàèéìòùÀÈÉÌÒÙ])\s*[,;]\s*(?=[a-zA-ZàèéìòùÀÈÉÌÒÙ])', ' ', text)
+    # Rimuove trattini em/en usati come separatori di lista (— / –)
+    cleaned = re.sub(r'\s*[—–]\s*', ' ', cleaned)
+    # Rimuove prefissi tipo "1/" "2/" che Whisper può copiare dal prompt
+    cleaned = re.sub(r'\b\d+[/\\]\s*', '', cleaned)
+    # Collassa spazi multipli
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned).strip()
+    if cleaned != text:
+        logger.debug(f"STT cleanup: '{text}' → '{cleaned}'")
+    return cleaned
+
+
 async def transcribe_audio(audio_bytes: bytes) -> Optional[str]:
     """
     Trascrive audio usando faster-whisper locale o Groq API.
     Il backend è determinato da config.AI_BACKEND.
+    Applica pulizia punteggiatura post-trascrizione.
     """
     if config.AI_BACKEND == "api":
-        return await _transcribe_groq(audio_bytes)
+        text = await _transcribe_groq(audio_bytes)
     else:
-        return await _transcribe_local(audio_bytes)
+        text = await _transcribe_local(audio_bytes)
+    return _clean_stt_text(text) if text else text
 
 
 async def _transcribe_local(audio_bytes: bytes) -> Optional[str]:
@@ -534,6 +560,8 @@ async def _transcribe_local(audio_bytes: bytes) -> Optional[str]:
                           content_type='audio/wav')
             data.add_field('model', config.WHISPER_MODEL)
             data.add_field('language', config.WHISPER_LANGUAGE)
+            if config.WHISPER_PROMPT:
+                data.add_field('initial_prompt', config.WHISPER_PROMPT)
 
             async with session.post(config.WHISPER_TRANSCRIBE_URL,
                                    data=data, timeout=config.TIMEOUTS["whisper"]) as resp:
@@ -651,6 +679,8 @@ async def _transcribe_groq(audio_bytes: bytes) -> Optional[str]:
             data.add_field('model', config.GROQ_WHISPER_MODEL)
             data.add_field('language', 'it')
             data.add_field('response_format', 'json')
+            if config.WHISPER_PROMPT:
+                data.add_field('prompt', config.WHISPER_PROMPT)
 
             url = f"{config.GROQ_API_URL}/audio/transcriptions"
 
