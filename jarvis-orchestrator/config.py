@@ -306,6 +306,29 @@ INTERVALS = {
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "it")
 
+# Whisper initial_prompt — context per migliorare trascrizione (max ~224 token / ~900 chars)
+# IMPORTANTE: scrivere in PROSA FLUIDA, senza elenchi numerati/puntati né separatori.
+# Whisper replica lo stile del prompt nell'output: prosa → output pulito.
+WHISPER_PROMPT = os.getenv("WHISPER_PROMPT", (
+    "JARVIS è l'assistente AI di casa. Le persone che parlano sono Marco, Ada, "
+    "Giorgio, Sofia, Loredana, Mario e Melina. "
+    "I comandi domotici più frequenti sono accendi, spegni, apri, chiudi, alza, "
+    "abbassa, muta, stop e silenzio. "
+    "Le stanze della casa sono Ingresso, Soggiorno, Cucina, Lavanderia, "
+    "Disimpegno, Camera, Cabina armadio, Cameretta, Bagno grande, Bagno piccolo, "
+    "Balcone interno, Balcone esterno, Garage e Box. "
+    "Le zone sono Notte, Giorno e Esterno. "
+    "I dispositivi includono TV, Cam, Lampada, Lampada Giorgio, Luce, Luci, "
+    "Porta, Soundbar e Echo. "
+    "Le luci si chiamano Centro Block, Strip Led, Divano, Faretto, Tavola, "
+    "Braava, Roomba, Letto e Specchio. "
+    "Si può anche chiedere di cercare su email, Drive, internet, Amazon, "
+    "shopping, cron, trading e Twitter."
+))
+
+# STT normalization via LLM (Qwen) — disable per test con solo Whisper prompt
+STT_NORMALIZE_ENABLED = os.getenv("STT_NORMALIZE_ENABLED", "false").lower() == "true"
+
 # Keywords cache TTL
 KEYWORDS_CACHE_TTL = int(os.getenv("KEYWORDS_CACHE_TTL", "300"))
 
@@ -355,7 +378,7 @@ LOCATION_MEMORY_DEFAULTS = {
 # ===========================================================================
 VOICE_MODELS_DIR = os.getenv("VOICE_MODELS_DIR", "/app/data/voice_models")
 VOICE_SIMILARITY_THRESHOLD = float(os.getenv("VOICE_SIMILARITY_THRESHOLD", "0.70"))
-VOICE_MIN_ENROLLMENT_SAMPLES = int(os.getenv("VOICE_MIN_ENROLLMENT_SAMPLES", "10"))
+VOICE_MIN_ENROLLMENT_SAMPLES = int(os.getenv("VOICE_MIN_ENROLLMENT_SAMPLES", "24"))
 
 # ===========================================================================
 # DATABASE LIMITS
@@ -374,6 +397,9 @@ MAX_AUDIT_LOGS_IN_REPORT = int(os.getenv("MAX_AUDIT_LOGS_IN_REPORT", "20"))
 TTS_CHARS_PER_SECOND = float(os.getenv("TTS_CHARS_PER_SECOND", "10.0"))
 TTS_SOUND_OFFSET = float(os.getenv("TTS_SOUND_OFFSET", "1.5"))
 TTS_MIN_DURATION = float(os.getenv("TTS_MIN_DURATION", "3.0"))
+
+# Multi-turn follow-up
+FOLLOWUP_TRIGGER_BUFFER_S = float(os.getenv("FOLLOWUP_TRIGGER_BUFFER_S", "0.5"))
 
 # Memory jobs
 MEMORY_MIN_MESSAGES_FOR_SUMMARY = int(os.getenv("MEMORY_MIN_MESSAGES", "2"))

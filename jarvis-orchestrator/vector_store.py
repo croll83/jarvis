@@ -80,7 +80,15 @@ class OllamaEmbeddingFunction:
                     timeout=config.TIMEOUTS["embedding"]
                 )
                 if response.status_code == 200:
-                    embeddings.append(response.json()["embedding"])
+                    emb = response.json()["embedding"]
+                    # Guard: ensure embedding is a list of floats
+                    if isinstance(emb, (int, float)):
+                        logger.error(f"Ollama embedding returned scalar ({type(emb).__name__}), using zero-vector")
+                        emb = [0.0] * EMBEDDING_DIM
+                    elif not isinstance(emb, list):
+                        logger.error(f"Ollama embedding returned {type(emb).__name__}, using zero-vector")
+                        emb = [0.0] * EMBEDDING_DIM
+                    embeddings.append(emb)
                 else:
                     logger.error(f"Embedding error: {response.status_code}")
                     embeddings.append([0.0] * EMBEDDING_DIM)
@@ -143,14 +151,47 @@ class GeminiEmbeddingFunction:
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    embeddings.append(data["embedding"]["values"])
+                    # Gemini API response: {"embedding": {"values": [0.1, 0.2, ...]}}
+                    embedding_obj = data.get("embedding")
+                    if isinstance(embedding_obj, dict):
+                        emb = embedding_obj.get("values")
+                    else:
+                        logger.error(f"Gemini embedding unexpected structure: type={type(embedding_obj).__name__}, response={str(data)[:300]}")
+                        emb = None
+                    # Guard: ensure embedding is a list of floats with correct dimension
+                    if emb is None:
+                        logger.error(f"Gemini embedding missing 'values', using zero-vector. Keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
+                        emb = [0.0] * EMBEDDING_DIM
+                    elif isinstance(emb, (int, float)):
+                        logger.error(f"Gemini embedding returned scalar ({type(emb).__name__}={emb}), using zero-vector")
+                        emb = [0.0] * EMBEDDING_DIM
+                    elif not isinstance(emb, list):
+                        logger.error(f"Gemini embedding returned {type(emb).__name__}, using zero-vector")
+                        emb = [0.0] * EMBEDDING_DIM
+                    elif len(emb) == 0:
+                        logger.error(f"Gemini embedding returned empty list, using zero-vector")
+                        emb = [0.0] * EMBEDDING_DIM
+                    elif not all(isinstance(v, (int, float)) for v in emb[:5]):
+                        logger.error(f"Gemini embedding contains non-numeric values: {emb[:5]}, using zero-vector")
+                        emb = [0.0] * EMBEDDING_DIM
+                    embeddings.append(emb)
                 else:
                     logger.error(f"Gemini embedding error {response.status_code}: {response.text[:200]}")
                     embeddings.append([0.0] * EMBEDDING_DIM)
             except Exception as e:
                 logger.error(f"Gemini embedding exception: {e}")
                 embeddings.append([0.0] * EMBEDDING_DIM)
-        return embeddings
+
+        # Final safety: ensure every element is List[float] with correct dim
+        safe_embeddings = []
+        for i, emb in enumerate(embeddings):
+            if not isinstance(emb, list) or len(emb) != EMBEDDING_DIM:
+                logger.error(f"Gemini embedding[{i}] final guard: type={type(emb).__name__}, "
+                             f"len={len(emb) if isinstance(emb, list) else 'N/A'}, replacing with zero-vector")
+                safe_embeddings.append([0.0] * EMBEDDING_DIM)
+            else:
+                safe_embeddings.append(emb)
+        return safe_embeddings
 
     def embed_documents(self, documents: List[str]) -> List[List[float]]:
         return self(documents)

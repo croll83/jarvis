@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.cpp" "compat_stub.c"
+    SRCS "main.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         jarvis_display
@@ -16,8 +16,3 @@ idf_component_register(
         cjson
         esp_timer
 )
-
-# Force linker to pull in __getreent from compat_stub.c
-# Required because esp-sr pre-compiled libs reference this symbol
-# which was removed (replaced by macro) in ESP-IDF v6.1
-target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,-u,__getreent")

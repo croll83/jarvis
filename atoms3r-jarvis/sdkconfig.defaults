@@ -20,7 +20,7 @@ CONFIG_ESPTOOLPY_FLASH_SAMPLE_MODE_STR=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 
 # =============================================================================
-# PSRAM Configuration (8MB OPI - ESSENZIALE per ESP-SR)
+# PSRAM Configuration (8MB OPI)
 # =============================================================================
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
@@ -43,14 +43,10 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # =============================================================================
-# ESP-SR WakeNet Configuration
+# microWakeWord (TFLite Micro) — no ESP-SR needed
 # =============================================================================
-CONFIG_SR_WN_WN9_JARVIS_TTS=y
-CONFIG_AFE_INTERFACE_V1=y
-
-# Disable ALL MultiNet models (not needed - JARVIS uses only WakeNet)
-CONFIG_SR_MN_CN_NONE=y
-CONFIG_SR_MN_EN_NONE=y
+# Wake word detection uses a custom TFLite model (jarvis_it.tflite)
+# loaded at compile time. ESP-NN acceleration enabled for fast inference.
 
 # =============================================================================
 # CPU and FreeRTOS

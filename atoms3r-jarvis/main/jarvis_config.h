@@ -52,11 +52,10 @@
 // Pattern sensore temperatura in Home Assistant (usa friendly_name o location)
 #define TEMP_SENSOR_PATTERN "sensor.temperatura_%s"
 
-// Intervallo polling stato busy dal server (ms)
-#define BUSY_POLL_INTERVAL_MS   2000
-
-// Timeout stato busy (ms)
-#define BUSY_STATE_TIMEOUT_MS   10000
+// Safety timeout stato busy (ms) — fallback if server never responds via WS
+// Server sends tts_done when done; this is only a last-resort safety net.
+// Must be long enough for complex responses (TTS can be 30-60s+).
+#define BUSY_STATE_TIMEOUT_MS   120000
 
 // Intervallo heartbeat al server (ms) - 5 minuti
 #define HEARTBEAT_INTERVAL_MS   300000
@@ -120,6 +119,11 @@
 #define WAVE_ANIMATION_MS       50
 #define BUTTON_DEBOUNCE_MS      200
 
+// Screensaver (Matrix rain)
+#define SCREENSAVER_TIMEOUT_MS   600000   // 10 min inattivita
+#define SCREENSAVER_DURATION_MS   60000   // 60s animazione
+#define SCREENSAVER_FRAME_MS         50   // ~20 FPS
+
 // =============================================================================
 // WEBSOCKET AUDIO + OPUS CONFIGURATION
 // =============================================================================
@@ -137,21 +141,17 @@
 #define RAW_RINGBUF_SIZE            (16000 * 2)  // 1s = 32KB @ 16kHz 16-bit
 
 // =============================================================================
-// WAKE WORD CONFIGURATION (ESP-SR WakeNet)
+// WAKE WORD CONFIGURATION (microWakeWord TFLite)
 // =============================================================================
 
-// TODO: Generare modello custom "wn9_jarvis" — per ora usa il primo modello disponibile
-#define WAKENET_MODEL_NAME      NULL  // Auto-detect dal SPIFFS
-
-// Modalità detection
-// DET_MODE_90  = Alta sensibilità
-// DET_MODE_95  = Media sensibilità (default)
-// DET_MODE_2G75 = Medio-bassa sensibilità
-// DET_MODE_3G75 = Bassa sensibilità
-#define WAKENET_DET_MODE        DET_MODE_95
-
-#define WAKENET_VAD_ENABLED     true
-#define WAKENET_AEC_ENABLED     false
+// Detection threshold: sliding window average of model output probabilities.
+// Model outputs uint8 0-255 (0.0-1.0 quantized). This is compared against
+// the mean of SLIDING_WINDOW_SIZE recent predictions.
+// Custom model trained with Italian TTS + real AtomS3R recordings + negative samples.
+#define MWW_PROBABILITY_CUTOFF      0.82f
+#define MWW_SLIDING_WINDOW_SIZE     10
+#define MWW_FEATURE_STEP_MS         20       // 20ms hop (v1-style model)
+#define MWW_MIN_SLICES_BEFORE_DET   74       // ~1.5s of silence before accepting detection
 
 // =============================================================================
 // STATE MACHINE

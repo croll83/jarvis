@@ -1737,25 +1737,51 @@
 
     <!-- Voice Enrollment Modal -->
     <div class="modal" id="enrollmentModal">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width: 520px;">
             <div class="modal-header">
                 <h2>Registrazione Vocale</h2>
                 <button class="modal-close" onclick="cancelEnrollment()">&times;</button>
             </div>
-            <p id="enrollmentUserName" style="color: var(--text-secondary); margin-bottom: 1rem;"></p>
-            <div id="enrollmentSteps"></div>
-            <div id="phraseDisplay" style="background: var(--bg-input); padding: 1rem; border-radius: 8px; text-align: center; font-size: 1rem; margin: 1rem 0; border: 1px solid var(--border-color);">
-                Premi "Inizia" per cominciare
+            <p id="enrollmentUserName" style="color: var(--text-secondary); margin-bottom: 0.75rem;"></p>
+
+            <!-- Selezione sorgente audio -->
+            <div id="enrollmentSourceSelect" style="margin-bottom: 1rem;">
+                <label style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem; display: block;">Sorgente audio:</label>
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                    <button class="btn-secondary btn-sm enrollment-source-btn active" data-source="browser" onclick="selectEnrollmentSource('browser')" style="flex: 1; min-width: 120px;">
+                        🎙️ Microfono Mac
+                    </button>
+                    <button class="btn-secondary btn-sm enrollment-source-btn" data-source="device" onclick="selectEnrollmentSource('device')" style="flex: 1; min-width: 120px;">
+                        📡 AtomS3R
+                    </button>
+                </div>
+                <div id="deviceSelectWrapper" style="display: none; margin-top: 0.5rem;">
+                    <select id="enrollmentDeviceSelect" style="width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-input); color: var(--text-primary); font-size: 0.85rem;">
+                        <option value="">Caricamento dispositivi...</option>
+                    </select>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem;">
+                        Con AtomS3R: avvia il re-enroll e parla normalmente. I campioni vengono catturati automaticamente ad ogni comando vocale.
+                    </p>
+                </div>
             </div>
-            <div id="recordingIndicator" style="display: none; text-align: center; margin: 1rem 0; color: var(--accent);">
+
+            <div id="enrollmentSteps"></div>
+
+            <!-- Frase da leggere — visibile PRIMA della registrazione -->
+            <div id="phraseDisplay" style="background: var(--bg-input); padding: 1rem; border-radius: 8px; text-align: center; font-size: 1.05rem; margin: 0.75rem 0; border: 1px solid var(--border-color); min-height: 3rem; display: flex; align-items: center; justify-content: center;">
+                Premi "Inizia" per vedere la prima frase
+            </div>
+
+            <div id="recordingIndicator" style="display: none; text-align: center; margin: 0.5rem 0; color: var(--accent);">
                 <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); animation: pulse-error 1s infinite; margin-right: 0.5rem;"></span>
                 Registrazione in corso...
             </div>
-            <div style="display: flex; gap: 0.75rem; margin-top: 1rem;">
+
+            <div style="display: flex; gap: 0.75rem; margin-top: 0.75rem;">
                 <button class="btn-secondary" onclick="cancelEnrollment()" style="flex: 1;">Annulla</button>
-                <button class="btn-primary" id="enrollmentButton" onclick="startRecording()" style="flex: 1;">Inizia</button>
+                <button class="btn-primary" id="enrollmentButton" onclick="showNextPhrase()" style="flex: 1;">Inizia</button>
             </div>
-            <div id="enrollmentStatus" style="margin-top: 1rem;"></div>
+            <div id="enrollmentStatus" style="margin-top: 0.75rem;"></div>
         </div>
     </div>
 
@@ -1989,6 +2015,17 @@
                         <input type="checkbox" id="vdEnabled" checked>
                         Device Abilitato
                     </label>
+                </div>
+
+                <div class="form-group">
+                    <label>Sensibilità Wake Word: <span id="vdSensitivityValue">0.82</span></label>
+                    <input type="range" id="vdWakeWordSensitivity" min="0.5" max="0.98" step="0.01" value="0.82"
+                           oninput="document.getElementById('vdSensitivityValue').textContent = this.value"
+                           style="width: 100%;">
+                    <small style="color: var(--text-secondary); display: flex; justify-content: space-between;">
+                        <span>← Più reattivo (più falsi positivi)</span>
+                        <span>Più preciso (meno reattivo) →</span>
+                    </small>
                 </div>
 
                 <div class="form-group">
@@ -2482,7 +2519,8 @@
                         <div style="display: flex; gap: 0.5rem;">
                             ${!user.voice_enrolled ?
                                 `<button class="btn-primary btn-sm" onclick="startEnrollment(${user.id}, '${user.name}')">Registra</button>` :
-                                `<button class="btn-secondary btn-sm" onclick="deleteVoice(${user.id})">Rimuovi</button>`}
+                                `<button class="btn-primary btn-sm" onclick="startReEnrollment(${user.id}, '${user.name}')" style="font-size:0.7rem;">Re-enroll</button>
+                                 <button class="btn-secondary btn-sm" onclick="deleteVoice(${user.id})">Rimuovi</button>`}
                             <button class="btn-danger btn-sm" onclick="deleteUser(${user.id}, '${user.name}')">Elimina</button>
                         </div>
                     </div>
@@ -2529,9 +2567,15 @@
         }
 
         // Voice Enrollment
+        let enrollmentSource = 'browser'; // 'browser' or 'device'
+        let enrollmentDevicePolling = null; // interval for device enrollment polling
+        let phraseReady = false; // true = frase mostrata, pronto per registrare
+
         async function startEnrollment(userId, userName) {
             currentEnrollmentUserId = userId;
             currentPhraseIndex = 0;
+            phraseReady = false;
+            enrollmentSource = 'browser';
             document.getElementById('enrollmentUserName').textContent = `Utente: ${userName}`;
 
             try {
@@ -2539,36 +2583,122 @@
                 const data = await response.json();
                 enrollmentPhrases = data.phrases;
                 updateEnrollmentSteps(0, enrollmentPhrases.length);
-                document.getElementById('phraseDisplay').textContent = 'Premi "Inizia" per cominciare';
+                document.getElementById('phraseDisplay').textContent = 'Premi "Inizia" per vedere la prima frase';
                 document.getElementById('enrollmentButton').textContent = 'Inizia';
-                document.getElementById('enrollmentButton').onclick = startRecording;
+                document.getElementById('enrollmentButton').onclick = showNextPhrase;
+                document.getElementById('enrollmentButton').disabled = false;
                 document.getElementById('enrollmentStatus').innerHTML = '';
+                document.getElementById('recordingIndicator').style.display = 'none';
+                document.getElementById('enrollmentSourceSelect').style.display = 'block';
+                selectEnrollmentSource('browser');
+                loadEnrollmentDevices();
                 openModal('enrollmentModal');
             } catch (e) { showToast('Errore avvio registrazione', 'error'); }
         }
 
-        function updateEnrollmentSteps(current, total) {
-            const container = document.getElementById('enrollmentSteps');
-            let html = '';
-            for (let i = 0; i < total; i++) {
-                const isDone = i < current;
-                const isActive = i === current;
-                const bg = isDone ? 'var(--success)' : isActive ? 'var(--accent)' : 'var(--bg-input)';
-                const border = isDone ? 'var(--success-bg)' : isActive ? 'rgba(233,69,96,0.2)' : 'transparent';
-                html += `<div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem; border-radius: 6px; background: ${border}; margin-bottom: 0.35rem;">
-                    <div style="width: 24px; height: 24px; border-radius: 50%; background: ${bg}; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 0.75rem; color: white;">${isDone ? '✓' : i + 1}</div>
-                    <span style="font-size: 0.85rem; color: var(--text-secondary);">${isDone ? 'Completato' : isActive ? 'In corso' : 'In attesa'}</span>
-                </div>`;
-            }
-            container.innerHTML = html;
+        async function startReEnrollment(userId, userName) {
+            if (!confirm(`Re-enrollment per ${userName}? Il modello vocale attuale verrà cancellato.`)) return;
+            try {
+                const response = await fetch(`/api/users/${userId}/voice/re-enroll`, { method: 'POST' });
+                const data = await response.json();
+                if (data.status === 'started') {
+                    showToast(`Re-enrollment avviato per ${userName}`);
+                    // Apri il modale di enrollment con i nuovi dati
+                    currentEnrollmentUserId = userId;
+                    currentPhraseIndex = 0;
+                    phraseReady = false;
+                    enrollmentSource = 'browser';
+                    enrollmentPhrases = data.phrases;
+                    document.getElementById('enrollmentUserName').textContent = `Utente: ${userName} (Re-enrollment)`;
+                    updateEnrollmentSteps(0, enrollmentPhrases.length);
+                    document.getElementById('phraseDisplay').textContent = 'Premi "Inizia" per vedere la prima frase';
+                    document.getElementById('enrollmentButton').textContent = 'Inizia';
+                    document.getElementById('enrollmentButton').onclick = showNextPhrase;
+                    document.getElementById('enrollmentButton').disabled = false;
+                    document.getElementById('enrollmentStatus').innerHTML = '';
+                    document.getElementById('recordingIndicator').style.display = 'none';
+                    document.getElementById('enrollmentSourceSelect').style.display = 'block';
+                    selectEnrollmentSource('browser');
+                    loadEnrollmentDevices();
+                    openModal('enrollmentModal');
+                    loadUsers();
+                } else {
+                    showToast(data.message || 'Errore re-enrollment', 'error');
+                }
+            } catch (e) { showToast('Errore re-enrollment', 'error'); }
         }
 
-        async function startRecording() {
-            if (currentPhraseIndex >= enrollmentPhrases.length) { await completeEnrollment(); return; }
+        function selectEnrollmentSource(source) {
+            enrollmentSource = source;
+            document.querySelectorAll('.enrollment-source-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.source === source);
+                if (b.dataset.source === source) {
+                    b.style.background = 'var(--accent)';
+                    b.style.color = 'white';
+                    b.style.borderColor = 'var(--accent)';
+                } else {
+                    b.style.background = '';
+                    b.style.color = '';
+                    b.style.borderColor = '';
+                }
+            });
+            document.getElementById('deviceSelectWrapper').style.display = source === 'device' ? 'block' : 'none';
+            // Adatta UI per modalità device
+            if (source === 'device') {
+                document.getElementById('enrollmentButton').textContent = 'Avvia Auto-Enrollment';
+                document.getElementById('enrollmentButton').onclick = startDeviceEnrollment;
+            } else {
+                document.getElementById('enrollmentButton').textContent = phraseReady ? '🔴 Registra' : 'Inizia';
+                document.getElementById('enrollmentButton').onclick = phraseReady ? recordPhrase : showNextPhrase;
+            }
+        }
 
-            document.getElementById('phraseDisplay').textContent = `"${enrollmentPhrases[currentPhraseIndex]}"`;
+        async function loadEnrollmentDevices() {
+            try {
+                // Carica sia i device configurati che quelli connessi via WS
+                const [configResp, connResp] = await Promise.all([
+                    fetch('/api/admin/voice-devices?filter=configured'),
+                    fetch('/devices/connected')
+                ]);
+                const configData = await configResp.json();
+                const connData = await connResp.json();
+                const devices = configData.devices || configData;
+                const connectedIds = new Set((connData.devices || []).map(d => d.toUpperCase()));
+
+                const select = document.getElementById('enrollmentDeviceSelect');
+                if (devices.length === 0) {
+                    select.innerHTML = '<option value="">Nessun dispositivo configurato</option>';
+                } else {
+                    select.innerHTML = devices.map(d => {
+                        const isOnline = connectedIds.has((d.device_id || '').toUpperCase());
+                        const status = isOnline ? '🟢' : '🔴';
+                        return `<option value="${d.device_id}" ${!isOnline ? 'disabled' : ''}>${status} ${d.friendly_name || d.device_id} (${d.location_id || '?'})${!isOnline ? ' — offline' : ''}</option>`;
+                    }).join('');
+                    // Auto-seleziona il primo online
+                    const firstOnline = devices.find(d => connectedIds.has((d.device_id || '').toUpperCase()));
+                    if (firstOnline) select.value = firstOnline.device_id;
+                }
+            } catch (e) {
+                document.getElementById('enrollmentDeviceSelect').innerHTML = '<option value="">Errore caricamento</option>';
+            }
+        }
+
+        // Mostra la frase da leggere SENZA registrare
+        function showNextPhrase() {
+            if (currentPhraseIndex >= enrollmentPhrases.length) { completeEnrollment(); return; }
+            document.getElementById('phraseDisplay').innerHTML =
+                `<div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem;">Frase ${currentPhraseIndex + 1} di ${enrollmentPhrases.length} — leggi e quando sei pronto premi Registra</div>` +
+                `<div style="font-size: 1.1rem; font-weight: 600;">"${enrollmentPhrases[currentPhraseIndex]}"</div>`;
+            document.getElementById('enrollmentButton').textContent = '🔴 Registra';
+            document.getElementById('enrollmentButton').onclick = recordPhrase;
+            phraseReady = true;
+        }
+
+        // Registra la frase corrente (dal microfono del browser)
+        async function recordPhrase() {
             document.getElementById('recordingIndicator').style.display = 'block';
             document.getElementById('enrollmentButton').disabled = true;
+            document.getElementById('enrollmentButton').textContent = 'Registrazione...';
 
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
@@ -2592,7 +2722,6 @@
                 source.connect(processor);
                 processor.connect(audioCtx.destination);
 
-                // Ferma dopo 4 secondi
                 setTimeout(async () => {
                     processor.disconnect();
                     source.disconnect();
@@ -2614,7 +2743,179 @@
                 showToast('Errore microfono', 'error');
                 document.getElementById('recordingIndicator').style.display = 'none';
                 document.getElementById('enrollmentButton').disabled = false;
+                document.getElementById('enrollmentButton').textContent = '🔴 Registra';
             }
+        }
+
+        // ── Device Enrollment (AtomS3R) ─────────────────────────────────
+        let enrollmentLastSampleCount = 0;
+        let enrollmentDeviceId = null;
+        let deviceEnrollmentStep = 0; // step corrente (0-based)
+
+        // Mostra la frase corrente — 3 righe: step / frase / campioni
+        function showDevicePhrase(step) {
+            const total = enrollmentPhrases.length;
+            const display = document.getElementById('phraseDisplay');
+
+            if (step >= total) {
+                display.innerHTML =
+                    `<div style="font-size: 1rem; color: var(--success); font-weight: 600; padding: 0.5rem 0;">
+                        ✅ Tutti i campioni raccolti!
+                    </div>`;
+                return;
+            }
+
+            display.innerHTML =
+                `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+                    Step ${step + 1} di ${total}
+                </div>
+                <div style="font-size: 1.2rem; font-weight: 600; margin-bottom: 0.6rem; line-height: 1.4;">
+                    "${enrollmentPhrases[step]}"
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-secondary);">
+                    Campioni raccolti: <span style="color: var(--accent); font-weight: 600;">${enrollmentLastSampleCount}</span> / ${total}
+                </div>`;
+
+            updateEnrollmentSteps(enrollmentLastSampleCount, total);
+        }
+
+        // Click "Avanti ▶" = trigger listen + disabilita bottone fino a campione ricevuto
+        async function deviceEnrollmentNext() {
+            if (!enrollmentDeviceId) return;
+            const btn = document.getElementById('enrollmentButton');
+            btn.disabled = true;
+            btn.textContent = '🎙️ Registrazione...';
+
+            document.getElementById('recordingIndicator').style.display = 'block';
+            document.getElementById('recordingIndicator').innerHTML =
+                `<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--success); animation: pulse-error 1s infinite; margin-right: 0.5rem;"></span>
+                 Leggi la frase all'AtomS3R`;
+
+            try {
+                await fetch(`/device/${enrollmentDeviceId}/trigger_listen`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({silent: false})
+                });
+            } catch (e) {
+                document.getElementById('enrollmentStatus').innerHTML =
+                    `<div style="color: var(--error); font-size: 0.85rem;">Errore trigger. Riprova.</div>`;
+                btn.disabled = false;
+                btn.textContent = 'Avanti ▶';
+            }
+            // Il bottone resta disabilitato — il polling lo riabilita quando arriva il campione
+        }
+
+        // Inizia enrollment device — verifica connessione, mostra frase 1
+        async function startDeviceEnrollment() {
+            const deviceSelect = document.getElementById('enrollmentDeviceSelect');
+            enrollmentDeviceId = deviceSelect.value;
+            if (!enrollmentDeviceId) {
+                document.getElementById('enrollmentStatus').innerHTML =
+                    `<div style="color: var(--error);">Seleziona un dispositivo</div>`;
+                return;
+            }
+
+            const btn = document.getElementById('enrollmentButton');
+            btn.disabled = true;
+            btn.textContent = 'Connessione...';
+
+            // Verifica connessione WS con un trigger silenzioso
+            try {
+                const testResp = await fetch(`/device/${enrollmentDeviceId}/trigger_listen`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({silent: true})
+                });
+                if (testResp.status !== 200) {
+                    btn.disabled = false;
+                    btn.textContent = 'Inizia';
+                    btn.onclick = startDeviceEnrollment;
+                    document.getElementById('enrollmentStatus').innerHTML =
+                        `<div style="color: var(--error);">Device non connesso via WebSocket.<br>
+                         <span style="font-size: 0.8rem;">Assicurati che l'AtomS3R sia acceso e connesso al WiFi.</span></div>`;
+                    return;
+                }
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = 'Inizia';
+                btn.onclick = startDeviceEnrollment;
+                document.getElementById('enrollmentStatus').innerHTML =
+                    `<div style="color: var(--error);">Errore connessione: ${e.message}</div>`;
+                return;
+            }
+
+            // Connesso — setup stato
+            document.getElementById('enrollmentSourceSelect').style.display = 'none';
+            document.getElementById('enrollmentStatus').innerHTML = '';
+            document.getElementById('recordingIndicator').style.display = 'none';
+            deviceEnrollmentStep = 0;
+            enrollmentLastSampleCount = 0;
+            currentPhraseIndex = 0;
+
+            // Mostra frase 1, bottone "Avanti ▶"
+            showDevicePhrase(0);
+            btn.textContent = 'Avanti ▶';
+            btn.onclick = deviceEnrollmentNext;
+            btn.disabled = false;
+
+            // Polling: quando il server riceve il campione, avanza alla prossima frase
+            enrollmentDevicePolling = setInterval(async () => {
+                try {
+                    const response = await fetch(`/api/users/${currentEnrollmentUserId}/voice/status`);
+                    const data = await response.json();
+
+                    if (data.status === 'enrolled') {
+                        // Completato!
+                        clearInterval(enrollmentDevicePolling);
+                        enrollmentDevicePolling = null;
+                        document.getElementById('recordingIndicator').style.display = 'none';
+                        showDevicePhrase(enrollmentPhrases.length); // mostra "✅"
+                        document.getElementById('enrollmentStatus').innerHTML =
+                            `<div style="color: var(--success); font-weight: 600;">✅ Registrazione completata!</div>`;
+                        btn.disabled = true;
+                        setTimeout(() => { closeModal('enrollmentModal'); loadUsers(); }, 2000);
+                        return;
+                    }
+
+                    if (data.status === 'in_progress') {
+                        const count = data.samples_collected || 0;
+                        if (count > enrollmentLastSampleCount) {
+                            // Nuovo campione ricevuto — avanza alla prossima frase
+                            enrollmentLastSampleCount = count;
+                            deviceEnrollmentStep = count;
+                            currentPhraseIndex = count;
+                            document.getElementById('recordingIndicator').style.display = 'none';
+                            showDevicePhrase(count);
+
+                            if (count >= enrollmentPhrases.length) {
+                                // Ultimo campione — completa
+                                btn.textContent = 'Completa';
+                                btn.onclick = completeEnrollment;
+                                btn.disabled = false;
+                            } else {
+                                // Mostra prossima frase, riabilita "Avanti ▶"
+                                btn.textContent = 'Avanti ▶';
+                                btn.onclick = deviceEnrollmentNext;
+                                btn.disabled = false;
+                            }
+                        }
+                    }
+                } catch (e) { /* polling error, ignore */ }
+            }, 2000);
+        }
+
+        function updateEnrollmentSteps(current, total) {
+            const container = document.getElementById('enrollmentSteps');
+            // Mostra progress bar compatta invece di singoli step (25 frasi sarebbero troppe)
+            const pct = Math.min(100, Math.round((current / total) * 100));
+            container.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">
+                    <div style="flex: 1; height: 8px; border-radius: 4px; background: var(--bg-input); overflow: hidden;">
+                        <div style="height: 100%; width: ${pct}%; background: ${pct >= 100 ? 'var(--success)' : 'var(--accent)'}; border-radius: 4px; transition: width 0.3s;"></div>
+                    </div>
+                    <span style="font-size: 0.8rem; color: var(--text-secondary); min-width: 60px; text-align: right;">${current}/${total}</span>
+                </div>`;
         }
 
         async function uploadEnrollmentSample(audioBlob) {
@@ -2628,18 +2929,23 @@
                 if (data.status === 'sample_added') {
                     currentPhraseIndex++;
                     updateEnrollmentSteps(currentPhraseIndex, enrollmentPhrases.length);
+                    phraseReady = false;
                     if (data.ready_to_complete) {
                         document.getElementById('phraseDisplay').textContent = 'Campioni raccolti!';
                         document.getElementById('enrollmentButton').textContent = 'Completa';
                         document.getElementById('enrollmentButton').onclick = completeEnrollment;
                     } else {
-                        document.getElementById('phraseDisplay').textContent = 'Prossima frase...';
+                        // Mostra prossima frase (read-then-record)
+                        document.getElementById('enrollmentButton').textContent = 'Prossima frase';
+                        document.getElementById('enrollmentButton').onclick = showNextPhrase;
                     }
                     document.getElementById('enrollmentButton').disabled = false;
                 } else throw new Error(data.message || 'Errore');
             } catch (e) {
                 document.getElementById('enrollmentStatus').innerHTML = `<div style="color: var(--error);">Errore. Riprova.</div>`;
                 document.getElementById('enrollmentButton').disabled = false;
+                document.getElementById('enrollmentButton').textContent = '🔴 Registra';
+                document.getElementById('enrollmentButton').onclick = recordPhrase;
             }
         }
 
@@ -2655,6 +2961,7 @@
         }
 
         async function cancelEnrollment() {
+            if (enrollmentDevicePolling) { clearInterval(enrollmentDevicePolling); enrollmentDevicePolling = null; }
             if (currentEnrollmentUserId) await fetch(`/api/users/${currentEnrollmentUserId}/voice/cancel`, { method: 'POST' });
             closeModal('enrollmentModal');
         }
@@ -3135,6 +3442,8 @@
             document.getElementById('vdFallbackTelegram').checked = true;
             document.getElementById('vdFallbackLocalSpeaker').checked = true;
             document.getElementById('vdEnabled').checked = true;
+            document.getElementById('vdWakeWordSensitivity').value = 0.82;
+            document.getElementById('vdSensitivityValue').textContent = '0.82';
             document.getElementById('vdNotes').value = '';
 
             // If editing, load device data
@@ -3148,6 +3457,8 @@
                     document.getElementById('vdFallbackTelegram').checked = device.fallback_telegram;
                     document.getElementById('vdFallbackLocalSpeaker').checked = device.fallback_local_speaker;
                     document.getElementById('vdEnabled').checked = device.enabled;
+                    document.getElementById('vdWakeWordSensitivity').value = device.wake_word_sensitivity || 0.82;
+                    document.getElementById('vdSensitivityValue').textContent = device.wake_word_sensitivity || 0.82;
                     document.getElementById('vdNotes').value = device.notes || '';
 
                     // Load media players for this location
@@ -3215,6 +3526,7 @@
                 fallback_telegram: document.getElementById('vdFallbackTelegram').checked,
                 fallback_local_speaker: document.getElementById('vdFallbackLocalSpeaker').checked,
                 enabled: document.getElementById('vdEnabled').checked,
+                wake_word_sensitivity: parseFloat(document.getElementById('vdWakeWordSensitivity').value),
                 notes: document.getElementById('vdNotes').value || null
             };
 

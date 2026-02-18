@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Ontology Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Top Bar -->
+  <header id="topbar">
+    <span class="logo">Ontology</span>
+    <div class="speaker-wrap">
+      <select id="speaker-select"></select>
+    </div>
+  </header>
+
+  <!-- Tabs -->
+  <nav id="tabs">
+    <button class="tab active" data-tab="entities">Entities</button>
+    <button class="tab" data-tab="relations">Relations</button>
+  </nav>
+
+  <!-- Entities Tab -->
+  <section id="entities-tab" class="tab-content active">
+    <div class="toolbar">
+      <select id="type-filter">
+        <option value="">All types</option>
+      </select>
+      <button id="btn-new-entity" class="btn-primary">+ New</button>
+    </div>
+    <div id="entity-list" class="card-list"></div>
+    <button id="btn-load-more" class="btn-secondary" style="display:none">Load more</button>
+  </section>
+
+  <!-- Relations Tab -->
+  <section id="relations-tab" class="tab-content">
+    <div class="toolbar">
+      <select id="rel-type-filter">
+        <option value="">All relation types</option>
+      </select>
+      <button id="btn-new-relation" class="btn-primary">+ Relation</button>
+    </div>
+    <div id="relation-list" class="card-list"></div>
+  </section>
+
+  <!-- Entity Detail Panel -->
+  <div id="detail-panel" class="panel hidden">
+    <div class="panel-header">
+      <button id="btn-back" class="btn-icon">&larr;</button>
+      <span id="detail-title"></span>
+      <div class="panel-actions">
+        <button id="btn-edit" class="btn-icon" title="Edit">&#9998;</button>
+        <button id="btn-delete" class="btn-icon danger" title="Delete">&#128465;</button>
+      </div>
+    </div>
+    <div id="detail-body"></div>
+    <div id="detail-relations"></div>
+  </div>
+
+  <!-- Create/Edit Entity Modal -->
+  <div id="entity-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span id="modal-title">New Entity</span>
+        <button class="btn-icon modal-close">&times;</button>
+      </div>
+      <form id="entity-form">
+        <div class="field">
+          <label for="entity-type">Type</label>
+          <select id="entity-type" required></select>
+        </div>
+        <div id="dynamic-fields"></div>
+        <div class="field">
+          <label for="entity-visibility">Visibility</label>
+          <select id="entity-visibility">
+            <option value="public">public</option>
+            <option value="family">family</option>
+            <option value="private">private</option>
+          </select>
+        </div>
+        <button type="submit" class="btn-primary full-width">Save</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Create Relation Modal -->
+  <div id="relation-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span>New Relation</span>
+        <button class="btn-icon modal-close">&times;</button>
+      </div>
+      <form id="relation-form">
+        <div class="field">
+          <label for="rel-from">From entity</label>
+          <input id="rel-from" type="text" placeholder="Search entity..." autocomplete="off" required>
+          <div id="rel-from-results" class="search-results hidden"></div>
+        </div>
+        <div class="field">
+          <label for="rel-type">Relation type</label>
+          <select id="rel-type" required></select>
+        </div>
+        <div id="rel-props-fields"></div>
+        <div id="rel-to-wrap" class="field"></div>
+        <button type="submit" class="btn-primary full-width">Create Relation(s)</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+micro_wake_word:
+  models:
+    - model: 'jarvis_it.tflite'
+      # Ti consiglio 0.75: è il bilanciamento perfetto tra reattività e precisione
+      probability_cutoff: 0.75
+      # Questo evita che un rumore impulsivo (es. sbattere un bicchiere) attivi il trigger
+      sliding_window_average_size: 10
+
+# Opzionale: Se vuoi vedere quanto è "sicuro" il modello nei log di ESPHome
+logger:
+  level: DEBUG

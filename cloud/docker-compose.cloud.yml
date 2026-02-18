@@ -45,3 +45,41 @@ services:
       resources:
         limits:
           memory: 1G
+
+  # ---------------------------------------------------------------------------
+  # Ontology Server - Knowledge Graph API (SQLite + FastAPI + ACL)
+  # Single source of truth per l'intero ecosistema di agent.
+  # ACL basata su X-Speaker-Id: filtra entita per visibilita (private/family/public).
+  # Raggiungibile da:
+  #   - Orchestrator: http://127.0.0.1:8100 (network_mode: host)
+  #   - OpenClaw (bare-metal): http://127.0.0.1:8100 (porta esposta su localhost)
+  #   - Dashboard (Tailscale): http://<tailscale-ip>:8100/dashboard (smartphone)
+  # ---------------------------------------------------------------------------
+  ontology-server:
+    build:
+      context: ../ontology-server
+      dockerfile: Dockerfile
+    container_name: jarvis_ontology
+    volumes:
+      - ontology_data:/app/data
+    ports:
+      - "127.0.0.1:8100:8100"
+      - "${TAILSCALE_IP:-100.100.74.71}:8100:8100"
+    environment:
+      - ONTOLOGY_DB_PATH=/app/data/graph.db
+      - ONTOLOGY_SCHEMA_PATH=/app/schema.yaml
+      - ONTOLOGY_API_TOKEN=${ONTOLOGY_API_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  ontology_data:

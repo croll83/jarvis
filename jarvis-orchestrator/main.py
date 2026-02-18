@@ -42,6 +42,7 @@ from integrations import (
 )
 from ai_engines import (
     is_safe, get_routing, get_quick_response, pre_route,
+    normalize_stt_text,
     # Gemini
     get_gemini_response, verify_with_gemini, is_gemini_intent,
     # Image generation
@@ -64,7 +65,10 @@ from location_memory import load_memory_services_from_db
 from context_builder import build_full_context, build_routing_context, build_reasoning_context
 from proactive import proactive_check_loop
 from vector_store import init_vector_store
-from ws_audio_handler import init_vad, get_active_session_count
+from ws_audio_handler import (
+    init_vad, get_active_session_count, get_persistent_connection_count,
+    trigger_device_listen, get_connected_devices,
+)
 
 # Logging setup
 logging.basicConfig(
@@ -76,7 +80,7 @@ logger = logging.getLogger("JARVIS_MAIN")
 # Filtro per nascondere le richieste frequenti dall'access log di uvicorn
 # (device_status polling ogni 2s, heartbeat ogni 5min — inquinano il log)
 class _QuietDevicePollingFilter(logging.Filter):
-    _QUIET_PATHS = ("/device_status", "/heartbeat", "/room_temperature/")
+    _QUIET_PATHS = ("/device_status", "/heartbeat", "/room_temperature/", "/ws/audio")
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
         return not any(p in msg for p in self._QUIET_PATHS)
@@ -389,7 +393,7 @@ async def _handle_approval_update(update: dict):
     """
     bot_token = config.JARVIS_APPROVAL_BOT_TOKEN
 
-    # ── Handle text messages (/location, /panicstop) ──
+    # ── Handle text messages (/location) ──
     message = update.get("message")
     if message:
         text_msg = (message.get("text") or "").strip()
@@ -423,43 +427,6 @@ async def _handle_approval_update(update: dict):
                 "reply_markup": {"inline_keyboard": [buttons]}
             })
 
-        # /panicstop — emergency stop all speakers in user's location
-        elif cmd == "/panicstop" and msg_chat_id:
-            user_msg = get_user_by_telegram_id(tg_id_msg) if tg_id_msg else None
-            if not user_msg:
-                logger.warning(f"Approval bot /panicstop: tg_id {tg_id_msg} not linked to any user")
-                await _tg_bot_api("sendMessage", {
-                    "chat_id": msg_chat_id, "text": "⚠️ Utente non riconosciuto."
-                })
-                return
-
-            user_loc = get_user_location(user_msg.id)
-            if not user_loc:
-                await _tg_bot_api("sendMessage", {
-                    "chat_id": msg_chat_id,
-                    "text": "⚠️ Location non impostata. Usa /location prima."
-                })
-                return
-
-            count, stopped_ids = await _panic_stop_all_speakers(user_loc.location_id)
-            loc_obj = get_location(user_loc.location_id)
-            loc_name = loc_obj.name if loc_obj else user_loc.location_id
-
-            if count > 0:
-                reply = f"🛑 *Panic Stop!*\nFermati {count} speaker a _{loc_name}_."
-            else:
-                reply = f"⚠️ Nessuno speaker trovato a _{loc_name}_."
-
-            log_event("panic_stop", {
-                "source": "telegram", "user": user_msg.name,
-                "location": user_loc.location_id,
-                "speakers_stopped": count, "entity_ids": stopped_ids
-            })
-
-            await _tg_bot_api("sendMessage", {
-                "chat_id": msg_chat_id, "text": reply, "parse_mode": "Markdown"
-            })
-            logger.info(f"🛑 Panic stop via Telegram by {user_msg.name}: {count} speakers at {loc_name}")
 
         return
 
@@ -1497,6 +1464,7 @@ async def voice_command(request: Request):
         admin_metrics.record_stt((time.time() - stt_start) * 1000)
         if not text:
             return {"status": "no_speech_detected"}
+        text = await normalize_stt_text(text)
     else:
         text = data.get("text")
 
@@ -1655,6 +1623,46 @@ async def update_device_status(request: Request):
         asyncio.create_task(play_feedback_sound(sound_type, target_player, location))
 
     return {"status": "ok"}
+
+
+# ===========================================================================
+# DEVICE TRIGGER LISTEN (per multi-turn e enrollment remoto)
+# ===========================================================================
+
+@app.post("/device/{device_id}/trigger_listen")
+async def api_trigger_listen(device_id: str, request: Request):
+    """
+    REST API to trigger a device to start listening via persistent WebSocket.
+    Used by: dashboard for remote enrollment, test/debug.
+
+    Body (optional JSON):
+      {"silent": false}  -- false for enrollment (plays wake sound on device)
+                            true for multi-turn follow-up (default, no sound)
+    """
+    silent = True
+    try:
+        body = await request.json()
+        silent = body.get("silent", True)
+    except Exception:
+        pass  # No body or invalid JSON — use default silent=True
+
+    device_id = device_id.upper().strip()
+    success = await trigger_device_listen(device_id, silent=silent)
+
+    if success:
+        return {"status": "ok", "device_id": device_id, "silent": silent}
+    else:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error", "message": f"Device {device_id} not connected via persistent WS"}
+        )
+
+
+@app.get("/devices/connected")
+async def api_connected_devices():
+    """List currently connected devices via persistent WebSocket."""
+    devices = await get_connected_devices()
+    return {"devices": devices, "count": len(devices)}
 
 
 # ===========================================================================
@@ -1919,12 +1927,15 @@ async def get_room_temperature(room: str, location_id: str = None):
 @app.websocket("/ws/audio")
 async def ws_audio(websocket: WebSocket):
     """
-    WebSocket endpoint per streaming audio Opus dal firmware AtomS3R.
-    Protocollo:
-      - Client invia frame Opus binari (20ms, ~30-80 bytes ciascuno)
-      - Server decodifica Opus a PCM 16kHz, esegue VAD Silero
-      - A fine speech, processa con la stessa pipeline di /voice_stream
-        (denoise -> STT -> speaker ID -> pre-route -> dispatch)
+    Persistent WebSocket for AtomS3R devices: control + audio on single channel.
+
+    Protocol:
+      - Device connects and stays connected (persistent)
+      - JSON text frames for control: hello, audio_start, state, trigger_listen
+      - Binary frames for Opus audio during active speech sessions
+      - Server can trigger device listening via trigger_listen command
+      - Backward compatible: legacy ephemeral protocol still works
+
     Auth via query params: ?device_id=XX&token=YY
     """
     device_id = websocket.query_params.get("device_id", "").upper().strip()
@@ -1943,7 +1954,7 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
     """
     Callback da WsAudioSession a fine speech.
     Stessa pipeline di /voice_stream: device config → denoise → STT →
-    restore speaker → speaker ID → panic check → pre-route → dispatch.
+    restore speaker → speaker ID → pre-route → dispatch.
 
     audio_bytes: PCM 16-bit mono 16 kHz
     """
@@ -1971,13 +1982,64 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
             _raw = (_raw * _gain).clip(-32768, 32767)
             logger.info(f"Audio normalized: peak={_peak:.0f} gain={_gain:.1f}x ({20*_np2.log10(_gain):.1f}dB)")
         clean_audio = _raw.astype(_np2.int16).tobytes()
+
+        # ── Auto-enrollment: cattura campioni se un utente ha enrollment in corso ──
+        # Se enrollment attivo → cattura campione e SKIPPA il routing (non è un comando)
+        try:
+            from voice_recognition import voice_recognizer
+            import asyncio as _aio_enroll
+            active_enrollments = voice_recognizer.get_all_active_enrollments()
+            if active_enrollments:
+                _enroll_loop = _aio_enroll.get_running_loop()
+                for enroll_uid in active_enrollments:
+                    # Esegui in thread pool (CPU-bound: resemblyzer embedding)
+                    result = await _enroll_loop.run_in_executor(
+                        None,
+                        voice_recognizer.quick_enroll_from_session,
+                        enroll_uid, clean_audio, 16000
+                    )
+                    if result.get("status") == "sample_added":
+                        logger.info(
+                            f"🎤 Auto-enrollment: user {enroll_uid} sample "
+                            f"{result['samples_collected']}/{result['samples_required']} "
+                            f"({result.get('duration', '?')}s) from {device_id}"
+                        )
+                    elif result.get("auto_completed"):
+                        logger.info(
+                            f"🎤 Auto-enrollment COMPLETE: user {enroll_uid} "
+                            f"({result['samples_collected']} samples) from {device_id}"
+                        )
+                    elif result.get("status") == "skipped":
+                        logger.debug(f"Auto-enrollment: skipped short audio for user {enroll_uid}")
+                # Enrollment attivo → audio catturato, skippa routing normale
+                logger.info(f"🎤 Enrollment mode active — skipping normal voice routing for {device_id}")
+                return
+        except Exception as e:
+            logger.error(f"Auto-enrollment error: {e}")
+
+        # ── STT + Speaker ID + Restore in PARALLELO ──────────────────────
+        # Speaker ID (resemblyzer) è CPU-bound (~seconds), lo eseguiamo
+        # in un thread pool per non bloccare l'event loop, in parallelo con STT.
+        import asyncio as _aio
+        loop = _aio.get_running_loop()
+
         stt_start = time.time()
-        text = await transcribe_audio(clean_audio)
+
+        # Lancia STT, Speaker ID e Restore concorrentemente
+        stt_task = _aio.ensure_future(transcribe_audio(clean_audio))
+        speaker_task = loop.run_in_executor(
+            None,  # default ThreadPoolExecutor
+            build_speaker_context, audio_bytes, "AtomS3R"
+        )
+        restore_task = _aio.ensure_future(restore_speaker(device_id))
+
+        # Attendi STT (critica per procedere)
+        text = await stt_task
         admin_metrics.record_stt((time.time() - stt_start) * 1000)
 
-        # Auto-restore speaker volume (firmware ha suppressato alla wake word)
+        # Gestisci restore (non bloccante)
         try:
-            restore_result = await restore_speaker(device_id)
+            restore_result = await restore_task
             if restore_result.get("status") == "restored":
                 logger.info(f"Auto-restore volume per {device_id}: "
                             f"{restore_result.get('original_volume', '?')}")
@@ -1986,14 +2048,24 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
 
         if not text:
             logger.info(f"WS: no speech detected from {device_id}")
+            # Cancella speaker task se non serve
+            speaker_task.cancel()
             return
 
         logger.info(f"WS transcribed: '{text[:120]}...' from {device_id}")
 
-        # Speaker identification
+        # ── STT Normalization (Qwen corregge errori di trascrizione) ──
+        norm_start = time.time()
+        text = await normalize_stt_text(text)
+        norm_ms = (time.time() - norm_start) * 1000
+        if norm_ms > 50:  # log solo se significativo
+            logger.info(f"STT normalize: {norm_ms:.0f}ms")
+
+        # Attendi Speaker ID (potrebbe essere già finito se STT era lenta)
         speaker_start = time.time()
-        speaker_ctx = build_speaker_context(audio_bytes, "AtomS3R")
-        admin_metrics.record_speaker_id((time.time() - speaker_start) * 1000)
+        speaker_ctx = await speaker_task
+        speaker_elapsed = (time.time() - stt_start) * 1000  # tempo totale dall'inizio
+        admin_metrics.record_speaker_id(speaker_elapsed)
 
         context = {
             "source": "AtomS3R",
@@ -2008,21 +2080,6 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         # Aggiorna user location
         if speaker_ctx.get("speaker_id"):
             set_user_location(speaker_ctx["speaker_id"], location, "voice")
-
-        # Panic stop check
-        if _is_panic_command(text):
-            logger.warning(f"PANIC STOP triggered by WS audio: '{text}' (location={location})")
-            count, stopped_ids = await _panic_stop_all_speakers(location)
-            response_text = f"Ok, ho fermato {count} speaker." if count > 0 else "Non ho trovato speaker attivi."
-            log_event("panic_stop", {
-                "source": "ws_audio",
-                "text": text,
-                "location": location,
-                "speakers_stopped": count,
-                "entity_ids": stopped_ids,
-            })
-            await deliver_final_response(response_text, context)
-            return
 
         # 3-way pre-routing via Qwen 7B
         pre_route_start = time.time()
@@ -2157,6 +2214,9 @@ async def voice_stream(
 
         logger.info(f"Transcribed from stream: '{text[:120]}...'")
 
+        # ── STT Normalization ──
+        text = await normalize_stt_text(text)
+
         # Speaker identification
         speaker_start = time.time()
         speaker_ctx = build_speaker_context(audio_bytes, "AtomS3R")
@@ -2180,28 +2240,6 @@ async def voice_stream(
         # Aggiorna user location (voice)
         if speaker_ctx.get("speaker_id"):
             set_user_location(speaker_ctx["speaker_id"], location, "voice")
-
-        # ── PANIC STOP keyword check (pre-route bypass) ──
-        if _is_panic_command(text):
-            logger.warning(f"🛑 PANIC STOP triggered by voice: '{text}' (location={location})")
-            count, stopped_ids = await _panic_stop_all_speakers(location)
-            response_text = f"Ok, ho fermato {count} speaker." if count > 0 else "Non ho trovato speaker attivi."
-            log_event("panic_stop", {
-                "source": "voice",
-                "text": text,
-                "location": location,
-                "speakers_stopped": count,
-                "entity_ids": stopped_ids
-            })
-            # Deliver response to VirtualMic dashboard if applicable
-            if context.get("vmic_request_id"):
-                await deliver_final_response(response_text, context)
-            return {
-                "status": "panic_stop",
-                "speakers_stopped": count,
-                "transcribed_text": text,
-                "location": location
-            }
 
         # 3-way pre-routing via Qwen 7B (~100ms)
         pre_route_start = time.time()
@@ -2236,6 +2274,41 @@ async def voice_stream(
             status_code=500,
             content={"status": "error", "message": str(e), "use_local_speaker": True}
         )
+
+
+# ===========================================================================
+# MULTI-TURN FOLLOW-UP DETECTION
+# ===========================================================================
+
+def _needs_followup(response_text: str) -> bool:
+    """
+    Check if the response warrants a follow-up listen trigger.
+
+    A response needs follow-up if it ends with a question mark,
+    indicating OpenClaw is asking the user something (multi-turn).
+
+    Simple regex is the right choice: OpenClaw produces well-punctuated Italian,
+    and false positives (rhetorical questions) are harmless (device just times out).
+    """
+    if not response_text:
+        return False
+    return response_text.rstrip().endswith('?')
+
+
+async def _delayed_trigger_listen(device_id: str, delay_seconds: float):
+    """
+    Wait for TTS to finish, then trigger the device to listen again.
+    Used for multi-turn conversations where OpenClaw asks a follow-up question.
+    """
+    try:
+        await asyncio.sleep(delay_seconds)
+        success = await trigger_device_listen(device_id, silent=True)
+        if success:
+            logger.info(f"🔄 Multi-turn: triggered listen on device {device_id}")
+        else:
+            logger.warning(f"🔄 Multi-turn: failed to trigger {device_id} (not connected?)")
+    except Exception as e:
+        logger.error(f"Multi-turn trigger error for {device_id}: {e}")
 
 
 # ===========================================================================
@@ -2379,6 +2452,23 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
             logger.info("TTS stream: no chunks sent during streaming, delivering full response")
             await deliver_final_response(response, context, sound_type="neutral")
 
+        # ── Multi-turn follow-up: if response ends with "?", trigger device to listen again ──
+        if _needs_followup(response) and source == "AtomS3R":
+            ft_device_id = context.get("device_id")
+            if ft_device_id:
+                ft_estimated_duration = max(
+                    config.TTS_MIN_DURATION,
+                    len(response) / config.TTS_CHARS_PER_SECOND + config.TTS_SOUND_OFFSET
+                )
+                ft_trigger_delay = ft_estimated_duration + getattr(config, 'FOLLOWUP_TRIGGER_BUFFER_S', 0.5)
+                logger.info(
+                    f"🔄 Multi-turn follow-up scheduled: device={ft_device_id}, "
+                    f"delay={ft_trigger_delay:.1f}s (tts_est={ft_estimated_duration:.1f}s)"
+                )
+                t = asyncio.create_task(_delayed_trigger_listen(ft_device_id, ft_trigger_delay))
+                _background_tasks.add(t)
+                t.add_done_callback(_background_tasks.discard)
+
     else:
         # ── Non-streaming path (Telegram, DND, silent hours, no speaker) ──
         # Feedback audio immediato (solo se voice source con speaker)
@@ -2398,72 +2488,6 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
 
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
         await deliver_final_response(response, context, sound_type="neutral")
-
-
-# ===========================================================================
-# PANIC STOP — Emergency speaker shutdown (bypasses all LLM routing)
-# ===========================================================================
-
-PANIC_KEYWORDS = [
-    "jarvis zitto", "jarvis stop", "jarvis basta", "jarvis silenzio",
-    "zitto", "stop stop", "basta", "silenzio", "stai zitto", "fermati",
-]
-
-def _is_panic_command(text: str) -> bool:
-    """Check se il testo trascritto è un comando di panic stop."""
-    # Pulisci punteggiatura per match più robusto
-    cleaned = re.sub(r'[,\.\!\?\;\:\-]', ' ', text.strip().lower())
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    return any(kw in cleaned for kw in PANIC_KEYWORDS)
-
-
-async def _panic_stop_all_speakers(location_id: str) -> Tuple[int, List[str]]:
-    """
-    Ferma TUTTI i media_player nella location.
-    Pulisce speaking_state per tutte le stanze.
-
-    Returns:
-        (count, entity_ids) — numero di speaker fermati e lista entity_id
-    """
-    from database import get_entities_by_type
-
-    entity_ids = []
-    try:
-        media_players = get_entities_by_type(location_id, "media_player")
-        if media_players:
-            entity_ids = [
-                f"media_player.{mp['name'].lower().replace(' ', '_')}"
-                for mp in media_players
-            ]
-    except Exception as e:
-        logger.error(f"Panic stop: failed to get media_players for {location_id}: {e}")
-
-    if not entity_ids:
-        logger.warning(f"Panic stop: no media_players found for location {location_id}")
-        return 0, []
-
-    # Bulk stop su tutti gli speaker
-    try:
-        success, msg = await call_hass_service_bulk(
-            location_id, "media_player", "media_stop", entity_ids
-        )
-        if success:
-            logger.info(f"🛑 Panic stop: stopped {len(entity_ids)} speakers in {location_id}: {entity_ids}")
-        else:
-            logger.error(f"Panic stop: HA bulk call failed: {msg}")
-    except Exception as e:
-        logger.error(f"Panic stop: exception during bulk stop: {e}")
-
-    # Pulisci speaking_state per la location
-    async with speaking_state_lock:
-        rooms_to_clear = list(speaking_state.keys())
-        for room in rooms_to_clear:
-            del speaking_state[room]
-        if rooms_to_clear:
-            logger.info(f"Panic stop: cleared speaking_state for rooms: {rooms_to_clear}")
-
-    return len(entity_ids), entity_ids
-
 
 # ===========================================================================
 # ENTITY RESOLUTION FOR VOICE (single entity, room, zone, floor, all)
@@ -2547,6 +2571,24 @@ def _resolve_home_control_target(
             "match_type": match_type,
         }
 
+    def _make_clarify_result(discovered_list, source_label):
+        """Ambiguous match: multiple entities, ask user to clarify."""
+        entity_ids = [e["entity_id"] for e in discovered_list]
+        names = [e.get("entity_name") or e.get("friendly_name", "?") for e in discovered_list[:8]]
+        rooms = sorted(set(e["room"] for e in discovered_list if e.get("room")))
+        rooms_str = ", ".join(rooms) if rooms else source_label
+        logger.info(
+            f"Entity resolution [{source_label}]: AMBIGUOUS → "
+            f"{len(entity_ids)} {domain} entities in [{rooms_str}], asking clarification"
+        )
+        return {
+            "mode": "clarify",
+            "entity_ids": entity_ids,
+            "entity_names": names,
+            "description": f"ambiguous in {rooms_str}",
+            "match_type": "ambiguous",
+        }
+
     # ── A. TESTO UTENTE: estrai target direttamente dal testo originale ──
     if user_text:
         extracted = _extract_target_from_user_text(user_text, location_id)
@@ -2575,7 +2617,10 @@ def _resolve_home_control_target(
     # B2. Prova entity_name come target di discovery (room/zona/piano)
     discovered = discover_entities_for_voice(location_id, entity_name, domain=domain)
     if discovered:
-        return _make_bulk_result(discovered, f"qwen_entity:'{entity_name}'")
+        if len(discovered) == 1:
+            return _make_bulk_result(discovered, f"qwen_entity:'{entity_name}'")
+        # Multiple entities: ambiguous → ask clarification
+        return _make_clarify_result(discovered, f"qwen_entity:'{entity_name}'")
 
     # B3. Estrai parole non-generiche dall'entity_name di Qwen
     if " " in entity_name:
@@ -2594,13 +2639,19 @@ def _resolve_home_control_target(
                 continue
             discovered = discover_entities_for_voice(location_id, word, domain=domain)
             if discovered:
-                return _make_bulk_result(discovered, f"qwen_word:'{word}'")
+                if len(discovered) == 1:
+                    return _make_bulk_result(discovered, f"qwen_word:'{word}'")
+                # Multiple entities: ambiguous → ask clarification
+                return _make_clarify_result(discovered, f"qwen_word:'{word}'")
 
     # ── C. ROOM HINT: stanza del microfono come ultimo resort ──
     if room_hint and room_hint.lower() not in ("unknown", "sconosciuto"):
         discovered = discover_entities_for_voice(location_id, room_hint, domain=domain)
         if discovered:
-            return _make_bulk_result(discovered, f"room_hint:'{room_hint}'")
+            if len(discovered) == 1:
+                return _make_bulk_result(discovered, f"room_hint:'{room_hint}'")
+            # Multiple entities in room: ambiguous → ask clarification
+            return _make_clarify_result(discovered, f"room_hint:'{room_hint}'")
 
     # ── D. FALLBACK SINTETICO (backwards compatible) ──
     fallback_id = f"{domain}.{entity_name.lower().replace(' ', '_')}"
@@ -2924,6 +2975,31 @@ async def process_jarvis_logic(text: str, context: dict):
         target = _resolve_home_control_target(
             target_location, domain, entity, room_hint, user_text=text
         )
+
+        # ── CLARIFICATION: ambiguous entity → ask user to specify ──
+        if target["mode"] == "clarify":
+            names_list = ", ".join(target.get("entity_names", [])[:6])
+            more = len(target.get("entity_names", [])) - 6
+            if more > 0:
+                names_list += f" e altri {more}"
+            response = f"Non sono sicuro a quale ti riferisci. Ho trovato: {names_list}. Quale intendi?"
+            logger.info(f"HOME_CONTROL clarification: {len(target['entity_ids'])} candidates → asking user")
+            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+            await deliver_final_response(response, context)
+            # Multi-turn: trigger device to listen again for user's clarification
+            if source in ("AtomS3R", "VirtualMic"):
+                cl_device_id = context.get("device_id")
+                if cl_device_id:
+                    cl_tts_est = max(
+                        config.TTS_MIN_DURATION,
+                        len(response) / config.TTS_CHARS_PER_SECOND + config.TTS_SOUND_OFFSET
+                    )
+                    cl_delay = cl_tts_est + getattr(config, 'FOLLOWUP_TRIGGER_BUFFER_S', 0.5)
+                    logger.info(f"🔄 Clarification follow-up: device={cl_device_id}, delay={cl_delay:.1f}s")
+                    t = asyncio.create_task(_delayed_trigger_listen(cl_device_id, cl_delay))
+                    _background_tasks.add(t)
+                    t.add_done_callback(_background_tasks.discard)
+            return
 
         # L1-L4 security check (domain-level, come entity_bulk)
         source_channel = "voice" if source in ("AtomS3R", "VirtualMic") else source.lower()
@@ -3369,16 +3445,29 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
     else:
         is_silent_time = (s_start <= now_h < s_end)
 
+    # Helper: immediately notify device that response is done (no audio to wait for)
+    async def _immediate_tts_done():
+        dev_id = context.get("device_id")
+        if dev_id and dev_id != "unknown":
+            try:
+                from ws_audio_handler import notify_tts_done
+                await notify_tts_done(dev_id)
+            except Exception:
+                pass
+
     if dnd_mode:
         await send_telegram(f"🔕 {text}")
+        await _immediate_tts_done()
         return
 
     if is_silent_time and source == "OpenClaw":
         await send_telegram(f"🌙 {text}")
+        await _immediate_tts_done()
         return
 
     if source == "Telegram":
         await send_telegram(text)
+        await _immediate_tts_done()
         return
 
     # === FALLBACK CHAIN per AtomS3R ===
@@ -3449,6 +3538,20 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
 
         # Schedula pulizia stato speaking dopo la durata stimata
         asyncio.create_task(clear_speaking_state_after_delay(room, estimated_duration))
+
+        # Notify device that TTS is done after estimated playback duration
+        # This lets the device transition BUSY → IDLE without relying on timeout
+        async def _notify_device_tts_done(dev_id: str, delay: float):
+            await asyncio.sleep(delay)
+            try:
+                from ws_audio_handler import notify_tts_done
+                await notify_tts_done(dev_id)
+            except Exception as e:
+                logger.debug(f"notify_tts_done failed for {dev_id}: {e}")
+
+        notify_device_id = context.get("device_id")
+        if notify_device_id and notify_device_id != "unknown":
+            asyncio.create_task(_notify_device_tts_done(notify_device_id, estimated_duration))
 
     # TODO: Se use_local_speaker=True, il chiamante dovrebbe gestire
     # la risposta locale. Per ora logghiamo solo.

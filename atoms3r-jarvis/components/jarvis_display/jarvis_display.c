@@ -664,6 +664,146 @@ void jarvis_display_set_friendly_name(const char* name) {
     }
 }
 
+// =============================================================================
+// SCREENSAVER — Matrix Rain
+// =============================================================================
+
+// Matrix grid: chars are 6px wide (5+gap), 8px tall (7+gap) at scale 1
+#define MATRIX_COLS        21   // 128 / 6 = 21.3
+#define MATRIX_CHAR_H       8   // 7px font + 1px gap
+#define MATRIX_ROWS        16   // 128 / 8 = 16
+
+// GC9107 color-rotated greens (sent_B → display_G)
+// RGB565 = RRRRR_GGGGGG_BBBBB, sent_B = lower 5 bits
+#define MATRIX_GREEN_BRIGHT  0x001F   // sent_B=31 → display_G max
+#define MATRIX_GREEN_MED     0x0012   // sent_B=18
+#define MATRIX_GREEN_DIM     0x000A   // sent_B=10
+#define MATRIX_GREEN_FAINT   0x0004   // sent_B=4
+
+// Frame throttle (matches SCREENSAVER_FRAME_MS in jarvis_config.h)
+#ifndef SCREENSAVER_FRAME_MS
+#define SCREENSAVER_FRAME_MS 50
+#endif
+
+typedef struct {
+    int head_row;    // current head position (character row, can be negative = delay)
+    int speed;       // rows to advance per frame (1-2)
+    int trail_len;   // trail length in character rows (4-12)
+} matrix_col_t;
+
+static matrix_col_t matrix_columns[MATRIX_COLS];
+static int64_t last_screensaver_frame = 0;
+static uint32_t matrix_rng_state = 0;
+
+// Simple fast PRNG (xorshift32)
+static uint32_t matrix_rand(void) {
+    matrix_rng_state ^= matrix_rng_state << 13;
+    matrix_rng_state ^= matrix_rng_state >> 17;
+    matrix_rng_state ^= matrix_rng_state << 5;
+    return matrix_rng_state;
+}
+
+static void matrix_reset_column(int col) {
+    // Random start above screen (negative = delay before appearing)
+    matrix_columns[col].head_row = -(int)(matrix_rand() % 20);
+    matrix_columns[col].speed = 1 + (matrix_rand() % 2);      // 1-2
+    matrix_columns[col].trail_len = 4 + (matrix_rand() % 9);  // 4-12
+}
+
+static char matrix_random_char(void) {
+    // Mix of digits, uppercase, katakana-like symbols from printable ASCII
+    static const char charset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%&*<>{}[]";
+    return charset[matrix_rand() % (sizeof(charset) - 1)];
+}
+
+void jarvis_display_screensaver_start(void) {
+    // Seed RNG from timer
+    matrix_rng_state = (uint32_t)(esp_timer_get_time() & 0xFFFFFFFF);
+    if (matrix_rng_state == 0) matrix_rng_state = 42;
+
+    // Initialize columns with staggered start positions
+    for (int i = 0; i < MATRIX_COLS; i++) {
+        matrix_reset_column(i);
+        // Spread initial positions so they don't all start together
+        matrix_columns[i].head_row = -(int)(matrix_rand() % 30);
+    }
+
+    last_screensaver_frame = 0;
+    fb_clear(COLOR_BLACK);
+    flush_buffer();
+    ESP_LOGI(TAG, "Screensaver started (Matrix rain)");
+}
+
+bool jarvis_display_screensaver_tick(void) {
+    int64_t now = esp_timer_get_time() / 1000;
+    if (now - last_screensaver_frame < SCREENSAVER_FRAME_MS) {
+        return false;  // Throttled
+    }
+    last_screensaver_frame = now;
+
+    // Clear frame buffer
+    fb_clear(COLOR_BLACK);
+
+    // Render each column
+    for (int col = 0; col < MATRIX_COLS; col++) {
+        matrix_col_t *mc = &matrix_columns[col];
+        int px_x = col * 6;  // pixel X position (6px per char column)
+
+        // If head is still in delay zone, advance and skip rendering
+        if (mc->head_row < 0) {
+            mc->head_row += mc->speed;
+            continue;
+        }
+
+        // Draw trail from head backwards
+        for (int t = 0; t < mc->trail_len; t++) {
+            int row = mc->head_row - t;
+            if (row < 0 || row >= MATRIX_ROWS) continue;
+
+            int px_y = row * MATRIX_CHAR_H;
+
+            // Choose color based on position in trail
+            uint16_t color;
+            if (t == 0) {
+                color = COLOR_WHITE;  // Head = white
+            } else if (t == 1) {
+                color = MATRIX_GREEN_BRIGHT;
+            } else if (t < mc->trail_len / 3) {
+                color = MATRIX_GREEN_MED;
+            } else if (t < mc->trail_len * 2 / 3) {
+                color = MATRIX_GREEN_DIM;
+            } else {
+                color = MATRIX_GREEN_FAINT;
+            }
+
+            // Draw a random character at this position
+            char c = matrix_random_char();
+            fb_draw_char(px_x, px_y, c, color, 1);
+        }
+
+        // Advance head
+        mc->head_row += mc->speed;
+
+        // If entire trail has scrolled past the bottom, reset column
+        if (mc->head_row - mc->trail_len >= MATRIX_ROWS) {
+            matrix_reset_column(col);
+        }
+    }
+
+    flush_buffer();
+    return true;
+}
+
+void jarvis_display_screensaver_stop(void) {
+    ESP_LOGI(TAG, "Screensaver stopped");
+    fb_clear(COLOR_BLACK);
+    flush_buffer();
+}
+
+// =============================================================================
+// FLASH
+// =============================================================================
+
 void jarvis_display_flash_white(void) {
     if (!frame_buffer || !panel_handle) return;
 
@@ -675,5 +815,19 @@ void jarvis_display_flash_white(void) {
     vTaskDelay(pdMS_TO_TICKS(80));
 
     // Torna allo stato corrente (il chiamante imposterà LISTENING subito dopo)
+    jarvis_display_update();
+}
+
+void jarvis_display_flash_red(void) {
+    if (!frame_buffer || !panel_handle) return;
+
+    // Flash rosso (speaker stop feedback)
+    fb_clear(COLOR_RED);
+    flush_buffer();
+
+    // Durata flash: 120ms
+    vTaskDelay(pdMS_TO_TICKS(120));
+
+    // Torna allo stato corrente
     jarvis_display_update();
 }

@@ -170,6 +170,43 @@ async def get_voice_status(user_id: int) -> dict:
     return voice_recognizer.get_enrollment_status(user_id)
 
 
+@router.post("/{user_id}/voice/quick-sample")
+async def quick_voice_sample(user_id: int, audio: UploadFile = File(...)) -> dict:
+    """
+    Aggiunge un campione di enrollment rapido da upload audio.
+    Skippa audio < 0.5s. Auto-completa quando raggiunge MIN_ENROLLMENT_SAMPLES.
+    Utile per enrollment da AtomS3R o altri device remoti.
+    """
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    audio_bytes = await audio.read()
+    return voice_recognizer.quick_enroll_from_session(user_id, audio_bytes)
+
+
+@router.post("/{user_id}/voice/re-enroll")
+async def re_enroll_voice(user_id: int) -> dict:
+    """
+    Cancella il modello vocale esistente e avvia un nuovo enrollment.
+    Utile per cambio microfono (es. da Mac a AtomS3R).
+    Dopo questa chiamata, l'utente può semplicemente parlare all'AtomS3R
+    e i campioni vengono raccolti automaticamente da _process_ws_audio().
+    """
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    # Cancella modello esistente
+    voice_recognizer.delete_voice_model(user_id)
+
+    # Avvia nuovo enrollment
+    result = voice_recognizer.start_enrollment(user_id)
+    result["re_enroll"] = True
+    logger.info(f"Re-enrollment started for user {user_id} ({user.name})")
+    return result
+
+
 @router.post("/voice/test")
 async def test_voice_identification(audio: UploadFile = File(...)) -> dict:
     """

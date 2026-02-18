@@ -1,0 +1,8 @@
+# AtomS3R Recorder - Local Configuration
+# WiFi (stesse credenziali del firmware JARVIS)
+CONFIG_WIFI_SSID="Vodafone-Nostra"
+CONFIG_WIFI_PASSWORD="zanzara+"
+
+# IP del Mac su cui gira record_from_atom.py
+CONFIG_RECORDER_SERVER_HOST="192.168.1.26"
+CONFIG_RECORDER_SERVER_PORT=5555
