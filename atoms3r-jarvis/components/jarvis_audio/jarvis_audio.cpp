@@ -58,19 +58,19 @@ static const char *TAG = "AUDIO";
 
 // microWakeWord preprocessing parameters (must match training config)
 #define MWW_WINDOW_SIZE_MS      30      // 30ms window
-#define MWW_STEP_SIZE_MS        20      // 20ms hop (ESPHome default for V2 models)
+#define MWW_STEP_SIZE_MS        10      // 10ms hop (ESPHome V2 model JSON: feature_step_size=10)
 #define MWW_NUM_MEL_CHANNELS    40      // 40 mel filterbank channels
 #define MWW_LOWER_FREQ          125.0f  // Lower band limit (Hz)
 #define MWW_UPPER_FREQ          7500.0f // Upper band limit (Hz)
 
 // Audio samples per feature step
-#define MWW_STEP_SAMPLES        (MIC_SAMPLE_RATE * MWW_STEP_SIZE_MS / 1000)  // 160
+#define MWW_STEP_SAMPLES        (MIC_SAMPLE_RATE * MWW_STEP_SIZE_MS / 1000)  // 160 @ 10ms step
 
 // Detection parameters
 // NOTE: jarvis_config.h is in main/ and cannot be included by components.
 // These values must be kept in sync with jarvis_config.h manually.
 // The server can also override sensitivity at runtime via config_update WS message.
-#define MWW_PROBABILITY_CUTOFF      0.35f  // Probability threshold (tuning in progress)
+#define MWW_PROBABILITY_CUTOFF      0.50f  // Probability threshold (server can override at runtime)
 #define MWW_SLIDING_WINDOW_SIZE     3      // Smaller window = react faster to short peaks
 #define MWW_MIN_SLICES_BEFORE_DET   74     // ~1.5s at 20ms step
 
@@ -380,24 +380,16 @@ static void audio_feed_task(void* arg) {
         return;
     }
 
-    int feed_count = 0;
     while (1) {
         int samples = jarvis_codec_read(mono_buff, chunk_samples);
 
         if (samples > 0) {
-            feed_count++;
-            if (feed_count <= 5 || feed_count % 500 == 0) {
-                float rms = calculate_rms(mono_buff, samples);
-                ESP_LOGI(TAG, "Feed #%d: %d samples, RMS=%.4f",
-                         feed_count, samples, rms);
-            }
-
             // Update audio level
             audio_level = calculate_rms(mono_buff, samples);
 
             // PATH 1: Raw ring buffer (when streaming is active)
             // No software gain applied — server-side normalizes peak to ~85%.
-            // Hardware gain chain: PGA +30dB + ADC scale +6dB + ADC vol 0dB = +36dB.
+            // Hardware gain chain: PGA +30dB + ADC scale +30dB + ADC vol 0dB = +60dB.
             if (streaming_to_ringbuf && raw_ringbuf) {
                 int copy_len = (samples <= 320) ? samples : 320;
                 xRingbufferSend(raw_ringbuf, mono_buff,
@@ -478,22 +470,6 @@ static void mww_detect_task(void* arg) {
             features[i] = quantize_feature(frontend_output.values[i]);
         }
 
-        // DEBUG: Log first few features periodically
-        static int feat_log_count = 0;
-        feat_log_count++;
-        if (feat_log_count <= 5 || feat_log_count % 300 == 0) {
-            ESP_LOGI(TAG, "Features[0..7]: %d %d %d %d %d %d %d %d (input_type=%d)",
-                     features[0], features[1], features[2], features[3],
-                     features[4], features[5], features[6], features[7],
-                     model_input->type);
-            // Also show raw frontend values
-            ESP_LOGI(TAG, "Raw frontend[0..7]: %u %u %u %u %u %u %u %u",
-                     frontend_output.values[0], frontend_output.values[1],
-                     frontend_output.values[2], frontend_output.values[3],
-                     frontend_output.values[4], frontend_output.values[5],
-                     frontend_output.values[6], frontend_output.values[7]);
-        }
-
         // Feed features into model input tensor at current stride position
         int8_t *input_data = model_input->data.int8;
         memcpy(input_data + (MWW_NUM_MEL_CHANNELS * current_stride_step),
@@ -514,40 +490,10 @@ static void mww_detect_task(void* arg) {
             continue;
         }
 
-        // DEBUG: dump raw output tensor (first 10 inferences, then every 100th)
-        static int infer_count = 0;
-        infer_count++;
-
-        // Dump ALL output values to understand the tensor layout
+        // Get output tensor size and determine wake word index
         int out_size = 1;
         for (int d = 0; d < model_output->dims->size; d++) {
             out_size *= model_output->dims->data[d];
-        }
-        if (infer_count <= 10 || infer_count % 100 == 0) {
-            // Log type and all raw values
-            if (model_output->type == kTfLiteUInt8) {
-                ESP_LOGI(TAG, "MWW #%d OUT(uint8, size=%d):", infer_count, out_size);
-                for (int i = 0; i < out_size && i < 8; i++) {
-                    ESP_LOGI(TAG, "  out[%d]=%u (%.3f)", i, model_output->data.uint8[i],
-                             model_output->data.uint8[i] / 255.0f);
-                }
-            } else if (model_output->type == kTfLiteInt8) {
-                ESP_LOGI(TAG, "MWW #%d OUT(int8, size=%d):", infer_count, out_size);
-                for (int i = 0; i < out_size && i < 8; i++) {
-                    ESP_LOGI(TAG, "  out[%d]=%d (uint8=%u, prob=%.3f)", i,
-                             model_output->data.int8[i],
-                             (uint8_t)((int16_t)model_output->data.int8[i] + 128),
-                             ((int16_t)model_output->data.int8[i] + 128) / 255.0f);
-                }
-            } else if (model_output->type == kTfLiteFloat32) {
-                ESP_LOGI(TAG, "MWW #%d OUT(float32, size=%d):", infer_count, out_size);
-                for (int i = 0; i < out_size && i < 8; i++) {
-                    ESP_LOGI(TAG, "  out[%d]=%.6f", i, model_output->data.f[i]);
-                }
-            } else {
-                ESP_LOGI(TAG, "MWW #%d OUT(type=%d, size=%d) UNKNOWN TYPE", infer_count,
-                         model_output->type, out_size);
-            }
         }
 
         // Get probability from output tensor
@@ -571,11 +517,10 @@ static void mww_detect_task(void* arg) {
 
         float prob_f = probability / 255.0f;
 
-        // Log when prob > 0.05 (any non-trivial activity)
-        if (prob_f > 0.05f) {
-            ESP_LOGI(TAG, "MWW infer #%d: prob=%.3f (idx=%d) slices=%d threshold=%.2f",
-                     infer_count, prob_f, wake_idx, slices_since_last_det,
-                     runtime_probability_cutoff);
+        // Log only when probability is near or above threshold
+        if (prob_f >= runtime_probability_cutoff * 0.5f) {
+            ESP_LOGI(TAG, "MWW prob=%.3f (threshold=%.2f, slices=%d)",
+                     prob_f, runtime_probability_cutoff, slices_since_last_det);
         }
 
         // Update sliding window
@@ -590,10 +535,10 @@ static void mww_detect_task(void* arg) {
             }
             float avg_prob = (float)sum / (MWW_SLIDING_WINDOW_SIZE * 255.0f);
 
-            // DEBUG: Log sliding window avg every 100 inferences or if above half threshold
-            if (infer_count % 100 == 0 || avg_prob >= runtime_probability_cutoff * 0.5f) {
-                ESP_LOGI(TAG, "MWW window avg=%.3f (threshold=%.2f) slices=%d",
-                         avg_prob, runtime_probability_cutoff, slices_since_last_det);
+            // Log sliding window when approaching threshold
+            if (avg_prob >= runtime_probability_cutoff * 0.5f) {
+                ESP_LOGI(TAG, "MWW window avg=%.3f (threshold=%.2f)",
+                         avg_prob, runtime_probability_cutoff);
             }
 
             if (avg_prob >= runtime_probability_cutoff) {

@@ -1,0 +1,47 @@
+{
+  "id": "intelligent-routing",
+  "name": "Intelligent Routing",
+  "version": "1.0.0",
+  "description": "Automatic model routing based on task complexity. Classifies incoming messages and routes MEDIUM+ tasks to stronger models, while SIMPLE tasks stay on the default (Haiku).",
+  "hooks": ["before_model_resolve"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "routerScriptPath": {
+        "type": "string",
+        "description": "Absolute path to intelligent-router-hook.js classifier script"
+      },
+      "routingLogPath": {
+        "type": "string",
+        "description": "Absolute path to routing-log.jsonl for logging decisions"
+      },
+      "classifierTimeoutMs": {
+        "type": "number",
+        "description": "Timeout in ms for the classifier subprocess (default: 8000)"
+      },
+      "enableFastPath": {
+        "type": "boolean",
+        "description": "Enable keyword-based fast-path for SIMPLE classification (default: true)"
+      },
+      "dryRun": {
+        "type": "boolean",
+        "description": "Log routing decisions but don't override the model (default: false)"
+      }
+    }
+  },
+  "uiHints": {
+    "routerScriptPath": {
+      "label": "Router Script Path",
+      "placeholder": "/home/jarvis/.openclaw/workspace/skills/intelligent-router/intelligent-router-hook.js"
+    },
+    "routingLogPath": {
+      "label": "Routing Log Path",
+      "placeholder": "/home/jarvis/.openclaw/workspace/state/routing-log.jsonl"
+    },
+    "classifierTimeoutMs": {
+      "label": "Classifier Timeout (ms)",
+      "placeholder": "8000"
+    }
+  }
+}
