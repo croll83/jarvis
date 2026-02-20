@@ -71,9 +71,10 @@ async def bearer_auth_middleware(request: Request, call_next):
     if not ONTOLOGY_API_TOKEN:
         return await call_next(request)
 
-    # Skip auth for health/docs/dashboard/schema/speakers
+    # Skip auth for health/docs/dashboard/schema/speakers/app
     if request.url.path in ("/health", "/docs", "/openapi.json", "/redoc", "/schema", "/speakers") \
-       or request.url.path.startswith("/dashboard"):
+       or request.url.path.startswith("/dashboard") \
+       or request.url.path.startswith("/app"):
         return await call_next(request)
 
     auth = request.headers.get("Authorization", "")
@@ -705,8 +706,33 @@ def list_speakers():
 
 
 # ---------------------------------------------------------------------------
-# Dashboard (static files — must be mounted LAST)
+# Dashboard — old simple (static files at /dashboard)
 # ---------------------------------------------------------------------------
 _static_dir = FilePath(__file__).parent / "static"
 if _static_dir.is_dir():
     app.mount("/dashboard", StaticFiles(directory=str(_static_dir), html=True), name="dashboard")
+
+# ---------------------------------------------------------------------------
+# Dashboard — React SPA (static files at /app, SPA catch-all)
+# Must be mounted LAST because it has a catch-all route.
+# ---------------------------------------------------------------------------
+_react_dir = FilePath(__file__).parent / "dashboard-build"
+if _react_dir.is_dir():
+    from starlette.responses import FileResponse
+
+    # Serve React static assets (js/css) at /app/static/
+    _react_static = _react_dir / "static"
+    if _react_static.is_dir():
+        app.mount("/app/static", StaticFiles(directory=str(_react_static)), name="react-static")
+
+    # SPA catch-all: any /app/* route serves index.html (React Router handles the rest)
+    @app.get("/app/{full_path:path}", include_in_schema=False)
+    async def react_spa(full_path: str):
+        file_path = _react_dir / full_path
+        if full_path and file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(str(_react_dir / "index.html"))
+
+    @app.get("/app", include_in_schema=False)
+    async def react_spa_root():
+        return FileResponse(str(_react_dir / "index.html"))

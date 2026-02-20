@@ -150,6 +150,40 @@ def resolve_device_to_entity_id(
 # TEXT-TO-SPEECH (via Home Assistant / Alexa)
 # ===========================================================================
 
+# Speakers muted by speaker_stop (triple-tap). Maps entity_id → original_volume.
+# speak() checks this and unmutes before sending TTS.
+_stop_muted_speakers: Dict[str, float] = {}
+
+
+async def mute_speaker_for_stop(location_id: str, entity_id: str):
+    """Mute a speaker via triple-tap stop. Records original volume for restore."""
+    original_volume = 0.5
+    try:
+        states = await get_hass_states_bulk(location_id, [entity_id])
+        if states and entity_id in states:
+            original_volume = states[entity_id].get("attributes", {}).get("volume_level", 0.5)
+    except Exception:
+        pass
+    _stop_muted_speakers[entity_id] = original_volume
+    # Mute via volume_mute (hardware) + volume=0 (belt & suspenders)
+    await call_hass_service(location_id, "media_player", "volume_mute",
+        {"entity_id": entity_id, "is_volume_muted": True})
+    await call_hass_service(location_id, "media_player", "volume_set",
+        {"entity_id": entity_id, "volume_level": 0})
+    logger.info(f"🛑 mute_speaker_for_stop: {entity_id} muted (was vol={original_volume})")
+
+
+async def unmute_speaker_from_stop(location_id: str, entity_id: str):
+    """Unmute a speaker that was muted by triple-tap stop."""
+    original_volume = _stop_muted_speakers.pop(entity_id, None)
+    if original_volume is not None:
+        await call_hass_service(location_id, "media_player", "volume_mute",
+            {"entity_id": entity_id, "is_volume_muted": False})
+        await call_hass_service(location_id, "media_player", "volume_set",
+            {"entity_id": entity_id, "volume_level": original_volume})
+        logger.info(f"🔊 unmute_speaker_from_stop: {entity_id} restored to vol={original_volume}")
+
+
 async def speak(text: str, media_player_id: str, location_id: str = None) -> Tuple[bool, str]:
     """
     Utilizza l'integrazione Alexa Media Player per il TTS.
@@ -174,6 +208,10 @@ async def speak(text: str, media_player_id: str, location_id: str = None) -> Tup
             # Fallback: costruisci entity_id dal nome
             media_player_id = f"media_player.{media_player_id.lower().replace(' ', '_')}"
             logger.warning(f"Speaker not found in DB, using fallback: {media_player_id}")
+
+    # Auto-unmute if speaker was muted by triple-tap stop
+    if media_player_id in _stop_muted_speakers:
+        await unmute_speaker_from_stop(location_id, media_player_id)
 
     service_data = {
         "target": media_player_id,

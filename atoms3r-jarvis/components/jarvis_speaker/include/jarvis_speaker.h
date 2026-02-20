@@ -52,6 +52,16 @@ void jarvis_speaker_play_wake_sound(void);
 void jarvis_speaker_play_buzz(void);
 
 /**
+ * @brief Play a short listening beep (non-blocking)
+ *
+ * Higher-pitched beep (~100ms, 880Hz) as feedback when
+ * multi-turn listening reactivates. Signals "speak now" to the user
+ * without requiring them to look at the screen.
+ * If playback is already in progress, does nothing.
+ */
+void jarvis_speaker_play_listening_beep(void);
+
+/**
  * @brief Play raw PCM data (blocking)
  * @param pcm_data PCM 16-bit signed mono samples
  * @param num_samples Number of samples

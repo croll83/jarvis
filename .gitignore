@@ -57,3 +57,6 @@ cloud/openclaw.json
 
 # model samples
 *.wav
+
+# Runtime data (database, vector store, ecc.)
+data/

@@ -344,12 +344,12 @@ def init_db():
         firmware_version TEXT,
         ip_address TEXT,
         notes TEXT,
-        wake_word_sensitivity REAL DEFAULT 0.82
+        wake_word_sensitivity REAL DEFAULT 0.85
     )''')
 
     # Migration: add wake_word_sensitivity column for existing DBs
     try:
-        c.execute("ALTER TABLE voice_devices ADD COLUMN wake_word_sensitivity REAL DEFAULT 0.82")
+        c.execute("ALTER TABLE voice_devices ADD COLUMN wake_word_sensitivity REAL DEFAULT 0.85")
     except sqlite3.OperationalError:
         pass  # Column already exists
 
@@ -2864,7 +2864,7 @@ class VoiceDevice:
     firmware_version: Optional[str]
     ip_address: Optional[str]
     notes: Optional[str]
-    wake_word_sensitivity: float = 0.82
+    wake_word_sensitivity: float = 0.85
 
     @property
     def is_configured(self) -> bool:
@@ -2915,7 +2915,7 @@ def _row_to_voice_device(row) -> VoiceDevice:
         firmware_version=row['firmware_version'],
         ip_address=row['ip_address'],
         notes=row['notes'],
-        wake_word_sensitivity=row['wake_word_sensitivity'] if 'wake_word_sensitivity' in row.keys() else 0.82
+        wake_word_sensitivity=row['wake_word_sensitivity'] if 'wake_word_sensitivity' in row.keys() else 0.85
     )
 
 
