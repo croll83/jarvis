@@ -96,6 +96,7 @@ static ws_audio_session_done_callback_t session_done_cb = NULL;
 static ws_trigger_listen_callback_t trigger_listen_cb = NULL;
 static ws_tts_done_callback_t tts_done_cb = NULL;
 static ws_config_update_callback_t config_update_cb = NULL;
+static ws_wake_detected_callback_t wake_detected_cb = NULL;
 
 // WebSocket client
 static esp_websocket_client_handle_t ws_client = NULL;
@@ -282,6 +283,12 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
                                             sensitivity = (float)sens->valuedouble;
                                         }
                                         config_update_cb(sensitivity);
+                                    }
+
+                                } else if (strcmp(type, "wake_detected") == 0) {
+                                    ESP_LOGI(TAG, "Server: wake_detected (server-side wake word)");
+                                    if (wake_detected_cb) {
+                                        wake_detected_cb();
                                     }
 
                                 } else if (strcmp(type, "ping") == 0) {
@@ -536,6 +543,28 @@ static void ws_persistent_task(void *arg) {
         while (task_should_run && conn_state >= CONN_STATE_CONNECTED) {
             int64_t now = esp_timer_get_time() / 1000;
 
+            // Continuous Opus stream to server (for server-side wake word detection)
+            // Only when idle — during active sessions, run_audio_session handles streaming
+            #ifndef USE_LOCAL_WAKEWORD
+            if (conn_state == CONN_STATE_CONNECTED && !audio_session_requested) {
+                size_t samples = jarvis_audio_read_raw(enc_input_buffer,
+                                                        BUFFER_SAMPLES,
+                                                        TICK_INTERVAL_MS);
+                if (samples >= (size_t)OPUS_FRAME_SAMPLES) {
+                    int enc_size = opus_encode(opus_encoder,
+                                                enc_input_buffer,
+                                                OPUS_FRAME_SAMPLES,
+                                                enc_output_buffer,
+                                                OPUS_MAX_PACKET_SIZE);
+                    if (enc_size > 0) {
+                        esp_websocket_client_send_bin(ws_client,
+                            (const char *)enc_output_buffer, enc_size,
+                            pdMS_TO_TICKS(100));
+                    }
+                }
+            }
+            #endif
+
             // Check if audio session was requested by main_task
             if (audio_session_requested && conn_state == CONN_STATE_CONNECTED) {
                 audio_session_requested = false;
@@ -561,7 +590,11 @@ static void ws_persistent_task(void *arg) {
                 last_ping_time = now;
             }
 
-            vTaskDelay(pdMS_TO_TICKS(50));  // 50ms idle loop
+            #ifndef USE_LOCAL_WAKEWORD
+            vTaskDelay(pdMS_TO_TICKS(5));   // 5ms tick for continuous Opus stream
+            #else
+            vTaskDelay(pdMS_TO_TICKS(50));  // 50ms idle loop (local wake word)
+            #endif
         }
 
         // === Phase 4: Cleanup connection ===
@@ -752,4 +785,8 @@ void jarvis_ws_audio_set_tts_done_callback(ws_tts_done_callback_t cb) {
 
 void jarvis_ws_audio_set_config_update_callback(ws_config_update_callback_t cb) {
     config_update_cb = cb;
+}
+
+void jarvis_ws_audio_set_wake_detected_callback(ws_wake_detected_callback_t cb) {
+    wake_detected_cb = cb;
 }

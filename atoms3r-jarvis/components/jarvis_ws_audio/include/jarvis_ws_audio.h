@@ -68,6 +68,13 @@ typedef void (*ws_tts_done_callback_t)(void);
 typedef void (*ws_config_update_callback_t)(float wake_word_sensitivity);
 
 /**
+ * Callback when server sends "wake_detected" (server-side wake word detection).
+ * Called from WS event handler context — keep lightweight (just set a flag).
+ * The device should play the wake sound and start an audio session.
+ */
+typedef void (*ws_wake_detected_callback_t)(void);
+
+/**
  * Initialize WS audio module: Opus encoder/decoder.
  * Call once at startup (after jarvis_codec_init).
  *
@@ -97,6 +104,7 @@ bool jarvis_ws_audio_connect(const char *device_id,
  */
 void jarvis_ws_audio_set_tts_done_callback(ws_tts_done_callback_t cb);
 void jarvis_ws_audio_set_config_update_callback(ws_config_update_callback_t cb);
+void jarvis_ws_audio_set_wake_detected_callback(ws_wake_detected_callback_t cb);
 
 /**
  * Start an audio session on the existing persistent connection.

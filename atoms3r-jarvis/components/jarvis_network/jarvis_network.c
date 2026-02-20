@@ -645,6 +645,25 @@ void jarvis_network_suppress_speaker(const char* device_id) {
 void jarvis_network_get_ws_audio_url(const char *device_id, char *buf, size_t size) {
     if (!buf || size == 0) return;
     const char *token = jarvis_network_get_api_token();
+
+    // Check for full URL override (e.g. wakeword-server on LAN)
+    #ifdef CONFIG_JARVIS_WS_URL
+    if (CONFIG_JARVIS_WS_URL[0] != '\0') {
+        // Use the override URL, append device_id and token as query params
+        if (token && token[0]) {
+            snprintf(buf, size, "%s?device_id=%s&token=%s",
+                     CONFIG_JARVIS_WS_URL,
+                     device_id ? device_id : "", token);
+        } else {
+            snprintf(buf, size, "%s?device_id=%s",
+                     CONFIG_JARVIS_WS_URL,
+                     device_id ? device_id : "");
+        }
+        return;
+    }
+    #endif
+
+    // Default: build URL from host:port
     if (token && token[0]) {
         snprintf(buf, size, "ws://%s:%d%s?device_id=%s&token=%s",
                  JARVIS_SERVER_HOST, JARVIS_SERVER_PORT, WS_AUDIO_PATH,

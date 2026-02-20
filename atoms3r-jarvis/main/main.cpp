@@ -110,6 +110,9 @@ static volatile device_state_t display_state_value = STATE_IDLE;
 // Deferred wake word flag (wake callback runs in afe_detect_task, must not block it)
 static volatile bool wake_word_pending = false;
 
+// Deferred server-side wake detected flag (from wakeword-server via WS)
+static volatile bool server_wake_pending = false;
+
 // Deferred remote-trigger listen flag (set by WS control callback, processed in main_task)
 static volatile bool remote_trigger_pending = false;
 static volatile bool remote_trigger_silent = true;
@@ -131,6 +134,7 @@ static void on_session_done(bool success);
 static void on_remote_trigger(bool silent);
 static void on_tts_done(void);
 static void on_config_update_ws(float wake_word_sensitivity);
+static void on_server_wake_detected(void);
 static void reset_activity_timer(void);
 
 // Helper: update state and notify server
@@ -339,12 +343,16 @@ static void handle_long_press(void) {
     save_dnd_to_nvs(dnd_mode);
     if (dnd_mode) {
         ESP_LOGI(TAG, "DND mode ENABLED");
+        #ifdef USE_LOCAL_WAKEWORD
         jarvis_audio_stop_listening();
+        #endif
         set_state(STATE_DND);
         jarvis_network_notify_dnd(device_config.device_id, true);
     } else {
         ESP_LOGI(TAG, "DND mode DISABLED");
+        #ifdef USE_LOCAL_WAKEWORD
         jarvis_audio_start_listening();
+        #endif
         set_state(STATE_IDLE);
         jarvis_network_notify_dnd(device_config.device_id, false);
     }
@@ -441,19 +449,26 @@ static void activate_listening(bool silent) {
     set_state(STATE_LISTENING);
 
     // Stop wake word detection, enable raw audio streaming to ring buffer
+    #ifdef USE_LOCAL_WAKEWORD
     jarvis_audio_stop_listening();
     jarvis_audio_set_streaming(true);
+    #endif
+    // Server-side mode: ring buffer is always-on, no need to toggle
 
     // Start audio session on persistent WS
     activation_time = esp_timer_get_time() / 1000;
 
     if (!jarvis_ws_audio_start_session()) {
         ESP_LOGE(TAG, "Failed to start WS audio session");
+        #ifdef USE_LOCAL_WAKEWORD
         jarvis_audio_set_streaming(false);
+        #endif
         set_state(STATE_ERROR);
         jarvis_display_set_error("WS audio failed");
         error_clear_time = esp_timer_get_time() / 1000 + 2000;
+        #ifdef USE_LOCAL_WAKEWORD
         jarvis_audio_start_listening();
+        #endif
     }
 }
 
@@ -489,14 +504,24 @@ static void on_config_update_ws(float wake_word_sensitivity) {
 }
 
 // =============================================================================
+// SERVER WAKE DETECTED CALLBACK (server-side wake word via WS)
+// =============================================================================
+
+static void on_server_wake_detected(void) {
+    server_wake_pending = true;
+}
+
+// =============================================================================
 // WS AUDIO SESSION DONE CALLBACK
 // =============================================================================
 
 static void on_session_done(bool success) {
     ESP_LOGI(TAG, "WS audio session done: %s (was state=%d)", success ? "OK" : "FAIL", current_state);
 
-    // Stop streaming ring buffer
+    // Stop streaming ring buffer (local MWW only — server-side keeps it always-on)
+    #ifdef USE_LOCAL_WAKEWORD
     jarvis_audio_set_streaming(false);
+    #endif
 
     // NOTE: This callback runs in ws_audio task (Core 0, pri 6).
     // Do NOT call jarvis_display_* here — it causes SPI bus race with main_task.
@@ -516,10 +541,12 @@ static void on_session_done(bool success) {
     // Send state to server (safe from any context — just sets a JSON send flag)
     jarvis_ws_audio_send_state(success ? "busy" : "error");
 
-    // Re-enable wake word listening
+    // Re-enable wake word listening (local MWW only)
+    #ifdef USE_LOCAL_WAKEWORD
     if (!dnd_mode) {
         jarvis_audio_start_listening();
     }
+    #endif
 }
 
 // =============================================================================
@@ -603,11 +630,19 @@ static void main_task(void* arg) {
         // Process audio (wake word detection — now a no-op, detection via flag)
         jarvis_audio_process();
 
-        // Deferred wake word activation (set by afe_detect_task callback)
+        // Deferred wake word activation (set by afe_detect_task callback — local MWW)
         if (wake_word_pending) {
             wake_word_pending = false;
             reset_activity_timer();
             ESP_LOGI(TAG, "Wake word flag processed by main_task");
+            on_wake_word_detected();
+        }
+
+        // Deferred server-side wake word (set by WS wake_detected callback)
+        if (server_wake_pending) {
+            server_wake_pending = false;
+            reset_activity_timer();
+            ESP_LOGI(TAG, "Server wake_detected flag processed by main_task");
             on_wake_word_detected();
         }
 
@@ -857,10 +892,15 @@ extern "C" void app_main(void) {
     // Register config_update callback (server pushes new sensitivity from dashboard)
     jarvis_ws_audio_set_config_update_callback(on_config_update_ws);
 
+    // Register wake_detected callback (server-side wake word from wakeword-server)
+    jarvis_ws_audio_set_wake_detected_callback(on_server_wake_detected);
+
     // Set wake word callback (lightweight — just sets flag, main_task processes it)
+    #ifdef USE_LOCAL_WAKEWORD
     jarvis_audio_set_wake_callback([]() {
         wake_word_pending = true;
     });
+    #endif
 
     // Restore DND mode from NVS (persisted across reboots)
     dnd_mode = load_dnd_from_nvs();

@@ -5,6 +5,10 @@ Guida completa per il deploy di JARVIS su un VPS. Nessuna GPU richiesta: AI via 
 Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere Home Assistant.
 **OpenClaw gira bare-metal** (Node.js, non in Docker) sulla stessa macchina.
 
+> **NOTA:** Il wakeword-server (`jarvis/wakeword-server/`) NON va deployato su VPS cloud.
+> Ogni casa ha il proprio wakeword-server su un LXC locale (stessa LAN degli AtomS3R).
+> Il VPS riceve solo il relay audio post-wake tramite Tailscale.
+
 > **TODO:**
 > - Aggiungere conf Nginx per webhook Telegram (jarvis-pub.mintwork.it → IP pubblico VPS)
 > - Aggiungere conf Nginx per AtomS3R (endpoint accessibile da rete locale/Tailscale)
@@ -51,7 +55,19 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
               | HA Wagmi (Napoli) |        | HA Albani (Milano)|
               | 100.x.x.x:8123   |        | 100.x.x.x:8123   |
               +-------------------+        +-------------------+
+
+              +-------------------------------------------+
+              | Proxmox locale (1 per casa)               |
+              |  LXC Wakeword (100.x.x.x:8200 Tailscale) |
+              |  openWakeWord + relay on-demand            |
+              |  LAN :8200 ← AtomS3R devices (WiFi)       |
+              +-------------------------------------------+
 ```
+
+> **Wakeword server**: il VPS raggiunge i wakeword-server locali via Tailscale per push
+> di configurazione (`POST /api/config/{device_id}`) e trigger_listen
+> (`POST /api/trigger_listen/{device_id}`). Il relay audio avviene in direzione opposta:
+> il wakeword-server apre un WebSocket on-demand verso il VPS solo quando rileva un wake word.
 
 ### Ordine di boot
 
@@ -298,8 +314,24 @@ Variabili obbligatorie da compilare:
 | `HASS_URL` | `http://100.x.x.x:8123` (IP Tailscale del tuo HA, senza `/api`) |
 | `JARVIS_HASS_TOKEN` | HA → Profilo → Token di lunga durata |
 | `ONTOLOGY_API_TOKEN` | (opzionale) `openssl rand -hex 32` — protegge l'API ontology |
+| `WAKEWORD_SERVER_URLS` | (opzionale) JSON map `{"location_id": "http://<TAILSCALE_IP>:8200"}` — IP Tailscale dei wakeword-server locali |
 
 > **Nota**: OpenClaw gira bare-metal, NON in Docker. Tailscale gira host-level, NON in Docker. Il `.env` viene letto solo dal container Docker (orchestrator). OpenClaw ha la sua configurazione in `~/.openclaw/`. Tailscale si autentica con `tailscale up --hostname=jarvis-cloud`.
+
+### STEP 5b — Deploy Wakeword Server (locale, 1 per casa)
+
+Il wakeword-server NON gira sul VPS. Va deployato su un LXC locale (Proxmox) nella stessa
+LAN degli AtomS3R. Dopo il deploy, inserisci il suo IP Tailscale nel `.env` del VPS.
+
+```bash
+# Sul Proxmox HOST (non sul VPS)
+sudo bash /opt/jarvis/cloud/scripts/deploy-wakeword.sh
+```
+
+Lo script crea un LXC container con Docker + Tailscale + wakeword-server.
+Al termine, riporta l'IP Tailscale da inserire in `WAKEWORD_SERVER_URLS`.
+
+Per i dettagli, vedi: [`infrastructure/README.md` STEP 2b](../infrastructure/README.md#step-2b--deploy-vm-wakeword-1-per-casa-opzionale)
 
 ### STEP 6 — Avvia OpenClaw + stack Docker
 
@@ -339,6 +371,9 @@ curl -s http://$(tailscale ip -4):18789/health
 # HA raggiungibile?
 curl -s -H "Authorization: Bearer <HASS_TOKEN>" \
   http://100.x.x.x:8123/api/ | head -c 100
+
+# Wakeword server raggiungibile via Tailscale? (se deployato)
+curl http://<TAILSCALE_IP_WAKEWORD>:8200/health
 
 # Logs in tempo reale
 docker compose -f docker-compose.cloud.yml logs -f   # Docker (orchestrator)
@@ -587,6 +622,10 @@ docker stats
 
 # Risorse OpenClaw (bare-metal)
 ps aux | grep openclaw
+
+# Wakeword server raggiungibile? (via Tailscale, se deployato)
+curl http://<TAILSCALE_IP_WAKEWORD>:8200/health
+curl http://<TAILSCALE_IP_WAKEWORD>:8200/api/devices
 ```
 
 ---
@@ -767,17 +806,23 @@ bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
 cp -r /opt/jarvis/ontology-server/skill/* ~/.openclaw/workspace/skills/ontology/
 sudo systemctl restart openclaw
 
-# 5. Se exec-approvals.json e cambiato
+# 5. Aggiorna wakeword-server (sul Proxmox HOST, non sul VPS)
+# pct exec <CT_ID> -- bash -c '
+#   cd /opt/jarvis-wakeword && git pull --depth 1
+#   cd jarvis/wakeword-server && docker compose up -d --build
+# '
+
+# 6. Se exec-approvals.json e cambiato
 cp /opt/jarvis/cloud/exec-approvals.json ~/.openclaw/
 sudo systemctl restart openclaw
 
-# 6. Se il plugin browser-dom e cambiato
+# 7. Se il plugin browser-dom e cambiato
 cp -r /opt/jarvis/extensions/browser-dom/* ~/.openclaw/extensions/browser-dom/
 cd ~/.openclaw/extensions/browser-dom && npm install
 sudo systemctl restart openclaw-chrome openclaw
 ```
 
-> **Nota**: l'aggiornamento di OpenClaw non richiede rebuild Docker. L'aggiornamento Docker non tocca OpenClaw. L'aggiornamento di Tailscale non tocca ne Docker ne OpenClaw. Se cambiano solo file Python dell'orchestrator, basta rebuild Docker. Se cambia la skill definition, serve anche la copia + restart OpenClaw. Il database ontology (`graph.db`) persiste nel volume Docker `ontology_data` ed e indipendente dal rebuild.
+> **Nota**: l'aggiornamento di OpenClaw non richiede rebuild Docker. L'aggiornamento Docker non tocca OpenClaw. L'aggiornamento di Tailscale non tocca ne Docker ne OpenClaw. Se cambiano solo file Python dell'orchestrator, basta rebuild Docker. Se cambia la skill definition, serve anche la copia + restart OpenClaw. Il database ontology (`graph.db`) persiste nel volume Docker `ontology_data` ed e indipendente dal rebuild. Il wakeword-server si aggiorna direttamente sul Proxmox host (non sul VPS).
 
 ---
 

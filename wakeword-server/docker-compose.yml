@@ -1,0 +1,18 @@
+services:
+  wakeword-server:
+    build: .
+    container_name: jarvis_wakeword
+    ports:
+      - "8200:8200"
+    environment:
+      - ORCHESTRATOR_WS_URL=${ORCHESTRATOR_WS_URL}
+      - DEVICE_API_TOKEN=${DEVICE_API_TOKEN}
+      - WAKEWORD_MODEL=${WAKEWORD_MODEL:-hey_jarvis}
+      - WAKEWORD_THRESHOLD=${WAKEWORD_THRESHOLD:-0.5}
+      - MULTIROOM_COOLDOWN_S=${MULTIROOM_COOLDOWN_S:-5}
+    volumes:
+      - wakeword_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  wakeword_data:

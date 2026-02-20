@@ -68,6 +68,27 @@ Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA r
 +---------------------------------------------------------------------+
 
         VM-GPU <--- LAN / Tailscale ---> VM-OpenClaw
+
++---------------------------------------------------------------------+
+|  VM-Wakeword (LXC, 1 per casa — stessa LAN degli AtomS3R)           |
+|  CPU: 1 vCPU | RAM: 2 GB | Disco: 10 GB                            |
+|  Docker: jarvis-wakeword-server :8200                                |
+|  Tailscale host-level (100.x.x.x) — raggiungibile dall'orchestrator |
+|                                                                      |
+|  openWakeWord: modelli ~2MB, ~80ms/inference su CPU                  |
+|  Opus decode + wake word detection per 4-5 device                    |
+|  Multi-room cooldown (5s)                                            |
+|                                                                      |
+|  Rete: AtomS3R → LAN locale (:8200/ws/audio)                        |
+|  Tailscale: orchestrator VPS → push config + trigger_listen          |
+|  Relay: → VM-GPU/VPS orchestrator via Tailscale (on-demand, wake)    |
++---------------------------------------------------------------------+
+
+        VM-GPU <--- LAN / Tailscale ---> VM-OpenClaw
+            ^
+            |  (Tailscale, on-demand relay + push config)
+            |
+        VM-Wakeword (LAN + Tailscale) <--- WiFi --- AtomS3R devices
 ```
 
 ### Ordine di boot
@@ -90,6 +111,13 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
                       vede Tailscale direttamente, raggiunge OpenClaw via OPENCLAW_URL
 ```
 
+**VM-Wakeword** (boot autonomo, 1 per casa):
+```
+1. tailscaled      -> host-level service, si connette alla tailnet
+2. docker          -> started
+3. wakeword-server -> healthcheck :8200/health, si connette a VPS orchestrator via relay
+```
+
 ### Cosa gira dove
 
 | Servizio | Dove gira | Container/Processo | CPU | RAM | GPU/VRAM | Funzione |
@@ -102,6 +130,8 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | **MongoDB** | VM-GPU | `jarvis_mongo` | 0.5 | 512 MB | - | Database side projects |
 | **OpenClaw** | VM separata (bare-metal) | `openclaw.service` (systemd) | 0.5 | 512 MB | - | Gemini 3 Pro brain (API cloud) |
 | **Chrome Headless** | VM separata (bare-metal) | `openclaw-chrome.service` (systemd) | 0.5 | ≤1 GB | - | Browser automation via CDP :18800 |
+| **Wakeword Server** | VM-Wakeword (LXC, 1/casa) | `jarvis_wakeword` (Docker) | 1 | 2 GB | - | openWakeWord detection + relay :8200 |
+| **Tailscale** | VM-Wakeword | host-level (`tailscaled`) | - | 64 MB | - | Raggiungibilita dall'orchestrator VPS |
 
 ---
 
@@ -136,6 +166,22 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 
 > **Nota:** Chrome headless (per browser-dom) richiede ~512 MB extra di RAM rispetto al solo gateway.
 > Node.js 22+ è necessario per il supporto nativo WebSocket usato dal plugin browser-dom.
+
+### VM-Wakeword (LXC, 1 per casa)
+
+| Componente | Minimo | Consigliato |
+|------------|--------|-------------|
+| CPU | 1 core | 1 core |
+| RAM | 1 GB | 2 GB |
+| Disco | 5 GB | 10 GB |
+| OS | Ubuntu 22.04+ / Debian 12+ | - |
+| Docker | 24.0+ | latest |
+| Tailscale | installato host-level | latest |
+| GPU | Non richiesta | - |
+
+> **Nota:** Un singolo LXC gestisce 4-5 device AtomS3R. Il container deve essere sulla stessa LAN
+> dei device (stessa rete WiFi). Tailscale serve per la raggiungibilita dall'orchestrator VPS
+> (push config, trigger_listen). I device lo raggiungono via IP LAN.
 
 ---
 
@@ -181,6 +227,51 @@ sudo tailscale up --hostname=jarvis-wagmi
 # === VM-OpenClaw ===
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up --hostname=jarvis-openclaw
+```
+
+### STEP 2b — Deploy VM-Wakeword (1 per casa, opzionale)
+
+Se usi il wakeword-server (rilevamento wake word lato server invece che on-device):
+
+```bash
+# Opzione A: Script interattivo (consigliato — eseguire sul Proxmox HOST)
+sudo bash cloud/scripts/deploy-wakeword.sh
+
+# Opzione B: Terraform + Ansible (automatizzato)
+cd infrastructure/terraform
+# Aggiungi le istanze wakeword in terraform.tfvars:
+# wakeword_instances = {
+#   "casa1" = {
+#     ct_id             = 210
+#     ip_address        = "192.168.1.210/24"
+#     hostname          = "jarvis-wakeword-casa1"
+#     node_name         = "pve-casa1"
+#     tailscale_authkey = "tskey-auth-xxxxx"
+#   }
+# }
+terraform apply
+
+# Poi con Ansible:
+cd ../ansible
+ansible-playbook playbooks/wakeword.yml -e "wakeword_host=192.168.1.210"
+```
+
+Lo script/playbook:
+1. Crea un LXC container (1 core, 2 GB RAM, 10 GB disco)
+2. Installa Docker + Tailscale nel container
+3. Connette Tailscale alla tailnet (serve auth key)
+4. Clona il repo (sparse checkout di `jarvis/wakeword-server/`)
+5. Crea `.env` e avvia `docker compose up -d`
+6. Verifica health su `:8200/health`
+
+Dopo il deploy, aggiungi l'IP Tailscale del wakeword server al `.env` dell'orchestrator:
+
+```bash
+# Nel .env dell'orchestrator (VM-GPU o VPS cloud)
+WAKEWORD_SERVER_URLS={"tua_location_id": "http://<TAILSCALE_IP_WAKEWORD>:8200"}
+
+# Poi riavvia l'orchestrator
+docker compose restart orchestrator
 ```
 
 ### STEP 3 — Setup VM-OpenClaw (una tantum)
@@ -373,6 +464,23 @@ curl -s \
 
 # Logs in tempo reale
 docker compose logs -f orchestrator
+
+# === VM-Wakeword (se deployato) ===
+
+# Health check
+curl http://<WAKEWORD_LAN_IP>:8200/health
+
+# Devices connessi
+curl http://<WAKEWORD_LAN_IP>:8200/api/devices
+
+# Tailscale connesso?
+pct exec <CT_ID> -- tailscale status
+
+# Raggiungibile dall'orchestrator via Tailscale?
+tailscale ping jarvis-wakeword-casa1
+
+# Logs
+pct exec <CT_ID> -- docker logs -f jarvis_wakeword
 ```
 
 ### STEP 10 — Primo accesso alla dashboard
@@ -431,6 +539,16 @@ nvidia.yml   -> NVIDIA Container Toolkit
 jarvis.yml   -> Clone repo, .env, docker-compose up, pull modelli
 security.yml -> Frigate + DoubleTake (opzionale)
 verify.yml   -> Health check di tutti i servizi (incluso OpenClaw remoto)
+```
+
+Per il wakeword server (separato, eseguito sull'LXC wakeword):
+
+```bash
+ansible-playbook playbooks/wakeword.yml -e "wakeword_host=192.168.1.210"
+```
+
+```
+wakeword.yml -> Docker, Tailscale, clone repo, .env, docker-compose up, health check
 ```
 
 ---
@@ -535,6 +653,7 @@ Permette all'orchestrator di raggiungere HA remoti e la VM-OpenClaw senza aprire
 |------|-----------|-------|----------|
 | **Napoli (Wagmi)** | Host-level sulla VM-GPU | Gateway VPN per lo stack | `jarvis-wagmi` |
 | **VM-OpenClaw** | Host-level sulla VM dedicata | Espone OpenClaw sulla tailnet | `jarvis-openclaw` |
+| **VM-Wakeword** | Host-level nel LXC wakeword | Orchestrator → push config, trigger_listen | `jarvis-wakeword-<casa>` |
 | **Milano (Albani)** | Add-on HAOS o host-level | Espone HA sulla tailnet | `ha-albani` |
 
 ### Schema di rete
@@ -566,8 +685,16 @@ Permette all'orchestrator di raggiungere HA remoti e la VM-OpenClaw senza aprire
 |   | Automazioni       |                                        |
 |   +-------------------+                                        |
 |                                                                 |
+|   Napoli (LXC su stesso Proxmox della VM-GPU)                  |
+|   +-------------------+                                        |
+|   | jarvis-wakeword-  |  LAN :8200 ← AtomS3R devices          |
+|   |  casa1            |  Tailscale ← orchestrator (config/     |
+|   | Docker: wakeword  |              trigger_listen)            |
+|   +-------------------+                                        |
+|                                                                 |
 |   wagmi -> openclaw: http://jarvis-openclaw:18789 (MagicDNS)  |
 |   wagmi -> albani: 100.x.x.x:8123 (HA API via Tailscale)     |
+|   wagmi -> wakeword: http://jarvis-wakeword-casa1:8200        |
 |   Zero porte aperte, NAT traversal automatico                  |
 +---------------------------------------------------------------+
 ```
@@ -608,6 +735,13 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 |-------|----------|------------|---------|
 | 18789 | OpenClaw Gateway + Dashboard | HTTP | LAN / Tailscale |
 | 18800 | Chrome Headless (CDP) | HTTP/WS | Solo localhost (127.0.0.1) |
+
+### VM-Wakeword (per ogni casa)
+
+| Porta | Servizio | Protocollo | Accesso |
+|-------|----------|------------|---------|
+| 8200 | Wakeword Server (HTTP + WS) | HTTP/WS | LAN (AtomS3R) + Tailscale (orchestrator) |
+| 41641/udp | Tailscale NAT traversal | UDP | WAN (host-level) |
 
 ---
 
@@ -657,6 +791,20 @@ curl http://jarvis-openclaw:18789/health
 
 # Tailscale ping test
 tailscale ping jarvis-openclaw
+
+# === VM-Wakeword (dal Proxmox host) ===
+
+# Health check
+curl http://<WAKEWORD_LAN_IP>:8200/health
+
+# Devices connessi
+curl http://<WAKEWORD_LAN_IP>:8200/api/devices
+
+# Logs
+pct exec <CT_ID> -- docker logs -f jarvis_wakeword
+
+# Tailscale
+pct exec <CT_ID> -- tailscale status
 
 # === VM-OpenClaw ===
 
@@ -797,6 +945,48 @@ sudo systemctl restart openclaw-chrome
 sudo systemctl restart openclaw
 ```
 
+### Wakeword server non risponde (VM-Wakeword)
+
+```bash
+# Container LXC avviato?
+pct status <CT_ID>
+
+# Docker container attivo?
+pct exec <CT_ID> -- docker ps
+
+# Health check
+pct exec <CT_ID> -- curl -sf http://localhost:8200/health
+
+# Logs wakeword
+pct exec <CT_ID> -- docker logs --tail=50 jarvis_wakeword
+
+# Tailscale connesso?
+pct exec <CT_ID> -- tailscale status
+
+# Riavvia il container Docker
+pct exec <CT_ID> -- docker compose -f /opt/jarvis-wakeword/jarvis/wakeword-server/docker-compose.yml restart
+
+# Redeploy completo (se serve)
+sudo bash cloud/scripts/deploy-wakeword.sh
+```
+
+### Orchestrator non raggiunge il wakeword server
+
+```bash
+# Verifica IP Tailscale del wakeword
+pct exec <CT_ID> -- tailscale ip -4
+
+# Ping via Tailscale (dalla VM-GPU o VPS)
+tailscale ping jarvis-wakeword-casa1
+
+# Test REST API (dalla VM-GPU o VPS)
+curl http://<TAILSCALE_IP_WAKEWORD>:8200/health
+
+# Verifica .env orchestrator
+grep WAKEWORD_SERVER_URLS .env
+# Deve contenere: {"location_id": "http://<TAILSCALE_IP>:8200"}
+```
+
 ### HA non raggiungibile
 
 ```bash
@@ -863,6 +1053,20 @@ cp jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orch
 # Non serve riavvio — OpenClaw ricarica le skill automaticamente
 ```
 
+### VM-Wakeword (LXC)
+
+```bash
+# Dal Proxmox host
+pct exec <CT_ID> -- bash -c '
+  cd /opt/jarvis-wakeword
+  git pull --depth 1
+  cd jarvis/wakeword-server
+  docker compose up -d --build
+  sleep 5
+  curl -sf http://localhost:8200/health && echo " OK" || echo " FAIL"
+'
+```
+
 Per aggiornare il plugin browser-dom:
 
 ```bash
@@ -891,6 +1095,8 @@ sudo systemctl restart openclaw
 | [terraform/](terraform/) | IaC per Proxmox LXC (VM-GPU) |
 | [ansible/](ansible/) | Playbook di configurazione (VM-GPU) |
 | [../docker-compose.yml](../docker-compose.yml) | Stack locale VM-GPU (NO OpenClaw, NO Tailscale) |
+| [../cloud/scripts/deploy-wakeword.sh](../cloud/scripts/deploy-wakeword.sh) | Script deploy wakeword LXC (interattivo, su Proxmox host) |
+| [../wakeword-server/](../wakeword-server/) | Wakeword server (openWakeWord + relay) |
 | [../cloud/](../cloud/) | Deploy cloud (VPS senza GPU) |
 | [../security/](../security/) | Stack security (Frigate + DoubleTake) |
 | [../../extensions/browser-dom/](../../extensions/browser-dom/) | Plugin DOM automation (CDP) |
