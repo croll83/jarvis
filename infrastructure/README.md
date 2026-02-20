@@ -1,24 +1,39 @@
-# JARVIS — Deploy Locale (GPU + OpenClaw su VM separata)
+# JARVIS — Deploy Locale (GPU + OpenClaw su LXC/VM separata)
 
 Guida completa per il deploy locale di JARVIS su Proxmox con GPU NVIDIA.
-I modelli locali (Qwen 7B router, Whisper STT) girano on-premise sulla VM-GPU;
-il reasoning e gestito da Gemini 3 Pro via OpenClaw che gira **bare-metal su una
-VM dedicata e separata** per isolamento di sicurezza.
-Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA remoti e la VM OpenClaw.
+I modelli locali (Qwen 7B router, Whisper STT) girano on-premise su un **LXC con
+GPU device sharing** (driver NVIDIA installato sull'host Proxmox, GPU condivisa via
+cgroup2 — NON PCIe passthrough esclusivo).
+Il reasoning e gestito da Gemini 3 Pro via OpenClaw che gira **bare-metal su un
+LXC/VM dedicato e separato** per isolamento di sicurezza.
+Tailscale gira host-level (non in Docker) su tutti i container/VM per raggiungere
+HA remoti e il LXC OpenClaw.
+
+> **NOTA IMPORTANTE — GPU Device Sharing vs Passthrough:**
+> La GPU **non** e assegnata in esclusiva a nessuna VM/LXC tramite PCIe passthrough.
+> Il driver NVIDIA gira sull'**host Proxmox** e la GPU e condivisa con l'LXC jarvis
+> tramite device binding (`/dev/nvidia*` + cgroup2 allow). Questo significa:
+> - Zero overhead di virtualizzazione GPU
+> - La GPU resta disponibile anche per l'host (e potenzialmente altri container)
+> - Non servono IOMMU, vfio-pci, o UEFI
+> - Setup piu semplice e performance native
 
 ---
 
 ## Architettura Hardware
 
 ```
-+---------------------------------------------------------------------+
-|  HARDWARE: Proxmox Host (es. AtomMan G7 / Mini PC)                  |
-|  CPU: 6-8 core | RAM: 24-32 GB | GPU: RTX 4060+ (8GB+ VRAM)        |
-|  Disco: 200GB+ NVMe                                                 |
-+---------------------------------------------------------------------+
++=====================================================================+
+|  HARDWARE: Proxmox Host (es. AtomMan G7 Pro)                        |
+|  CPU: 32 vCPU (Intel Core i9) | RAM: 64 GB | GPU: RTX 5070 Laptop 8GB|
+|  Disco: 2 TB NVMe                                                   |
+|  NVIDIA Driver: installato SULL'HOST (nvidia-smi funziona qui)       |
+|  Schermo + tastiera + mouse collegati fisicamente                    |
++=====================================================================+
 |                                                                      |
-|  VM-GPU (LXC Ubuntu 22.04) - GPU passthrough via cgroup             |
-|  NVIDIA Container Toolkit installato                                 |
+|  [1] LXC-JARVIS (Ubuntu 22.04) — GPU device sharing via cgroup2     |
+|  Device /dev/nvidia* montati dall'host (NO PCIe passthrough)         |
+|  NVIDIA Container Toolkit installato (no-cgroups=true per LXC)       |
 |  Tailscale host-level (100.x.x.x) - jarvis-wagmi                   |
 |                                                                      |
 |  docker-compose.yml                                                  |
@@ -43,11 +58,11 @@ Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA r
 |  +-- Qwen 2.5 7B Q4_K_M .............. 4.4 GB                      |
 |  +-- nomic-embed-text ................. 0.3 GB                      |
 |  +-- faster-whisper base .............. 0.4 GB                      |
-|  +-- TOTALE ........................... ~5.1 GB (serve 8GB+ GPU)    |
+|  +-- TOTALE ........................... ~5.1 GB / 8 GB VRAM disp.  |
 +---------------------------------------------------------------------+
 
 +---------------------------------------------------------------------+
-|  VM-OpenClaw (VM dedicata su Proxmox, NO Docker)                     |
+|  [2] LXC-OpenClaw (Ubuntu 22.04, NO Docker, NO GPU)                 |
 |  Node.js bare-metal | systemd service                                |
 |  Tailscale host-level - jarvis-openclaw                              |
 |                                                                      |
@@ -55,6 +70,7 @@ Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA r
 |  Chrome headless  :18800 (CDP, solo localhost)                       |
 |  Gemini 3 Pro (API cloud)                                            |
 |  Telegram bot integrato                                              |
+|  Linuxbrew + skill dependencies                                      |
 |                                                                      |
 |  Skill (copiata):                                                    |
 |  ~/.openclaw/workspace/skills/jarvis-orchestrator/                   |
@@ -67,10 +83,8 @@ Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA r
 |  - LAN IP: http://192.168.x.x:18789                                 |
 +---------------------------------------------------------------------+
 
-        VM-GPU <--- LAN / Tailscale ---> VM-OpenClaw
-
 +---------------------------------------------------------------------+
-|  VM-Wakeword (LXC, 1 per casa — stessa LAN degli AtomS3R)           |
+|  [3] LXC-Wakeword (1 per casa — stessa LAN degli AtomS3R)           |
 |  CPU: 1 vCPU | RAM: 2 GB | Disco: 10 GB                            |
 |  Docker: jarvis-wakeword-server :8200                                |
 |  Tailscale host-level (100.x.x.x) — raggiungibile dall'orchestrator |
@@ -81,28 +95,70 @@ Tailscale gira host-level (non in Docker) su entrambe le VM per raggiungere HA r
 |                                                                      |
 |  Rete: AtomS3R → LAN locale (:8200/ws/audio)                        |
 |  Tailscale: orchestrator VPS → push config + trigger_listen          |
-|  Relay: → VM-GPU/VPS orchestrator via Tailscale (on-demand, wake)    |
+|  Relay: → LXC-JARVIS/VPS orchestrator via Tailscale (on-demand)     |
 +---------------------------------------------------------------------+
 
-        VM-GPU <--- LAN / Tailscale ---> VM-OpenClaw
-            ^
-            |  (Tailscale, on-demand relay + push config)
-            |
-        VM-Wakeword (LAN + Tailscale) <--- WiFi --- AtomS3R devices
++---------------------------------------------------------------------+
+|  [4] VM-Workstation (Ubuntu + XFCE — vera VM KVM, NO GPU dedicata)   |
+|  CPU: 6 core | RAM: 12 GB | Disco: 250 GB                           |
+|  Display: VirtIO-GPU (QXL) | Accesso: RDP (xrdp) + noVNC Proxmox   |
+|                                                                      |
+|  Chrome (reale, non headless) + OpenClaw browser extension           |
+|  Cursor IDE, Git, Node.js (nvm), Python 3                            |
+|  Workspace di sviluppo, email, browsing                              |
+|                                                                      |
+|  Accesso da host Proxmox: desktop XFCE locale + Remmina (RDP)       |
+|  Accesso da LAN: RDP diretto all'IP della VM                        |
+|  Accesso da ovunque: noVNC da Proxmox Web UI                        |
+|                                                                      |
+|  Vedi: infrastructure/WORKSTATION.md per setup completo              |
++---------------------------------------------------------------------+
+
++---------------------------------------------------------------------+
+|  [5] VM-HAOS (opzionale — Home Assistant OS, vera VM KVM)            |
+|  CPU: 2 core | RAM: 8 GB | Disco: 64 GB                            |
+|  Porta: :8123 (HA API)                                               |
+|  Zigbee/Z-Wave dongle via USB passthrough                            |
+|  Raggiungibile dall'orchestrator via LAN o Tailscale                 |
++---------------------------------------------------------------------+
+
++---------------------------------------------------------------------+
+|  [6] LXC-Alexa (opzionale — Alexa Media Server)                     |
+|  CPU: 1 core | RAM: 1 GB | Disco: 5 GB                             |
+|  Fa funzionare gli Amazon Echo come speaker di JARVIS                |
+|  Comunica con HAOS via integrazione alexa_media                      |
++---------------------------------------------------------------------+
+
+  Topologia di rete:
+
+  LXC-JARVIS <--- LAN / Tailscale ---> LXC-OpenClaw
+      ^
+      |  (Tailscale, on-demand relay + push config)
+      |
+  LXC-Wakeword (LAN + Tailscale) <--- WiFi --- AtomS3R devices
+
+  LXC-JARVIS <--- LAN ---> VM-HAOS (:8123)
+  LXC-JARVIS <--- Tailscale ---> HA remoti (Milano, ecc.)
+
+  Host Proxmox --- schermo locale --- desktop XFCE + Remmina
+      |
+      +--- RDP locale -----> VM-Workstation (Chrome + IDE + dev)
+      +--- RDP locale -----> altre VM (se servono)
+      +--- Browser locale -> Proxmox Web UI (:8006)
 ```
 
 ### Ordine di boot
 
-Le due VM sono indipendenti su Proxmox e si avviano in parallelo.
+I container/VM sono indipendenti su Proxmox e si avviano in parallelo.
 
-**VM-OpenClaw** (boot autonomo):
+**LXC-OpenClaw** (boot autonomo):
 ```
 systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
                               -> openclaw.service (Node.js, porta 18789)
 ```
 `openclaw-chrome.service` ha `Before=openclaw.service`, quindi Chrome parte prima del gateway.
 
-**VM-GPU** (boot sequenziale):
+**LXC-JARVIS** (boot sequenziale):
 ```
 1. tailscaled      -> host-level service, si connette alla tailnet
 2. ollama          -> diventa healthy (modelli caricati)
@@ -111,7 +167,7 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
                       vede Tailscale direttamente, raggiunge OpenClaw via OPENCLAW_URL
 ```
 
-**VM-Wakeword** (boot autonomo, 1 per casa):
+**LXC-Wakeword** (boot autonomo, 1 per casa):
 ```
 1. tailscaled      -> host-level service, si connette alla tailnet
 2. docker          -> started
@@ -122,36 +178,55 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 
 | Servizio | Dove gira | Container/Processo | CPU | RAM | GPU/VRAM | Funzione |
 |----------|-----------|-------------------|-----|-----|----------|----------|
-| **Tailscale** | VM-GPU | host-level (`tailscaled.service`) | - | 64 MB | - | VPN mesh per HA remoti + OpenClaw |
-| **Ollama** | VM-GPU | `jarvis_ollama` | - | - | 4.7 GB | Qwen 7B pre-routing + embeddings |
-| **Whisper** | VM-GPU | `jarvis_whisper` | - | - | 0.4 GB | Speech-to-text (faster-whisper) |
-| **Orchestrator** | VM-GPU | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
-| **PostgreSQL** | VM-GPU | `jarvis_postgres` | 0.5 | 512 MB | - | Database side projects |
-| **MongoDB** | VM-GPU | `jarvis_mongo` | 0.5 | 512 MB | - | Database side projects |
-| **OpenClaw** | VM separata (bare-metal) | `openclaw.service` (systemd) | 0.5 | 512 MB | - | Gemini 3 Pro brain (API cloud) |
-| **Chrome Headless** | VM separata (bare-metal) | `openclaw-chrome.service` (systemd) | 0.5 | ≤1 GB | - | Browser automation via CDP :18800 |
-| **Wakeword Server** | VM-Wakeword (LXC, 1/casa) | `jarvis_wakeword` (Docker) | 1 | 2 GB | - | openWakeWord detection + relay :8200 |
-| **Tailscale** | VM-Wakeword | host-level (`tailscaled`) | - | 64 MB | - | Raggiungibilita dall'orchestrator VPS |
+| **NVIDIA Driver** | **Host Proxmox** | kernel module | - | - | - | Driver GPU, `nvidia-smi` funziona qui |
+| **Tailscale** | LXC-JARVIS | host-level (`tailscaled.service`) | - | 64 MB | - | VPN mesh per HA remoti + OpenClaw |
+| **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | 4.7 GB | Qwen 7B pre-routing + embeddings |
+| **Whisper** | LXC-JARVIS | `jarvis_whisper` (Docker, `--gpus all`) | - | - | 0.4 GB | Speech-to-text (faster-whisper) |
+| **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
+| **Ontology Server** | LXC-JARVIS | `jarvis_ontology` (Docker, 127.0.0.1:8100) | 0.5 | 256 MB | - | Knowledge Graph API + ACL |
+| **PostgreSQL** | LXC-JARVIS | `jarvis_postgres` (Docker) | 0.5 | 512 MB | - | Database side projects |
+| **MongoDB** | LXC-JARVIS | `jarvis_mongo` (Docker) | 0.5 | 512 MB | - | Database side projects |
+| **OpenClaw** | LXC-OpenClaw (bare-metal) | `openclaw.service` (systemd) | 0.5 | 512 MB | - | Gemini 3 Pro brain (API cloud) |
+| **Chrome Headless** | LXC-OpenClaw (bare-metal) | `openclaw-chrome.service` (systemd) | 0.5 | ≤1 GB | - | Browser automation via CDP :18800 |
+| **Wakeword Server** | LXC-Wakeword (1/casa) | `jarvis_wakeword` (Docker) | 1 | 2 GB | - | openWakeWord detection + relay :8200 |
+| **Tailscale** | LXC-Wakeword | host-level (`tailscaled`) | - | 64 MB | - | Raggiungibilita dall'orchestrator VPS |
+| **Workstation** | VM-Workstation (opz.) | KVM VM (Ubuntu + XFCE) | 6 | 12 GB | - | Chrome reale + OpenClaw ext + IDE + dev |
+| **HAOS** | VM-HAOS (opz.) | KVM VM | 2 | 8 GB | - | Home Assistant OS + MASS + add-ons |
+| **Alexa Media** | LXC-Alexa (opz.) | Docker/nativo | 1 | 1 GB | - | Echo come speaker JARVIS |
 
 ---
 
 ## Requisiti
 
-### VM-GPU (LXC)
+### Host Proxmox
 
 | Componente | Minimo | Consigliato |
 |------------|--------|-------------|
-| CPU | 4 core x86_64 | 6-8 core |
-| RAM | 16 GB | 24-32 GB |
-| GPU | NVIDIA 8 GB VRAM | RTX 4060 / RTX 5070 |
-| Disco | 100 GB SSD | 200 GB NVMe |
-| OS Host | Proxmox VE 8.x | - |
-| OS Container | Ubuntu 22.04+ | - |
+| CPU | 8 core x86_64 | 32 vCPU (es. Intel Core i9) |
+| RAM | 32 GB | 64 GB |
+| GPU | NVIDIA 8 GB VRAM | RTX 5070 Laptop 8 GB / RTX 5070 Ti 16 GB |
+| Disco | 500 GB SSD | 2 TB NVMe |
+| OS | Proxmox VE 8.x | latest |
+| NVIDIA Driver | installato sull'host | latest |
+
+> **NVIDIA Driver sull'HOST:** Il driver va installato su Proxmox, non nei container.
+> L'LXC-JARVIS accede alla GPU tramite device binding (`/dev/nvidia*` + cgroup2).
+> Vedi [PROXMOX.md](PROXMOX.md) per la procedura dettagliata.
+
+### LXC-JARVIS (GPU)
+
+| Componente | Minimo | Consigliato |
+|------------|--------|-------------|
+| CPU | 4 core | 8 core |
+| RAM | 16 GB | 20 GB |
+| Disco | 100 GB | 250 GB |
+| OS | Ubuntu 22.04+ | - |
 | Docker | 24.0+ | latest |
 | Docker Compose | 2.20+ | latest |
+| NVIDIA Container Toolkit | installato (`no-cgroups=true`) | latest |
 | Tailscale | installato host-level | latest |
 
-### VM-OpenClaw
+### LXC-OpenClaw
 
 | Componente | Minimo | Consigliato |
 |------------|--------|-------------|
@@ -161,13 +236,14 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | OS | Ubuntu 22.04+ / Debian 12+ | - |
 | Node.js | 22+ | 22 LTS |
 | Google Chrome | stable | latest |
+| Linuxbrew | installato | latest |
 | GPU | Non richiesta | - |
 | Tailscale | installato host-level | latest |
 
 > **Nota:** Chrome headless (per browser-dom) richiede ~512 MB extra di RAM rispetto al solo gateway.
 > Node.js 22+ è necessario per il supporto nativo WebSocket usato dal plugin browser-dom.
 
-### VM-Wakeword (LXC, 1 per casa)
+### LXC-Wakeword (1 per casa)
 
 | Componente | Minimo | Consigliato |
 |------------|--------|-------------|
@@ -189,47 +265,47 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 
 ### Prerequisiti
 
-- Proxmox host con GPU NVIDIA passthrough configurato (vedi [PROXMOX.md](PROXMOX.md))
-- LXC container creato con accesso GPU per la VM-GPU (vedi [Terraform](terraform/) o manuale)
-- VM dedicata per OpenClaw (senza GPU, anche leggera)
-- Docker + Compose installati sulla VM-GPU (vedi [DOCKER.md](DOCKER.md))
-- NVIDIA Container Toolkit installato sulla VM-GPU (vedi [DOCKER.md](DOCKER.md) Step 5)
-- Node.js 18+ installato sulla VM-OpenClaw
+- Proxmox host con NVIDIA driver installato (vedi [PROXMOX.md](PROXMOX.md))
+- LXC container creato con accesso GPU via device binding (vedi [Terraform](terraform/) o manuale)
+- LXC/VM dedicato per OpenClaw (senza GPU, anche leggero)
+- Docker + Compose installati nel LXC-JARVIS (vedi [DOCKER.md](DOCKER.md))
+- NVIDIA Container Toolkit installato nel LXC-JARVIS con `no-cgroups=true` (vedi [DOCKER.md](DOCKER.md) Step 5)
+- Node.js 22+ installato nel LXC-OpenClaw
 - API keys pronte: Gemini, e opzionalmente Groq/OpenRouter come fallback
-- Tailscale installato host-level su entrambe le VM (VM-GPU e VM-OpenClaw)
+- Tailscale installato host-level su tutti i container/VM
 
 ### STEP 1 — Infrastruttura (una tantum)
 
 Se parti da zero su Proxmox:
 
 ```bash
-# Opzione A: Terraform (automatizzato) — crea la VM-GPU (LXC)
+# Opzione A: Terraform (automatizzato) — crea LXC-JARVIS
 cd infrastructure/terraform
 cp terraform.tfvars.example terraform.tfvars
-nano terraform.tfvars   # Credenziali Proxmox, sizing, GPU
+nano terraform.tfvars   # Credenziali Proxmox, sizing, GPU device paths
 terraform init && terraform apply
 
 # Opzione B: Manuale
-# Segui PROXMOX.md per creare LXC con GPU passthrough (VM-GPU)
-# Crea una seconda VM per OpenClaw (senza GPU, 1 core, 1 GB RAM)
-# Poi segui DOCKER.md per installare Docker + NVIDIA toolkit sulla VM-GPU
+# Segui PROXMOX.md per installare driver NVIDIA sull'host e creare LXC con GPU device sharing
+# Crea un secondo LXC/VM per OpenClaw (senza GPU, 1 core, 1 GB RAM)
+# Poi segui DOCKER.md per installare Docker + NVIDIA Container Toolkit nel LXC-JARVIS
 ```
 
-### STEP 2 — Setup Tailscale (entrambe le VM)
+### STEP 2 — Setup Tailscale (tutti i container/VM)
 
-Tailscale gira host-level su entrambe le VM (non in Docker).
+Tailscale gira host-level su tutti i container/VM (non in Docker).
 
 ```bash
-# === VM-GPU ===
+# === LXC-JARVIS ===
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up --hostname=jarvis-wagmi
 
-# === VM-OpenClaw ===
+# === LXC-OpenClaw ===
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up --hostname=jarvis-openclaw
 ```
 
-### STEP 2b — Deploy VM-Wakeword (1 per casa, opzionale)
+### STEP 2b — Deploy LXC-Wakeword (1 per casa, opzionale)
 
 Se usi il wakeword-server (rilevamento wake word lato server invece che on-device):
 
@@ -267,16 +343,16 @@ Lo script/playbook:
 Dopo il deploy, aggiungi l'IP Tailscale del wakeword server al `.env` dell'orchestrator:
 
 ```bash
-# Nel .env dell'orchestrator (VM-GPU o VPS cloud)
+# Nel .env dell'orchestrator (LXC-JARVIS o VPS cloud)
 WAKEWORD_SERVER_URLS={"tua_location_id": "http://<TAILSCALE_IP_WAKEWORD>:8200"}
 
 # Poi riavvia l'orchestrator
 docker compose restart orchestrator
 ```
 
-### STEP 3 — Setup VM-OpenClaw (una tantum)
+### STEP 3 — Setup LXC-OpenClaw (una tantum)
 
-Sulla VM dedicata a OpenClaw:
+Sul LXC/VM dedicato a OpenClaw:
 
 ```bash
 # Installa Node.js 20 LTS
@@ -286,11 +362,11 @@ sudo apt-get install -y nodejs
 # Installa OpenClaw globalmente
 npm install -g openclaw
 
-# (Tailscale gia installato nello STEP 2)
+# (Tailscale già installato nello STEP 2)
 
 # Configura OpenClaw con onboard
 openclaw onboard
-# Inserisci: GEMINI_API_KEY, OPENCLAW_GATEWAY_TOKEN (stesso del .env sulla VM-GPU)
+# Inserisci: GEMINI_API_KEY, OPENCLAW_GATEWAY_TOKEN (stesso del .env sulla LXC-JARVIS)
 
 # Copia la skill JARVIS nella directory OpenClaw
 sudo mkdir -p /opt/jarvis/jarvis-orchestrator/skill
@@ -322,7 +398,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now openclaw
 ```
 
-#### STEP 3b — Browser-DOM Plugin (VM-OpenClaw, opzionale)
+#### STEP 3b — Browser-DOM Plugin (LXC-OpenClaw, opzionale)
 
 Il plugin browser-dom aggiunge 8 tool DOM per automazione web (navigazione, click,
 fill, screenshot via CSS selectors / XPath / text matching) parlando direttamente con
@@ -362,14 +438,14 @@ sudo systemctl restart openclaw
 journalctl -u openclaw --since '1 min ago' | grep browser-dom
 ```
 
-### STEP 4 — Clone repository (VM-GPU)
+### STEP 4 — Clone repository (LXC-JARVIS)
 
 ```bash
 git clone https://github.com/croll83/jarvis.git
 cd jarvis
 ```
 
-### STEP 5 — Configura .env (VM-GPU)
+### STEP 5 — Configura .env (LXC-JARVIS)
 
 ```bash
 cp .env.example .env
@@ -382,7 +458,7 @@ Variabili obbligatorie:
 |-----------|----------------|
 | `AI_BACKEND` | `local` (usa Ollama + Whisper locali) |
 | `GEMINI_API_KEY` | [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
-| `OPENCLAW_GATEWAY_TOKEN` | `openssl rand -hex 32` — deve essere lo stesso usato in `openclaw onboard` sulla VM-OpenClaw |
+| `OPENCLAW_GATEWAY_TOKEN` | `openssl rand -hex 32` — deve essere lo stesso usato in `openclaw onboard` sulla LXC-OpenClaw |
 | `OPENCLAW_URL` | `http://jarvis-openclaw:18789` (Tailscale MagicDNS) o `http://192.168.x.x:18789` (LAN) |
 | `OPENCLAW_TELEGRAM_BOT_TOKEN` | @BotFather su Telegram |
 | `JARVIS_APPROVAL_BOT_TOKEN` | @BotFather (secondo bot, separato) |
@@ -399,19 +475,19 @@ GROQ_API_KEY=gsk_...          # STT via Groq (fallback se Whisper locale down)
 OPENROUTER_API_KEY=sk-or-...  # Routing via OpenRouter (fallback se Ollama down)
 ```
 
-### STEP 6 — Configura system prompt (VM-GPU)
+### STEP 6 — Configura system prompt (LXC-JARVIS)
 
 ```bash
 nano config/router_system_prompt.txt   # Regole di routing per Qwen
 ```
 
-### STEP 7 — Avvia lo stack (VM-GPU)
+### STEP 7 — Avvia lo stack (LXC-JARVIS)
 
 ```bash
 docker compose up -d
 ```
 
-### STEP 8 — Scarica modelli Ollama (VM-GPU)
+### STEP 8 — Scarica modelli Ollama (LXC-JARVIS)
 
 ```bash
 # Attendi che Ollama sia pronto, poi:
@@ -426,7 +502,7 @@ Lo script scarica:
 ### STEP 9 — Verifica
 
 ```bash
-# === VM-OpenClaw ===
+# === LXC-OpenClaw ===
 
 # OpenClaw attivo?
 sudo systemctl status openclaw
@@ -437,7 +513,7 @@ curl http://localhost:18789/health
 # Tailscale connesso?
 tailscale status
 
-# === VM-GPU ===
+# === LXC-JARVIS ===
 
 # Tailscale connesso?
 tailscale status
@@ -445,7 +521,7 @@ tailscale status
 # Orchestrator healthy?
 curl http://localhost:5000/health
 
-# OpenClaw raggiungibile dalla VM-GPU?
+# OpenClaw raggiungibile dalla LXC-JARVIS?
 # (via Tailscale MagicDNS)
 curl http://jarvis-openclaw:18789/health
 # (oppure via LAN)
@@ -465,7 +541,7 @@ curl -s \
 # Logs in tempo reale
 docker compose logs -f orchestrator
 
-# === VM-Wakeword (se deployato) ===
+# === LXC-Wakeword (se deployato) ===
 
 # Health check
 curl http://<WAKEWORD_LAN_IP>:8200/health
@@ -485,7 +561,7 @@ pct exec <CT_ID> -- docker logs -f jarvis_wakeword
 
 ### STEP 10 — Primo accesso alla dashboard
 
-Apri `http://localhost:5000/admin` nel browser (dalla VM-GPU o via Tailscale da qualsiasi dispositivo nella tailnet).
+Apri `http://localhost:5000/admin` nel browser (dalla LXC-JARVIS o via Tailscale da qualsiasi dispositivo nella tailnet).
 
 Da qui puoi:
 - Creare utenti e assegnare ruoli (admin/user)
@@ -496,7 +572,7 @@ Da qui puoi:
 
 ### STEP 11 — Dashboard OpenClaw
 
-La dashboard di OpenClaw e accessibile direttamente dalla VM-OpenClaw:
+La dashboard di OpenClaw e accessibile direttamente dalla LXC-OpenClaw:
 `http://jarvis-openclaw:18789` (via Tailscale MagicDNS da qualsiasi dispositivo nella tailnet)
 oppure `http://192.168.x.x:18789` dalla LAN.
 
@@ -517,21 +593,21 @@ curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=h
 
 Se preferisci automatizzare tutto, Ansible fa gli step di setup in un comando.
 
-**Nota:** Il playbook Ansible gestisce la **VM-GPU**. Il setup della VM-OpenClaw
-e un processo separato (vedi STEP 3 sopra) in quanto e una VM indipendente con
-un'installazione bare-metal di Node.js e OpenClaw.
+**Nota:** Il playbook Ansible gestisce sia il **LXC-JARVIS** che il **LXC-OpenClaw**
+(tag separati: `--tags common,nvidia,jarvis` per JARVIS, `--tags openclaw` per OpenClaw).
+Il LXC-OpenClaw ha un'installazione bare-metal di Node.js e OpenClaw (no Docker).
 
 ```bash
 cd infrastructure/ansible
 cp inventory/hosts.yml.example inventory/hosts.yml
 cp group_vars/all.yml.example group_vars/all.yml
 nano group_vars/all.yml    # Tutte le variabili: deploy_type, API keys, etc.
-nano inventory/hosts.yml   # IP della VM-GPU target
+nano inventory/hosts.yml   # IP della LXC-JARVIS target
 
 ansible-playbook playbooks/site.yml
 ```
 
-Il playbook esegue in sequenza (sulla VM-GPU):
+Il playbook esegue in sequenza (sulla LXC-JARVIS):
 
 ```
 common.yml   -> Sistema base, Docker, firewall, Tailscale host-level
@@ -580,7 +656,7 @@ curl -X PUT http://localhost:5000/admin/preferences/llm_params \
 
 ### Parametri restart-required (.env)
 
-Questi richiedono riavvio del container orchestrator sulla VM-GPU:
+Questi richiedono riavvio del container orchestrator sulla LXC-JARVIS:
 
 ```env
 # Timeouts (secondi)
@@ -643,17 +719,17 @@ curl -X POST http://localhost:5000/admin/prompts/reload
 
 ## Tailscale Multi-Location
 
-Tailscale gira host-level su entrambe le VM (VM-GPU e VM-OpenClaw), non come container Docker.
+Tailscale gira host-level su tutti i container/VM (LXC-JARVIS, LXC-OpenClaw, LXC-Wakeword), non come container Docker.
 L'orchestrator usa `network_mode: host` e vede l'interfaccia Tailscale direttamente.
-Permette all'orchestrator di raggiungere HA remoti e la VM-OpenClaw senza aprire porte.
+Permette all'orchestrator di raggiungere HA remoti e il LXC-OpenClaw senza aprire porte.
 
 ### Dove serve Tailscale
 
 | Nodo | Dove gira | Ruolo | Hostname |
 |------|-----------|-------|----------|
-| **Napoli (Wagmi)** | Host-level sulla VM-GPU | Gateway VPN per lo stack | `jarvis-wagmi` |
-| **VM-OpenClaw** | Host-level sulla VM dedicata | Espone OpenClaw sulla tailnet | `jarvis-openclaw` |
-| **VM-Wakeword** | Host-level nel LXC wakeword | Orchestrator → push config, trigger_listen | `jarvis-wakeword-<casa>` |
+| **Napoli (Wagmi)** | Host-level nel LXC-JARVIS | Gateway VPN per lo stack | `jarvis-wagmi` |
+| **LXC-OpenClaw** | Host-level nel LXC dedicato | Espone OpenClaw sulla tailnet | `jarvis-openclaw` |
+| **LXC-Wakeword** | Host-level nel LXC wakeword | Orchestrator → push config, trigger_listen | `jarvis-wakeword-<casa>` |
 | **Milano (Albani)** | Add-on HAOS o host-level | Espone HA sulla tailnet | `ha-albani` |
 
 ### Schema di rete
@@ -662,7 +738,7 @@ Permette all'orchestrator di raggiungere HA remoti e la VM-OpenClaw senza aprire
 +---------------------------------------------------------------+
 |                    TAILSCALE MESH (100.x.x.x)                  |
 |                                                                 |
-|   Napoli VM-GPU (LXC)               VM-OpenClaw (bare-metal)  |
+|   Napoli LXC-JARVIS                    LXC-OpenClaw (bare-metal)  |
 |   +-------------------+           +-------------------+        |
 |   | jarvis-wagmi      |<--------->| jarvis-openclaw   |        |
 |   | Tailscale (host)  |           | Tailscale (host)  |        |
@@ -685,7 +761,7 @@ Permette all'orchestrator di raggiungere HA remoti e la VM-OpenClaw senza aprire
 |   | Automazioni       |                                        |
 |   +-------------------+                                        |
 |                                                                 |
-|   Napoli (LXC su stesso Proxmox della VM-GPU)                  |
+|   Napoli (LXC su stesso host Proxmox)                              |
 |   +-------------------+                                        |
 |   | jarvis-wakeword-  |  LAN :8200 ← AtomS3R devices          |
 |   |  casa1            |  Tailscale ← orchestrator (config/     |
@@ -718,7 +794,7 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 
 ## Porte di Rete
 
-### VM-GPU
+### LXC-JARVIS
 
 | Porta Host | Servizio | Protocollo | Accesso |
 |------------|----------|------------|---------|
@@ -729,14 +805,14 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | 27017 | MongoDB | TCP | Interno |
 | 41641/udp | Tailscale NAT traversal | UDP | WAN (host-level) |
 
-### VM-OpenClaw
+### LXC-OpenClaw
 
 | Porta | Servizio | Protocollo | Accesso |
 |-------|----------|------------|---------|
 | 18789 | OpenClaw Gateway + Dashboard | HTTP | LAN / Tailscale |
 | 18800 | Chrome Headless (CDP) | HTTP/WS | Solo localhost (127.0.0.1) |
 
-### VM-Wakeword (per ogni casa)
+### LXC-Wakeword (per ogni casa)
 
 | Porta | Servizio | Protocollo | Accesso |
 |-------|----------|------------|---------|
@@ -757,7 +833,7 @@ Embeddings:         nomic-embed-text (Ollama)        nomic-embed-text (solo loca
 HA control:         HTTP diretto / Tailscale         Tailscale (tutto remoto)
 Speaker ID:         Resemblyzer (in orchestrator)    Resemblyzer (in orchestrator)
 
-GPU richiesta:      Si (8GB+ VRAM, solo VM-GPU)      No
+GPU richiesta:      Si (8GB+ VRAM, solo LXC-JARVIS)      No
 Latenza voce:       ~200ms (locale)                  ~800ms (API round-trip)
 Offline mode:       Parziale (Qwen locale)           No (tutto API)
 Costo mensile:      ~0 (solo corrente)               ~4-8/mese VPS + API
@@ -768,7 +844,7 @@ Costo mensile:      ~0 (solo corrente)               ~4-8/mese VPS + API
 ## Monitoring
 
 ```bash
-# === VM-GPU ===
+# === LXC-JARVIS ===
 
 # Stato container
 docker compose ps
@@ -792,7 +868,7 @@ curl http://jarvis-openclaw:18789/health
 # Tailscale ping test
 tailscale ping jarvis-openclaw
 
-# === VM-Wakeword (dal Proxmox host) ===
+# === LXC-Wakeword (dal Proxmox host) ===
 
 # Health check
 curl http://<WAKEWORD_LAN_IP>:8200/health
@@ -806,7 +882,7 @@ pct exec <CT_ID> -- docker logs -f jarvis_wakeword
 # Tailscale
 pct exec <CT_ID> -- tailscale status
 
-# === VM-OpenClaw ===
+# === LXC-OpenClaw ===
 
 # Stato servizi
 sudo systemctl status openclaw-chrome openclaw
@@ -831,7 +907,7 @@ curl http://localhost:18789/health
 
 ## Troubleshooting
 
-### GPU non rilevata (VM-GPU)
+### GPU non rilevata (LXC-JARVIS)
 
 ```bash
 nvidia-smi                           # Verifica driver NVIDIA
@@ -839,14 +915,14 @@ docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
 docker info | grep -i nvidia         # Runtime configurato?
 ```
 
-### Ollama non risponde (VM-GPU)
+### Ollama non risponde (LXC-JARVIS)
 
 ```bash
 docker logs jarvis_ollama
 curl http://localhost:11434/api/tags  # Deve rispondere con lista modelli
 ```
 
-### Memoria VRAM insufficiente (VM-GPU)
+### Memoria VRAM insufficiente (LXC-JARVIS)
 
 ```bash
 nvidia-smi   # Verifica utilizzo VRAM
@@ -855,7 +931,7 @@ nvidia-smi   # Verifica utilizzo VRAM
 # In docker-compose.yml, cambia OLLAMA_MAX_LOADED_MODELS=1
 ```
 
-### Tailscale non si connette (VM-GPU)
+### Tailscale non si connette (LXC-JARVIS)
 
 ```bash
 tailscale status
@@ -865,7 +941,7 @@ sudo journalctl -u tailscaled --since '5 min ago'
 sudo tailscale up --hostname=jarvis-wagmi
 ```
 
-### OpenClaw non raggiungibile (dalla VM-GPU)
+### OpenClaw non raggiungibile (dalla LXC-JARVIS)
 
 ```bash
 # Verifica che OpenClaw sia attivo sulla sua VM
@@ -884,7 +960,7 @@ curl http://jarvis-openclaw:18789/health
 ssh user@jarvis-openclaw "sudo journalctl -u openclaw --since '5 min ago'"
 ```
 
-### OpenClaw non parte (VM-OpenClaw)
+### OpenClaw non parte (LXC-OpenClaw)
 
 ```bash
 # Controlla lo stato del servizio
@@ -904,7 +980,7 @@ openclaw --version
 sudo systemctl restart openclaw
 ```
 
-### Chrome headless non parte (VM-OpenClaw)
+### Chrome headless non parte (LXC-OpenClaw)
 
 ```bash
 # Stato del servizio
@@ -925,7 +1001,7 @@ ls -la ~/.openclaw/browser/openclaw/user-data/Singleton*
 sudo systemctl restart openclaw-chrome
 ```
 
-### browser-dom plugin non carica (VM-OpenClaw)
+### browser-dom plugin non carica (LXC-OpenClaw)
 
 ```bash
 # Verifica che il plugin sia presente
@@ -945,7 +1021,7 @@ sudo systemctl restart openclaw-chrome
 sudo systemctl restart openclaw
 ```
 
-### Wakeword server non risponde (VM-Wakeword)
+### Wakeword server non risponde (LXC-Wakeword)
 
 ```bash
 # Container LXC avviato?
@@ -976,10 +1052,10 @@ sudo bash cloud/scripts/deploy-wakeword.sh
 # Verifica IP Tailscale del wakeword
 pct exec <CT_ID> -- tailscale ip -4
 
-# Ping via Tailscale (dalla VM-GPU o VPS)
+# Ping via Tailscale (dalla LXC-JARVIS o VPS)
 tailscale ping jarvis-wakeword-casa1
 
-# Test REST API (dalla VM-GPU o VPS)
+# Test REST API (dalla LXC-JARVIS o VPS)
 curl http://<TAILSCALE_IP_WAKEWORD>:8200/health
 
 # Verifica .env orchestrator
@@ -990,7 +1066,7 @@ grep WAKEWORD_SERVER_URLS .env
 ### HA non raggiungibile
 
 ```bash
-# Test diretto dall'host (VM-GPU) — orchestrator usa network_mode: host
+# Test diretto dall'host (LXC-JARVIS) — orchestrator usa network_mode: host
 curl -H "Authorization: Bearer $TOKEN" \
   http://<HA_IP>:8123/api/
 
@@ -998,7 +1074,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 tailscale ping 100.x.x.x
 ```
 
-### Database corrotto (VM-GPU)
+### Database corrotto (LXC-JARVIS)
 
 ```bash
 cp data/jarvis_state.db data/jarvis_state.db.bak
@@ -1006,7 +1082,7 @@ cp data/jarvis_state.db data/jarvis_state.db.bak
 docker compose restart orchestrator
 ```
 
-### Container non parte (VM-GPU)
+### Container non parte (LXC-JARVIS)
 
 ```bash
 docker compose logs <servizio>
@@ -1017,7 +1093,7 @@ docker stats   # RAM esaurita?
 
 ## Aggiornamenti
 
-### VM-GPU (Docker stack)
+### LXC-JARVIS (Docker stack)
 
 ```bash
 git pull
@@ -1026,12 +1102,12 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-### VM-OpenClaw (bare-metal)
+### LXC-OpenClaw (bare-metal)
 
 OpenClaw si aggiorna indipendentemente sulla sua VM:
 
 ```bash
-# Sulla VM-OpenClaw
+# Sulla LXC-OpenClaw
 npm update -g openclaw
 
 # Riavvia il servizio
@@ -1041,10 +1117,10 @@ sudo systemctl restart openclaw
 curl http://localhost:18789/health
 ```
 
-Per aggiornare la skill JARVIS sulla VM-OpenClaw:
+Per aggiornare la skill JARVIS sulla LXC-OpenClaw:
 
 ```bash
-# Sulla VM-OpenClaw
+# Sulla LXC-OpenClaw
 cd /opt/jarvis
 git pull
 # Ricopia la skill aggiornata
@@ -1053,7 +1129,7 @@ cp jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orch
 # Non serve riavvio — OpenClaw ricarica le skill automaticamente
 ```
 
-### VM-Wakeword (LXC)
+### LXC-Wakeword (LXC)
 
 ```bash
 # Dal Proxmox host
@@ -1070,7 +1146,7 @@ pct exec <CT_ID> -- bash -c '
 Per aggiornare il plugin browser-dom:
 
 ```bash
-# Sulla VM-OpenClaw
+# Sulla LXC-OpenClaw
 cd /opt/jarvis
 git pull
 # Ricopia il plugin aggiornato
@@ -1089,12 +1165,13 @@ sudo systemctl restart openclaw
 | File | Contenuto |
 |------|-----------|
 | [DOCKER.md](DOCKER.md) | Docker Engine + Compose + NVIDIA Toolkit |
-| [PROXMOX.md](PROXMOX.md) | LXC con GPU passthrough |
+| [PROXMOX.md](PROXMOX.md) | LXC con GPU device sharing (driver su host) |
+| [WORKSTATION.md](WORKSTATION.md) | VM Workstation Ubuntu Desktop (Chrome reale + IDE) |
 | [OLLAMA.md](OLLAMA.md) | Modelli AI (Qwen 7B, nomic-embed-text) |
 | [WHISPER.md](WHISPER.md) | faster-whisper STT |
-| [terraform/](terraform/) | IaC per Proxmox LXC (VM-GPU) |
-| [ansible/](ansible/) | Playbook di configurazione (VM-GPU) |
-| [../docker-compose.yml](../docker-compose.yml) | Stack locale VM-GPU (NO OpenClaw, NO Tailscale) |
+| [terraform/](terraform/) | IaC per Proxmox (LXC-JARVIS + LXC-Wakeword + VM-Workstation) |
+| [ansible/](ansible/) | Playbook di configurazione (LXC-JARVIS + LXC-OpenClaw) |
+| [../docker-compose.yml](../docker-compose.yml) | Stack Docker dentro LXC-JARVIS (NO OpenClaw, NO Tailscale) |
 | [../cloud/scripts/deploy-wakeword.sh](../cloud/scripts/deploy-wakeword.sh) | Script deploy wakeword LXC (interattivo, su Proxmox host) |
 | [../wakeword-server/](../wakeword-server/) | Wakeword server (openWakeWord + relay) |
 | [../cloud/](../cloud/) | Deploy cloud (VPS senza GPU) |

@@ -5,9 +5,12 @@ import time
 from typing import Optional
 
 import numpy as np
+import openwakeword
 from openwakeword.model import Model
 
 from config import WAKEWORD_MODEL, WAKEWORD_THRESHOLD, OPUS_SAMPLE_RATE
+
+_models_downloaded = False
 
 logger = logging.getLogger("wakeword-server")
 
@@ -25,7 +28,16 @@ class DeviceWakeWordEngine:
 
     def init(self):
         """Load model (call once per device connection)."""
-        self._model = Model(wakeword_models=[self.model_name])
+        global _models_downloaded
+        try:
+            self._model = Model(wakeword_models=[self.model_name])
+        except (ValueError, FileNotFoundError):
+            # Model files not present — download them (first run or missing from image)
+            if not _models_downloaded:
+                logger.info(f"[{self.device_id}] Model '{self.model_name}' not found, downloading...")
+                openwakeword.utils.download_models()
+                _models_downloaded = True
+            self._model = Model(wakeword_models=[self.model_name])
         logger.info(f"[{self.device_id}] openWakeWord model '{self.model_name}' loaded")
 
     def set_threshold(self, threshold: float):
