@@ -1,7 +1,8 @@
 # =============================================================================
 # JARVIS — Terraform Variables
 # =============================================================================
-# Solo LXC: niente VM. La GPU è condivisa dall'host Proxmox via device binding.
+# LXC per lo stack JARVIS + VM opzionale per workstation desktop.
+# La GPU è condivisa dall'host Proxmox via device binding (cgroup2).
 
 # -----------------------------------------------------------------------------
 # Deployment Type
@@ -73,13 +74,13 @@ variable "lxc_password" {
 variable "lxc_cores" {
   description = "Numero core CPU"
   type        = number
-  default     = 6
+  default     = 8
 }
 
 variable "lxc_memory" {
   description = "RAM in MB"
   type        = number
-  default     = 16384
+  default     = 24576
 }
 
 variable "lxc_swap" {
@@ -91,7 +92,7 @@ variable "lxc_swap" {
 variable "lxc_disk_size" {
   description = "Dimensione disco root in GB"
   type        = number
-  default     = 100
+  default     = 400
 }
 
 variable "lxc_template_file_id" {
@@ -165,4 +166,66 @@ variable "gpu_cgroup_device_majors" {
   description = "Major number dei device NVIDIA per cgroup2 allow (decimale)"
   type        = list(number)
   default     = [195, 234, 509]
+}
+
+# -----------------------------------------------------------------------------
+# VM Workstation (opzionale — Ubuntu Desktop + XFCE)
+# -----------------------------------------------------------------------------
+# VM KVM per uso desktop: Chrome reale + OpenClaw browser extension,
+# IDE, Git, Node.js, Python 3. Accessibile via RDP (xrdp) e noVNC.
+# Vedi WORKSTATION.md per la configurazione post-install.
+
+variable "workstation_enabled" {
+  description = "Crea la VM Workstation (true/false)"
+  type        = bool
+  default     = false
+}
+
+variable "workstation_hostname" {
+  description = "Hostname per la VM Workstation"
+  type        = string
+  default     = "jarvis-workstation"
+}
+
+variable "workstation_vm_id" {
+  description = "Proxmox VM ID per la workstation (0 = auto-assign)"
+  type        = number
+  default     = 0
+}
+
+variable "workstation_cores" {
+  description = "Numero core CPU per la workstation"
+  type        = number
+  default     = 6
+}
+
+variable "workstation_memory" {
+  description = "RAM in MB per la workstation"
+  type        = number
+  default     = 12288
+}
+
+variable "workstation_disk_size" {
+  description = "Dimensione disco root in GB per la workstation"
+  type        = number
+  default     = 400
+}
+
+variable "workstation_iso_file_id" {
+  description = "ISO Ubuntu Desktop su Proxmox (es. local:iso/ubuntu-24.04.2-desktop-amd64.iso)"
+  type        = string
+  default     = "local:iso/ubuntu-24.04.2-desktop-amd64.iso"
+}
+
+variable "workstation_ip_address" {
+  description = "IP statico della workstation in CIDR (es. 192.168.1.60/24) oppure 'dhcp'"
+  type        = string
+  default     = "dhcp"
+}
+
+variable "workstation_password" {
+  description = "Password utente jarvis per la workstation"
+  type        = string
+  sensitive   = true
+  default     = ""
 }

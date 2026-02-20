@@ -84,6 +84,7 @@ static const char *TAG = "AUDIO";
 #else
 // Without local wakeword, use same chunk size for feed task
 #define MWW_STEP_SAMPLES        AUDIO_FEED_CHUNK_SAMPLES
+#define MWW_STEP_SIZE_MS        (AUDIO_FEED_CHUNK_SAMPLES * 1000 / MIC_SAMPLE_RATE)  // 10ms @ 160 samples
 #endif // USE_LOCAL_WAKEWORD
 
 // =============================================================================

@@ -46,12 +46,12 @@ ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5... user@host"
 lxc_password   = ""                     # Password root (opzionale)
 
 # Risorse — adatta in base al deploy_type:
-#   lxc_gpu: 6 core, 16 GB RAM, 100-200 GB disco (modelli AI ~12 GB)
+#   lxc_gpu: 8 core, 24 GB RAM, 400 GB disco (modelli AI ~12 GB + Docker images)
 #   lxc:     2-4 core, 4 GB RAM, 50 GB disco
-lxc_cores     = 6
-lxc_memory    = 16384                   # MB
+lxc_cores     = 8
+lxc_memory    = 24576                   # 20 GB
 lxc_swap      = 2048                    # MB
-lxc_disk_size = 200                     # GB
+lxc_disk_size = 400                     # GB
 
 # Template LXC Ubuntu — scaricalo da Proxmox UI:
 #   Storage > local > CT Templates > Templates > ubuntu-22.04-standard
@@ -89,3 +89,24 @@ gpu_devices = [
 #   stat -c '%t' /dev/nvidia-uvm | xargs printf '%d\n' (→ 234)
 # I default (195, 234, 509) funzionano nella maggior parte dei casi
 gpu_cgroup_device_majors = [195, 234, 509]
+
+# -----------------------------------------------------------------------------
+# VM Workstation (opzionale — Ubuntu Desktop + XFCE)
+# -----------------------------------------------------------------------------
+# VM desktop per: Chrome reale + OpenClaw browser extension, IDE, Git, dev.
+# Accessibile via RDP (xrdp) e noVNC Proxmox. NO GPU dedicata.
+# Vedi WORKSTATION.md per la configurazione post-install.
+#
+# Prerequisito: scarica la ISO di Ubuntu Desktop su Proxmox:
+#   Proxmox UI > local storage > ISO Images > Download from URL:
+#   https://releases.ubuntu.com/24.04.2/ubuntu-24.04.2-desktop-amd64.iso
+
+workstation_enabled       = false                # true per creare la VM
+workstation_hostname      = "jarvis-workstation"
+workstation_vm_id         = 200                  # 0 per auto-assign
+workstation_cores         = 6
+workstation_memory        = 12288                # 12 GB
+workstation_disk_size     = 400                  # GB
+workstation_iso_file_id   = "local:iso/ubuntu-24.04.2-desktop-amd64.iso"
+workstation_ip_address    = "192.168.1.60/24"    # oppure "dhcp"
+workstation_password      = ""                   # Password utente jarvis

@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download openWakeWord models at build time (avoid runtime download)
+RUN python -c "import openwakeword; openwakeword.utils.download_models()"
+
 # Application code
 COPY *.py .
 

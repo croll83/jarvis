@@ -401,7 +401,7 @@ echo ""
 echo -e "${YELLOW}[6/${TOTAL_STEPS}] Configurazione e avvio wakeword-server...${NC}"
 
 # Scrivi .env
-lxc_exec "cat > /opt/jarvis-wakeword/wakeword-server/.env << 'ENVEOF'
+lxc_exec "cat > /opt/jarvis-wakeword/wakeword-server/.env << ENVEOF
 ORCHESTRATOR_WS_URL=${ORCHESTRATOR_WS_URL}
 DEVICE_API_TOKEN=${DEVICE_API_TOKEN}
 WAKEWORD_MODEL=hey_jarvis

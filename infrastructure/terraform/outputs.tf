@@ -32,7 +32,7 @@ output "next_steps" {
   value       = <<-EOT
 
     ================================================================
-    JARVIS Terraform — LXC creato!
+    JARVIS Terraform — Infrastruttura creata!
     ================================================================
 
     Container ID:  ${proxmox_virtual_environment_container.jarvis.vm_id}
@@ -43,6 +43,15 @@ output "next_steps" {
     ⚠️  GPU: Se il provisioner SSH non ha funzionato,
     esegui manualmente sull'host Proxmox:
       bash configure-gpu.sh ${proxmox_virtual_environment_container.jarvis.vm_id}
+    %{endif}
+    %{if var.workstation_enabled}
+
+    🖥️  VM Workstation:  ${var.workstation_hostname}
+    VM ID:             ${proxmox_virtual_environment_vm.workstation[0].vm_id}
+    IP:                ${var.workstation_ip_address != "dhcp" ? split("/", var.workstation_ip_address)[0] : "DHCP — vedi Proxmox UI"}
+
+    La VM si avvia con l'ISO Ubuntu. Completa l'installazione da
+    Proxmox Web UI (noVNC), poi segui WORKSTATION.md per il setup.
     %{endif}
 
     Prossimi passi:
@@ -58,7 +67,25 @@ output "next_steps" {
 
     3. Esegui Ansible:
        ansible-playbook playbooks/site.yml
+    %{if var.workstation_enabled}
+
+    4. Installa Ubuntu Desktop dalla console noVNC Proxmox
+    5. Segui WORKSTATION.md per configurazione software
+    %{endif}
 
     ================================================================
   EOT
+}
+
+# -----------------------------------------------------------------------------
+# Workstation Outputs
+# -----------------------------------------------------------------------------
+output "workstation_vm_id" {
+  description = "Proxmox VM ID della workstation"
+  value       = var.workstation_enabled ? proxmox_virtual_environment_vm.workstation[0].vm_id : null
+}
+
+output "workstation_ip" {
+  description = "IP della workstation"
+  value       = var.workstation_enabled ? (var.workstation_ip_address != "dhcp" ? split("/", var.workstation_ip_address)[0] : "controlla-proxmox-ui") : null
 }
