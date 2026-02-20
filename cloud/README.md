@@ -809,7 +809,7 @@ sudo systemctl restart openclaw
 # 5. Aggiorna wakeword-server (sul Proxmox HOST, non sul VPS)
 # pct exec <CT_ID> -- bash -c '
 #   cd /opt/jarvis-wakeword && git pull --depth 1
-#   cd jarvis/wakeword-server && docker compose up -d --build
+#   cd wakeword-server && docker compose up -d --build
 # '
 
 # 6. Se exec-approvals.json e cambiato

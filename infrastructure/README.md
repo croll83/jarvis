@@ -964,7 +964,7 @@ pct exec <CT_ID> -- docker logs --tail=50 jarvis_wakeword
 pct exec <CT_ID> -- tailscale status
 
 # Riavvia il container Docker
-pct exec <CT_ID> -- docker compose -f /opt/jarvis-wakeword/jarvis/wakeword-server/docker-compose.yml restart
+pct exec <CT_ID> -- docker compose -f /opt/jarvis-wakeword/wakeword-server/docker-compose.yml restart
 
 # Redeploy completo (se serve)
 sudo bash cloud/scripts/deploy-wakeword.sh
@@ -1060,7 +1060,7 @@ cp jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orch
 pct exec <CT_ID> -- bash -c '
   cd /opt/jarvis-wakeword
   git pull --depth 1
-  cd jarvis/wakeword-server
+  cd wakeword-server
   docker compose up -d --build
   sleep 5
   curl -sf http://localhost:8200/health && echo " OK" || echo " FAIL"
