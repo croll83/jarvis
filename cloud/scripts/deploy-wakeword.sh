@@ -5,16 +5,17 @@
 #
 # Questo script:
 #   1. Crea un LXC container su Proxmox (se non esiste)
-#   2. Installa Docker + Tailscale nel LXC
-#   3. Deploya jarvis-wakeword-server via Docker Compose
+#   2. Configura DNS e TUN device per Tailscale
+#   3. Installa Docker + Tailscale nel LXC
+#   4. Deploya jarvis-wakeword-server via Docker Compose
 #
 # Prerequisiti:
 #   - Eseguire come root sul Proxmox HOST (non dentro un LXC/VM)
-#   - Template Ubuntu/Debian scaricato (pveam)
+#   - Template Ubuntu/Debian scaricato (pveam download local ...)
 #   - Connessione internet attiva
 #
 # Utilizzo:
-#   sudo ./deploy-wakeword.sh
+#   bash deploy-wakeword.sh          (interattivo)
 #
 # Variabili d'ambiente opzionali (o risponde interattivamente):
 #   WAKEWORD_CT_ID=210
@@ -23,7 +24,7 @@
 #   WAKEWORD_GW=192.168.1.1
 #   WAKEWORD_BRIDGE=vmbr0
 #   WAKEWORD_STORAGE=local-lvm
-#   WAKEWORD_TEMPLATE=local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst
+#   WAKEWORD_TEMPLATE=local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst
 #   TAILSCALE_AUTHKEY=tskey-auth-xxxxx
 #   ORCHESTRATOR_WS_URL=ws://jarvis-pub.mintwork.it/ws/audio
 #   DEVICE_API_TOKEN=xxxxx
@@ -54,6 +55,18 @@ echo -e "${NC}"
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}Errore: eseguire come root sul Proxmox host${NC}"
     exit 1
+fi
+
+# Check pct command available (we are on Proxmox host)
+if ! command -v pct &>/dev/null; then
+    # Try with full path
+    if [ -x /usr/sbin/pct ]; then
+        export PATH="/usr/sbin:$PATH"
+    else
+        echo -e "${RED}Errore: comando 'pct' non trovato.${NC}"
+        echo -e "${RED}Questo script va eseguito sul Proxmox HOST, non dentro un LXC/VM.${NC}"
+        exit 1
+    fi
 fi
 
 # Check running on Proxmox host (not inside container)
@@ -97,12 +110,22 @@ prompt_var WAKEWORD_GW         "Gateway"                    ""
 prompt_var WAKEWORD_BRIDGE     "Bridge di rete"             "vmbr0"
 prompt_var WAKEWORD_STORAGE    "Storage per rootfs"         "local-lvm"
 
-# Trova template disponibile
+# Trova template disponibile — auto-detect se non specificato
 if [ -z "${WAKEWORD_TEMPLATE:-}" ]; then
     echo ""
     echo -e "${CYAN}  Template disponibili:${NC}"
-    pveam list local 2>/dev/null | grep -E "ubuntu|debian" | head -5 || true
-    prompt_var WAKEWORD_TEMPLATE "Template (path completo)" "local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+    AVAILABLE=$(pveam list local 2>/dev/null | grep -E "ubuntu|debian" | awk '{print $1}' || true)
+    if [ -n "$AVAILABLE" ]; then
+        echo "$AVAILABLE" | head -5 | while read -r t; do echo "    $t"; done
+        # Pick first debian/ubuntu as default
+        AUTO_TEMPLATE=$(echo "$AVAILABLE" | head -1)
+        prompt_var WAKEWORD_TEMPLATE "Template (path completo)" "${AUTO_TEMPLATE}"
+    else
+        echo -e "  ${YELLOW}Nessun template trovato! Scarica prima un template:${NC}"
+        echo "    pveam available | grep -E 'debian-12|ubuntu-22'"
+        echo "    pveam download local <nome-template>"
+        exit 1
+    fi
 fi
 
 echo ""
@@ -124,6 +147,7 @@ echo "  Hostname:          ${WAKEWORD_HOSTNAME}"
 echo "  IP:                ${WAKEWORD_IP}"
 echo "  Gateway:           ${WAKEWORD_GW}"
 echo "  Bridge:            ${WAKEWORD_BRIDGE}"
+echo "  Template:          ${WAKEWORD_TEMPLATE}"
 echo "  Orchestrator URL:  ${ORCHESTRATOR_WS_URL}"
 echo ""
 read -rp "Procedere? [y/N]: " confirm
@@ -131,6 +155,11 @@ if [[ ! "$confirm" =~ ^[yY]$ ]]; then
     echo "Annullato."
     exit 0
 fi
+
+# Helper: esegui un comando dentro il LXC
+lxc_exec() {
+    pct exec "${WAKEWORD_CT_ID}" -- bash -c "$1"
+}
 
 # =============================================================================
 # STEP 1: Crea LXC Container
@@ -140,8 +169,9 @@ echo -e "${YELLOW}[1/${TOTAL_STEPS}] Creazione LXC container ${WAKEWORD_CT_ID}..
 
 if pct status "${WAKEWORD_CT_ID}" &>/dev/null; then
     echo -e "  Container ${WAKEWORD_CT_ID} esiste gia. Skip creazione."
-    # Assicurati che sia avviato
-    pct start "${WAKEWORD_CT_ID}" 2>/dev/null || true
+    # Assicurati che sia fermato per poter applicare config
+    pct stop "${WAKEWORD_CT_ID}" 2>/dev/null || true
+    sleep 2
 else
     pct create "${WAKEWORD_CT_ID}" "${WAKEWORD_TEMPLATE}" \
         --hostname "${WAKEWORD_HOSTNAME}" \
@@ -150,35 +180,59 @@ else
         --swap 512 \
         --rootfs "${WAKEWORD_STORAGE}:10" \
         --net0 "name=eth0,bridge=${WAKEWORD_BRIDGE},ip=${WAKEWORD_IP},gw=${WAKEWORD_GW}" \
+        --nameserver "8.8.8.8 1.1.1.1" \
         --features nesting=1,keyctl=1 \
         --unprivileged 1 \
-        --onboot 1 \
-        --start 1
+        --onboot 1
 
-    echo -e "  ${GREEN}Container ${WAKEWORD_CT_ID} creato e avviato${NC}"
-
-    # Aspetta che il container sia pronto
-    echo "  Attendo avvio container..."
-    sleep 5
+    echo -e "  ${GREEN}Container ${WAKEWORD_CT_ID} creato${NC}"
 fi
 
-# Helper: esegui un comando dentro il LXC
-lxc_exec() {
-    pct exec "${WAKEWORD_CT_ID}" -- bash -c "$1"
-}
+# --- Configura TUN device per Tailscale (necessario in LXC unprivileged) ---
+LXC_CONF="/etc/pve/lxc/${WAKEWORD_CT_ID}.conf"
 
-# Attendi che la rete sia pronta
-echo "  Verifico connettivita..."
-for i in $(seq 1 15); do
-    if lxc_exec "ping -c1 -W2 8.8.8.8 &>/dev/null"; then
-        echo -e "  ${GREEN}Rete OK${NC}"
-        break
+echo "  Configuro TUN device per Tailscale..."
+
+# Rimuovi vecchie entry TUN se presenti (idempotente)
+sed -i '/lxc.cgroup2.devices.allow.*10:200/d' "$LXC_CONF"
+sed -i '/lxc.mount.entry.*dev\/net\/tun/d' "$LXC_CONF"
+
+# Aggiungi TUN device config
+echo "lxc.cgroup2.devices.allow: c 10:200 rwm" >> "$LXC_CONF"
+echo "lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file" >> "$LXC_CONF"
+
+# Assicurati che il nameserver sia configurato (fix per container esistenti)
+if ! grep -q "^nameserver:" "$LXC_CONF"; then
+    echo "nameserver: 8.8.8.8 1.1.1.1" >> "$LXC_CONF"
+fi
+
+echo -e "  ${GREEN}TUN device e DNS configurati${NC}"
+
+# --- Avvia il container ---
+echo "  Avvio container..."
+pct start "${WAKEWORD_CT_ID}"
+sleep 5
+
+# Attendi che la rete sia pronta (testa DNS, non solo ping)
+echo "  Verifico connettivita e DNS..."
+for i in $(seq 1 20); do
+    if lxc_exec "ping -c1 -W2 8.8.8.8 &>/dev/null" 2>/dev/null; then
+        # Test anche DNS
+        if lxc_exec "getent hosts deb.debian.org &>/dev/null || getent hosts archive.ubuntu.com &>/dev/null" 2>/dev/null; then
+            echo -e "  ${GREEN}Rete e DNS OK${NC}"
+            break
+        else
+            echo "  Rete OK, DNS non ancora pronto... (${i}/20)"
+        fi
+    else
+        echo "  Attendo rete... (${i}/20)"
     fi
-    if [ "$i" -eq 15 ]; then
-        echo -e "${RED}  Timeout rete! Verifica configurazione IP/gateway.${NC}"
+    if [ "$i" -eq 20 ]; then
+        echo -e "${RED}  Timeout rete/DNS! Verifica configurazione IP/gateway/nameserver.${NC}"
+        echo -e "${RED}  Controlla: pct config ${WAKEWORD_CT_ID}${NC}"
         exit 1
     fi
-    sleep 2
+    sleep 3
 done
 
 # =============================================================================
@@ -187,8 +241,8 @@ done
 echo ""
 echo -e "${YELLOW}[2/${TOTAL_STEPS}] Aggiornamento sistema e installazione dipendenze...${NC}"
 
-lxc_exec "apt update && apt upgrade -y -q"
-lxc_exec "apt install -y -q curl git ca-certificates gnupg"
+lxc_exec "apt-get update -qq && apt-get upgrade -y -qq"
+lxc_exec "apt-get install -y -qq curl git ca-certificates gnupg lsb-release"
 
 # =============================================================================
 # STEP 3: Installa Docker
@@ -205,15 +259,21 @@ if ! command -v docker &>/dev/null; then
 else
     echo "Docker gia installato: $(docker --version)"
 fi
-apt install -y -q docker-compose-plugin 2>/dev/null || true
+apt-get install -y -qq docker-compose-plugin 2>/dev/null || true
 '
 
 # =============================================================================
 # STEP 4: Installa e connetti Tailscale
 # =============================================================================
 echo ""
-echo -e "${YELLOW}[4/${TOTAL_STEPS}] Installazione Tailscale...${NC}"
+echo -e "${YELLOW}[4/${TOTAL_STEPS}] Installazione e connessione Tailscale...${NC}"
 
+# Verifica che TUN sia disponibile
+if ! lxc_exec "ls /dev/net/tun &>/dev/null" 2>/dev/null; then
+    echo -e "  ${YELLOW}WARN: /dev/net/tun non trovato, Tailscale usera userspace networking${NC}"
+fi
+
+# Installa Tailscale
 lxc_exec '
 if ! command -v tailscale &>/dev/null; then
     curl -fsSL https://tailscale.com/install.sh | sh
@@ -223,21 +283,88 @@ else
 fi
 '
 
-TS_HOSTNAME="${WAKEWORD_HOSTNAME}"
-lxc_exec "
-if tailscale status &>/dev/null 2>&1; then
-    echo 'Tailscale gia connesso:'
-    tailscale status | head -3
-else
-    echo 'Connessione Tailscale come ${TS_HOSTNAME}...'
-    tailscale up --hostname=${TS_HOSTNAME} --authkey='${TAILSCALE_AUTHKEY}'
-    echo 'Tailscale connesso!'
-    tailscale ip -4
+# Avvia tailscaled e attendi che sia pronto
+echo "  Avvio tailscaled..."
+lxc_exec '
+systemctl enable tailscaled 2>/dev/null || true
+systemctl start tailscaled 2>/dev/null || true
+'
+
+# Attendi che tailscaled sia effettivamente pronto
+TS_READY=false
+for i in $(seq 1 15); do
+    if lxc_exec "tailscale status &>/dev/null 2>&1" 2>/dev/null; then
+        TS_READY=true
+        break
+    fi
+    # Prova ad avviare di nuovo se non è partito
+    if [ "$i" -eq 3 ] || [ "$i" -eq 8 ]; then
+        lxc_exec "systemctl restart tailscaled 2>/dev/null || true"
+    fi
+    echo "  Attendo tailscaled... (${i}/15)"
+    sleep 2
+done
+
+if [ "$TS_READY" != "true" ]; then
+    echo -e "  ${YELLOW}tailscaled non parte con systemd, provo userspace mode...${NC}"
+    lxc_exec "nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --tun=userspace-networking &>/var/log/tailscaled.log &"
+    sleep 3
+
+    # Crea un servizio systemd per userspace mode (persistenza al reboot)
+    lxc_exec 'cat > /etc/systemd/system/tailscaled-userspace.service << EOF
+[Unit]
+Description=Tailscale daemon (userspace networking)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --tun=userspace-networking
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable tailscaled-userspace
+'
+    echo -e "  ${GREEN}tailscaled avviato in userspace mode${NC}"
 fi
-"
+
+# Connetti Tailscale
+TS_HOSTNAME="${WAKEWORD_HOSTNAME}"
+TS_AUTHKEY="${TAILSCALE_AUTHKEY}"
+
+# Verifica se già connesso
+ALREADY_CONNECTED=false
+if lxc_exec "tailscale status 2>/dev/null | grep -q '100\\.'" 2>/dev/null; then
+    ALREADY_CONNECTED=true
+    echo -e "  ${GREEN}Tailscale gia connesso${NC}"
+fi
+
+if [ "$ALREADY_CONNECTED" != "true" ]; then
+    echo "  Connessione Tailscale come ${TS_HOSTNAME}..."
+    lxc_exec "tailscale up --hostname='${TS_HOSTNAME}' --authkey='${TS_AUTHKEY}'"
+
+    # Verifica connessione
+    sleep 3
+    if lxc_exec "tailscale status &>/dev/null 2>&1" 2>/dev/null; then
+        echo -e "  ${GREEN}Tailscale connesso!${NC}"
+    else
+        echo -e "${RED}  Tailscale connessione fallita! Controlla l'auth key.${NC}"
+        echo "  Debug: pct exec ${WAKEWORD_CT_ID} -- tailscale status"
+        exit 1
+    fi
+fi
 
 # Recupera IP Tailscale per il report finale
 TS_IP=$(lxc_exec "tailscale ip -4 2>/dev/null" | tr -d '[:space:]')
+if [ -z "$TS_IP" ]; then
+    echo -e "${RED}  Impossibile ottenere IP Tailscale!${NC}"
+    echo "  Debug: pct exec ${WAKEWORD_CT_ID} -- tailscale status"
+    exit 1
+fi
 echo -e "  ${GREEN}Tailscale IP: ${TS_IP}${NC}"
 
 # =============================================================================
@@ -248,17 +375,23 @@ echo -e "${YELLOW}[5/${TOTAL_STEPS}] Clone codice wakeword-server...${NC}"
 
 lxc_exec "mkdir -p /opt/jarvis-wakeword"
 
+REPO_URL="${JARVIS_REPO}"
 lxc_exec "
 if [ ! -d /opt/jarvis-wakeword/.git ]; then
-    cd /opt/jarvis-wakeword
-    git clone --depth 1 --filter=blob:none --sparse '${JARVIS_REPO}' .
-    git sparse-checkout set jarvis/wakeword-server
-    echo 'Repo clonato (sparse checkout)'
+    git clone --depth 1 '${REPO_URL}' /opt/jarvis-wakeword
+    echo 'Repo clonato'
 else
     cd /opt/jarvis-wakeword
     git pull --depth 1 || true
     echo 'Repo aggiornato'
 fi
+
+# Verifica che la cartella wakeword-server esista
+if [ ! -f /opt/jarvis-wakeword/wakeword-server/docker-compose.yml ]; then
+    echo 'ERRORE: wakeword-server/ non trovato nel repo!'
+    exit 1
+fi
+echo 'wakeword-server trovato'
 "
 
 # =============================================================================
@@ -268,18 +401,18 @@ echo ""
 echo -e "${YELLOW}[6/${TOTAL_STEPS}] Configurazione e avvio wakeword-server...${NC}"
 
 # Scrivi .env
-lxc_exec "cat > /opt/jarvis-wakeword/jarvis/wakeword-server/.env << 'ENVEOF'
+lxc_exec "cat > /opt/jarvis-wakeword/wakeword-server/.env << 'ENVEOF'
 ORCHESTRATOR_WS_URL=${ORCHESTRATOR_WS_URL}
 DEVICE_API_TOKEN=${DEVICE_API_TOKEN}
 WAKEWORD_MODEL=hey_jarvis
 WAKEWORD_THRESHOLD=${WAKEWORD_THRESHOLD}
 MULTIROOM_COOLDOWN_S=${MULTIROOM_COOLDOWN_S}
 ENVEOF
-chmod 600 /opt/jarvis-wakeword/jarvis/wakeword-server/.env
+chmod 600 /opt/jarvis-wakeword/wakeword-server/.env
 "
 
 # Build e avvia
-lxc_exec "cd /opt/jarvis-wakeword/jarvis/wakeword-server && docker compose up -d --build"
+lxc_exec "cd /opt/jarvis-wakeword/wakeword-server && docker compose up -d --build"
 
 # =============================================================================
 # STEP 7: Health check

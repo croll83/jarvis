@@ -95,25 +95,23 @@
         state: directory
         mode: "0755"
 
-    - name: Clone/update JARVIS repo (sparse checkout)
+    - name: Clone/update JARVIS repo
       ansible.builtin.shell: |
         if [ ! -d "{{ wakeword_dir }}/.git" ]; then
-          git clone --depth 1 --filter=blob:none --sparse "{{ jarvis_repo }}" "{{ wakeword_dir }}"
-          cd "{{ wakeword_dir }}"
-          git sparse-checkout set jarvis/wakeword-server
+          git clone --depth 1 "{{ jarvis_repo }}" "{{ wakeword_dir }}"
         else
           cd "{{ wakeword_dir }}"
           git pull --depth 1
         fi
       args:
-        creates: "{{ wakeword_dir }}/jarvis/wakeword-server/server.py"
+        creates: "{{ wakeword_dir }}/wakeword-server/server.py"
 
     # -----------------------------------------------------------------
     # ENV FILE
     # -----------------------------------------------------------------
     - name: Create .env file
       ansible.builtin.copy:
-        dest: "{{ wakeword_dir }}/jarvis/wakeword-server/.env"
+        dest: "{{ wakeword_dir }}/wakeword-server/.env"
         content: |
           ORCHESTRATOR_WS_URL={{ orchestrator_ws_url }}
           DEVICE_API_TOKEN={{ device_api_token }}
@@ -127,7 +125,7 @@
     # -----------------------------------------------------------------
     - name: Build and start wakeword-server
       ansible.builtin.shell: |
-        cd "{{ wakeword_dir }}/jarvis/wakeword-server"
+        cd "{{ wakeword_dir }}/wakeword-server"
         docker compose up -d --build
       register: compose_up
 
