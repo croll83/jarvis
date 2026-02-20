@@ -15,7 +15,7 @@
 
 # Script da eseguire sull'host Proxmox per configurare cgroup GPU
 resource "local_file" "gpu_config_script" {
-  count    = var.deploy_type == "lxc_gpu" ? 1 : 0
+  count    = var.jarvis_enabled && var.deploy_type == "lxc_gpu" ? 1 : 0
   filename = "${path.module}/configure-gpu.sh"
 
   content = <<-SCRIPT
@@ -35,7 +35,7 @@ resource "local_file" "gpu_config_script" {
 
     set -e
 
-    CT_ID="${proxmox_virtual_environment_container.jarvis.vm_id}"
+    CT_ID="${proxmox_virtual_environment_container.jarvis[0].vm_id}"
     CONF="/etc/pve/lxc/$CT_ID.conf"
 
     echo "📋 Configurazione GPU cgroup per CT $CT_ID"

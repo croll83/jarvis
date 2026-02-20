@@ -100,7 +100,7 @@ HA remoti e il LXC OpenClaw.
 
 +---------------------------------------------------------------------+
 |  [4] VM-Workstation (Ubuntu + XFCE — vera VM KVM, NO GPU dedicata)   |
-|  CPU: 6 core | RAM: 12 GB | Disco: 250 GB                           |
+|  CPU: 6 core | RAM: 12 GB | Disco: 400 GB                           |
 |  Display: VirtIO-GPU (QXL) | Accesso: RDP (xrdp) + noVNC Proxmox   |
 |                                                                      |
 |  Chrome (reale, non headless) + OpenClaw browser extension           |
@@ -279,15 +279,27 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 Se parti da zero su Proxmox:
 
 ```bash
-# Opzione A: Terraform (automatizzato) — crea LXC-JARVIS
+# Opzione A: Terraform (automatizzato) — crea i container/VM scelti
 cd infrastructure/terraform
 cp terraform.tfvars.example terraform.tfvars
-nano terraform.tfvars   # Credenziali Proxmox, sizing, GPU device paths
+nano terraform.tfvars
+
+# Scegli cosa creare:
+#   jarvis_enabled      = true     # LXC-JARVIS (GPU + Ollama + Orchestrator)
+#   openclaw_enabled    = true     # LXC-OpenClaw (Gateway Gemini)
+#   workstation_enabled = false    # VM-Workstation (Ubuntu Desktop + Chrome)
+#
+# Per ora puoi abilitare solo la workstation:
+#   jarvis_enabled      = false
+#   openclaw_enabled    = false
+#   workstation_enabled = true
+
 terraform init && terraform apply
 
 # Opzione B: Manuale
 # Segui PROXMOX.md per installare driver NVIDIA sull'host e creare LXC con GPU device sharing
-# Crea un secondo LXC/VM per OpenClaw (senza GPU, 1 core, 1 GB RAM)
+# Crea un secondo LXC per OpenClaw (senza GPU, 2 core, 4 GB RAM)
+# Crea una VM per la Workstation (vedi WORKSTATION.md)
 # Poi segui DOCKER.md per installare Docker + NVIDIA Container Toolkit nel LXC-JARVIS
 ```
 
@@ -591,30 +603,47 @@ curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=h
 
 ## Deploy Automatizzato (Ansible)
 
-Se preferisci automatizzare tutto, Ansible fa gli step di setup in un comando.
-
-**Nota:** Il playbook Ansible gestisce sia il **LXC-JARVIS** che il **LXC-OpenClaw**
-(tag separati: `--tags common,nvidia,jarvis` per JARVIS, `--tags openclaw` per OpenClaw).
-Il LXC-OpenClaw ha un'installazione bare-metal di Node.js e OpenClaw (no Docker).
+Ansible configura il software su container/VM gia creati (da Terraform o manualmente).
+Ogni componente ha il suo playbook — esegui solo quelli che ti servono.
 
 ```bash
 cd infrastructure/ansible
 cp inventory/hosts.yml.example inventory/hosts.yml
 cp group_vars/all.yml.example group_vars/all.yml
 nano group_vars/all.yml    # Tutte le variabili: deploy_type, API keys, etc.
-nano inventory/hosts.yml   # IP della LXC-JARVIS target
+nano inventory/hosts.yml   # IP dei container/VM target
+```
 
+**Esegui solo i componenti che hai abilitato in Terraform:**
+
+```bash
+# LXC-JARVIS (Ollama, Whisper, Orchestrator)
+ansible-playbook playbooks/site.yml --tags common,nvidia,jarvis,verify
+
+# LXC-OpenClaw (Node.js, Chrome headless, skill deps)
+ansible-playbook playbooks/site.yml --tags openclaw
+
+# VM-Workstation (Chrome reale, xrdp, nvm, Cursor)
+# Prerequisito: Ubuntu installato manualmente da noVNC
+ansible-playbook playbooks/workstation.yml
+
+# LXC-Wakeword
+ansible-playbook playbooks/wakeword.yml -e "wakeword_host=192.168.1.210"
+
+# Tutto insieme (se hai abilitato tutto)
 ansible-playbook playbooks/site.yml
+ansible-playbook playbooks/workstation.yml
 ```
 
-Il playbook esegue in sequenza (sulla LXC-JARVIS):
+Il playbook `site.yml` esegue in sequenza:
 
 ```
-common.yml   -> Sistema base, Docker, firewall, Tailscale host-level
-nvidia.yml   -> NVIDIA Container Toolkit
-jarvis.yml   -> Clone repo, .env, docker-compose up, pull modelli
-security.yml -> Frigate + DoubleTake (opzionale)
-verify.yml   -> Health check di tutti i servizi (incluso OpenClaw remoto)
+common.yml      -> Sistema base, Docker, firewall, Tailscale (LXC-JARVIS)
+nvidia.yml      -> NVIDIA Container Toolkit (LXC-JARVIS, solo lxc_gpu)
+openclaw.yml    -> Node.js, Chrome headless, OpenClaw, Linuxbrew (LXC-OpenClaw)
+jarvis.yml      -> Clone repo, .env, docker-compose up, pull modelli (LXC-JARVIS)
+security.yml    -> Frigate + DoubleTake (opzionale)
+verify.yml      -> Health check di tutti i servizi
 ```
 
 Per il wakeword server (separato, eseguito sull'LXC wakeword):
@@ -1169,8 +1198,8 @@ sudo systemctl restart openclaw
 | [WORKSTATION.md](WORKSTATION.md) | VM Workstation Ubuntu Desktop (Chrome reale + IDE) |
 | [OLLAMA.md](OLLAMA.md) | Modelli AI (Qwen 7B, nomic-embed-text) |
 | [WHISPER.md](WHISPER.md) | faster-whisper STT |
-| [terraform/](terraform/) | IaC per Proxmox (LXC-JARVIS + LXC-Wakeword + VM-Workstation) |
-| [ansible/](ansible/) | Playbook di configurazione (LXC-JARVIS + LXC-OpenClaw) |
+| [terraform/](terraform/) | IaC per Proxmox (LXC-JARVIS + LXC-OpenClaw + LXC-Wakeword + VM-Workstation) |
+| [ansible/](ansible/) | Playbook di configurazione (LXC-JARVIS + LXC-OpenClaw + VM-Workstation) |
 | [../docker-compose.yml](../docker-compose.yml) | Stack Docker dentro LXC-JARVIS (NO OpenClaw, NO Tailscale) |
 | [../cloud/scripts/deploy-wakeword.sh](../cloud/scripts/deploy-wakeword.sh) | Script deploy wakeword LXC (interattivo, su Proxmox host) |
 | [../wakeword-server/](../wakeword-server/) | Wakeword server (openWakeWord + relay) |
