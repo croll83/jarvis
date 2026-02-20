@@ -19,11 +19,20 @@ all:
       ansible_user: jarvis
       ansible_become: true
 
-# Gruppo per la VM OpenClaw (deploy locale)
-# OpenClaw gira su VM separata con Node.js, Chrome headless, Linuxbrew
+# Gruppo per il LXC OpenClaw (deploy locale)
+# OpenClaw gira su LXC separato con Node.js, Chrome headless, Linuxbrew
 openclaw:
   hosts:
     jarvis-openclaw:
-      ansible_host: 192.168.1.51     # <-- IP VM OpenClaw (bare-metal)
+      ansible_host: 192.168.1.51     # <-- IP LXC-OpenClaw (bare-metal)
+      ansible_user: jarvis
+      ansible_become: true
+
+# Gruppo per la VM Workstation (opzionale)
+# Ubuntu Desktop + Chrome reale + OpenClaw browser extension + IDE
+workstation:
+  hosts:
+    jarvis-workstation:
+      ansible_host: 192.168.1.60     # <-- IP VM Workstation
       ansible_user: jarvis
       ansible_become: true

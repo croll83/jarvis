@@ -12,6 +12,8 @@
 # =============================================================================
 
 resource "proxmox_virtual_environment_container" "jarvis" {
+  count = var.jarvis_enabled ? 1 : 0
+
   description   = var.deploy_type == "lxc_gpu" ? "JARVIS AI — LXC con GPU NVIDIA" : "JARVIS AI — LXC (API mode)"
   node_name     = var.proxmox_node
   vm_id         = var.ct_id > 0 ? var.ct_id : null

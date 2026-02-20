@@ -8,7 +8,16 @@
 # nano terraform.tfvars
 
 # -----------------------------------------------------------------------------
-# Tipo di deploy
+# Componenti da creare (abilita/disabilita singolarmente)
+# -----------------------------------------------------------------------------
+# Scegli cosa creare su Proxmox. Puoi abilitarne anche solo uno.
+jarvis_enabled      = true     # LXC-JARVIS (Ollama, Whisper, Orchestrator)
+openclaw_enabled    = true     # LXC-OpenClaw (Gateway Gemini, Chrome headless)
+workstation_enabled = false    # VM-Workstation (Ubuntu Desktop + Chrome reale)
+# wakeword: si abilita aggiungendo istanze a wakeword_instances (sotto)
+
+# -----------------------------------------------------------------------------
+# Tipo di deploy (solo per LXC-JARVIS)
 # -----------------------------------------------------------------------------
 # "lxc_gpu" = LXC con GPU NVIDIA (AI locale — Ollama/Whisper)
 # "lxc"     = LXC senza GPU (AI via API — Groq/OpenRouter/Gemini)
@@ -91,6 +100,18 @@ gpu_devices = [
 gpu_cgroup_device_majors = [195, 234, 509]
 
 # -----------------------------------------------------------------------------
+# LXC-OpenClaw (Gateway Gemini + Chrome headless)
+# -----------------------------------------------------------------------------
+# Node.js bare-metal, Chrome headless CDP, browser-dom plugin.
+# NO Docker, NO GPU. Configurato da Ansible: playbooks/openclaw.yml
+openclaw_hostname    = "jarvis-openclaw"
+openclaw_ct_id       = 101                   # 0 per auto-assign
+openclaw_cores       = 2
+openclaw_memory      = 4096                  # 4 GB
+openclaw_disk_size   = 30                    # GB
+openclaw_ip_address  = "192.168.1.51/24"     # oppure "dhcp"
+
+# -----------------------------------------------------------------------------
 # VM Workstation (opzionale — Ubuntu Desktop + XFCE)
 # -----------------------------------------------------------------------------
 # VM desktop per: Chrome reale + OpenClaw browser extension, IDE, Git, dev.
@@ -101,7 +122,6 @@ gpu_cgroup_device_majors = [195, 234, 509]
 #   Proxmox UI > local storage > ISO Images > Download from URL:
 #   https://releases.ubuntu.com/24.04.2/ubuntu-24.04.2-desktop-amd64.iso
 
-workstation_enabled       = false                # true per creare la VM
 workstation_hostname      = "jarvis-workstation"
 workstation_vm_id         = 200                  # 0 per auto-assign
 workstation_cores         = 6

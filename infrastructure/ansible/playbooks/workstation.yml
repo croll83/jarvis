@@ -1,0 +1,354 @@
+---
+# =============================================================================
+# JARVIS — VM Workstation Setup (Ubuntu Desktop)
+# =============================================================================
+# Configura la VM Workstation dopo l'installazione manuale di Ubuntu.
+#
+# Prerequisiti:
+#   - Ubuntu Desktop installato (da ISO via noVNC Proxmox)
+#   - SSH accessibile (utente jarvis con sudo)
+#   - Rete configurata (IP statico o DHCP)
+#
+# Utilizzo:
+#   ansible-playbook playbooks/workstation.yml
+#
+# Installa: qemu-guest-agent, XFCE (opzionale), xrdp, Chrome, Git,
+#           nvm + Node.js LTS, Python 3 + pip + venv, Cursor IDE,
+#           Tailscale (opzionale)
+
+- name: Setup VM Workstation
+  hosts: workstation
+  become: true
+  tags: [workstation]
+
+  vars:
+    ws_user: "{{ jarvis_user | default('jarvis') }}"
+    nvm_version: "0.40.1"
+    install_xfce: true
+    install_tailscale: true
+
+  tasks:
+    # -----------------------------------------------------------------
+    # SYSTEM UPDATE + BASE PACKAGES
+    # -----------------------------------------------------------------
+    - name: Aggiorna cache apt
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Aggiorna tutti i pacchetti
+      ansible.builtin.apt:
+        upgrade: dist
+
+    - name: Installa pacchetti base
+      ansible.builtin.apt:
+        name:
+          - curl
+          - wget
+          - git
+          - nano
+          - vim
+          - htop
+          - jq
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - build-essential
+          - software-properties-common
+          - unzip
+          - apt-transport-https
+        state: present
+
+    # -----------------------------------------------------------------
+    # QEMU GUEST AGENT (Proxmox integration)
+    # -----------------------------------------------------------------
+    - name: Installa QEMU Guest Agent
+      ansible.builtin.apt:
+        name: qemu-guest-agent
+        state: present
+
+    - name: Abilita QEMU Guest Agent
+      ansible.builtin.systemd:
+        name: qemu-guest-agent
+        state: started
+        enabled: true
+
+    # -----------------------------------------------------------------
+    # XFCE (opzionale — piu leggero di GNOME)
+    # -----------------------------------------------------------------
+    - name: Installa XFCE Desktop
+      ansible.builtin.apt:
+        name:
+          - xfce4
+          - xfce4-goodies
+        state: present
+      when: install_xfce | default(true)
+
+    # -----------------------------------------------------------------
+    # XRDP (accesso RDP)
+    # -----------------------------------------------------------------
+    - name: Installa xrdp
+      ansible.builtin.apt:
+        name: xrdp
+        state: present
+
+    - name: Abilita e avvia xrdp
+      ansible.builtin.systemd:
+        name: xrdp
+        state: started
+        enabled: true
+
+    - name: Aggiungi utente al gruppo ssl-cert
+      ansible.builtin.user:
+        name: "{{ ws_user }}"
+        groups: ssl-cert
+        append: true
+
+    - name: Configura xrdp per XFCE
+      ansible.builtin.copy:
+        dest: "/home/{{ ws_user }}/.xsession"
+        content: "xfce4-session"
+        owner: "{{ ws_user }}"
+        group: "{{ ws_user }}"
+        mode: "0755"
+      when: install_xfce | default(true)
+
+    - name: Riavvia xrdp
+      ansible.builtin.systemd:
+        name: xrdp
+        state: restarted
+
+    # -----------------------------------------------------------------
+    # GOOGLE CHROME
+    # -----------------------------------------------------------------
+    - name: Verifica se Chrome e installato
+      ansible.builtin.command: google-chrome --version
+      register: chrome_check
+      changed_when: false
+      failed_when: false
+
+    - name: Installa Google Chrome
+      when: chrome_check.rc != 0
+      block:
+        - name: Scarica Chrome .deb
+          ansible.builtin.get_url:
+            url: https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+            dest: /tmp/google-chrome-stable.deb
+            mode: "0644"
+
+        - name: Installa Chrome
+          ansible.builtin.apt:
+            deb: /tmp/google-chrome-stable.deb
+            state: present
+
+        - name: Rimuovi .deb
+          ansible.builtin.file:
+            path: /tmp/google-chrome-stable.deb
+            state: absent
+
+    - name: Mostra versione Chrome
+      ansible.builtin.command: google-chrome --version
+      register: chrome_version
+      changed_when: false
+
+    - name: "Chrome: {{ chrome_version.stdout }}"
+      ansible.builtin.debug:
+        msg: "{{ chrome_version.stdout }}"
+
+    # -----------------------------------------------------------------
+    # GIT CONFIG
+    # -----------------------------------------------------------------
+    - name: Configura Git default branch
+      ansible.builtin.command: git config --global init.defaultBranch main
+      become_user: "{{ ws_user }}"
+      changed_when: false
+
+    - name: Genera chiave SSH (se non esiste)
+      ansible.builtin.command: ssh-keygen -t ed25519 -C "jarvis-workstation" -f /home/{{ ws_user }}/.ssh/id_ed25519 -N ""
+      become_user: "{{ ws_user }}"
+      args:
+        creates: "/home/{{ ws_user }}/.ssh/id_ed25519"
+
+    # -----------------------------------------------------------------
+    # NVM + NODE.JS
+    # -----------------------------------------------------------------
+    - name: Verifica se nvm e installato
+      ansible.builtin.stat:
+        path: "/home/{{ ws_user }}/.nvm/nvm.sh"
+      register: nvm_check
+
+    - name: Installa nvm
+      ansible.builtin.shell: |
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v{{ nvm_version }}/install.sh | bash
+      become_user: "{{ ws_user }}"
+      environment:
+        HOME: "/home/{{ ws_user }}"
+      args:
+        creates: "/home/{{ ws_user }}/.nvm/nvm.sh"
+      when: not nvm_check.stat.exists
+
+    - name: Installa Node.js LTS via nvm
+      ansible.builtin.shell: |
+        export NVM_DIR="/home/{{ ws_user }}/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        nvm install --lts
+        nvm alias default lts/*
+      become_user: "{{ ws_user }}"
+      environment:
+        HOME: "/home/{{ ws_user }}"
+      args:
+        executable: /bin/bash
+      register: node_install
+      changed_when: "'is already installed' not in node_install.stderr"
+
+    - name: Verifica Node.js
+      ansible.builtin.shell: |
+        export NVM_DIR="/home/{{ ws_user }}/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        node --version
+      become_user: "{{ ws_user }}"
+      environment:
+        HOME: "/home/{{ ws_user }}"
+      args:
+        executable: /bin/bash
+      register: node_version
+      changed_when: false
+
+    - name: "Node.js: {{ node_version.stdout }}"
+      ansible.builtin.debug:
+        msg: "{{ node_version.stdout }}"
+
+    # -----------------------------------------------------------------
+    # PYTHON 3 + PIP + VENV
+    # -----------------------------------------------------------------
+    - name: Installa Python 3 tools
+      ansible.builtin.apt:
+        name:
+          - python3-pip
+          - python3-venv
+          - python3-dev
+        state: present
+
+    # -----------------------------------------------------------------
+    # CURSOR IDE (AppImage)
+    # -----------------------------------------------------------------
+    - name: Installa libfuse2 (per AppImage)
+      ansible.builtin.apt:
+        name: libfuse2t64
+        state: present
+      failed_when: false
+
+    - name: Installa libfuse2 (fallback nome pacchetto)
+      ansible.builtin.apt:
+        name: libfuse2
+        state: present
+      failed_when: false
+
+    - name: Crea directory bin
+      ansible.builtin.file:
+        path: "/home/{{ ws_user }}/.local/bin"
+        state: directory
+        owner: "{{ ws_user }}"
+        group: "{{ ws_user }}"
+        mode: "0755"
+
+    - name: Scarica Cursor AppImage
+      ansible.builtin.get_url:
+        url: "https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=stable"
+        dest: "/home/{{ ws_user }}/.local/bin/cursor"
+        owner: "{{ ws_user }}"
+        group: "{{ ws_user }}"
+        mode: "0755"
+      register: cursor_download
+      failed_when: false
+
+    - name: Crea desktop entry per Cursor
+      ansible.builtin.copy:
+        dest: "/home/{{ ws_user }}/.local/share/applications/cursor.desktop"
+        owner: "{{ ws_user }}"
+        group: "{{ ws_user }}"
+        mode: "0644"
+        content: |
+          [Desktop Entry]
+          Name=Cursor
+          Exec=/home/{{ ws_user }}/.local/bin/cursor --no-sandbox %U
+          Icon=cursor
+          Type=Application
+          Categories=Development;IDE;
+          StartupWMClass=Cursor
+      when: cursor_download is succeeded
+
+    # -----------------------------------------------------------------
+    # TAILSCALE (opzionale)
+    # -----------------------------------------------------------------
+    - name: Installa Tailscale
+      ansible.builtin.shell: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+      args:
+        creates: /usr/bin/tailscale
+      when: install_tailscale | default(true)
+
+    # -----------------------------------------------------------------
+    # /dev/shm (fix per Chrome in VM)
+    # -----------------------------------------------------------------
+    - name: Aumenta /dev/shm a 2 GB
+      ansible.posix.mount:
+        path: /dev/shm
+        src: tmpfs
+        fstype: tmpfs
+        opts: defaults,size=2g
+        state: mounted
+      failed_when: false
+
+    # -----------------------------------------------------------------
+    # UFW FIREWALL (opzionale)
+    # -----------------------------------------------------------------
+    - name: Installa UFW
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+
+    - name: UFW — consenti SSH
+      community.general.ufw:
+        rule: allow
+        name: OpenSSH
+
+    - name: UFW — consenti RDP
+      community.general.ufw:
+        rule: allow
+        port: "3389"
+        proto: tcp
+
+    - name: UFW — abilita
+      community.general.ufw:
+        state: enabled
+
+    # -----------------------------------------------------------------
+    # RIEPILOGO
+    # -----------------------------------------------------------------
+    - name: Riepilogo
+      ansible.builtin.debug:
+        msg: |
+          ================================================================
+          VM Workstation Setup completato!
+          ================================================================
+
+          Installati:
+            - QEMU Guest Agent
+            - XFCE Desktop + xrdp (RDP :3389)
+            - Google Chrome {{ chrome_version.stdout | default('') }}
+            - Git + chiave SSH generata
+            - nvm + Node.js {{ node_version.stdout | default('LTS') }}
+            - Python 3 + pip + venv
+            - Cursor IDE (AppImage)
+            - Tailscale (da connettere: tailscale up --hostname=jarvis-workstation)
+
+          Accesso RDP:
+            remmina → {{ ansible_default_ipv4.address | default('IP della VM') }}:3389
+
+          Prossimi passi:
+            1. Connettiti via RDP
+            2. Apri Chrome e installa l'estensione OpenClaw browser
+            3. Configura Git: git config --global user.name/email
+            4. Connetti Tailscale: sudo tailscale up --hostname=jarvis-workstation
+          ================================================================

@@ -45,7 +45,25 @@ variable "proxmox_node" {
 }
 
 # -----------------------------------------------------------------------------
-# LXC Settings
+# Componenti da creare (abilita/disabilita singolarmente)
+# -----------------------------------------------------------------------------
+variable "jarvis_enabled" {
+  description = "Crea il LXC-JARVIS (true/false)"
+  type        = bool
+  default     = true
+}
+
+variable "openclaw_enabled" {
+  description = "Crea il LXC-OpenClaw (true/false)"
+  type        = bool
+  default     = true
+}
+
+# workstation_enabled è definito più in basso nella sezione VM Workstation
+# wakeword_instances = {} (map vuota) equivale a disabilitato
+
+# -----------------------------------------------------------------------------
+# LXC-JARVIS Settings
 # -----------------------------------------------------------------------------
 variable "hostname" {
   description = "Hostname per il container LXC"
@@ -166,6 +184,45 @@ variable "gpu_cgroup_device_majors" {
   description = "Major number dei device NVIDIA per cgroup2 allow (decimale)"
   type        = list(number)
   default     = [195, 234, 509]
+}
+
+# -----------------------------------------------------------------------------
+# LXC-OpenClaw Settings
+# -----------------------------------------------------------------------------
+variable "openclaw_hostname" {
+  description = "Hostname per il container LXC-OpenClaw"
+  type        = string
+  default     = "jarvis-openclaw"
+}
+
+variable "openclaw_ct_id" {
+  description = "Proxmox CT ID per OpenClaw (0 = auto-assign)"
+  type        = number
+  default     = 0
+}
+
+variable "openclaw_cores" {
+  description = "Numero core CPU per OpenClaw"
+  type        = number
+  default     = 2
+}
+
+variable "openclaw_memory" {
+  description = "RAM in MB per OpenClaw"
+  type        = number
+  default     = 4096
+}
+
+variable "openclaw_disk_size" {
+  description = "Dimensione disco root in GB per OpenClaw"
+  type        = number
+  default     = 30
+}
+
+variable "openclaw_ip_address" {
+  description = "IP statico OpenClaw in CIDR (es. 192.168.1.51/24) oppure 'dhcp'"
+  type        = string
+  default     = "dhcp"
 }
 
 # -----------------------------------------------------------------------------

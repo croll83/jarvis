@@ -57,15 +57,20 @@ cp terraform.tfvars.example terraform.tfvars
 nano terraform.tfvars
 ```
 
-Modifica `terraform.tfvars` — abilita la workstation:
+Modifica `terraform.tfvars` — abilita solo la workstation (disabilita il resto se non ti serve):
 
 ```hcl
-workstation_enabled     = true
+# Scegli cosa creare:
+jarvis_enabled      = false    # disabilita se non installi ancora LXC-JARVIS
+openclaw_enabled    = false    # disabilita se non installi ancora LXC-OpenClaw
+workstation_enabled = true     # <-- abilita la workstation
+
+# Configurazione workstation:
 workstation_hostname    = "jarvis-workstation"
 workstation_vm_id       = 200
 workstation_cores       = 6
 workstation_memory      = 12288       # 12 GB
-workstation_disk_size   = 250         # GB
+workstation_disk_size   = 400         # GB
 workstation_iso_file_id = "local:iso/ubuntu-24.04.2-desktop-amd64.iso"
 workstation_ip_address  = "192.168.1.60/24"   # oppure "dhcp"
 workstation_password    = "la-tua-password"
@@ -95,7 +100,7 @@ automaticamente dall'ISO.
    - SCSI Controller: VirtIO SCSI single
    - Qemu Agent: abilitato
 5. **Disks:**
-   - Bus: SCSI, Disco: 250 GB
+   - Bus: SCSI, Disco: 400 GB
    - Storage: local-lvm
    - Discard: abilitato, IO Thread: abilitato, SSD emulation: si
 6. **CPU:**
@@ -131,7 +136,23 @@ automaticamente dall'ISO.
 
 ---
 
-## Step 4 — Post-installazione base
+## Step 4 — Setup automatico (Ansible) o manuale
+
+### Opzione A: Ansible (consigliato — fa tutto in un comando)
+
+Dopo aver installato Ubuntu e verificato che SSH funziona:
+
+```bash
+cd infrastructure/ansible
+# Assicurati che inventory/hosts.yml abbia la sezione workstation con l'IP corretto
+# Poi:
+ansible-playbook playbooks/workstation.yml
+```
+
+Il playbook installa: qemu-guest-agent, XFCE, xrdp, Chrome, Git, nvm + Node.js,
+Python 3, Cursor IDE, Tailscale, firewall. Fatto — salta al **Step 12** (desktop host).
+
+### Opzione B: Manuale (step 4–11)
 
 Entra nella VM (console noVNC o SSH dopo aver configurato la rete):
 
@@ -162,7 +183,7 @@ sudo apt install -y xfce4 xfce4-goodies
 ```
 
 > **Nota:** Puoi tenere sia GNOME che XFCE e scegliere al login.
-> XFCE consuma ~1 GB RAM vs ~1.5 GB di GNOME — su 8 GB totali fa differenza.
+> XFCE consuma ~1 GB RAM vs ~1.5 GB di GNOME — su 12 GB totali non è critico ma comunque meglio.
 
 ---
 
@@ -381,7 +402,7 @@ sudo ufw enable
 |------------|---------|
 | CPU | 6 core (host passthrough) |
 | RAM | 12 GB |
-| Disco | 250 GB VirtIO SCSI (SSD, iothread, discard) |
+| Disco | 400 GB VirtIO SCSI (SSD, iothread, discard) |
 | Display | QXL (buona qualita con noVNC e SPICE) |
 | Rete | VirtIO bridge vmbr0 |
 | Accesso | RDP :3389 + noVNC Proxmox |
