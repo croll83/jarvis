@@ -56,6 +56,18 @@ TAILSCALE_TIMEOUT_LOCAL = float(os.getenv("TAILSCALE_TIMEOUT_LOCAL", "10.0"))
 # Se vuoto, l'autenticazione device è disabilitata
 DEVICE_API_TOKEN = os.getenv("DEVICE_API_TOKEN", "")
 
+# Wakeword Server URLs (one per location/casa, JSON map)
+# Format: {"location_id": "http://192.168.1.X:8200", ...}
+# Used to push wake_word_sensitivity and trigger_listen to LXC wakeword-servers
+WAKEWORD_SERVER_URLS_RAW = os.getenv("WAKEWORD_SERVER_URLS", "")
+WAKEWORD_SERVER_URLS: dict = {}
+if WAKEWORD_SERVER_URLS_RAW:
+    try:
+        import json
+        WAKEWORD_SERVER_URLS = json.loads(WAKEWORD_SERVER_URLS_RAW)
+    except Exception:
+        pass
+
 # OpenClaw (AI Brain - Gemini 3 Pro)
 OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://localhost:18789")
 OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "")

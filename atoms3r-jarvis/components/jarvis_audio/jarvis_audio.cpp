@@ -30,20 +30,24 @@ extern "C" {
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 
+#ifdef USE_LOCAL_WAKEWORD
 // ESPMicroSpeechFeatures (mel spectrogram frontend)
 #include "frontend.h"
 #include "frontend_util.h"
 
 // Model data (embedded as C array)
 #include "jarvis_wakeword_model.h"
+#endif // USE_LOCAL_WAKEWORD
 }
 
+#ifdef USE_LOCAL_WAKEWORD
 // TFLite Micro (C++ API)
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_allocator.h"
 #include "tensorflow/lite/micro/micro_resource_variable.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#endif // USE_LOCAL_WAKEWORD
 
 static const char *TAG = "AUDIO";
 
@@ -56,6 +60,10 @@ static const char *TAG = "AUDIO";
 // Raw ring buffer for WS audio streaming (1 second @ 16kHz mono 16-bit = 32KB)
 #define RAW_RINGBUF_SIZE        (16000 * 2)
 
+// Audio read chunk size (used by feed task regardless of wake word mode)
+#define AUDIO_FEED_CHUNK_SAMPLES 160  // 10ms @ 16kHz
+
+#ifdef USE_LOCAL_WAKEWORD
 // microWakeWord preprocessing parameters (must match training config)
 #define MWW_WINDOW_SIZE_MS      30      // 30ms window
 #define MWW_STEP_SIZE_MS        10      // 10ms hop (ESPHome V2 model JSON: feature_step_size=10)
@@ -67,15 +75,16 @@ static const char *TAG = "AUDIO";
 #define MWW_STEP_SAMPLES        (MIC_SAMPLE_RATE * MWW_STEP_SIZE_MS / 1000)  // 160 @ 10ms step
 
 // Detection parameters
-// NOTE: jarvis_config.h is in main/ and cannot be included by components.
-// These values must be kept in sync with jarvis_config.h manually.
-// The server can also override sensitivity at runtime via config_update WS message.
 #define MWW_PROBABILITY_CUTOFF      0.50f  // Probability threshold (server can override at runtime)
 #define MWW_SLIDING_WINDOW_SIZE     3      // Smaller window = react faster to short peaks
 #define MWW_MIN_SLICES_BEFORE_DET   74     // ~1.5s at 20ms step
 
 // TFLite tensor arena size (model-dependent, ~23KB for typical microWakeWord)
 #define TENSOR_ARENA_SIZE       (32 * 1024)
+#else
+// Without local wakeword, use same chunk size for feed task
+#define MWW_STEP_SAMPLES        AUDIO_FEED_CHUNK_SAMPLES
+#endif // USE_LOCAL_WAKEWORD
 
 // =============================================================================
 // STATE
@@ -88,20 +97,25 @@ static bool voice_active = false;
 // Wake word callback
 static wake_word_callback_t wake_callback = NULL;
 
+#ifdef USE_LOCAL_WAKEWORD
 // Runtime sensitivity threshold (initialized from MWW_PROBABILITY_CUTOFF, updatable at runtime)
 static float runtime_probability_cutoff = MWW_PROBABILITY_CUTOFF;
 
 // microWakeWord state
 static bool mww_initialized = false;
+#endif // USE_LOCAL_WAKEWORD
 
 // Audio tasks
 static TaskHandle_t audio_feed_task_handle = NULL;
+#ifdef USE_LOCAL_WAKEWORD
 static TaskHandle_t mww_detect_task_handle = NULL;
+#endif
 
 // Raw audio ring buffer for WS audio streaming
 static RingbufHandle_t raw_ringbuf = NULL;
 static volatile bool streaming_to_ringbuf = false;
 
+#ifdef USE_LOCAL_WAKEWORD
 // TFLite Micro objects (C++ - allocated statically)
 static uint8_t *tensor_arena = NULL;
 static uint8_t *var_arena = NULL;  // Separate arena for streaming variable state
@@ -122,6 +136,7 @@ static int slices_since_last_det = 0;
 // Model stride tracking (how many feature slices per inference)
 static int model_stride = 1;
 static int current_stride_step = 0;
+#endif // USE_LOCAL_WAKEWORD
 
 // =============================================================================
 // HELPER FUNCTIONS
@@ -140,6 +155,7 @@ static float calculate_rms(int16_t* samples, size_t count) {
     return normalized > 1.0f ? 1.0f : normalized;
 }
 
+#ifdef USE_LOCAL_WAKEWORD
 // Convert uint16 frontend output to int8 for TFLite model input
 // Matches ESPHome/microWakeWord quantization: (feature * 256) / 666 - 128
 static int8_t quantize_feature(uint16_t feature_val) {
@@ -151,7 +167,7 @@ static int8_t quantize_feature(uint16_t feature_val) {
 }
 
 // =============================================================================
-// TFLITE MODEL INITIALIZATION
+// TFLITE MODEL INITIALIZATION (local wake word only)
 // =============================================================================
 
 static bool init_tflite_model(void) {
@@ -353,15 +369,17 @@ static bool init_audio_frontend(void) {
     return true;
 }
 
-// =============================================================================
-// AUDIO FEED TASK (reads codec, feeds ring buffer + detection buffer)
-// =============================================================================
-
 // Shared buffer between feed and detect tasks
 static int16_t *detect_audio_buf = NULL;
 static volatile size_t detect_audio_available = 0;
 static SemaphoreHandle_t detect_audio_mutex = NULL;
 static SemaphoreHandle_t detect_audio_ready = NULL;
+
+#endif // USE_LOCAL_WAKEWORD
+
+// =============================================================================
+// AUDIO FEED TASK (reads codec, feeds ring buffer + detection buffer)
+// =============================================================================
 
 static void audio_feed_task(void* arg) {
     // Read in chunks matching the feature step size
@@ -396,7 +414,8 @@ static void audio_feed_task(void* arg) {
                                 copy_len * sizeof(int16_t), 0);
             }
 
-            // PATH 2: Wake word detection (pass audio to detect task)
+            // PATH 2: Wake word detection (pass audio to detect task) — local only
+            #ifdef USE_LOCAL_WAKEWORD
             if (mww_initialized && listening && detect_audio_mutex) {
                 if (xSemaphoreTake(detect_audio_mutex, 0) == pdTRUE) {
                     memcpy(detect_audio_buf, mono_buff, samples * sizeof(int16_t));
@@ -405,6 +424,7 @@ static void audio_feed_task(void* arg) {
                     xSemaphoreGive(detect_audio_ready);
                 }
             }
+            #endif // USE_LOCAL_WAKEWORD
         } else {
             vTaskDelay(pdMS_TO_TICKS(5));
         }
@@ -414,6 +434,7 @@ static void audio_feed_task(void* arg) {
     vTaskDelete(NULL);
 }
 
+#ifdef USE_LOCAL_WAKEWORD
 // =============================================================================
 // WAKE WORD DETECT TASK (microWakeWord TFLite inference)
 // =============================================================================
@@ -559,6 +580,7 @@ static void mww_detect_task(void* arg) {
 
     vTaskDelete(NULL);
 }
+#endif // USE_LOCAL_WAKEWORD
 
 // =============================================================================
 // INITIALIZATION
@@ -582,6 +604,7 @@ bool jarvis_audio_init(void) {
     }
     ESP_LOGI(TAG, "Raw audio ring buffer created (%d bytes)", RAW_RINGBUF_SIZE);
 
+    #ifdef USE_LOCAL_WAKEWORD
     // Allocate shared audio buffer for feed->detect communication
     detect_audio_buf = (int16_t *)heap_caps_malloc(MWW_STEP_SAMPLES * sizeof(int16_t),
                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -608,6 +631,9 @@ bool jarvis_audio_init(void) {
         ESP_LOGW(TAG, "microWakeWord init failed — continuing without wake word");
         ESP_LOGW(TAG, "Make sure to embed the actual jarvis_it.tflite model data");
     }
+    #else
+    ESP_LOGI(TAG, "Server-side wake word mode — local MWW disabled");
+    #endif // USE_LOCAL_WAKEWORD
 
     // Start audio feed task (Core 1, priority 5 — continuous I2S read)
     xTaskCreatePinnedToCore(
@@ -620,6 +646,7 @@ bool jarvis_audio_init(void) {
         1  // Core 1
     );
 
+    #ifdef USE_LOCAL_WAKEWORD
     // Start wake word detect task (Core 0, priority 6 — inference)
     if (mww_initialized) {
         xTaskCreatePinnedToCore(
@@ -632,22 +659,31 @@ bool jarvis_audio_init(void) {
             0  // Core 0
         );
     }
-
     ESP_LOGI(TAG, "Audio module initialized (microWakeWord + dual-path ring buffer)");
+    #else
+    // Server-side wake word: enable ring buffer streaming from boot
+    // The WS audio module will continuously send Opus frames to the wakeword-server
+    streaming_to_ringbuf = true;
+    ESP_LOGI(TAG, "Audio module initialized (ring buffer always-on for server-side wake word)");
+    #endif // USE_LOCAL_WAKEWORD
+
     return true;
 }
 
 void jarvis_audio_deinit(void) {
+    #ifdef USE_LOCAL_WAKEWORD
     if (mww_detect_task_handle) {
         vTaskDelete(mww_detect_task_handle);
         mww_detect_task_handle = NULL;
     }
+    #endif
 
     if (audio_feed_task_handle) {
         vTaskDelete(audio_feed_task_handle);
         audio_feed_task_handle = NULL;
     }
 
+    #ifdef USE_LOCAL_WAKEWORD
     mww_initialized = false;
 
     if (frontend_initialized) {
@@ -675,6 +711,7 @@ void jarvis_audio_deinit(void) {
         vSemaphoreDelete(detect_audio_ready);
         detect_audio_ready = NULL;
     }
+    #endif // USE_LOCAL_WAKEWORD
 
     if (raw_ringbuf) {
         vRingbufferDelete(raw_ringbuf);
@@ -691,6 +728,7 @@ void jarvis_audio_deinit(void) {
 void jarvis_audio_start_listening(void) {
     listening = true;
 
+    #ifdef USE_LOCAL_WAKEWORD
     // Reset detection state
     memset(recent_probs, 0, sizeof(recent_probs));
     prob_idx = 0;
@@ -702,6 +740,9 @@ void jarvis_audio_start_listening(void) {
     }
 
     ESP_LOGI(TAG, "Listening started (microWakeWord enabled)");
+    #else
+    ESP_LOGI(TAG, "Listening started (server-side wake word)");
+    #endif
 }
 
 void jarvis_audio_stop_listening(void) {
@@ -781,7 +822,11 @@ void jarvis_audio_set_wake_callback(wake_word_callback_t cb) {
 void jarvis_audio_set_sensitivity(float threshold) {
     if (threshold < 0.0f) threshold = 0.0f;
     if (threshold > 1.0f) threshold = 1.0f;
+    #ifdef USE_LOCAL_WAKEWORD
     ESP_LOGI(TAG, "Wake word sensitivity updated: %.2f -> %.2f",
              runtime_probability_cutoff, threshold);
     runtime_probability_cutoff = threshold;
+    #else
+    ESP_LOGI(TAG, "Wake word sensitivity %.2f (server-side, local ignored)", threshold);
+    #endif
 }

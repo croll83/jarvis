@@ -705,6 +705,7 @@ async def ws_audio_endpoint(
 async def trigger_device_listen(device_id: str, silent: bool = True) -> bool:
     """
     Trigger a device to start listening via persistent WS.
+    Falls back to wakeword-server REST API if device not directly connected.
 
     Args:
         device_id: MAC address of target device (uppercase)
@@ -718,13 +719,52 @@ async def trigger_device_listen(device_id: str, silent: bool = True) -> bool:
     async with _connections_lock:
         conn = _persistent_connections.get(device_id)
 
-    if not conn:
-        logger.warning(f"trigger_device_listen: device {device_id} not connected")
-        return False
+    if conn:
+        result = await conn.trigger_listen(silent=silent)
+        logger.info(f"trigger_device_listen({device_id}, silent={silent}): {'OK' if result else 'FAILED'}")
+        return result
 
-    result = await conn.trigger_listen(silent=silent)
-    logger.info(f"trigger_device_listen({device_id}, silent={silent}): {'OK' if result else 'FAILED'}")
-    return result
+    # Device not directly connected — try via wakeword-server REST
+    result = await _trigger_via_wakeword_server(device_id, silent)
+    if result:
+        logger.info(f"trigger_device_listen({device_id}, silent={silent}): OK (via wakeword-server)")
+        return True
+
+    logger.warning(f"trigger_device_listen: device {device_id} not connected (direct or via wakeword-server)")
+    return False
+
+
+async def _trigger_via_wakeword_server(device_id: str, silent: bool) -> bool:
+    """Try to trigger_listen via wakeword-server REST API."""
+    try:
+        from config import WAKEWORD_SERVER_URLS, DEVICE_API_TOKEN
+        from database import get_voice_device
+        if not WAKEWORD_SERVER_URLS:
+            return False
+
+        device = get_voice_device(device_id)
+        wakeword_url = None
+        if device and device.location_id:
+            wakeword_url = WAKEWORD_SERVER_URLS.get(device.location_id)
+        if not wakeword_url and len(WAKEWORD_SERVER_URLS) == 1:
+            wakeword_url = next(iter(WAKEWORD_SERVER_URLS.values()))
+        if not wakeword_url:
+            return False
+
+        import httpx
+        headers = {}
+        if DEVICE_API_TOKEN:
+            headers["Authorization"] = f"Bearer {DEVICE_API_TOKEN}"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{wakeword_url}/api/trigger_listen/{device_id}",
+                params={"silent": str(silent).lower()},
+                headers=headers,
+            )
+            return resp.status_code == 200
+    except Exception as e:
+        logger.debug(f"trigger_via_wakeword_server failed for {device_id}: {e}")
+        return False
 
 
 async def get_connected_devices() -> list:

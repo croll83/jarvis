@@ -1825,6 +1825,48 @@ async def get_voice_device_detail(device_id: str) -> Dict[str, Any]:
     return device.to_dict()
 
 
+# ---------------------------------------------------------------------------
+# Wakeword-server LXC helpers
+# ---------------------------------------------------------------------------
+
+def _get_wakeword_server_url(device_id: str) -> Optional[str]:
+    """Get wakeword-server URL for a device based on its location."""
+    from config import WAKEWORD_SERVER_URLS, DEVICE_API_TOKEN
+    if not WAKEWORD_SERVER_URLS:
+        return None
+    try:
+        device = get_voice_device(device_id)
+        if device and device.location_id:
+            return WAKEWORD_SERVER_URLS.get(device.location_id)
+    except Exception:
+        pass
+    # Fallback: if only one URL configured, use it
+    if len(WAKEWORD_SERVER_URLS) == 1:
+        return next(iter(WAKEWORD_SERVER_URLS.values()))
+    return None
+
+
+async def _push_wakeword_config(device_id: str, sensitivity: float):
+    """Push wake_word_threshold to wakeword-server LXC via REST."""
+    wakeword_url = _get_wakeword_server_url(device_id)
+    if not wakeword_url:
+        return
+    try:
+        import httpx
+        from config import DEVICE_API_TOKEN
+        headers = {}
+        if DEVICE_API_TOKEN:
+            headers["Authorization"] = f"Bearer {DEVICE_API_TOKEN}"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{wakeword_url}/api/config/{device_id}",
+                json={"wake_word_threshold": sensitivity},
+                headers=headers,
+            )
+    except Exception as e:
+        logger.debug(f"Push wakeword config to LXC failed for {device_id}: {e}")
+
+
 @router.post("/voice-devices")
 async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, Any]:
     """
@@ -1865,6 +1907,9 @@ async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, An
             })
         except Exception:
             pass  # Device may not be connected
+
+        # Also push to wakeword-server LXC if configured
+        await _push_wakeword_config(device_id, data.wake_word_sensitivity)
 
     device = get_voice_device(device_id)
 
@@ -1925,6 +1970,9 @@ async def update_voice_device_endpoint(
             })
         except Exception:
             pass  # Device may not be connected
+
+        # Also push to wakeword-server LXC if configured
+        await _push_wakeword_config(device_id, data.wake_word_sensitivity)
 
     device = get_voice_device(device_id)
 

@@ -101,6 +101,18 @@
       when: deploy_type == "lxc_gpu" and ai_backend == "local"
 
     # -----------------------------------------------------------------
+    # WAKEWORD SERVER (se configurato)
+    # -----------------------------------------------------------------
+    - name: Check Wakeword Server health
+      ansible.builtin.uri:
+        url: "{{ wakeword_server_url | default('http://localhost:8200') }}/health"
+        method: GET
+        timeout: 10
+      register: wakeword_check
+      failed_when: false
+      when: check_wakeword | default(false)
+
+    # -----------------------------------------------------------------
     # SECURITY STACK (se installato)
     # -----------------------------------------------------------------
     - name: Check MQTT
@@ -169,6 +181,13 @@
             MQTT:            {{ 'porta 1883 attiva' if (mqtt_check.state | default('')) == 'started' else 'FAIL' }}
             Frigate:         {{ 'OK' if (frigate_check.status | default(0)) == 200 else 'FAIL' }}
             DoubleTake:      {{ 'OK' if (doubletake_check.status | default(0)) == 200 else 'FAIL' }}
+          {% endif %}
+
+          {% if check_wakeword | default(false) %}
+
+          WAKEWORD SERVER:
+            Health:          {{ 'OK' if (wakeword_check.status | default(0)) == 200 else 'OFFLINE' }}
+            Devices:         {{ wakeword_check.json.connected_devices | default('N/A') if (wakeword_check.status | default(0)) == 200 else 'N/A' }}
           {% endif %}
 
           ACCESSO:

@@ -1,0 +1,169 @@
+---
+# =============================================================================
+# JARVIS — Wakeword Server Deployment (Ansible)
+# =============================================================================
+# Deploys jarvis-wakeword-server + Tailscale on an LXC container (1 per casa).
+#
+# Prerequisiti:
+#   - LXC container creato (via Terraform o deploy-wakeword.sh)
+#   - SSH access configurato
+#
+# Variabili richieste:
+#   - orchestrator_ws_url: ws://jarvis-pub.mintwork.it/ws/audio
+#   - device_api_token: token condiviso con orchestrator e device
+#   - tailscale_authkey: Tailscale auth key per unirsi alla tailnet
+#   - tailscale_hostname: nome del nodo Tailscale (es. jarvis-wakeword)
+#
+# Variabili opzionali:
+#   - wakeword_threshold: soglia di default (0.5)
+#   - multiroom_cooldown_s: cooldown multi-room in secondi (5)
+#   - jarvis_repo: URL del repo git
+#
+# Utilizzo:
+#   ansible-playbook playbooks/wakeword.yml -i inventory/wakeword.ini
+#
+# Deploy alternativo (consigliato per singola casa):
+#   cloud/scripts/deploy-wakeword.sh (esegui direttamente su Proxmox host)
+# =============================================================================
+
+- name: Deploy JARVIS Wakeword Server
+  hosts: wakeword
+  become: true
+  tags: [wakeword]
+
+  vars:
+    jarvis_repo: "{{ jarvis_repo | default('https://github.com/croll83/jarvis.git') }}"
+    wakeword_dir: "/opt/jarvis-wakeword"
+    wakeword_threshold: "{{ wakeword_threshold | default('0.5') }}"
+    multiroom_cooldown_s: "{{ multiroom_cooldown_s | default('5') }}"
+    tailscale_hostname: "{{ tailscale_hostname | default('jarvis-wakeword') }}"
+
+  tasks:
+    # -----------------------------------------------------------------
+    # DOCKER
+    # -----------------------------------------------------------------
+    - name: Install Docker (if not present)
+      ansible.builtin.shell: |
+        if ! command -v docker &>/dev/null; then
+          curl -fsSL https://get.docker.com | sh
+          systemctl enable docker
+          systemctl start docker
+        fi
+      args:
+        creates: /usr/bin/docker
+
+    - name: Install Docker Compose plugin
+      ansible.builtin.apt:
+        name: docker-compose-plugin
+        state: present
+      when: ansible_os_family == "Debian"
+
+    # -----------------------------------------------------------------
+    # TAILSCALE
+    # -----------------------------------------------------------------
+    - name: Install Tailscale
+      ansible.builtin.shell: |
+        if ! command -v tailscale &>/dev/null; then
+          curl -fsSL https://tailscale.com/install.sh | sh
+        fi
+      args:
+        creates: /usr/bin/tailscale
+
+    - name: Connect Tailscale
+      ansible.builtin.shell: |
+        if ! tailscale status &>/dev/null 2>&1; then
+          tailscale up --hostname={{ tailscale_hostname }} --authkey='{{ tailscale_authkey }}'
+        fi
+      when: tailscale_authkey is defined and tailscale_authkey | length > 0
+
+    - name: Get Tailscale IP
+      ansible.builtin.command: tailscale ip -4
+      register: tailscale_ip
+      changed_when: false
+      failed_when: false
+
+    - name: Show Tailscale IP
+      ansible.builtin.debug:
+        msg: "Tailscale IP: {{ tailscale_ip.stdout | default('non connesso') }}"
+
+    # -----------------------------------------------------------------
+    # CODE
+    # -----------------------------------------------------------------
+    - name: Create wakeword directory
+      ansible.builtin.file:
+        path: "{{ wakeword_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Clone/update JARVIS repo (sparse checkout)
+      ansible.builtin.shell: |
+        if [ ! -d "{{ wakeword_dir }}/.git" ]; then
+          git clone --depth 1 --filter=blob:none --sparse "{{ jarvis_repo }}" "{{ wakeword_dir }}"
+          cd "{{ wakeword_dir }}"
+          git sparse-checkout set jarvis/wakeword-server
+        else
+          cd "{{ wakeword_dir }}"
+          git pull --depth 1
+        fi
+      args:
+        creates: "{{ wakeword_dir }}/jarvis/wakeword-server/server.py"
+
+    # -----------------------------------------------------------------
+    # ENV FILE
+    # -----------------------------------------------------------------
+    - name: Create .env file
+      ansible.builtin.copy:
+        dest: "{{ wakeword_dir }}/jarvis/wakeword-server/.env"
+        content: |
+          ORCHESTRATOR_WS_URL={{ orchestrator_ws_url }}
+          DEVICE_API_TOKEN={{ device_api_token }}
+          WAKEWORD_MODEL=hey_jarvis
+          WAKEWORD_THRESHOLD={{ wakeword_threshold }}
+          MULTIROOM_COOLDOWN_S={{ multiroom_cooldown_s }}
+        mode: "0600"
+
+    # -----------------------------------------------------------------
+    # DEPLOY
+    # -----------------------------------------------------------------
+    - name: Build and start wakeword-server
+      ansible.builtin.shell: |
+        cd "{{ wakeword_dir }}/jarvis/wakeword-server"
+        docker compose up -d --build
+      register: compose_up
+
+    - name: Show compose output
+      ansible.builtin.debug:
+        msg: "{{ compose_up.stdout_lines }}"
+      when: compose_up.stdout_lines | length > 0
+
+    # -----------------------------------------------------------------
+    # HEALTH CHECK
+    # -----------------------------------------------------------------
+    - name: Wait for wakeword-server health
+      ansible.builtin.uri:
+        url: "http://localhost:8200/health"
+        method: GET
+        timeout: 10
+      register: health_check
+      retries: 6
+      delay: 5
+      until: health_check.status == 200
+
+    - name: Deployment summary
+      ansible.builtin.debug:
+        msg: |
+          ================================================================
+            JARVIS Wakeword Server — Deploy Completato
+          ================================================================
+            Health:          OK
+            LAN:             http://{{ ansible_host }}:8200
+            Tailscale:       http://{{ tailscale_ip.stdout | default('N/A') }}:8200
+            Devices:         {{ health_check.json.connected_devices | default(0) }}
+
+            Orchestrator .env:
+              WAKEWORD_SERVER_URLS={"LOCATION_ID": "http://{{ tailscale_ip.stdout | default('IP') }}:8200"}
+
+            Firmware sdkconfig.local:
+              CONFIG_JARVIS_WS_URL="ws://{{ ansible_host }}:8200/ws/audio"
+              CONFIG_USE_LOCAL_WAKEWORD=n
+          ================================================================

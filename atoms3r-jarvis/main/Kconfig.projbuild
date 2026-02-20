@@ -32,6 +32,25 @@ menu "JARVIS Configuration"
             Deve corrispondere al token configurato nell'orchestrator.
             Se vuoto, nessun header Authorization viene inviato.
 
+    config JARVIS_WS_URL
+        string "JARVIS WebSocket URL override"
+        default ""
+        help
+            Full WebSocket URL override for the audio endpoint.
+            When set, the device connects to this URL instead of building
+            it from SERVER_HOST:PORT/ws/audio.
+            Use for wakeword-server proxy: "ws://192.168.1.XX:8200/ws/audio"
+            Leave empty to use the default (SERVER_HOST:PORT).
+
+    config USE_LOCAL_WAKEWORD
+        bool "Use local microWakeWord (on-device)"
+        default n
+        help
+            Enable on-device wake word detection using microWakeWord (TFLite).
+            When disabled (default), the device streams audio 24/7 to a
+            wakeword-server which handles wake word detection server-side.
+            Enable this for standalone operation without a wakeword-server.
+
     # NOTA: DEVICE_ROOM e DEVICE_ID sono stati rimossi.
     # Il device_id è ora il MAC address (letto a runtime).
     # La configurazione viene recuperata dinamicamente dal server.
