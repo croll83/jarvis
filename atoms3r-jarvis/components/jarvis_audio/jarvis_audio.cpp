@@ -58,24 +58,21 @@ static const char *TAG = "AUDIO";
 
 // microWakeWord preprocessing parameters (must match training config)
 #define MWW_WINDOW_SIZE_MS      30      // 30ms window
-#define MWW_STEP_SIZE_MS        20      // 20ms hop (v1-style model)
+#define MWW_STEP_SIZE_MS        20      // 20ms hop (ESPHome default for V2 models)
 #define MWW_NUM_MEL_CHANNELS    40      // 40 mel filterbank channels
 #define MWW_LOWER_FREQ          125.0f  // Lower band limit (Hz)
 #define MWW_UPPER_FREQ          7500.0f // Upper band limit (Hz)
 
 // Audio samples per feature step
-#define MWW_STEP_SAMPLES        (MIC_SAMPLE_RATE * MWW_STEP_SIZE_MS / 1000)  // 320
+#define MWW_STEP_SAMPLES        (MIC_SAMPLE_RATE * MWW_STEP_SIZE_MS / 1000)  // 160
 
-// Detection parameters (can be overridden by jarvis_config.h)
-#ifndef MWW_PROBABILITY_CUTOFF
-#define MWW_PROBABILITY_CUTOFF      0.82f  // Probability threshold (0.0-1.0)
-#endif
-#ifndef MWW_SLIDING_WINDOW_SIZE
-#define MWW_SLIDING_WINDOW_SIZE     10     // Number of recent predictions to average
-#endif
-#ifndef MWW_MIN_SLICES_BEFORE_DET
-#define MWW_MIN_SLICES_BEFORE_DET   74     // ~1.5s minimum before accepting detection
-#endif
+// Detection parameters
+// NOTE: jarvis_config.h is in main/ and cannot be included by components.
+// These values must be kept in sync with jarvis_config.h manually.
+// The server can also override sensitivity at runtime via config_update WS message.
+#define MWW_PROBABILITY_CUTOFF      0.35f  // Probability threshold (tuning in progress)
+#define MWW_SLIDING_WINDOW_SIZE     3      // Smaller window = react faster to short peaks
+#define MWW_MIN_SLICES_BEFORE_DET   74     // ~1.5s at 20ms step
 
 // TFLite tensor arena size (model-dependent, ~23KB for typical microWakeWord)
 #define TENSOR_ARENA_SIZE       (32 * 1024)
@@ -107,6 +104,7 @@ static volatile bool streaming_to_ringbuf = false;
 
 // TFLite Micro objects (C++ - allocated statically)
 static uint8_t *tensor_arena = NULL;
+static uint8_t *var_arena = NULL;  // Separate arena for streaming variable state
 static tflite::MicroInterpreter *interpreter = NULL;
 static TfLiteTensor *model_input = NULL;
 static TfLiteTensor *model_output = NULL;
@@ -211,32 +209,49 @@ static bool init_tflite_model(void) {
     resolver.AddLogistic();
     resolver.AddQuantize();
 
-    // Create allocator from tensor arena
-    tflite::MicroAllocator *allocator = tflite::MicroAllocator::Create(
-        tensor_arena, TENSOR_ARENA_SIZE);
-    if (!allocator) {
-        ESP_LOGE(TAG, "Failed to create MicroAllocator");
+    // Create SEPARATE arena for resource variables (ESPHome pattern)
+    // Streaming models use VAR_HANDLE/READ_VARIABLE/ASSIGN_VARIABLE to maintain
+    // internal state across inference calls. The variables MUST be in a separate
+    // arena so they persist independently of the tensor arena.
+    #define VAR_ARENA_SIZE 16384  // 16KB for streaming model variables
+    var_arena = (uint8_t *)heap_caps_malloc(VAR_ARENA_SIZE,
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!var_arena) {
+        var_arena = (uint8_t *)malloc(VAR_ARENA_SIZE);
+    }
+    if (!var_arena) {
+        ESP_LOGE(TAG, "Failed to allocate variable arena");
         heap_caps_free(tensor_arena);
         tensor_arena = NULL;
         return false;
     }
-
-    // Create resource variables (required for streaming models with VAR_HANDLE)
-    // The model uses VAR_HANDLE/READ_VARIABLE/ASSIGN_VARIABLE to maintain
-    // internal state across inference calls (conv layer states for streaming)
+    tflite::MicroAllocator *var_allocator = tflite::MicroAllocator::Create(
+        var_arena, VAR_ARENA_SIZE);
+    if (!var_allocator) {
+        ESP_LOGE(TAG, "Failed to create variable allocator");
+        heap_caps_free(tensor_arena);
+        heap_caps_free(var_arena);
+        tensor_arena = NULL;
+        var_arena = NULL;
+        return false;
+    }
     tflite::MicroResourceVariables *resource_vars =
-        tflite::MicroResourceVariables::Create(allocator, 20);
+        tflite::MicroResourceVariables::Create(var_allocator, 20);
     if (!resource_vars) {
         ESP_LOGE(TAG, "Failed to create MicroResourceVariables");
         heap_caps_free(tensor_arena);
+        heap_caps_free(var_arena);
         tensor_arena = NULL;
+        var_arena = NULL;
         return false;
     }
-    ESP_LOGI(TAG, "ResourceVariables created for streaming model state");
+    ESP_LOGI(TAG, "ResourceVariables created (separate arena %d bytes)", VAR_ARENA_SIZE);
 
-    // Create interpreter with resource variables
+    // Create interpreter using raw tensor arena (ESPHome-style constructor)
+    // This lets the interpreter manage its own MicroAllocator internally,
+    // while keeping resource variables in the separate arena.
     static tflite::MicroInterpreter static_interpreter(
-        model, resolver, allocator, resource_vars);
+        model, resolver, tensor_arena, TENSOR_ARENA_SIZE, resource_vars);
     interpreter = &static_interpreter;
 
     TfLiteStatus alloc_status = interpreter->AllocateTensors();
@@ -264,6 +279,24 @@ static bool init_tflite_model(void) {
         printf(",%d", model_output->dims->data[i]);
     }
     printf("], type=%d\n", model_output->type);
+
+    // DEBUG: Log quantization parameters
+    if (model_input->quantization.type == kTfLiteAffineQuantization) {
+        TfLiteAffineQuantization *quant = (TfLiteAffineQuantization*)model_input->quantization.params;
+        if (quant && quant->scale && quant->zero_point) {
+            ESP_LOGI(TAG, "Input quant: scale=%.6f, zero_point=%d",
+                     quant->scale->data[0], quant->zero_point->data[0]);
+        }
+    } else {
+        ESP_LOGI(TAG, "Input quant type: %d", model_input->quantization.type);
+    }
+    if (model_output->quantization.type == kTfLiteAffineQuantization) {
+        TfLiteAffineQuantization *quant = (TfLiteAffineQuantization*)model_output->quantization.params;
+        if (quant && quant->scale && quant->zero_point) {
+            ESP_LOGI(TAG, "Output quant: scale=%.6f, zero_point=%d",
+                     quant->scale->data[0], quant->zero_point->data[0]);
+        }
+    }
 
     // Determine model stride from input tensor shape
     // Typical shape: [1, stride, 1, 40] or [1, stride, 40]
@@ -332,7 +365,7 @@ static SemaphoreHandle_t detect_audio_ready = NULL;
 
 static void audio_feed_task(void* arg) {
     // Read in chunks matching the feature step size
-    const int chunk_samples = MWW_STEP_SAMPLES;  // 320 samples = 20ms
+    const int chunk_samples = MWW_STEP_SAMPLES;  // 160 samples = 10ms (V2)
     ESP_LOGI(TAG, "Audio feed task started (chunk=%d samples, %dms)",
              chunk_samples, MWW_STEP_SIZE_MS);
 
@@ -362,17 +395,12 @@ static void audio_feed_task(void* arg) {
             // Update audio level
             audio_level = calculate_rms(mono_buff, samples);
 
-            // PATH 1: Raw ring buffer with digital gain (when streaming is active)
+            // PATH 1: Raw ring buffer (when streaming is active)
+            // No software gain applied — server-side normalizes peak to ~85%.
+            // Hardware gain chain: PGA +30dB + ADC scale +6dB + ADC vol 0dB = +36dB.
             if (streaming_to_ringbuf && raw_ringbuf) {
-                int16_t amplified[320];
                 int copy_len = (samples <= 320) ? samples : 320;
-                for (int j = 0; j < copy_len; j++) {
-                    int32_t v = (int32_t)mono_buff[j] * 4;  // 4x = ~12dB
-                    if (v > 32767) v = 32767;
-                    else if (v < -32768) v = -32768;
-                    amplified[j] = (int16_t)v;
-                }
-                xRingbufferSend(raw_ringbuf, amplified,
+                xRingbufferSend(raw_ringbuf, mono_buff,
                                 copy_len * sizeof(int16_t), 0);
             }
 
@@ -450,6 +478,22 @@ static void mww_detect_task(void* arg) {
             features[i] = quantize_feature(frontend_output.values[i]);
         }
 
+        // DEBUG: Log first few features periodically
+        static int feat_log_count = 0;
+        feat_log_count++;
+        if (feat_log_count <= 5 || feat_log_count % 300 == 0) {
+            ESP_LOGI(TAG, "Features[0..7]: %d %d %d %d %d %d %d %d (input_type=%d)",
+                     features[0], features[1], features[2], features[3],
+                     features[4], features[5], features[6], features[7],
+                     model_input->type);
+            // Also show raw frontend values
+            ESP_LOGI(TAG, "Raw frontend[0..7]: %u %u %u %u %u %u %u %u",
+                     frontend_output.values[0], frontend_output.values[1],
+                     frontend_output.values[2], frontend_output.values[3],
+                     frontend_output.values[4], frontend_output.values[5],
+                     frontend_output.values[6], frontend_output.values[7]);
+        }
+
         // Feed features into model input tensor at current stride position
         int8_t *input_data = model_input->data.int8;
         memcpy(input_data + (MWW_NUM_MEL_CHANNELS * current_stride_step),
@@ -470,18 +514,68 @@ static void mww_detect_task(void* arg) {
             continue;
         }
 
+        // DEBUG: dump raw output tensor (first 10 inferences, then every 100th)
+        static int infer_count = 0;
+        infer_count++;
+
+        // Dump ALL output values to understand the tensor layout
+        int out_size = 1;
+        for (int d = 0; d < model_output->dims->size; d++) {
+            out_size *= model_output->dims->data[d];
+        }
+        if (infer_count <= 10 || infer_count % 100 == 0) {
+            // Log type and all raw values
+            if (model_output->type == kTfLiteUInt8) {
+                ESP_LOGI(TAG, "MWW #%d OUT(uint8, size=%d):", infer_count, out_size);
+                for (int i = 0; i < out_size && i < 8; i++) {
+                    ESP_LOGI(TAG, "  out[%d]=%u (%.3f)", i, model_output->data.uint8[i],
+                             model_output->data.uint8[i] / 255.0f);
+                }
+            } else if (model_output->type == kTfLiteInt8) {
+                ESP_LOGI(TAG, "MWW #%d OUT(int8, size=%d):", infer_count, out_size);
+                for (int i = 0; i < out_size && i < 8; i++) {
+                    ESP_LOGI(TAG, "  out[%d]=%d (uint8=%u, prob=%.3f)", i,
+                             model_output->data.int8[i],
+                             (uint8_t)((int16_t)model_output->data.int8[i] + 128),
+                             ((int16_t)model_output->data.int8[i] + 128) / 255.0f);
+                }
+            } else if (model_output->type == kTfLiteFloat32) {
+                ESP_LOGI(TAG, "MWW #%d OUT(float32, size=%d):", infer_count, out_size);
+                for (int i = 0; i < out_size && i < 8; i++) {
+                    ESP_LOGI(TAG, "  out[%d]=%.6f", i, model_output->data.f[i]);
+                }
+            } else {
+                ESP_LOGI(TAG, "MWW #%d OUT(type=%d, size=%d) UNKNOWN TYPE", infer_count,
+                         model_output->type, out_size);
+            }
+        }
+
         // Get probability from output tensor
+        // microWakeWord V2 models typically have output [1, num_classes]:
+        //   out[0] = probability of NOT wake word
+        //   out[1] = probability of wake word
+        // If model has only 1 output, use out[0] as wake probability.
+        int wake_idx = (out_size >= 2) ? 1 : 0;
+
         uint8_t probability = 0;
         if (model_output->type == kTfLiteUInt8) {
-            probability = model_output->data.uint8[0];
+            probability = model_output->data.uint8[wake_idx];
         } else if (model_output->type == kTfLiteInt8) {
-            // Convert int8 [-128,127] to uint8 [0,255]
-            probability = (uint8_t)((int16_t)model_output->data.int8[0] + 128);
+            probability = (uint8_t)((int16_t)model_output->data.int8[wake_idx] + 128);
         } else if (model_output->type == kTfLiteFloat32) {
-            float p = model_output->data.f[0];
+            float p = model_output->data.f[wake_idx];
             if (p < 0.0f) p = 0.0f;
             if (p > 1.0f) p = 1.0f;
             probability = (uint8_t)(p * 255.0f);
+        }
+
+        float prob_f = probability / 255.0f;
+
+        // Log when prob > 0.05 (any non-trivial activity)
+        if (prob_f > 0.05f) {
+            ESP_LOGI(TAG, "MWW infer #%d: prob=%.3f (idx=%d) slices=%d threshold=%.2f",
+                     infer_count, prob_f, wake_idx, slices_since_last_det,
+                     runtime_probability_cutoff);
         }
 
         // Update sliding window
@@ -495,6 +589,12 @@ static void mww_detect_task(void* arg) {
                 sum += recent_probs[i];
             }
             float avg_prob = (float)sum / (MWW_SLIDING_WINDOW_SIZE * 255.0f);
+
+            // DEBUG: Log sliding window avg every 100 inferences or if above half threshold
+            if (infer_count % 100 == 0 || avg_prob >= runtime_probability_cutoff * 0.5f) {
+                ESP_LOGI(TAG, "MWW window avg=%.3f (threshold=%.2f) slices=%d",
+                         avg_prob, runtime_probability_cutoff, slices_since_last_det);
+            }
 
             if (avg_prob >= runtime_probability_cutoff) {
                 ESP_LOGI(TAG, ">>> WAKE WORD 'JARVIS' DETECTED! <<< (avg_prob=%.3f, threshold=%.2f)",
@@ -736,6 +836,7 @@ void jarvis_audio_set_wake_callback(wake_word_callback_t cb) {
 void jarvis_audio_set_sensitivity(float threshold) {
     if (threshold < 0.0f) threshold = 0.0f;
     if (threshold > 1.0f) threshold = 1.0f;
+    ESP_LOGI(TAG, "Wake word sensitivity updated: %.2f -> %.2f",
+             runtime_probability_cutoff, threshold);
     runtime_probability_cutoff = threshold;
-    ESP_LOGI(TAG, "Wake word sensitivity updated: threshold=%.2f", threshold);
 }

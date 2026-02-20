@@ -176,10 +176,12 @@ static bool init_es8311(void) {
     }
 
     // Set ADC scale gain (REG16 bits[2:0]): 0=0dB, 1=6dB, ..., 7=42dB
-    // +18dB digital gain for ambient mic use — enough to bring speech to
-    // usable levels without clipping at close range. Total hardware chain:
-    // PGA +30dB (analog) + ADC scale +18dB (digital) + ADC vol +16dB = +64dB
-    ret = es8311_microphone_gain_set(es8311_handle, ES8311_MIC_GAIN_18DB);
+    // M5Stack official example: ES8311_MIC_GAIN_6DB (+6dB)
+    // XiaoZhi ESP32: ES8311_MIC_GAIN_30DB (+30dB)
+    // ESPHome: ES8311_MIC_GAIN_42DB (+42dB)
+    // We use the M5Stack default: +6dB. Total hardware chain:
+    // PGA +30dB (analog) + ADC scale +6dB (digital) + ADC vol 0dB = +36dB
+    ret = es8311_microphone_gain_set(es8311_handle, ES8311_MIC_GAIN_6DB);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "ES8311 mic gain set failed: %s", esp_err_to_name(ret));
     }
@@ -189,7 +191,7 @@ static bool init_es8311(void) {
     es8311_register_dump(es8311_handle);
 
     ESP_LOGI(TAG, "ES8311 codec initialized (16kHz, 16-bit res, volume=80%%, "
-             "PGA=+30dB, ADC_vol=+16dB, ADC_scale=+18dB)");
+             "PGA=+30dB, ADC_vol=0dB, ADC_scale=+6dB) [M5Stack defaults]");
     return true;
 }
 

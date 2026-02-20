@@ -627,14 +627,13 @@ async def ws_audio_endpoint(
                             from integrations import call_hass_service
                             dev = get_voice_device(device_id)
                             if dev and dev.output_speaker and dev.location_id:
-                                success, msg = await call_hass_service(
-                                    dev.location_id,
-                                    "media_player",
-                                    "media_stop",
-                                    {"entity_id": dev.output_speaker}
-                                )
-                                logger.info(f"🛑 speaker_stop: {dev.output_speaker} → "
-                                            f"{'OK' if success else msg}")
+                                loc = dev.location_id
+                                spk = dev.output_speaker
+                                # Alexa TTS (notify.alexa_media) is a cloud-driven behavior
+                                # that cannot be interrupted via media_stop or play_media.
+                                # Strategy: mute immediately, auto-unmute when speak() is called next.
+                                from integrations import mute_speaker_for_stop
+                                await mute_speaker_for_stop(loc, spk)
                                 # Clear speaking_state for this device's room
                                 from main import speaking_state, speaking_state_lock
                                 async with speaking_state_lock:

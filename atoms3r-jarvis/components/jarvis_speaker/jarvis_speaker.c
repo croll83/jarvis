@@ -169,6 +169,47 @@ void jarvis_speaker_play_buzz(void) {
     );
 }
 
+// =============================================================================
+// LISTENING BEEP (short high-pitched beep for multi-turn "speak now" feedback)
+// =============================================================================
+
+#define BEEP_FREQ_HZ     880
+#define BEEP_DURATION_MS  100
+#define BEEP_SAMPLE_RATE  16000
+#define BEEP_SAMPLES      (BEEP_SAMPLE_RATE * BEEP_DURATION_MS / 1000)  // 1600
+#define BEEP_AMPLITUDE    6000  // clear but not loud
+
+static void listening_beep_task(void* arg) {
+    // Generate 880Hz sine wave, 100ms, moderate amplitude
+    int16_t beep_buf[BEEP_SAMPLES];
+    for (int i = 0; i < BEEP_SAMPLES; i++) {
+        float t = (float)i / BEEP_SAMPLE_RATE;
+        // Fade-in/fade-out (first/last 10ms) to avoid click
+        float env = 1.0f;
+        int fade_samples = BEEP_SAMPLE_RATE / 100;  // 10ms = 160 samples
+        if (i < fade_samples) {
+            env = (float)i / fade_samples;
+        } else if (i > BEEP_SAMPLES - fade_samples) {
+            env = (float)(BEEP_SAMPLES - i) / fade_samples;
+        }
+        beep_buf[i] = (int16_t)(sinf(2.0f * 3.14159265f * BEEP_FREQ_HZ * t) * BEEP_AMPLITUDE * env);
+    }
+
+    jarvis_speaker_play_pcm(beep_buf, BEEP_SAMPLES);
+    playback_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+void jarvis_speaker_play_listening_beep(void) {
+    if (!speaker_initialized) return;
+    if (playing) return;
+
+    xTaskCreatePinnedToCore(
+        listening_beep_task, "beep", 4096 + 3200,  // extra stack for 1600 int16 on stack
+        NULL, 4, &playback_task_handle, 1
+    );
+}
+
 bool jarvis_speaker_is_playing(void) {
     return playing;
 }

@@ -19,8 +19,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY api.py ontology.py helpers.py schema.yaml ./
 
-# Copy dashboard static files
+# Copy old simple dashboard (served at /dashboard)
 COPY static/ /app/static/
+
+# Copy React dashboard build (served at /app, SPA)
+COPY dashboard-build/ /app/dashboard-build/
 
 # Create data directory for SQLite (will be mounted as volume)
 RUN mkdir -p /app/data

@@ -58,6 +58,29 @@ static const char *TAG = "JARVIS";
 static device_state_t current_state = STATE_IDLE;
 static bool dnd_mode = false;
 
+// NVS helpers for DND persistence across reboots
+#define NVS_NAMESPACE "jarvis"
+#define NVS_KEY_DND   "dnd_mode"
+
+static void save_dnd_to_nvs(bool enabled) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, NVS_KEY_DND, enabled ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static bool load_dnd_from_nvs(void) {
+    nvs_handle_t h;
+    uint8_t val = 0;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, NVS_KEY_DND, &val);
+        nvs_close(h);
+    }
+    return val != 0;
+}
+
 // Device configuration (from server)
 static device_config_t device_config = {};
 static bool config_loaded = false;
@@ -280,6 +303,7 @@ static void handle_short_press(void) {
     // If in DND, exit DND first then activate
     if (dnd_mode) {
         dnd_mode = false;
+        save_dnd_to_nvs(false);
         ESP_LOGI(TAG, "DND mode DISABLED (via button activate)");
         jarvis_audio_start_listening();
         jarvis_network_notify_dnd(device_config.device_id, false);
@@ -312,6 +336,7 @@ static void handle_long_press(void) {
 
     // Toggle DND mode
     dnd_mode = !dnd_mode;
+    save_dnd_to_nvs(dnd_mode);
     if (dnd_mode) {
         ESP_LOGI(TAG, "DND mode ENABLED");
         jarvis_audio_stop_listening();
@@ -405,9 +430,12 @@ static void activate_listening(bool silent) {
         );
 
         jarvis_speaker_wait_done(500);
+    } else {
+        // Silent mode (multi-turn): play short beep as "speak now" feedback
+        // No speaker suppress needed — user is already in conversation
+        jarvis_speaker_play_listening_beep();
+        jarvis_speaker_wait_done(200);
     }
-    // Silent mode (multi-turn): skip wake sound + speaker suppress
-    // User is already in conversation, speaker just finished TTS
 
     // Transition to LISTENING state
     set_state(STATE_LISTENING);
@@ -834,13 +862,22 @@ extern "C" void app_main(void) {
         wake_word_pending = true;
     });
 
-    // Start listening
-    jarvis_audio_start_listening();
+    // Restore DND mode from NVS (persisted across reboots)
+    dnd_mode = load_dnd_from_nvs();
+    if (dnd_mode) {
+        ESP_LOGI(TAG, "DND mode RESTORED from NVS — staying silent");
+        set_state(STATE_DND);
+        jarvis_network_notify_dnd(device_config.device_id, true);
+        // Don't start listening — DND means no wake word detection
+    } else {
+        // Start listening (wake word detection)
+        jarvis_audio_start_listening();
+        jarvis_display_set_state(STATE_IDLE);
+    }
 
     // Update display
     jarvis_display_set_time(current_hour, current_minute);
     jarvis_display_set_temperature(cached_temperature);
-    jarvis_display_set_state(STATE_IDLE);
 
     ESP_LOGI(TAG, "=================================");
     ESP_LOGI(TAG, "JARVIS AtomS3R Ready!");
@@ -848,7 +885,11 @@ extern "C" void app_main(void) {
     if (device_config.is_configured) {
         ESP_LOGI(TAG, "Room: %s", device_config.friendly_name);
     }
-    ESP_LOGI(TAG, "Say 'Jarvis' to activate");
+    if (dnd_mode) {
+        ESP_LOGI(TAG, "DND mode is ON");
+    } else {
+        ESP_LOGI(TAG, "Say 'Jarvis' to activate");
+    }
     ESP_LOGI(TAG, "=================================");
 
     // Initialize screensaver inactivity timer

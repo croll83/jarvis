@@ -147,11 +147,11 @@
 // Detection threshold: sliding window average of model output probabilities.
 // Model outputs uint8 0-255 (0.0-1.0 quantized). This is compared against
 // the mean of SLIDING_WINDOW_SIZE recent predictions.
-// Custom model trained with Italian TTS + real AtomS3R recordings + negative samples.
-#define MWW_PROBABILITY_CUTOFF      0.82f
-#define MWW_SLIDING_WINDOW_SIZE     10
-#define MWW_FEATURE_STEP_MS         20       // 20ms hop (v1-style model)
-#define MWW_MIN_SLICES_BEFORE_DET   74       // ~1.5s of silence before accepting detection
+// microWakeWord V2 hey_jarvis (pre-trained by ESPHome/Kevin Ahrendt)
+#define MWW_PROBABILITY_CUTOFF      0.75f
+#define MWW_SLIDING_WINDOW_SIZE     5
+#define MWW_FEATURE_STEP_MS         10       // 10ms hop (v2-style model)
+#define MWW_MIN_SLICES_BEFORE_DET   148      // ~1.5s at 10ms step
 
 // =============================================================================
 // STATE MACHINE

@@ -304,16 +304,19 @@ static esp_err_t es8311_fmt_config(es8311_handle_t dev, const es8311_resolution_
 
 esp_err_t es8311_microphone_config(es8311_handle_t dev, bool digital_mic)
 {
-    uint8_t reg14 = 0x1A; // enable analog MIC and max PGA gain
+    // REG14: PGA gain + analog mic select.
+    // M5Stack/Espressif default: 0x1A = analog mic, LINSEL=1, PGA=+30dB.
+    // This is the reference value used by M5Atomic-EchoBase library,
+    // esp_codec_dev, ESP-ADF, and XiaoZhi ESP32.
+    uint8_t reg14 = 0x1A; // enable analog MIC + PGA gain = +30dB (default)
 
     /* PDM digital microphone enable or disable */
     if (digital_mic) {
         reg14 |= BIT(6);
     }
-    // ADC digital volume: 0xBF=0dB, 0.5dB/step, 0xFF=+32dB
-    // Was 0xC8 (+4.5dB) — too low, speech at 10cm gives RMS=0.039
-    // Set to 0xDF (+16dB) for better speech levels
-    es8311_write_reg(dev, ES8311_ADC_REG17, 0xDF);
+    // ADC digital volume (REG17): 0xBF = 0dB (M5Stack/Espressif default).
+    // ESPHome uses 0xC8 (+4.5dB). We use the conservative 0dB default.
+    es8311_write_reg(dev, ES8311_ADC_REG17, 0xBF);
 
     return es8311_write_reg(dev, ES8311_SYSTEM_REG14, reg14);
 }
