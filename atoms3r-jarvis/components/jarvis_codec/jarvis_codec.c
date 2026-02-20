@@ -176,22 +176,18 @@ static bool init_es8311(void) {
     }
 
     // Set ADC scale gain (REG16 bits[2:0]): 0=0dB, 1=6dB, ..., 7=42dB
-    // M5Stack official example: ES8311_MIC_GAIN_6DB (+6dB)
-    // XiaoZhi ESP32: ES8311_MIC_GAIN_30DB (+30dB)
-    // ESPHome: ES8311_MIC_GAIN_42DB (+42dB)
-    // We use the M5Stack default: +6dB. Total hardware chain:
-    // PGA +30dB (analog) + ADC scale +6dB (digital) + ADC vol 0dB = +36dB
-    ret = es8311_microphone_gain_set(es8311_handle, ES8311_MIC_GAIN_6DB);
+    // M5Stack official example: ES8311_MIC_GAIN_6DB (+6dB) — too low, peak ~242/32767
+    // XiaoZhi ESP32: ES8311_MIC_GAIN_30DB (+30dB) — good balance
+    // ESPHome: ES8311_MIC_GAIN_42DB (+42dB) — aggressive
+    // We use XiaoZhi level: +30dB. Total hardware chain:
+    // PGA +30dB (analog) + ADC scale +30dB (digital) + ADC vol 0dB = +60dB
+    ret = es8311_microphone_gain_set(es8311_handle, ES8311_MIC_GAIN_30DB);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "ES8311 mic gain set failed: %s", esp_err_to_name(ret));
     }
 
-    // Verify register values via readback
-    ESP_LOGI(TAG, "ES8311 register dump (mic gain verification):");
-    es8311_register_dump(es8311_handle);
-
-    ESP_LOGI(TAG, "ES8311 codec initialized (16kHz, 16-bit res, volume=80%%, "
-             "PGA=+30dB, ADC_vol=0dB, ADC_scale=+6dB) [M5Stack defaults]");
+    ESP_LOGI(TAG, "ES8311 codec initialized (16kHz, 32-bit I2S, volume=80%%, "
+             "PGA=+30dB, ADC_vol=0dB, ADC_scale=+30dB)");
     return true;
 }
 
@@ -237,7 +233,7 @@ static bool init_i2s(void) {
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX),
         .sample_rate = MIC_SAMPLE_RATE,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,  // Must match ES8311 32-bit resolution
         .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // Stereo: L+R interleaved
         .communication_format = I2S_COMM_FORMAT_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
@@ -269,7 +265,7 @@ static bool init_i2s(void) {
 
     i2s_zero_dma_buffer(I2S_PORT);
 
-    ESP_LOGI(TAG, "I2S initialized (legacy API, 16kHz, 16-bit, STEREO, APLL, port %d)",
+    ESP_LOGI(TAG, "I2S initialized (legacy API, 16kHz, 32-bit, STEREO, APLL, port %d)",
              I2S_PORT);
     return true;
 }
@@ -346,67 +342,86 @@ void jarvis_codec_deinit(void) {
     ESP_LOGI(TAG, "Codec deinitialized");
 }
 
-// Stereo I2S (RIGHT_LEFT): de-interleave L+R to extract mono (left channel)
+// Persistent heap buffers for I2S read/write (avoids stack overflow in small tasks)
+// Separate buffers for read vs write to allow concurrent access from different tasks
+static int32_t *i2s_read_buf = NULL;
+static size_t i2s_read_buf_size = 0;   // in int32 elements
+static int32_t *i2s_write_buf = NULL;
+static size_t i2s_write_buf_size = 0;  // in int32 elements
+
+static int32_t *ensure_buf(int32_t **pbuf, size_t *psize, size_t stereo_samples_32) {
+    if (*pbuf && *psize >= stereo_samples_32) {
+        return *pbuf;
+    }
+    // Allocate (or grow) on PSRAM heap — never on stack
+    if (*pbuf) free(*pbuf);
+    *pbuf = (int32_t *)heap_caps_malloc(stereo_samples_32 * sizeof(int32_t),
+                                         MALLOC_CAP_SPIRAM);
+    if (!*pbuf) {
+        // Fallback to internal RAM
+        *pbuf = (int32_t *)malloc(stereo_samples_32 * sizeof(int32_t));
+    }
+    *psize = *pbuf ? stereo_samples_32 : 0;
+    return *pbuf;
+}
+
+// Stereo I2S (RIGHT_LEFT) at 32-bit: read int32 samples, extract int16 from MSBs
 int jarvis_codec_read(int16_t *buf, size_t num_samples) {
     if (!initialized || !buf || num_samples == 0) return -1;
 
-    // Read stereo (L+R interleaved) and extract left channel as mono
-    // Need 2x samples because stereo has L,R,L,R,...
-    size_t stereo_samples = num_samples * 2;
-    size_t bytes_to_read = stereo_samples * sizeof(int16_t);
+    // I2S is 32-bit stereo: each frame = L(32bit) + R(32bit) = 8 bytes
+    // We need num_samples mono frames → num_samples * 2 stereo int32 samples
+    size_t stereo_samples_32 = num_samples * 2;
+    size_t bytes_to_read = stereo_samples_32 * sizeof(int32_t);
 
-    int16_t stack_buf[640];  // enough for typical 160*2=320 stereo samples
-    int16_t *stereo_buf = (stereo_samples <= 640) ? stack_buf :
-                          (int16_t *)malloc(bytes_to_read);
+    int32_t *stereo_buf = ensure_buf(&i2s_read_buf, &i2s_read_buf_size, stereo_samples_32);
     if (!stereo_buf) return -1;
 
     size_t bytes_read = 0;
     esp_err_t ret = i2s_read(I2S_PORT, stereo_buf, bytes_to_read, &bytes_read, portMAX_DELAY);
     if (ret != ESP_OK || bytes_read == 0) {
-        if (stereo_buf != stack_buf) free(stereo_buf);
         return -1;
     }
 
-    // De-interleave: take every other sample (left channel = even indices)
-    size_t total_samples = bytes_read / sizeof(int16_t);
-    size_t mono_count = total_samples / 2;
+    // De-interleave: take left channel (even indices), extract int16 from int32
+    // ES8311 32-bit format: audio data is in the upper 16 bits (MSBs)
+    size_t total_int32_samples = bytes_read / sizeof(int32_t);
+    size_t mono_count = total_int32_samples / 2;
 
     for (size_t i = 0; i < mono_count; i++) {
-        buf[i] = stereo_buf[i * 2];  // Left channel
+        int32_t raw = stereo_buf[i * 2];  // Left channel (even index)
+        buf[i] = (int16_t)(raw >> 16);    // Extract upper 16 bits
     }
 
-    if (stereo_buf != stack_buf) free(stereo_buf);
     return (int)mono_count;
 }
 
-// Write mono samples as stereo (duplicate L=R) for ES8311
+// Write mono int16 samples as stereo int32 (duplicate L=R, shift to upper bits) for ES8311
 int jarvis_codec_write(const int16_t *buf, size_t num_samples) {
     if (!initialized || !buf || num_samples == 0) return -1;
 
-    // Expand mono to stereo: L,R,L,R,...  (L=R=same sample)
-    size_t stereo_samples = num_samples * 2;
-    size_t bytes_to_write = stereo_samples * sizeof(int16_t);
+    // I2S is 32-bit stereo: each frame = L(32bit) + R(32bit)
+    size_t stereo_samples_32 = num_samples * 2;
+    size_t bytes_to_write = stereo_samples_32 * sizeof(int32_t);
 
-    int16_t stack_buf[640];
-    int16_t *stereo_buf = (stereo_samples <= 640) ? stack_buf :
-                          (int16_t *)malloc(bytes_to_write);
+    int32_t *stereo_buf = ensure_buf(&i2s_write_buf, &i2s_write_buf_size, stereo_samples_32);
     if (!stereo_buf) return -1;
 
     for (size_t i = 0; i < num_samples; i++) {
-        stereo_buf[i * 2] = buf[i];      // Left
-        stereo_buf[i * 2 + 1] = buf[i];  // Right = same
+        int32_t sample_32 = ((int32_t)buf[i]) << 16;  // int16 → upper 16 bits of int32
+        stereo_buf[i * 2] = sample_32;      // Left
+        stereo_buf[i * 2 + 1] = sample_32;  // Right = same
     }
 
     size_t bytes_written = 0;
     esp_err_t ret = i2s_write(I2S_PORT, stereo_buf, bytes_to_write, &bytes_written, pdMS_TO_TICKS(1000));
-    if (stereo_buf != stack_buf) free(stereo_buf);
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S write error: %s", esp_err_to_name(ret));
         return -1;
     }
 
-    return (int)(bytes_written / sizeof(int16_t) / 2);  // return mono sample count
+    return (int)(bytes_written / sizeof(int32_t) / 2);  // return mono sample count
 }
 
 void jarvis_codec_set_volume(int volume) {

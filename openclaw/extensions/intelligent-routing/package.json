@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/intelligent-routing",
+  "version": "1.0.0",
+  "description": "Intelligent model routing plugin for OpenClaw — classifies task complexity and routes to optimal model",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

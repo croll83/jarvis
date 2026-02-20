@@ -23,7 +23,7 @@ sdkconfig
 sdkconfig.old
 
 # ESP-IDF local credentials (non committare!)
-atoms3r-jarvis/sdkconfig.local
+sdkconfig.local
 
 # Bytecode (compilati) - come i file di build
 __pycache__/
@@ -53,7 +53,7 @@ infrastructure/ansible/inventory/hosts.yml
 infrastructure/ansible/group_vars/all.yml
 
 # OpenClaw config (contiene API keys, bot tokens, gateway secrets)
-cloud/openclaw.json
+openclaw.json
 
 # model samples
 *.wav
