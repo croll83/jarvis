@@ -35,7 +35,7 @@ proxmox_endpoint = "https://192.168.1.10:8006/"
 #     Pool.Allocate Sys.Audit Sys.Console Sys.Modify SDN.Use VM.Allocate VM.Audit \
 #     VM.Clone VM.Config.CDROM VM.Config.Cloudinit VM.Config.CPU VM.Config.Disk \
 #     VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options \
-#     VM.Migrate VM.Monitor VM.PowerMgmt"
+#     VM.Migrate VM.PowerMgmt"
 #   pveum aclmod / -user terraform@pve -role TerraformRole
 #   pveum user token add terraform@pve provider --privsep=0
 proxmox_api_token = "terraform@pve!provider=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
@@ -130,3 +130,31 @@ workstation_disk_size     = 400                  # GB
 workstation_iso_file_id   = "local:iso/ubuntu-24.04.2-desktop-amd64.iso"
 workstation_ip_address    = "192.168.1.60/24"    # oppure "dhcp"
 workstation_password      = ""                   # Password utente jarvis
+
+# -----------------------------------------------------------------------------
+# Wakeword Server (opzionale — uno per casa/LAN)
+# -----------------------------------------------------------------------------
+# LXC leggero con openWakeWord server-side. I device AtomS3R streamano
+# audio continuo via WS e il server rileva "hey jarvis" localmente.
+# Richiede Tailscale per la connessione all'orchestrator VPS.
+#
+# Una istanza per casa/LAN. Mappa vuota {} = disabilitato.
+# Dopo terraform apply, configurare con: cloud/scripts/deploy-wakeword.sh
+# oppure con Ansible: ansible-playbook playbooks/wakeword.yml
+
+wakeword_instances = {
+  # "albani20" = {
+  #   ct_id              = 210                          # Proxmox CT ID
+  #   ip_address         = "192.168.1.210/24"           # IP statico sulla LAN locale
+  #   hostname           = "jarvis-wakeword"            # Hostname container
+  #   node_name          = "pve-albani20"               # Nodo Proxmox dove creare il CT
+  #   tailscale_authkey  = "tskey-auth-xxxxx"           # Chiave Tailscale (opzionale)
+  # }
+  # "casa2" = {
+  #   ct_id              = 211
+  #   ip_address         = "192.168.1.211/24"
+  #   hostname           = "jarvis-wakeword-casa2"
+  #   node_name          = "pve-casa2"
+  #   tailscale_authkey  = "tskey-auth-yyyyy"
+  # }
+}

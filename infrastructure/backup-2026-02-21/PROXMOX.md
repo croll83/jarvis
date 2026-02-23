@@ -1,9 +1,12 @@
-# Proxmox Host — Setup Manuale
+# Infrastruttura Proxmox — Guida Installazione
 
-Operazioni manuali sull'host Proxmox che non possono essere automatizzate.
-I container LXC e le VM sono creati da **Terraform** (`infrastructure/terraform/`),
-il software e' configurato da **Ansible** (`infrastructure/ansible/`).
-Questa guida copre solo i passaggi che devono essere eseguiti direttamente sull'host.
+Creazione del container LXC su Proxmox VE per ospitare lo stack JARVIS.
+
+> **DEPLOY CLOUD**: Salta questo file, vai direttamente a [DOCKER.md](DOCKER.md).
+> Se usi un VPS (Hetzner, Contabo, ecc.), non hai bisogno di Proxmox. Passa all'installazione di Docker.
+
+> **AUTOMAZIONE**: Questa guida descrive la procedura manuale. Se preferisci,
+> puoi automatizzare tutto con Terraform + Ansible: vedi `infrastructure/terraform/` e `infrastructure/ansible/`.
 
 ---
 
@@ -12,18 +15,44 @@ Questa guida copre solo i passaggi che devono essere eseguiti direttamente sull'
 | Requisito | Minimo | Consigliato |
 |-----------|--------|-------------|
 | Proxmox VE | 7.4+ | 8.x |
-| CPU host | 8 core | 32 vCPU (Intel Core i9) |
-| RAM host | 32 GB | 64 GB |
-| Disco | 500 GB SSD | 2 TB NVMe |
-| GPU | NVIDIA con 8 GB VRAM | RTX 5070 Laptop 8 GB |
+| CPU host | 4 core | 8+ core |
+| RAM host | 16 GB | 32+ GB |
+| Disco | 100 GB SSD | 500 GB NVMe |
+| GPU (opzionale) | NVIDIA con 8 GB VRAM | RTX 4060/5070 16 GB |
 
 ---
 
-## 1. Installare il driver NVIDIA sull'host Proxmox
+## Scelta: LXC con GPU vs LXC senza GPU
 
-> **IMPORTANTE**: Il driver NVIDIA va installato sull'**HOST** Proxmox, NON nei container LXC.
-> L'LXC condivide il kernel dell'host, quindi ha accesso diretto ai device GPU
-> tramite device binding (`/dev/nvidia*` + cgroup2). Nessun PCIe passthrough necessario.
+| Caratteristica | LXC con GPU | LXC senza GPU |
+|----------------|-------------|---------------|
+| GPU accessibile | Si (condivisa dall'host) | No |
+| Overhead | Minimo (kernel host condiviso) | Minimo |
+| Driver NVIDIA | Installato sull'HOST, non nel container | Non necessario |
+| Isolamento | Condiviso col kernel host | Condiviso col kernel host |
+| Complessita setup | Media (device binding + cgroup2) | Bassa |
+| Caso d'uso | Deploy locale con Ollama/Whisper su GPU | Modalita API cloud |
+
+**Regola pratica:**
+- Hai una GPU NVIDIA sullo stesso host Proxmox? --> **LXC con GPU** (condivisione device dall'host)
+- Non hai GPU o usi API cloud? --> **LXC senza GPU** (piu semplice)
+
+> **Perche LXC e non VM?** L'LXC gira sullo stesso kernel dell'host Proxmox.
+> La GPU non richiede PCIe passthrough (come in una VM), ma viene semplicemente
+> resa disponibile nel container via device binding. Questo significa:
+> - Zero overhead di virtualizzazione
+> - GPU condivisa (non dedicata esclusivamente)
+> - Setup piu semplice (no IOMMU, no vfio-pci, no UEFI)
+> - Performance native
+
+---
+
+## Opzione A — LXC con GPU NVIDIA
+
+### A.1 Installare il driver NVIDIA sull'host Proxmox
+
+> **IMPORTANTE**: Il driver NVIDIA va installato sull'HOST Proxmox, NON nel container LXC.
+> L'LXC condivide il kernel dell'host, quindi ha accesso diretto ai device GPU.
 
 ```bash
 # SSH nell'host Proxmox
@@ -96,7 +125,6 @@ nvidia-smi
 
 Deve mostrare la GPU con nome, temperatura, VRAM e driver version.
 
-```bash
 # Abilita persistence mode
 nvidia-smi -pm 1
 
@@ -134,14 +162,9 @@ EOF
 systemctl daemon-reload
 systemctl enable --now nvidia-persistenced
 systemctl status nvidia-persistenced
-```
 
----
 
-## 2. Identificare i device NVIDIA
-
-Dopo il reboot, identifica i device e i major number. Servono per compilare
-`terraform.tfvars` (`gpu_devices` e `gpu_cgroup_device_majors`).
+### A.2 Identificare i device NVIDIA
 
 ```bash
 # Elenca tutti i device NVIDIA
@@ -154,48 +177,63 @@ Output tipico:
 crw-rw-rw- 1 root root 195,   0 ... /dev/nvidia0
 crw-rw-rw- 1 root root 195, 255 ... /dev/nvidiactl
 crw-rw-rw- 1 root root 195, 254 ... /dev/nvidia-modeset
-crw-rw-rw- 1 root root 507,   0 ... /dev/nvidia-uvm
-crw-rw-rw- 1 root root 507,   1 ... /dev/nvidia-uvm-tools
-cr--------  1 root root 510,   1 ... nvidia-cap1
-cr--r--r--  1 root root 510,   2 ... nvidia-cap2
+crw-rw-rw- 1 root root 509,   0 ... /dev/nvidia-uvm
+crw-rw-rw- 1 root root 509,   1 ... /dev/nvidia-uvm-tools
+crw-rw-rw- 1 root root 234,   0 ... /dev/nvidia-caps/nvidia-cap1
+crw-rw-rw- 1 root root 234,   1 ... /dev/nvidia-caps/nvidia-cap2
+```
+```
+crw-rw-rw- 1 root root 195,   0 Feb 20 23:45 /dev/nvidia0
+crw-rw-rw- 1 root root 195, 255 Feb 20 23:45 /dev/nvidiactl
+crw-rw-rw- 1 root root 195, 254 Feb 20 23:48 /dev/nvidia-modeset
+crw-rw-rw- 1 root root 507,   0 Feb 20 23:45 /dev/nvidia-uvm
+crw-rw-rw- 1 root root 507,   1 Feb 20 23:45 /dev/nvidia-uvm-tools
+cr--------  1 root root 510, 1 Feb 20 23:45 nvidia-cap1
+cr--r--r--  1 root root 510, 2 Feb 20 23:45 nvidia-cap2
 ```
 
-Prendi nota dei **major number** (195, 507, 510 nel tuo caso): servono per `gpu_cgroup_device_majors` in `terraform.tfvars`.
+Prendi nota dei **major number** (195, 509, 234): servono per la configurazione cgroup.
 
----
+### A.3 Creare il container LXC
 
-## 3. Crea API token per Terraform
+Dalla Web UI di Proxmox (`https://<proxmox-ip>:8006`):
 
-Terraform si connette alle API Proxmox dal tuo Mac. Serve un token dedicato:
+1. **Create CT**
+2. **General:**
+   - Hostname: `jarvis`
+   - Password: scegli una password
+   - CT ID: a scelta (es. 100)
+3. **Template:**
+   - Storage: local
+   - Template: `ubuntu-22.04-standard` o `ubuntu-24.04-standard`
+   - (Scarica il template da Proxmox se non presente)
+4. **Disks:**
+   - Root Disk: 100 GB minimo (200 GB consigliato per modelli AI)
+5. **CPU:**
+   - Cores: 4 minimo (6-8 consigliato)
+6. **Memory:**
+   - RAM: 16384 MB (16 GB)
+   - Swap: 2048 MB
+7. **Network:**
+   - Bridge: `vmbr0`
+   - IPv4: DHCP o statico
+
+**NON avviare ancora il container!** Devi prima configurare i device GPU.
+
+### A.4 Configurare l'accesso GPU nel container
+
+Edita la configurazione del container sull'host Proxmox:
 
 ```bash
-pveum user add terraform@pve
-pveum role add TerraformRole -privs "Datastore.AllocateSpace Datastore.Audit \
-  Pool.Allocate Sys.Audit Sys.Console Sys.Modify SDN.Use VM.Allocate VM.Audit \
-  VM.Clone VM.Config.CDROM VM.Config.Cloudinit VM.Config.CPU VM.Config.Disk \
-  VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options \
-  VM.Migrate VM.PowerMgmt"
-pveum aclmod / -user terraform@pve -role TerraformRole
-pveum user token add terraform@pve provider --privsep=0
+nano /etc/pve/lxc/100.conf
 ```
 
-L'ultimo comando restituisce il token — copialo nel `terraform.tfvars` sul Mac come `proxmox_api_token`.
-
----
-
-## 4. Configurazione cgroup GPU (Riferimento)
-
-> **Nota:** Terraform genera automaticamente lo script `configure-gpu.sh` che esegue
-> questa configurazione. Dopo `terraform apply`, copialo ed eseguilo sull'host:
-> ```bash
-> scp infrastructure/terraform/configure-gpu.sh root@<proxmox-ip>:~/
-> ssh root@<proxmox-ip> "bash ~/configure-gpu.sh"
-> ```
-> La sezione seguente documenta cosa fa lo script, per riferimento.
-
-Lo script modifica `/etc/pve/lxc/<CT_ID>.conf` aggiungendo:
+Aggiungi queste righe in fondo (sostituisci i major number con quelli del tuo sistema):
 
 ```
+# Docker support
+features: keyctl=1,nesting=1
+
 # Device NVIDIA - mount
 lxc.mount.entry: /dev/nvidia0 dev/nvidia0 none bind,optional,create=file 0 0
 lxc.mount.entry: /dev/nvidiactl dev/nvidiactl none bind,optional,create=file 0 0
@@ -203,34 +241,126 @@ lxc.mount.entry: /dev/nvidia-uvm dev/nvidia-uvm none bind,optional,create=file 0
 lxc.mount.entry: /dev/nvidia-uvm-tools dev/nvidia-uvm-tools none bind,optional,create=file 0 0
 
 # cgroup2 - permetti accesso ai device NVIDIA
+# Major 195 = nvidia (nvidia0, nvidiactl, nvidia-modeset)
+# Major 509 = nvidia-uvm (nvidia-uvm, nvidia-uvm-tools)
+# Major 234 = nvidia-caps (nvidia-cap1, nvidia-cap2)
 lxc.cgroup2.devices.allow: c 195:* rwm
-lxc.cgroup2.devices.allow: c 507:* rwm
-lxc.cgroup2.devices.allow: c 510:* rwm
+lxc.cgroup2.devices.allow: c 509:* rwm
+lxc.cgroup2.devices.allow: c 234:* rwm
 ```
 
+> **NOTA**: Se hai piu di una GPU (es. `/dev/nvidia0`, `/dev/nvidia1`), aggiungi
+> una riga `lxc.mount.entry` per ogni device.
+
 > **NOTA**: I major number possono variare tra sistemi. Verifica sempre con
-> `ls -la /dev/nvidia*` sull'host (vedi sezione 2).
+> `ls -la /dev/nvidia*` sull'host.
 
-### Verifica GPU nel container
-
-Dopo aver eseguito `configure-gpu.sh`:
+### A.5 Avviare e verificare
 
 ```bash
-# Riavvia il container (lo script lo fa automaticamente)
-pct stop <CT_ID> && pct start <CT_ID>
+# Avvia il container
+pct start 100
 
 # Entra nel container
-pct enter <CT_ID>
+pct enter 100
 
 # Verifica che i device NVIDIA siano visibili
 ls -la /dev/nvidia*
 ```
 
-I device devono essere presenti dentro il container.
+I device devono essere presenti dentro il container. Se non li vedi, controlla la configurazione cgroup2 nel file `.conf`.
+
+### A.6 Setup iniziale nel LXC con GPU
+
+```bash
+# Aggiorna
+apt update && apt upgrade -y
+
+# Installa utility base
+apt install -y curl wget git nano htop jq ca-certificates gnupg lsb-release \
+  python3-pip sqlite3 ffmpeg unzip
+
+# Crea utente jarvis
+adduser jarvis
+usermod -aG sudo jarvis
+
+# Sudo senza password (opzionale ma comodo per Ansible)
+echo "jarvis ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/jarvis
+chmod 440 /etc/sudoers.d/jarvis
+```
+
+> **Prossimo step**: Procedi con [DOCKER.md](DOCKER.md), che include la sezione
+> NVIDIA Container Toolkit per rendere la GPU accessibile a Docker.
 
 ---
 
-## 5. Configurazione Rete (riferimento)
+## Opzione B — LXC senza GPU
+
+Per un container leggero quando non serve GPU (modalita API cloud).
+
+### B.1 Creare il container LXC
+
+Dalla Web UI di Proxmox:
+
+1. **Create CT**
+2. **General:**
+   - Hostname: `jarvis`
+   - Password: scegli una password
+   - CT ID: a scelta (es. 101)
+3. **Template:**
+   - Storage: local
+   - Template: `ubuntu-22.04-standard` o `ubuntu-24.04-standard`
+   - (Scarica il template da Proxmox se non presente)
+4. **Disks:**
+   - Root Disk: 50 GB minimo
+5. **CPU:**
+   - Cores: 2 minimo (4 consigliato)
+6. **Memory:**
+   - RAM: 4096 MB (4 GB) minimo
+   - Swap: 2048 MB
+7. **Network:**
+   - Bridge: `vmbr0`
+   - IPv4: DHCP o statico
+
+### B.2 Configurazione post-creazione
+
+Abilita le feature necessarie per Docker in LXC:
+
+```bash
+# Sul nodo Proxmox, edita la config del container
+nano /etc/pve/lxc/101.conf
+```
+
+Aggiungi queste righe per supporto Docker:
+
+```
+features: keyctl=1,nesting=1
+```
+
+Avvia il container:
+
+```bash
+pct start 101
+pct enter 101
+```
+
+### B.3 Setup iniziale nel LXC
+
+```bash
+# Aggiorna
+apt update && apt upgrade -y
+
+# Installa utility base
+apt install -y curl wget git nano htop
+
+# Crea utente jarvis
+adduser jarvis
+usermod -aG sudo jarvis
+```
+
+---
+
+## Configurazione Rete
 
 ### IP Statico (consigliato per server)
 
@@ -282,7 +412,9 @@ In alternativa, usa **Tailscale** per accesso sicuro senza port forwarding.
 
 ---
 
-## 6. Risorse Consigliate (LXC-JARVIS)
+## Risorse Consigliate
+
+### Deploy Locale con GPU (LXC)
 
 | Risorsa | Minimo | Consigliato |
 |---------|--------|-------------|
@@ -291,9 +423,17 @@ In alternativa, usa **Tailscale** per accesso sicuro senza port forwarding.
 | Disco | 100 GB SSD | 200 GB NVMe |
 | GPU VRAM (host) | 8 GB | 12-16 GB |
 
+### Deploy senza GPU (LXC)
+
+| Risorsa | Minimo | Consigliato |
+|---------|--------|-------------|
+| vCPU | 2 | 4 |
+| RAM | 4 GB | 8 GB |
+| Disco | 50 GB | 100 GB |
+
 ---
 
-## 7. Setup SSH (riferimento)
+## Setup SSH
 
 ### Dal container LXC
 
@@ -306,7 +446,7 @@ sudo apt install -y openssh-server
 sudo systemctl enable --now sshd
 ```
 
-### Dal tuo Mac (accesso senza password)
+### Dal tuo PC (accesso senza password)
 
 ```bash
 # Genera chiave SSH (se non ne hai una)
@@ -339,7 +479,7 @@ sudo systemctl restart sshd
 
 ---
 
-## 8. Verifica Installazione
+## Verifica Installazione
 
 ```bash
 # Dal container LXC, verifica il sistema
@@ -347,12 +487,14 @@ uname -a              # Kernel Linux
 free -h               # RAM disponibile
 df -h                 # Spazio disco
 ip a                  # IP assegnato
+
+# Solo per LXC con GPU
 ls -la /dev/nvidia*   # Device GPU visibili nel container
 ```
 
 ---
 
-## 9. Desktop locale sull'host Proxmox (KVM switch virtuale)
+## Desktop locale sull'host Proxmox (KVM switch virtuale)
 
 Per usare lo schermo, tastiera e mouse fisici collegati all'AtomMan per controllare
 le VM (Workstation, HAOS, ecc.), installa un desktop leggero **direttamente sull'host Proxmox**.
@@ -392,6 +534,12 @@ Dallo stesso desktop XFCE sull'host, puoi gestire tutto:
 > - Va fatto una sola volta — il desktop persiste tra i reboot.
 > - XFCE sull'host consuma ~200-300 MB RAM — trascurabile su 64 GB.
 > - Le VM devono avere **xrdp** installato per essere raggiungibili via RDP.
->   Per la VM Workstation, Ansible `workstation.yml` lo installa automaticamente.
+>   Per la VM Workstation vedi [WORKSTATION.md](WORKSTATION.md) Step 6.
 > - Se non ti serve il desktop locale (es. gestisci tutto via SSH/Web UI da un altro PC),
 >   puoi saltare questo step.
+
+---
+
+## Prossimo Step
+
+Procedi con l'installazione di Docker: **[DOCKER.md](DOCKER.md)**

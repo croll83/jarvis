@@ -1,0 +1,284 @@
+{
+  "version": 4,
+  "terraform_version": "1.5.7",
+  "serial": 13,
+  "lineage": "131d9385-9cb9-c3eb-c3fd-762e202feb4b",
+  "outputs": {
+    "ct_id": {
+      "value": 100,
+      "type": "number"
+    },
+    "deploy_type": {
+      "value": "lxc_gpu",
+      "type": "string"
+    },
+    "ipv4_address": {
+      "value": "controlla-proxmox-ui",
+      "type": "string"
+    },
+    "next_steps": {
+      "value": "\n================================================================\nJARVIS Terraform — Infrastruttura creata!\n================================================================\n\n\n📦 LXC-JARVIS:     CT 100\n   Deploy Type:    lxc_gpu\n   IP:             DHCP — vedi Proxmox UI\n\n   ⚠️  GPU: esegui sull'host Proxmox:\n   bash configure-gpu.sh\n\n\n\n\n📦 LXC-OpenClaw:   CT 101\n   IP:             DHCP — vedi Proxmox UI\n\n\n\n🖥️  VM Workstation:  jarvis-workstation (VM 200)\n   IP:             DHCP — vedi Proxmox UI\n\n   La VM si avvia con l'ISO Ubuntu. Completa l'installazione da\n   Proxmox Web UI (noVNC), poi:\n     ansible-playbook playbooks/workstation.yml\n\n\nProssimi passi:\n\n1. Configura GPU cgroup (sull'host Proxmox):\n   bash configure-gpu.sh\n\n\n\n2. Configura Ansible:\n   cd ../ansible\n   cp inventory/hosts.yml.example inventory/hosts.yml\n   cp group_vars/all.yml.example group_vars/all.yml\n   nano group_vars/all.yml  # API keys, token HA, ecc.\n\n3. Esegui Ansible (solo i componenti abilitati):\n\n   ansible-playbook playbooks/site.yml --tags common,nvidia,jarvis,verify\n\n\n   ansible-playbook playbooks/site.yml --tags openclaw\n\n\n\n\n4. Installa Ubuntu Desktop dalla console noVNC Proxmox\n5. ansible-playbook playbooks/workstation.yml\n\n\n================================================================\n",
+      "type": "string"
+    },
+    "openclaw_ct_id": {
+      "value": 101,
+      "type": "number"
+    },
+    "openclaw_ip": {
+      "value": "controlla-proxmox-ui",
+      "type": "string"
+    },
+    "workstation_ip": {
+      "value": "controlla-proxmox-ui",
+      "type": "string"
+    },
+    "workstation_vm_id": {
+      "value": 200,
+      "type": "number"
+    }
+  },
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "local_file",
+      "name": "gpu_config_script",
+      "provider": "provider[\"registry.terraform.io/hashicorp/local\"]",
+      "instances": []
+    },
+    {
+      "mode": "managed",
+      "type": "proxmox_virtual_environment_vm",
+      "name": "workstation",
+      "provider": "provider[\"registry.terraform.io/bpg/proxmox\"]",
+      "instances": [
+        {
+          "index_key": 0,
+          "schema_version": 0,
+          "attributes": {
+            "acpi": true,
+            "agent": [
+              {
+                "enabled": true,
+                "timeout": "15m",
+                "trim": false,
+                "type": "virtio",
+                "wait_for_ip": []
+              }
+            ],
+            "amd_sev": [],
+            "audio_device": [],
+            "bios": "seabios",
+            "boot_order": [
+              "scsi0",
+              "ide2"
+            ],
+            "cdrom": [
+              {
+                "enabled": false,
+                "file_id": "local:iso/ubuntu-24.04.2-desktop-amd64.iso",
+                "interface": "ide2"
+              }
+            ],
+            "clone": [],
+            "cpu": [
+              {
+                "affinity": "",
+                "architecture": "",
+                "cores": 6,
+                "flags": null,
+                "hotplugged": 0,
+                "limit": 0,
+                "numa": false,
+                "sockets": 1,
+                "type": "host",
+                "units": 0
+              }
+            ],
+            "delete_unreferenced_disks_on_destroy": true,
+            "description": "JARVIS Workstation — Ubuntu Desktop + Chrome + OpenClaw browser extension",
+            "disk": [
+              {
+                "aio": "io_uring",
+                "backup": true,
+                "cache": "none",
+                "datastore_id": "local-lvm",
+                "discard": "on",
+                "file_format": "raw",
+                "file_id": "",
+                "import_from": "",
+                "interface": "scsi0",
+                "iothread": true,
+                "path_in_datastore": "vm-200-disk-0",
+                "replicate": true,
+                "serial": "",
+                "size": 400,
+                "speed": [],
+                "ssd": true
+              }
+            ],
+            "efi_disk": [],
+            "hook_script_file_id": null,
+            "hostpci": [],
+            "hotplug": null,
+            "id": "200",
+            "initialization": [
+              {
+                "datastore_id": "",
+                "dns": [
+                  {
+                    "domain": "",
+                    "servers": [
+                      "8.8.8.8",
+                      "1.1.1.1"
+                    ]
+                  }
+                ],
+                "file_format": "",
+                "interface": "",
+                "ip_config": [
+                  {
+                    "ipv4": [
+                      {
+                        "address": "dhcp",
+                        "gateway": ""
+                      }
+                    ],
+                    "ipv6": []
+                  }
+                ],
+                "meta_data_file_id": "",
+                "network_data_file_id": "",
+                "type": "",
+                "user_account": [
+                  {
+                    "keys": [
+                      "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDJ8OCPQJUS9RHhaf8dUVxnPhSPxMyvN4mK4vFCAyDu9s8wgwFM61AV6ThP/xW9cMTdu63gi06JOEBuSzam1wT65mlgX+zHs/kZ1Sqa51IGlrWMQZE8X8d9gfbzF01WRU/jr0KGRf461+AMjGdHp8wGG/z/hGpohX0Z47C3alahBUPBW/EYvlOl2bRfnT54As1PFJQl7mN+59h2ieCUhrPK5W2cPFDbS6Ue62vzfB6GAPE/XdjImW8y0abESah3dAPVpSn/SCXr+g/n30xISws5zkGrR0usND8kAhXMAtcf9ZP1FURo+SApZYkSK5EycQZ6736UFXLKnAeVYEEhxbPuZlZj8X3LnpNgpglOXZBPmMo7WimcYJ1JelzmrWO/6Ga3a2PpfkGKrjtrHwecrpagLB5dz/FQzo6OC6zMJ+jGgypHh+sGfdftE+Ky5bnfPi6cXekhDTiTTocseDA5gi99Ss92wO6LhluMZvFLziY6C1VwO6QHaLdhiTtRm26Sm8K07EuP1ETxl71jPsOMHHiqOmCNE0rYPUFBkB6CTNHSVTCHzjOmVDaL5d5zAbykjVNKAd5o1GVLfjLmaveGUv+AkSX+BDJXooMdTpSOzNUHFiQ4uGL70bO+Sw6TV3mBtkRxzYCSrWak2QTMS16EfngEm030TrPmyA4Va7wCiKgAoQ== jarvis-cloud"
+                    ],
+                    "password": "**********",
+                    "username": "jarvis"
+                  }
+                ],
+                "user_data_file_id": "",
+                "vendor_data_file_id": ""
+              }
+            ],
+            "ipv4_addresses": [],
+            "ipv6_addresses": [],
+            "keyboard_layout": "it",
+            "kvm_arguments": "",
+            "mac_addresses": [],
+            "machine": "q35",
+            "memory": [
+              {
+                "dedicated": 12288,
+                "floating": 0,
+                "hugepages": "",
+                "keep_hugepages": false,
+                "shared": 0
+              }
+            ],
+            "migrate": false,
+            "name": "jarvis-workstation",
+            "network_device": [
+              {
+                "bridge": "vmbr0",
+                "disconnected": false,
+                "enabled": true,
+                "firewall": false,
+                "mac_address": "BC:24:11:2F:5F:22",
+                "model": "virtio",
+                "mtu": 0,
+                "queues": 0,
+                "rate_limit": 0,
+                "trunks": "",
+                "vlan_id": 0
+              }
+            ],
+            "network_interface_names": [],
+            "node_name": "pve-wagmi",
+            "numa": [],
+            "on_boot": true,
+            "operating_system": [],
+            "pool_id": "",
+            "protection": false,
+            "purge_on_destroy": true,
+            "reboot": false,
+            "reboot_after_update": true,
+            "rng": [],
+            "scsi_hardware": "virtio-scsi-single",
+            "serial_device": [],
+            "smbios": [],
+            "started": true,
+            "startup": [
+              {
+                "down_delay": 15,
+                "order": 3,
+                "up_delay": 30
+              }
+            ],
+            "stop_on_destroy": false,
+            "tablet_device": true,
+            "tags": [
+              "desktop",
+              "jarvis",
+              "workstation"
+            ],
+            "template": false,
+            "timeout_clone": 1800,
+            "timeout_create": 1800,
+            "timeout_migrate": 1800,
+            "timeout_move_disk": 1800,
+            "timeout_reboot": 1800,
+            "timeout_shutdown_vm": 1800,
+            "timeout_start_vm": 1800,
+            "timeout_stop_vm": 300,
+            "tpm_state": [],
+            "usb": [],
+            "vga": [
+              {
+                "clipboard": "",
+                "memory": 32,
+                "type": "qxl"
+              }
+            ],
+            "virtiofs": [],
+            "vm_id": 200,
+            "watchdog": []
+          },
+          "sensitive_attributes": [
+            [
+              {
+                "type": "get_attr",
+                "value": "initialization"
+              },
+              {
+                "type": "index",
+                "value": {
+                  "value": 0,
+                  "type": "number"
+                }
+              },
+              {
+                "type": "get_attr",
+                "value": "user_account"
+              },
+              {
+                "type": "index",
+                "value": {
+                  "value": 0,
+                  "type": "number"
+                }
+              },
+              {
+                "type": "get_attr",
+                "value": "password"
+              }
+            ]
+          ],
+          "private": "bnVsbA=="
+        }
+      ]
+    }
+  ],
+  "check_results": null
+}

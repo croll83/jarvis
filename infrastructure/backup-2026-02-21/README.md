@@ -1,18 +1,18 @@
-# JARVIS — Deploy Locale (GPU + OpenClaw su LXC separato)
+# JARVIS — Deploy Locale (GPU + OpenClaw su LXC/VM separata)
 
 Guida completa per il deploy locale di JARVIS su Proxmox con GPU NVIDIA.
 I modelli locali (Qwen 7B router, Whisper STT) girano on-premise su un **LXC con
 GPU device sharing** (driver NVIDIA installato sull'host Proxmox, GPU condivisa via
 cgroup2 — NON PCIe passthrough esclusivo).
 Il reasoning e gestito da Gemini 3 Pro via OpenClaw che gira **bare-metal su un
-LXC dedicato e separato** per isolamento di sicurezza.
+LXC/VM dedicato e separato** per isolamento di sicurezza.
 Tailscale gira host-level (non in Docker) su tutti i container/VM per raggiungere
 HA remoti e il LXC OpenClaw.
 
 > **NOTA IMPORTANTE — GPU Device Sharing vs Passthrough:**
 > La GPU **non** e assegnata in esclusiva a nessuna VM/LXC tramite PCIe passthrough.
 > Il driver NVIDIA gira sull'**host Proxmox** e la GPU e condivisa con l'LXC jarvis
-> tramite device binding (`/dev/nvidia*` + cgroup2). Questo significa:
+> tramite device binding (`/dev/nvidia*` + cgroup2 allow). Questo significa:
 > - Zero overhead di virtualizzazione GPU
 > - La GPU resta disponibile anche per l'host (e potenzialmente altri container)
 > - Non servono IOMMU, vfio-pci, o UEFI
@@ -187,8 +187,9 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | **PostgreSQL** | LXC-JARVIS | `jarvis_postgres` (Docker) | 0.5 | 512 MB | - | Database side projects |
 | **MongoDB** | LXC-JARVIS | `jarvis_mongo` (Docker) | 0.5 | 512 MB | - | Database side projects |
 | **OpenClaw** | LXC-OpenClaw (bare-metal) | `openclaw.service` (systemd) | 0.5 | 512 MB | - | Gemini 3 Pro brain (API cloud) |
-| **Chrome Headless** | LXC-OpenClaw (bare-metal) | `openclaw-chrome.service` (systemd) | 0.5 | <=1 GB | - | Browser automation via CDP :18800 |
+| **Chrome Headless** | LXC-OpenClaw (bare-metal) | `openclaw-chrome.service` (systemd) | 0.5 | ≤1 GB | - | Browser automation via CDP :18800 |
 | **Wakeword Server** | LXC-Wakeword (1/casa) | `jarvis_wakeword` (Docker) | 1 | 2 GB | - | openWakeWord detection + relay :8200 |
+| **Tailscale** | LXC-Wakeword | host-level (`tailscaled`) | - | 64 MB | - | Raggiungibilita dall'orchestrator VPS |
 | **Workstation** | VM-Workstation (opz.) | KVM VM (Ubuntu + XFCE) | 6 | 12 GB | - | Chrome reale + OpenClaw ext + IDE + dev |
 | **HAOS** | VM-HAOS (opz.) | KVM VM | 2 | 8 GB | - | Home Assistant OS + MASS + add-ons |
 | **Alexa Media** | LXC-Alexa (opz.) | Docker/nativo | 1 | 1 GB | - | Echo come speaker JARVIS |
@@ -207,6 +208,10 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | Disco | 500 GB SSD | 2 TB NVMe |
 | OS | Proxmox VE 8.x | latest |
 | NVIDIA Driver | installato sull'host | latest |
+
+> **NVIDIA Driver sull'HOST:** Il driver va installato su Proxmox, non nei container.
+> L'LXC-JARVIS accede alla GPU tramite device binding (`/dev/nvidia*` + cgroup2).
+> Vedi [PROXMOX.md](PROXMOX.md) per la procedura dettagliata.
 
 ### LXC-JARVIS (GPU)
 
@@ -231,8 +236,12 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | OS | Ubuntu 22.04+ / Debian 12+ | - |
 | Node.js | 22+ | 22 LTS |
 | Google Chrome | stable | latest |
+| Linuxbrew | installato | latest |
 | GPU | Non richiesta | - |
 | Tailscale | installato host-level | latest |
+
+> **Nota:** Chrome headless (per browser-dom) richiede ~512 MB extra di RAM rispetto al solo gateway.
+> Node.js 22+ è necessario per il supporto nativo WebSocket usato dal plugin browser-dom.
 
 ### LXC-Wakeword (1 per casa)
 
@@ -246,206 +255,434 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | Tailscale | installato host-level | latest |
 | GPU | Non richiesta | - |
 
+> **Nota:** Un singolo LXC gestisce 4-5 device AtomS3R. Il container deve essere sulla stessa LAN
+> dei device (stessa rete WiFi). Tailscale serve per la raggiungibilita dall'orchestrator VPS
+> (push config, trigger_listen). I device lo raggiungono via IP LAN.
+
 ---
 
-## Installazione (Step-by-Step)
+## Quick Setup (Step-by-Step)
 
 ### Prerequisiti
 
-Prima di iniziare, raccogli:
-- **API keys**: Gemini ([aistudio.google.com](https://aistudio.google.com/app/apikey))
-- **Telegram bot tokens**: 2 bot da @BotFather (uno per OpenClaw, uno per Approval)
-- **HA long-lived token**: Home Assistant > Profilo > Token di lunga durata
-- **Proxmox API token**: vedi [PROXMOX.md](PROXMOX.md) sezione 3
-- **Terraform + Ansible** installati sul Mac (`brew install terraform ansible`)
+- Proxmox host con NVIDIA driver installato (vedi [PROXMOX.md](PROXMOX.md))
+- LXC container creato con accesso GPU via device binding (vedi [Terraform](terraform/) o manuale)
+- LXC/VM dedicato per OpenClaw (senza GPU, anche leggero)
+- Docker + Compose installati nel LXC-JARVIS (vedi [DOCKER.md](DOCKER.md))
+- NVIDIA Container Toolkit installato nel LXC-JARVIS con `no-cgroups=true` (vedi [DOCKER.md](DOCKER.md) Step 5)
+- Node.js 22+ installato nel LXC-OpenClaw
+- API keys pronte: Gemini, e opzionalmente Groq/OpenRouter come fallback
+- Tailscale installato host-level su tutti i container/VM
 
-### FASE 1 — Proxmox Host (manuale, una tantum)
+### STEP 1 — Infrastruttura (una tantum)
 
-Operazioni sull'host che non possono essere automatizzate.
-
-1. **Installa driver NVIDIA** sull'host → [PROXMOX.md](PROXMOX.md) sezione 1
-2. **Verifica device** → `ls -la /dev/nvidia*` — annota i major number per `terraform.tfvars`
-3. **Crea API token** per Terraform → [PROXMOX.md](PROXMOX.md) sezione 3
-4. **(Opzionale) Desktop XFCE + Remmina** sull'host → [PROXMOX.md](PROXMOX.md) sezione 9
-
-### FASE 2 — Terraform (dal Mac — crea infrastruttura)
-
-Terraform crea i container LXC e le VM su Proxmox via API.
+Se parti da zero su Proxmox:
 
 ```bash
+# Opzione A: Terraform (automatizzato) — crea i container/VM scelti
 cd infrastructure/terraform
 cp terraform.tfvars.example terraform.tfvars
-nano terraform.tfvars    # IP Proxmox, API token, scegli componenti
+nano terraform.tfvars
 
-terraform init           # scarica il provider Proxmox (prima volta)
-terraform plan           # anteprima di cosa verra' creato
-terraform apply          # crea tutto
+# Scegli cosa creare:
+#   jarvis_enabled      = true     # LXC-JARVIS (GPU + Ollama + Orchestrator)
+#   openclaw_enabled    = true     # LXC-OpenClaw (Gateway Gemini)
+#   workstation_enabled = false    # VM-Workstation (Ubuntu Desktop + Chrome)
+#
+# Per ora puoi abilitare solo la workstation:
+#   jarvis_enabled      = false
+#   openclaw_enabled    = false
+#   workstation_enabled = true
+
+terraform init && terraform apply
+
+# Opzione B: Manuale
+# Segui PROXMOX.md per installare driver NVIDIA sull'host e creare LXC con GPU device sharing
+# Crea un secondo LXC per OpenClaw (senza GPU, 2 core, 4 GB RAM)
+# Crea una VM per la Workstation (vedi WORKSTATION.md)
+# Poi segui DOCKER.md per installare Docker + NVIDIA Container Toolkit nel LXC-JARVIS
 ```
 
-Scegli cosa creare abilitando i flag in `terraform.tfvars`:
+### STEP 2 — Setup Tailscale (tutti i container/VM)
 
-```hcl
-jarvis_enabled      = true     # LXC-JARVIS (GPU + Ollama + Orchestrator)
-openclaw_enabled    = true     # LXC-OpenClaw (Gateway Gemini)
-workstation_enabled = true     # VM-Workstation (Ubuntu Desktop + Chrome)
-# wakeword: si abilita aggiungendo istanze a wakeword_instances
-```
-
-**Dopo `terraform apply`** — se hai abilitato LXC-JARVIS, esegui lo script GPU sull'host:
+Tailscale gira host-level su tutti i container/VM (non in Docker).
 
 ```bash
-# Copia ed esegui configure-gpu.sh sull'host Proxmox
-scp configure-gpu.sh root@<proxmox-ip>:~/
-ssh root@<proxmox-ip> "bash ~/configure-gpu.sh"
+# === LXC-JARVIS ===
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --hostname=jarvis-wagmi
+
+# === LXC-OpenClaw ===
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --hostname=jarvis-openclaw
 ```
 
-### FASE 3 — VM Workstation (manuale + Ansible)
+### STEP 2b — Deploy LXC-Wakeword (1 per casa, opzionale)
 
-Prerequisito: `workstation_enabled = true` in Fase 2.
+Se usi il wakeword-server (rilevamento wake word lato server invece che on-device):
 
-1. **Scarica ISO Ubuntu** su Proxmox → [WORKSTATION.md](WORKSTATION.md) Step 1
-2. **Installa Ubuntu** via noVNC (manuale) → [WORKSTATION.md](WORKSTATION.md) Step 3
-3. **Prepara la VM per Ansible** (dalla console noVNC della VM):
-   ```bash
-   sudo apt update && sudo apt install -y openssh-server
-   echo "jarvis ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/jarvis
-   ```
-4. **Copia chiave SSH** (dal Mac):
-   ```bash
-   ssh-copy-id jarvis@<IP_VM_WORKSTATION>
-   ```
-5. **Lancia Ansible**:
+```bash
+# Opzione A: Script interattivo (consigliato — eseguire sul Proxmox HOST)
+sudo bash cloud/scripts/deploy-wakeword.sh
+
+# Opzione B: Terraform + Ansible (automatizzato)
+cd infrastructure/terraform
+# Aggiungi le istanze wakeword in terraform.tfvars:
+# wakeword_instances = {
+#   "casa1" = {
+#     ct_id             = 210
+#     ip_address        = "192.168.1.210/24"
+#     hostname          = "jarvis-wakeword-casa1"
+#     node_name         = "pve-casa1"
+#     tailscale_authkey = "tskey-auth-xxxxx"
+#   }
+# }
+terraform apply
+
+# Poi con Ansible:
+cd ../ansible
+ansible-playbook playbooks/wakeword.yml -e "wakeword_host=192.168.1.210"
+```
+
+Lo script/playbook:
+1. Crea un LXC container (1 core, 2 GB RAM, 10 GB disco)
+2. Installa Docker + Tailscale nel container
+3. Connette Tailscale alla tailnet (serve auth key)
+4. Clona il repo (sparse checkout di `jarvis/wakeword-server/`)
+5. Crea `.env` e avvia `docker compose up -d`
+6. Verifica health su `:8200/health`
+
+Dopo il deploy, aggiungi l'IP Tailscale del wakeword server al `.env` dell'orchestrator:
+
+```bash
+# Nel .env dell'orchestrator (LXC-JARVIS o VPS cloud)
+WAKEWORD_SERVER_URLS={"tua_location_id": "http://<TAILSCALE_IP_WAKEWORD>:8200"}
+
+# Poi riavvia l'orchestrator
+docker compose restart orchestrator
+```
+
+### STEP 3 — Setup LXC-OpenClaw (una tantum)
+
+Sul LXC/VM dedicato a OpenClaw:
+
+```bash
+# Installa Node.js 20 LTS
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+sudo apt-get install -y nodejs
+
+# Installa OpenClaw globalmente
+npm install -g openclaw
+
+# (Tailscale già installato nello STEP 2)
+
+# Configura OpenClaw con onboard
+openclaw onboard
+# Inserisci: GEMINI_API_KEY, OPENCLAW_GATEWAY_TOKEN (stesso del .env sulla LXC-JARVIS)
+
+# Copia la skill JARVIS nella directory OpenClaw
+sudo mkdir -p /opt/jarvis/jarvis-orchestrator/skill
+# (copia o clona i file della skill JARVIS in /opt/jarvis/jarvis-orchestrator/skill)
+mkdir -p ~/.openclaw/workspace/skills/jarvis-orchestrator
+cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
+cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
+
+# Crea il servizio systemd
+sudo tee /etc/systemd/system/openclaw.service > /dev/null <<EOF
+[Unit]
+Description=OpenClaw Gateway
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER
+ExecStart=$(which openclaw) gateway run
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now openclaw
+```
+
+#### STEP 3b — Browser-DOM Plugin (LXC-OpenClaw, opzionale)
+
+Il plugin browser-dom aggiunge 8 tool DOM per automazione web (navigazione, click,
+fill, screenshot via CSS selectors / XPath / text matching) parlando direttamente con
+Chrome headless tramite CDP.
+
+```bash
+# Installa Chrome headless (se non presente)
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo apt install -y ./google-chrome-stable_current_amd64.deb
+rm google-chrome-stable_current_amd64.deb
+
+# Copia il plugin
+mkdir -p ~/.openclaw/extensions/browser-dom
+cp -r /opt/jarvis/extensions/browser-dom/{src,index.ts,package.json,openclaw.plugin.json} \
+    ~/.openclaw/extensions/browser-dom/
+cd ~/.openclaw/extensions/browser-dom && npm install --omit=dev && cd -
+
+# Crea directory Chrome user-data
+mkdir -p ~/.openclaw/browser/openclaw/user-data
+
+# Crea servizio Chrome headless (come root)
+sudo cp /opt/jarvis/extensions/browser-dom/openclaw-chrome.service \
+    /etc/systemd/system/openclaw-chrome.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now openclaw-chrome
+
+# Verifica CDP
+curl -s http://127.0.0.1:18800/json/version
+
+# Configura il plugin in openclaw.json (dopo onboarding)
+bash /opt/jarvis/cloud/scripts/configure-browser-dom.sh
+
+# Riavvia OpenClaw per caricare il plugin
+sudo systemctl restart openclaw
+
+# Verifica che il plugin sia caricato
+journalctl -u openclaw --since '1 min ago' | grep browser-dom
+```
+
+### STEP 4 — Clone repository (LXC-JARVIS)
+
+```bash
+git clone https://github.com/croll83/jarvis.git
+cd jarvis
+```
+
+### STEP 5 — Configura .env (LXC-JARVIS)
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Variabili obbligatorie:
+
+| Variabile | Come ottenerla |
+|-----------|----------------|
+| `AI_BACKEND` | `local` (usa Ollama + Whisper locali) |
+| `GEMINI_API_KEY` | [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
+| `OPENCLAW_GATEWAY_TOKEN` | `openssl rand -hex 32` — deve essere lo stesso usato in `openclaw onboard` sulla LXC-OpenClaw |
+| `OPENCLAW_URL` | `http://jarvis-openclaw:18789` (Tailscale MagicDNS) o `http://192.168.x.x:18789` (LAN) |
+| `OPENCLAW_TELEGRAM_BOT_TOKEN` | @BotFather su Telegram |
+| `JARVIS_APPROVAL_BOT_TOKEN` | @BotFather (secondo bot, separato) |
+| `JARVIS_APPROVAL_CHAT_ID` | Scrivi al bot, poi `curl https://api.telegram.org/bot<TOKEN>/getUpdates` |
+| `HASS_URL` | `http://homeassistant:8123` (locale) o `http://100.x.x.x:8123` (via Tailscale) |
+| `JARVIS_HASS_TOKEN` | HA -> Profilo -> Token di lunga durata |
+| `POSTGRES_PASSWORD` | Password forte a scelta |
+| `MONGO_PASSWORD` | Password forte a scelta |
+
+Variabili opzionali (API cloud come fallback):
+
+```env
+GROQ_API_KEY=gsk_...          # STT via Groq (fallback se Whisper locale down)
+OPENROUTER_API_KEY=sk-or-...  # Routing via OpenRouter (fallback se Ollama down)
+```
+
+### STEP 6 — Configura system prompt (LXC-JARVIS)
+
+```bash
+nano config/router_system_prompt.txt   # Regole di routing per Qwen
+```
+
+### STEP 7 — Avvia lo stack (LXC-JARVIS)
+
+```bash
+docker compose up -d
+```
+
+### STEP 8 — Scarica modelli Ollama (LXC-JARVIS)
+
+```bash
+# Attendi che Ollama sia pronto, poi:
+bash setup.sh
+```
+
+Lo script scarica:
+1. **Qwen 2.5 7B Instruct Q4_K_M** (~4.7 GB) - router/pre-router
+2. **nomic-embed-text** (~274 MB) - embeddings per memoria semantica
+3. Esegue warmup dei modelli
+
+### STEP 9 — Verifica
+
+```bash
+# === LXC-OpenClaw ===
+
+# OpenClaw attivo?
+sudo systemctl status openclaw
+
+# OpenClaw healthy?
+curl http://localhost:18789/health
+
+# Tailscale connesso?
+tailscale status
+
+# === LXC-JARVIS ===
+
+# Tailscale connesso?
+tailscale status
+
+# Orchestrator healthy?
+curl http://localhost:5000/health
+
+# OpenClaw raggiungibile dalla LXC-JARVIS?
+# (via Tailscale MagicDNS)
+curl http://jarvis-openclaw:18789/health
+# (oppure via LAN)
+curl http://192.168.x.x:18789/health
+
+# Ollama con modelli?
+curl http://localhost:11434/api/tags
+
+# GPU ok?
+nvidia-smi
+
+# HA raggiungibile?
+curl -s \
+  -H "Authorization: Bearer <HASS_TOKEN>" \
+  http://<HA_IP>:8123/api/ | head -c 100
+
+# Logs in tempo reale
+docker compose logs -f orchestrator
+
+# === LXC-Wakeword (se deployato) ===
+
+# Health check
+curl http://<WAKEWORD_LAN_IP>:8200/health
+
+# Devices connessi
+curl http://<WAKEWORD_LAN_IP>:8200/api/devices
+
+# Tailscale connesso?
+pct exec <CT_ID> -- tailscale status
+
+# Raggiungibile dall'orchestrator via Tailscale?
+tailscale ping jarvis-wakeword-casa1
+
+# Logs
+pct exec <CT_ID> -- docker logs -f jarvis_wakeword
+```
+
+### STEP 10 — Primo accesso alla dashboard
+
+Apri `http://localhost:5000/admin` nel browser (dalla LXC-JARVIS o via Tailscale da qualsiasi dispositivo nella tailnet).
+
+Da qui puoi:
+- Creare utenti e assegnare ruoli (admin/user)
+- Enrollare voci (speaker identification con Resemblyzer)
+- Gestire location e entity maps
+- Configurare preferenze globali
+- Monitorare lo stato dei servizi
+
+### STEP 11 — Dashboard OpenClaw
+
+La dashboard di OpenClaw e accessibile direttamente dalla LXC-OpenClaw:
+`http://jarvis-openclaw:18789` (via Tailscale MagicDNS da qualsiasi dispositivo nella tailnet)
+oppure `http://192.168.x.x:18789` dalla LAN.
+
+Da qui puoi gestire le skill registrate, vedere i log delle conversazioni e monitorare lo stato del gateway.
+
+### STEP 12 — Telegram webhook
+
+Il webhook Telegram e gestito da **OpenClaw** (non dall'orchestrator).
+Configura il webhook del bot OpenClaw puntando al tuo dominio:
+
+```bash
+curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
+```
+
+### STEP 13 — Desktop locale sull'host Proxmox (KVM switch virtuale)
+
+Per usare lo schermo/tastiera/mouse fisici collegati all'AtomMan per controllare
+le VM (Workstation, HAOS, ecc.), installa un desktop leggero **direttamente sull'host Proxmox**:
+
+```bash
+# SSH nell'host Proxmox (o dalla console locale)
+
+# Installa XFCE leggero + Remmina (client RDP multi-tab)
+apt update
+apt install -y xfce4 xfce4-terminal lightdm remmina remmina-plugin-rdp
+
+# LightDM si avvia automaticamente — lo schermo locale mostra il login
+# Username: root (o l'utente Proxmox)
+```
+
+Dopo il login XFCE sull'host:
+
+1. **Remmina** → Nuova connessione RDP → `192.168.1.60` (IP VM Workstation)
+2. Salva e connetti — full screen con F11
+3. Per aggiungere altre VM: nuova connessione Remmina → IP della VM
+4. Switcha tra VM con le **tab di Remmina** o Alt+Tab
+5. Apri `https://localhost:8006` nel browser per la **Proxmox Web UI** sullo schermo locale
+
+> **Nota:** Questo step e manuale (non automatizzabile con Terraform/Ansible perche e l'host stesso).
+> Va fatto una sola volta. XFCE sull'host consuma ~200-300 MB RAM — trascurabile su 64 GB.
+> Vedi [PROXMOX.md — Desktop locale sull'host](PROXMOX.md#desktop-locale-sullhost-proxmox-kvm-switch-virtuale) per la guida completa.
+
+---
+
+## Deploy Automatizzato (Ansible)
+
+Ansible configura il software su container/VM gia creati (da Terraform o manualmente).
+Ogni componente ha il suo playbook — esegui solo quelli che ti servono.
 
 ```bash
 cd infrastructure/ansible
 cp inventory/hosts.yml.example inventory/hosts.yml
-nano inventory/hosts.yml   # inserisci IP della VM workstation
+cp group_vars/all.yml.example group_vars/all.yml
+nano group_vars/all.yml    # Tutte le variabili: deploy_type, API keys, etc.
+nano inventory/hosts.yml   # IP dei container/VM target
+```
 
+**Esegui solo i componenti che hai abilitato in Terraform:**
+
+```bash
+# LXC-JARVIS (Ollama, Whisper, Orchestrator)
+ansible-playbook playbooks/site.yml --tags common,nvidia,jarvis,verify
+
+# LXC-OpenClaw (Node.js, Chrome headless, skill deps)
+ansible-playbook playbooks/site.yml --tags openclaw
+
+# VM-Workstation (Chrome reale, xrdp, nvm, Cursor)
+# Prerequisito: Ubuntu installato manualmente da noVNC
+ansible-playbook playbooks/workstation.yml
+
+# LXC-Wakeword
+ansible-playbook playbooks/wakeword.yml -e "wakeword_host=192.168.1.210"
+
+# Tutto insieme (se hai abilitato tutto)
+ansible-playbook playbooks/site.yml
 ansible-playbook playbooks/workstation.yml
 ```
 
-Installa: GNOME Remote Desktop (RDP nativo), Chrome, Git, nvm + Node.js, Python 3, Zed IDE, Tailscale, UFW.
+Il playbook `site.yml` esegue in sequenza:
 
-6. Post-setup manuale: configura Git, connetti Tailscale, installa estensione OpenClaw su Chrome.
-   Vedi [WORKSTATION.md](WORKSTATION.md) Step 4 per dettagli.
-
-### FASE 4 — LXC-JARVIS (Ansible)
-
-Prerequisito: `jarvis_enabled = true` in Fase 2, `configure-gpu.sh` eseguito.
-
-```bash
-cd infrastructure/ansible
-cp group_vars/all.yml.example group_vars/all.yml
-nano group_vars/all.yml    # API keys, OPENCLAW_URL, HA token, password DB
-nano inventory/hosts.yml   # aggiungi IP del LXC-JARVIS
-
-ansible-playbook playbooks/site.yml --tags common,nvidia,jarvis,verify
+```
+common.yml      -> Sistema base, Docker, firewall, Tailscale (LXC-JARVIS)
+nvidia.yml      -> NVIDIA Container Toolkit (LXC-JARVIS, solo lxc_gpu)
+openclaw.yml    -> Node.js, Chrome headless, OpenClaw, Linuxbrew (LXC-OpenClaw)
+jarvis.yml      -> Clone repo, .env, docker-compose up, pull modelli (LXC-JARVIS)
+security.yml    -> Frigate + DoubleTake (opzionale)
+verify.yml      -> Health check di tutti i servizi
 ```
 
-Il playbook:
-1. Installa Docker + NVIDIA Container Toolkit (con `no-cgroups=true` per LXC)
-2. Clona il repository, genera `.env` da template
-3. Esegue `docker compose up -d` (Ollama, Whisper, Orchestrator, Ontology, Postgres, Mongo)
-4. Scarica i modelli AI (`setup.sh` — Qwen 7B + nomic-embed-text)
-5. Verifica health di tutti i servizi
-
-Post-setup manuale:
+Per il wakeword server (separato, eseguito sull'LXC wakeword):
 
 ```bash
-# SSH nel LXC-JARVIS
-tailscale up --hostname=jarvis-wagmi    # auth manuale
-
-# Accedi alla dashboard
-# http://<IP>:5000/admin
-# Crea utenti, enroll voci, configura location + entity map
+ansible-playbook playbooks/wakeword.yml -e "wakeword_host=192.168.1.210"
 ```
 
-### FASE 5 — LXC-OpenClaw (Ansible + onboarding manuale)
-
-Prerequisito: `openclaw_enabled = true` in Fase 2.
-
-```bash
-cd infrastructure/ansible
-nano inventory/hosts.yml   # aggiungi IP del LXC-OpenClaw nella sezione openclaw
-
-ansible-playbook playbooks/site.yml --tags openclaw
 ```
-
-Il playbook:
-1. Installa Node.js 22, Google Chrome, Linuxbrew
-2. Installa OpenClaw (`npm i -g openclaw`) + skill dependencies
-3. Configura servizi systemd (`openclaw.service` + `openclaw-chrome.service`)
-4. Installa plugin browser-dom (se presente nel repo)
-
-Post-setup manuale:
-
-```bash
-# SSH nel LXC-OpenClaw
-su - jarvis
-
-# Onboarding (inserisci GEMINI_API_KEY + OPENCLAW_GATEWAY_TOKEN)
-openclaw onboard
-
-# Copia la skill JARVIS
-bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
-
-# Configura browser-dom plugin
-bash /opt/jarvis/cloud/scripts/configure-browser-dom.sh
-
-# Avvia i servizi
-sudo systemctl start openclaw-chrome
-sudo systemctl start openclaw
-
-# Connetti Tailscale
-tailscale up --hostname=jarvis-openclaw
-
-# Verifica
-curl http://localhost:18789/health
+wakeword.yml -> Docker, Tailscale, clone repo, .env, docker-compose up, health check
 ```
-
-### FASE 6 — LXC-Wakeword (Ansible, opzionale)
-
-Prerequisito: istanze wakeword configurate in `terraform.tfvars`.
-
-```bash
-cd infrastructure/ansible
-ansible-playbook playbooks/wakeword.yml -e "wakeword_host=<IP_LXC_WAKEWORD>"
-```
-
-Post-setup:
-
-```bash
-# Nel LXC wakeword
-tailscale up --hostname=jarvis-wakeword-casa1
-
-# Nel .env dell'orchestrator (LXC-JARVIS), aggiungi:
-WAKEWORD_SERVER_URLS={"tua_location_id": "http://<TAILSCALE_IP_WAKEWORD>:8200"}
-
-# Riavvia orchestrator
-docker compose restart orchestrator
-```
-
-### Post-installazione
-
-1. **Telegram webhook** — configura il webhook del bot OpenClaw:
-   ```bash
-   curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
-   ```
-
-2. **Dashboard admin** — `http://<JARVIS_IP>:5000/admin`:
-   - Crea utenti e assegna ruoli
-   - Enroll voci (speaker identification con Resemblyzer)
-   - Configura location e entity maps
-   - Monitora stato servizi
-
-3. **Dashboard OpenClaw** — `http://jarvis-openclaw:18789` (via Tailscale):
-   - Gestisci skill registrate
-   - Vedi log conversazioni
-   - Monitora stato gateway
-
-4. **Estensione OpenClaw** — nella VM Workstation:
-   - Apri Chrome, installa l'estensione dal Web Store
-   - Configura URL gateway: `http://jarvis-openclaw:18789`
 
 ---
 
@@ -581,11 +818,11 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-OpenClaw senza aprir
 |   | Automazioni       |                                        |
 |   +-------------------+                                        |
 |                                                                 |
-|   Napoli (LXC su stesso host Proxmox)                          |
+|   Napoli (LXC su stesso host Proxmox)                              |
 |   +-------------------+                                        |
-|   | jarvis-wakeword-  |  LAN :8200 <- AtomS3R devices         |
-|   |  casa1            |  Tailscale <- orchestrator (config/    |
-|   | Docker: wakeword  |              trigger_listen)           |
+|   | jarvis-wakeword-  |  LAN :8200 ← AtomS3R devices          |
+|   |  casa1            |  Tailscale ← orchestrator (config/     |
+|   | Docker: wakeword  |              trigger_listen)            |
 |   +-------------------+                                        |
 |                                                                 |
 |   wagmi -> openclaw: http://jarvis-openclaw:18789 (MagicDNS)  |
@@ -638,6 +875,26 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 |-------|----------|------------|---------|
 | 8200 | Wakeword Server (HTTP + WS) | HTTP/WS | LAN (AtomS3R) + Tailscale (orchestrator) |
 | 41641/udp | Tailscale NAT traversal | UDP | WAN (host-level) |
+
+---
+
+## Confronto Locale vs Cloud
+
+```
+                    LOCALE (GPU)                    CLOUD (VPS)
+                    ────────────                    ───────────
+Pre-routing:        Qwen 7B Q4 (Ollama, locale)     Qwen 7B (OpenRouter API)
+STT:                faster-whisper (GPU, locale)     Groq Whisper (API cloud)
+Brain:              Gemini 3 Pro (OpenClaw, VM sep.) Gemini 3 Pro (OpenClaw, API)
+Embeddings:         nomic-embed-text (Ollama)        nomic-embed-text (solo locale)
+HA control:         HTTP diretto / Tailscale         Tailscale (tutto remoto)
+Speaker ID:         Resemblyzer (in orchestrator)    Resemblyzer (in orchestrator)
+
+GPU richiesta:      Si (8GB+ VRAM, solo LXC-JARVIS)      No
+Latenza voce:       ~200ms (locale)                  ~800ms (API round-trip)
+Offline mode:       Parziale (Qwen locale)           No (tutto API)
+Costo mensile:      ~0 (solo corrente)               ~4-8/mese VPS + API
+```
 
 ---
 
@@ -744,70 +1001,149 @@ sudo tailscale up --hostname=jarvis-wagmi
 ### OpenClaw non raggiungibile (dalla LXC-JARVIS)
 
 ```bash
-# Verifica che OpenClaw sia attivo sul suo LXC
+# Verifica che OpenClaw sia attivo sulla sua VM
 ssh user@jarvis-openclaw "sudo systemctl status openclaw"
 
 # Test connettivita Tailscale
 tailscale ping jarvis-openclaw
 
-# Test diretto via LAN
+# Test diretto via LAN (se sulla stessa rete)
 curl http://192.168.x.x:18789/health
 
 # Test via Tailscale MagicDNS
 curl http://jarvis-openclaw:18789/health
+
+# Logs OpenClaw sulla VM dedicata
+ssh user@jarvis-openclaw "sudo journalctl -u openclaw --since '5 min ago'"
 ```
 
 ### OpenClaw non parte (LXC-OpenClaw)
 
 ```bash
+# Controlla lo stato del servizio
 sudo systemctl status openclaw
+
+# Logs dettagliati
 sudo journalctl -u openclaw -e
+
+# Verifica che Node.js sia installato
 node --version
+
+# Verifica che openclaw sia installato
 which openclaw
+openclaw --version
+
+# Riavvia il servizio
 sudo systemctl restart openclaw
 ```
 
 ### Chrome headless non parte (LXC-OpenClaw)
 
 ```bash
+# Stato del servizio
 sudo systemctl status openclaw-chrome
 sudo journalctl -u openclaw-chrome --since '5 min ago'
+
+# Verifica Chrome installato
 google-chrome --version
+
+# CDP risponde?
 curl -s http://127.0.0.1:18800/json/version
+
+# Stale singleton files? (Chrome crashato in precedenza)
+ls -la ~/.openclaw/browser/openclaw/user-data/Singleton*
+# Il servizio li pulisce automaticamente all'avvio (ExecStartPre)
+
+# Riavvia il servizio
 sudo systemctl restart openclaw-chrome
 ```
 
 ### browser-dom plugin non carica (LXC-OpenClaw)
 
 ```bash
+# Verifica che il plugin sia presente
 ls -la ~/.openclaw/extensions/browser-dom/
+
+# Controlla i log OpenClaw per errori di caricamento
 journalctl -u openclaw --since '5 min ago' | grep -i 'browser-dom\|plugin'
+
+# Verifica che openclaw.json abbia il plugin configurato
 jq '.plugins["browser-dom"]' ~/.openclaw/openclaw.json
-curl -s http://127.0.0.1:18800/json/list
-sudo systemctl restart openclaw-chrome && sudo systemctl restart openclaw
+
+# Test manuale CDP
+curl -s http://127.0.0.1:18800/json/list   # Deve mostrare tab aperte
+
+# Riavvia entrambi i servizi
+sudo systemctl restart openclaw-chrome
+sudo systemctl restart openclaw
 ```
 
 ### Wakeword server non risponde (LXC-Wakeword)
 
 ```bash
+# Container LXC avviato?
 pct status <CT_ID>
+
+# Docker container attivo?
 pct exec <CT_ID> -- docker ps
+
+# Health check
 pct exec <CT_ID> -- curl -sf http://localhost:8200/health
+
+# Logs wakeword
 pct exec <CT_ID> -- docker logs --tail=50 jarvis_wakeword
+
+# Tailscale connesso?
+pct exec <CT_ID> -- tailscale status
+
+# Riavvia il container Docker
+pct exec <CT_ID> -- docker compose -f /opt/jarvis-wakeword/wakeword-server/docker-compose.yml restart
+
+# Redeploy completo (se serve)
+sudo bash cloud/scripts/deploy-wakeword.sh
+```
+
+### Orchestrator non raggiunge il wakeword server
+
+```bash
+# Verifica IP Tailscale del wakeword
+pct exec <CT_ID> -- tailscale ip -4
+
+# Ping via Tailscale (dalla LXC-JARVIS o VPS)
+tailscale ping jarvis-wakeword-casa1
+
+# Test REST API (dalla LXC-JARVIS o VPS)
+curl http://<TAILSCALE_IP_WAKEWORD>:8200/health
+
+# Verifica .env orchestrator
+grep WAKEWORD_SERVER_URLS .env
+# Deve contenere: {"location_id": "http://<TAILSCALE_IP>:8200"}
 ```
 
 ### HA non raggiungibile
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" http://<HA_IP>:8123/api/
-tailscale ping 100.x.x.x    # Se via Tailscale
+# Test diretto dall'host (LXC-JARVIS) — orchestrator usa network_mode: host
+curl -H "Authorization: Bearer $TOKEN" \
+  http://<HA_IP>:8123/api/
+
+# Se via Tailscale
+tailscale ping 100.x.x.x
 ```
 
 ### Database corrotto (LXC-JARVIS)
 
 ```bash
 cp data/jarvis_state.db data/jarvis_state.db.bak
-docker compose restart orchestrator   # Il DB viene ricreato se mancante
+# Il DB viene ricreato automaticamente al riavvio se mancante
+docker compose restart orchestrator
+```
+
+### Container non parte (LXC-JARVIS)
+
+```bash
+docker compose logs <servizio>
+docker stats   # RAM esaurita?
 ```
 
 ---
@@ -825,26 +1161,35 @@ docker compose up -d
 
 ### LXC-OpenClaw (bare-metal)
 
+OpenClaw si aggiorna indipendentemente sulla sua VM:
+
 ```bash
 # Sulla LXC-OpenClaw
 npm update -g openclaw
+
+# Riavvia il servizio
 sudo systemctl restart openclaw
+
+# Verifica
 curl http://localhost:18789/health
 ```
 
-Per aggiornare la skill JARVIS:
+Per aggiornare la skill JARVIS sulla LXC-OpenClaw:
 
 ```bash
+# Sulla LXC-OpenClaw
 cd /opt/jarvis
 git pull
+# Ricopia la skill aggiornata
 cp jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
 cp jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
 # Non serve riavvio — OpenClaw ricarica le skill automaticamente
 ```
 
-### LXC-Wakeword
+### LXC-Wakeword (LXC)
 
 ```bash
+# Dal Proxmox host
 pct exec <CT_ID> -- bash -c '
   cd /opt/jarvis-wakeword
   git pull --depth 1
@@ -855,14 +1200,18 @@ pct exec <CT_ID> -- bash -c '
 '
 ```
 
-### Plugin browser-dom
+Per aggiornare il plugin browser-dom:
 
 ```bash
 # Sulla LXC-OpenClaw
-cd /opt/jarvis && git pull
+cd /opt/jarvis
+git pull
+# Ricopia il plugin aggiornato
 cp -r extensions/browser-dom/{src,index.ts,package.json,openclaw.plugin.json} \
     ~/.openclaw/extensions/browser-dom/
 cd ~/.openclaw/extensions/browser-dom && npm install --omit=dev && cd -
+
+# Riavvia OpenClaw per ricaricare il plugin
 sudo systemctl restart openclaw
 ```
 
@@ -872,14 +1221,17 @@ sudo systemctl restart openclaw
 
 | File | Contenuto |
 |------|-----------|
-| [PROXMOX.md](PROXMOX.md) | Setup manuale host Proxmox (driver NVIDIA, cgroup, desktop locale) |
-| [WORKSTATION.md](WORKSTATION.md) | VM Workstation Ubuntu Desktop (Terraform + Ansible) |
-| [DOCKER.md](DOCKER.md) | Docker + NVIDIA Toolkit — riferimento e troubleshooting |
-| [OLLAMA.md](OLLAMA.md) | Ollama — modelli AI, configurazione avanzata, troubleshooting |
-| [WHISPER.md](WHISPER.md) | faster-whisper STT — configurazione e troubleshooting |
+| [DOCKER.md](DOCKER.md) | Docker Engine + Compose + NVIDIA Toolkit |
+| [PROXMOX.md](PROXMOX.md) | LXC con GPU device sharing (driver su host) |
+| [WORKSTATION.md](WORKSTATION.md) | VM Workstation Ubuntu Desktop (Chrome reale + IDE) |
+| [OLLAMA.md](OLLAMA.md) | Modelli AI (Qwen 7B, nomic-embed-text) |
+| [WHISPER.md](WHISPER.md) | faster-whisper STT |
 | [terraform/](terraform/) | IaC per Proxmox (LXC-JARVIS + LXC-OpenClaw + LXC-Wakeword + VM-Workstation) |
-| [ansible/](ansible/) | Playbook di configurazione (LXC-JARVIS + LXC-OpenClaw + VM-Workstation + Wakeword) |
-| [../docker-compose.yml](../docker-compose.yml) | Stack Docker dentro LXC-JARVIS |
+| [ansible/](ansible/) | Playbook di configurazione (LXC-JARVIS + LXC-OpenClaw + VM-Workstation) |
+| [../docker-compose.yml](../docker-compose.yml) | Stack Docker dentro LXC-JARVIS (NO OpenClaw, NO Tailscale) |
+| [../cloud/scripts/deploy-wakeword.sh](../cloud/scripts/deploy-wakeword.sh) | Script deploy wakeword LXC (interattivo, su Proxmox host) |
 | [../wakeword-server/](../wakeword-server/) | Wakeword server (openWakeWord + relay) |
+| [../cloud/](../cloud/) | Deploy cloud (VPS senza GPU) |
 | [../security/](../security/) | Stack security (Frigate + DoubleTake) |
-| [../openclaw/extensions/browser-dom/](../openclaw/extensions/browser-dom/) | Plugin DOM automation (CDP) |
+| [../../extensions/browser-dom/](../../extensions/browser-dom/) | Plugin DOM automation (CDP) |
+| [../../extensions/browser-dom/README.md](../../extensions/browser-dom/README.md) | Documentazione browser-dom |
