@@ -3,7 +3,8 @@
 # =============================================================================
 # LXC dedicato per OpenClaw: Node.js bare-metal, Chrome headless (CDP),
 # browser-dom plugin, skill dependencies (Linuxbrew).
-# NO Docker, NO GPU.
+# Docker SI (per lab-server e futuri container), NO GPU.
+# Nesting abilitato per Docker-in-LXC.
 #
 # Ansible playbook openclaw.yml configura il software al suo interno.
 # =============================================================================
