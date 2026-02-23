@@ -10,17 +10,18 @@ All mappings are configurable via database (admin dashboard).
 
 import logging
 from enum import IntEnum
-from typing import Dict, Tuple, Optional, Any
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("JARVIS_SECURITY")
 
 
 class SecurityLevel(IntEnum):
     """Security levels for home automation actions."""
-    L1_SAFE = 1        # lights, sensors, volume, input_boolean, reads
-    L2_SENSITIVE = 2   # covers, climate, fan
-    L3_PROTECTED = 3   # locks, alarm, cameras
-    L4_BLOCKED = 4     # always blocked from non-trusted sources
+
+    L1_SAFE = 1  # lights, sensors, volume, input_boolean, reads
+    L2_SENSITIVE = 2  # covers, climate, fan
+    L3_PROTECTED = 3  # locks, alarm, cameras
+    L4_BLOCKED = 4  # always blocked from non-trusted sources
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -45,7 +46,6 @@ DEFAULT_DOMAIN_LEVELS: Dict[str, SecurityLevel] = {
     "button": SecurityLevel.L1_SAFE,
     "number": SecurityLevel.L1_SAFE,
     "select": SecurityLevel.L1_SAFE,
-
     # L2 — Sensitive: physical actuators, comfort systems
     "cover": SecurityLevel.L2_SENSITIVE,
     "climate": SecurityLevel.L2_SENSITIVE,
@@ -53,13 +53,11 @@ DEFAULT_DOMAIN_LEVELS: Dict[str, SecurityLevel] = {
     "humidifier": SecurityLevel.L2_SENSITIVE,
     "water_heater": SecurityLevel.L2_SENSITIVE,
     "valve": SecurityLevel.L2_SENSITIVE,
-
     # L3 — Protected: security-critical
     "lock": SecurityLevel.L3_PROTECTED,
     "alarm_control_panel": SecurityLevel.L3_PROTECTED,
     "camera": SecurityLevel.L3_PROTECTED,
     "siren": SecurityLevel.L3_PROTECTED,
-
     # L4 — Blocked: never auto-allowed
     # (no default domains — L4 is for channel-based blocking)
 }
@@ -74,16 +72,19 @@ DEFAULT_DOMAIN_LEVELS: Dict[str, SecurityLevel] = {
 # Email/unknown sources are always blocked.
 
 DEFAULT_CHANNEL_PERMISSIONS: Dict[str, SecurityLevel] = {
-    "voice": SecurityLevel.L3_PROTECTED,        # Resemblyzer verified — fully trusted
+    "voice": SecurityLevel.L3_PROTECTED,  # Resemblyzer verified — fully trusted
     "openclaw_telegram": SecurityLevel.L2_SENSITIVE,  # Telegram via OpenClaw
+    "openclaw_whatsapp": SecurityLevel.L2_SENSITIVE,  # Whatsapp via OpenClaw
     "openclaw_app": SecurityLevel.L3_PROTECTED,  # Mac/desktop app — configurable as trusted
-    "api_tools": SecurityLevel.L2_SENSITIVE,     # Direct API tool calls from OpenClaw
-    "email": SecurityLevel.L4_BLOCKED,           # Always blocked for home control
-    "unknown": SecurityLevel.L4_BLOCKED,         # Unknown sources — blocked
+    "api_tools": SecurityLevel.L2_SENSITIVE,  # Direct API tool calls from OpenClaw
+    "email": SecurityLevel.L4_BLOCKED,  # Always blocked for home control
+    "unknown": SecurityLevel.L4_BLOCKED,  # Unknown sources — blocked
 }
 
 
-def get_domain_level(domain: str, db_overrides: Optional[Dict[str, int]] = None) -> SecurityLevel:
+def get_domain_level(
+    domain: str, db_overrides: Optional[Dict[str, int]] = None
+) -> SecurityLevel:
     """
     Get the security level for a Home Assistant domain.
 
@@ -99,13 +100,17 @@ def get_domain_level(domain: str, db_overrides: Optional[Dict[str, int]] = None)
         try:
             return SecurityLevel(db_overrides[domain])
         except ValueError:
-            logger.warning(f"Invalid security level {db_overrides[domain]} for domain {domain}")
+            logger.warning(
+                f"Invalid security level {db_overrides[domain]} for domain {domain}"
+            )
 
     # Fall back to defaults
     return DEFAULT_DOMAIN_LEVELS.get(domain, SecurityLevel.L2_SENSITIVE)
 
 
-def get_channel_permission(channel: str, db_overrides: Optional[Dict[str, int]] = None) -> SecurityLevel:
+def get_channel_permission(
+    channel: str, db_overrides: Optional[Dict[str, int]] = None
+) -> SecurityLevel:
     """
     Get the maximum security level a channel can execute.
 
@@ -121,7 +126,9 @@ def get_channel_permission(channel: str, db_overrides: Optional[Dict[str, int]] 
         try:
             return SecurityLevel(db_overrides[channel])
         except ValueError:
-            logger.warning(f"Invalid channel permission {db_overrides[channel]} for channel {channel}")
+            logger.warning(
+                f"Invalid channel permission {db_overrides[channel]} for channel {channel}"
+            )
 
     # Fall back to defaults
     return DEFAULT_CHANNEL_PERMISSIONS.get(channel, SecurityLevel.L4_BLOCKED)
@@ -190,9 +197,12 @@ def check_security(
     return True, reason, domain_level, channel_max
 
 
-def needs_approval(domain: str, source_channel: str,
-                   db_domain_overrides: Optional[Dict[str, int]] = None,
-                   db_channel_overrides: Optional[Dict[str, int]] = None) -> bool:
+def needs_approval(
+    domain: str,
+    source_channel: str,
+    db_domain_overrides: Optional[Dict[str, int]] = None,
+    db_channel_overrides: Optional[Dict[str, int]] = None,
+) -> bool:
     """
     Quick check: does this action need L3 approval?
 
@@ -211,15 +221,27 @@ def get_security_summary() -> Dict[str, Any]:
         "levels": {
             "L1_SAFE": {
                 "description": "Luci, sensori, volume, input, scene",
-                "domains": [d for d, l in DEFAULT_DOMAIN_LEVELS.items() if l == SecurityLevel.L1_SAFE],
+                "domains": [
+                    d
+                    for d, l in DEFAULT_DOMAIN_LEVELS.items()
+                    if l == SecurityLevel.L1_SAFE
+                ],
             },
             "L2_SENSITIVE": {
                 "description": "Tapparelle, clima, ventilatori",
-                "domains": [d for d, l in DEFAULT_DOMAIN_LEVELS.items() if l == SecurityLevel.L2_SENSITIVE],
+                "domains": [
+                    d
+                    for d, l in DEFAULT_DOMAIN_LEVELS.items()
+                    if l == SecurityLevel.L2_SENSITIVE
+                ],
             },
             "L3_PROTECTED": {
                 "description": "Serrature, allarme, telecamere",
-                "domains": [d for d, l in DEFAULT_DOMAIN_LEVELS.items() if l == SecurityLevel.L3_PROTECTED],
+                "domains": [
+                    d
+                    for d, l in DEFAULT_DOMAIN_LEVELS.items()
+                    if l == SecurityLevel.L3_PROTECTED
+                ],
             },
             "L4_BLOCKED": {
                 "description": "Sempre bloccato da fonti non trusted",

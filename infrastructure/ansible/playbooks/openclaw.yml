@@ -237,15 +237,65 @@
         mode: "0700"
 
     # -----------------------------------------------------------------
-    # BROWSER-DOM PLUGIN
+    # DOCKER (per lab-server e futuri container)
     # -----------------------------------------------------------------
+    - name: Verifica se Docker è installato
+      ansible.builtin.command: docker --version
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Installa Docker Engine
+      ansible.builtin.shell: curl -fsSL https://get.docker.com | sh
+      args:
+        creates: /usr/bin/docker
+      when: docker_check.rc != 0
+
+    - name: Aggiungi {{ openclaw_user }} al gruppo docker
+      ansible.builtin.user:
+        name: "{{ openclaw_user }}"
+        groups: [docker]
+        append: true
+      when: openclaw_user != "root"
+
+    - name: Configura Docker daemon (log rotation)
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "10m",
+              "max-file": "3"
+            }
+          }
+      notify: Restart Docker
+
+    - name: Assicura Docker avviato
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    # -----------------------------------------------------------------
+    # BROWSER-DOM PLUGIN (installato da migrazione o da repo)
+    # -----------------------------------------------------------------
+    - name: Verifica se browser-dom plugin esiste già (da migrazione)
+      ansible.builtin.stat:
+        path: "/home/{{ openclaw_user }}/.openclaw/extensions/browser-dom/package.json"
+      register: browser_dom_migrated
+
     - name: Verifica se browser-dom plugin esiste nel repo
       ansible.builtin.stat:
         path: "{{ jarvis_dir | default('/opt/jarvis') }}/extensions/browser-dom/package.json"
-      register: browser_dom_check
+      register: browser_dom_repo
+      when: not browser_dom_migrated.stat.exists
 
-    - name: Installa browser-dom plugin
-      when: browser_dom_check.stat.exists
+    - name: Installa browser-dom plugin da repo (solo se non migrato)
+      when: not browser_dom_migrated.stat.exists and browser_dom_repo.stat.exists | default(false)
       block:
         - name: Crea directory plugin browser-dom
           ansible.builtin.file:
@@ -276,14 +326,18 @@
             group: "{{ openclaw_user }}"
             remote_src: true
 
-        - name: Installa dipendenze npm browser-dom
-          community.general.npm:
-            path: "/home/{{ openclaw_user }}/.openclaw/extensions/browser-dom"
-            production: true
-          become_user: "{{ openclaw_user }}"
+    - name: Installa dipendenze npm browser-dom (sempre, anche post-migrazione)
+      community.general.npm:
+        path: "/home/{{ openclaw_user }}/.openclaw/extensions/browser-dom"
+        production: true
+      become_user: "{{ openclaw_user }}"
+      when: browser_dom_migrated.stat.exists or (browser_dom_repo.stat.exists | default(false))
 
     # -----------------------------------------------------------------
-    # CHROME HEADLESS SERVICE (CDP :18800)
+    # CHROME HEADLESS — directory user-data
+    # Chrome viene gestito da OpenClaw (`openclaw browser start`)
+    # quando il plugin browser-dom è abilitato nel config.
+    # NON serve un systemd service dedicato.
     # -----------------------------------------------------------------
     - name: Crea directory Chrome user-data
       ansible.builtin.file:
@@ -293,120 +347,31 @@
         group: "{{ openclaw_user }}"
         mode: "0755"
 
-    - name: Deploy servizio systemd Chrome headless
-      ansible.builtin.copy:
-        dest: /etc/systemd/system/openclaw-chrome.service
-        owner: root
-        group: root
-        mode: "0644"
-        content: |
-          [Unit]
-          Description=OpenClaw Headless Chrome (CDP :18800)
-          Documentation=https://github.com/AnirudhRanganathan/jarvis
-          After=network.target
-          Before=openclaw.service
-
-          [Service]
-          Type=simple
-          User={{ openclaw_user }}
-          Group={{ openclaw_user }}
-          Environment=HOME=/home/{{ openclaw_user }}
-
-          # Remove stale singleton files from previous crashes
-          ExecStartPre=/bin/rm -f /home/{{ openclaw_user }}/.openclaw/browser/openclaw/user-data/SingletonLock
-          ExecStartPre=/bin/rm -f /home/{{ openclaw_user }}/.openclaw/browser/openclaw/user-data/SingletonCookie
-          ExecStartPre=/bin/rm -f /home/{{ openclaw_user }}/.openclaw/browser/openclaw/user-data/SingletonSocket
-
-          ExecStart=/usr/bin/google-chrome \
-              --headless=new \
-              --no-sandbox \
-              --disable-gpu \
-              --disable-dev-shm-usage \
-              --disable-software-rasterizer \
-              --disable-background-networking \
-              --disable-default-apps \
-              --disable-extensions \
-              --disable-sync \
-              --disable-translate \
-              --metrics-recording-only \
-              --no-first-run \
-              --mute-audio \
-              --remote-debugging-port=18800 \
-              --remote-debugging-address=127.0.0.1 \
-              --user-data-dir=/home/{{ openclaw_user }}/.openclaw/browser/openclaw/user-data \
-              --window-size=1920,1080 \
-              about:blank
-
-          Restart=on-failure
-          RestartSec=5
-          TimeoutStopSec=10
-
-          MemoryMax=1G
-          CPUQuota=150%
-
-          StandardOutput=journal
-          StandardError=journal
-          SyslogIdentifier=openclaw-chrome
-
-          [Install]
-          WantedBy=multi-user.target
-      notify: Ricarica systemd
-
-    - name: Abilita servizio Chrome headless
-      ansible.builtin.systemd:
-        name: openclaw-chrome
-        enabled: true
-        daemon_reload: true
-
     # -----------------------------------------------------------------
-    # SYSTEMD SERVICE (OpenClaw Gateway)
+    # OPENCLAW GATEWAY SERVICE (user-level systemd via openclaw CLI)
+    # Usa il service manager nativo di OpenClaw, NON systemd manuale.
+    # Vantaggi: agent/Telegram può fare /restart senza sudo.
+    # Richiede: loginctl enable-linger (già fatto sopra).
     # -----------------------------------------------------------------
-    - name: Deploy servizio systemd OpenClaw
-      ansible.builtin.copy:
-        dest: /etc/systemd/system/openclaw.service
-        owner: root
-        group: root
-        mode: "0644"
-        content: |
-          [Unit]
-          Description=OpenClaw AI Gateway
-          After=network.target
-          Wants=network-online.target
+    - name: Recupera UID utente {{ openclaw_user }}
+      ansible.builtin.command: id -u {{ openclaw_user }}
+      register: openclaw_uid
+      changed_when: false
 
-          [Service]
-          Type=simple
-          User={{ openclaw_user }}
-          Group={{ openclaw_user }}
-          Environment=NODE_ENV=production
-          Environment=HOME=/home/{{ openclaw_user }}
-          Environment=PATH={{ brew_prefix }}/bin:{{ brew_prefix }}/sbin:/usr/local/bin:/usr/bin:/bin
-          Environment=CHROME_PATH=/usr/bin/google-chrome
-          Environment=PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
-          EnvironmentFile=-/home/{{ openclaw_user }}/.openclaw/openclaw.env
-          ExecStart=/usr/bin/openclaw gateway run
-          KillSignal=SIGINT
-          KillMode=mixed
-          TimeoutStopSec=15
-          Restart=on-failure
-          RestartSec=10
-          StandardOutput=journal
-          StandardError=journal
-          SyslogIdentifier=openclaw
+    - name: Installa OpenClaw gateway service (user-level systemd)
+      ansible.builtin.command: openclaw gateway install
+      become_user: "{{ openclaw_user }}"
+      environment:
+        HOME: "/home/{{ openclaw_user }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid.stdout }}"
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ openclaw_uid.stdout }}/bus"
+      register: gateway_install_result
+      changed_when: "'installed' in gateway_install_result.stdout or gateway_install_result.rc == 0"
+      failed_when: false
 
-          NoNewPrivileges=true
-          ProtectSystem=strict
-          ReadWritePaths=/home/{{ openclaw_user }}/.openclaw /home/{{ openclaw_user }}/.npm /home/{{ openclaw_user }}/.config /home/{{ openclaw_user }}/.cache /tmp
-          PrivateTmp=false
-
-          [Install]
-          WantedBy=multi-user.target
-      notify: Ricarica systemd
-
-    - name: Abilita servizio OpenClaw
-      ansible.builtin.systemd:
-        name: openclaw
-        enabled: true
-        daemon_reload: true
+    - name: "Gateway install: {{ gateway_install_result.stdout | default('(nessun output)') }}"
+      ansible.builtin.debug:
+        msg: "{{ gateway_install_result.stdout | default('') }}"
 
     # -----------------------------------------------------------------
     # RIEPILOGO
@@ -415,41 +380,35 @@
       ansible.builtin.debug:
         msg: |
           ================================================================
-          OpenClaw VM Setup completato!
+          OpenClaw LXC Setup completato!
           ================================================================
 
           Componenti installati:
-            - Node.js 22 + OpenClaw
-            - Google Chrome (headless) + systemd service (CDP :18800)
-            - browser-dom plugin (DOM automation via CDP)
+            - Node.js 22 + OpenClaw (gateway: user-level systemd)
+            - Google Chrome (gestito da OpenClaw, non systemd manuale)
+            - Docker Engine (per lab-server e futuri container)
             - Linuxbrew + skill dependencies
               (codexbar, ffmpeg, gcc, gogcli, gifgrep, goplaces, wacli, summarize)
 
-          Prossimi passi (come utente {{ openclaw_user }}):
-            1. su - {{ openclaw_user }}
-            2. openclaw onboard
-            3. Copia skill JARVIS:
-               cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
-               cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
-            4. Configura credenziali skill (scrive token + URL in skill.json):
-               bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
-            5. Configura browser-dom nel config:
-               bash /opt/jarvis/cloud/scripts/configure-browser-dom.sh
-            6. Configura env vars:
-               nano ~/.openclaw/openclaw.env   # GOG_KEYRING_PASSWORD, GOG_ACCOUNT
-            7. Copia credenziali gogcli:
-               scp -r ~/.config/gog/credentials.json {{ openclaw_user }}@<host>:~/.config/gog/
-               scp -r ~/.config/gog/keyring/ {{ openclaw_user }}@<host>:~/.config/gog/
-            8. Avvia servizi:
-               sudo systemctl start openclaw-chrome   # Chrome headless
-               sudo systemctl start openclaw           # OpenClaw gateway
-            9. Verifica:
-               curl -s http://127.0.0.1:18800/json/version   # Chrome CDP
-               curl http://localhost:18789/health              # OpenClaw
-               journalctl -u openclaw -f | grep browser-dom   # Plugin caricato
+          Gestione servizi (come utente {{ openclaw_user }}, SENZA sudo):
+            openclaw gateway start     # Avvia gateway + Chrome
+            openclaw gateway stop      # Ferma gateway
+            openclaw gateway restart   # Restart (anche da agent/Telegram)
+            openclaw gateway status    # Stato servizio
+
+          Prossimi passi:
+            1. Importa dati dal VPS (migrate-import-lxc.sh)
+            2. Connetti Tailscale: sudo tailscale up --hostname=jarvis-openclaw
+            3. Avvia: openclaw gateway start
+            4. Verifica: openclaw health
           ================================================================
 
   handlers:
     - name: Ricarica systemd
       ansible.builtin.systemd:
         daemon_reload: true
+
+    - name: Restart Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
