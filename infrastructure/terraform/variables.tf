@@ -27,7 +27,20 @@ variable "proxmox_endpoint" {
 }
 
 variable "proxmox_api_token" {
-  description = "Proxmox API token (formato: user@realm!tokenid=secret)"
+  description = "Proxmox API token (formato: user@realm!tokenid=secret) — NON USATO, vedi username/password"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "proxmox_username" {
+  description = "Username Proxmox (root@pam — necessario per device passthrough e feature flags LXC)"
+  type        = string
+  default     = "root@pam"
+}
+
+variable "proxmox_password" {
+  description = "Password di root@pam su Proxmox"
   type        = string
   sensitive   = true
 }

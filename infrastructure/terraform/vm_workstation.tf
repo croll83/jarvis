@@ -1,22 +1,24 @@
 # =============================================================================
-# JARVIS — VM Workstation (Ubuntu + XFCE Desktop)
+# JARVIS — VM Workstation (Ubuntu Desktop + GNOME)
 # =============================================================================
 # Vera VM KVM per uso desktop: Chrome reale + OpenClaw browser extension,
-# IDE (Cursor), Git, Node.js, Python 3, email, browsing.
+# IDE (Zed), Git, Node.js, Python 3, email, browsing.
 #
 # Accessibile via:
-#   - RDP (xrdp) da host Proxmox (desktop XFCE + Remmina) o da LAN
-#   - noVNC dalla Proxmox Web UI
+#   - RustDesk (dal Mac, Direct IP via Tailscale :21118)
+#   - RDP nativo (GNOME Remote Desktop :3389 — da Remmina/Proxmox)
+#   - noVNC dalla Proxmox Web UI (per installazione/troubleshooting)
 #
-# NON usa GPU dedicata — il display è VirtIO/QXL virtuale.
-# La GPU NVIDIA resta sull'host per LXC-JARVIS (Ollama/Whisper).
+# Display: VirtIO-GPU (espone /dev/dri/card0+renderD128 per GNOME).
+# NON usa GPU dedicata — la GPU NVIDIA resta sull'host per LXC-JARVIS.
+# Nota: VirtIO-GPU senza virgl (no 3D) — sufficiente per GNOME X11 + RustDesk.
 #
 # Prerequisiti:
 #   1. ISO Ubuntu Desktop scaricata su Proxmox (local:iso/ubuntu-24.04.x-desktop-amd64.iso)
 #   2. workstation_enabled = true in terraform.tfvars
 #
 # Post-install:
-#   Segui WORKSTATION.md per la configurazione software (Chrome, Cursor, nvm, ecc.)
+#   Segui WORKSTATION.md per la configurazione software (Chrome, Zed, nvm, ecc.)
 # =============================================================================
 
 resource "proxmox_virtual_environment_vm" "workstation" {
@@ -35,9 +37,15 @@ resource "proxmox_virtual_environment_vm" "workstation" {
   bios    = "seabios"
   machine = "q35"
 
-  # QEMU Guest Agent (installato post-setup)
+  # Controller SCSI — virtio-scsi-single per supporto iothread sui dischi
+  scsi_hardware = "virtio-scsi-single"
+
+  # QEMU Guest Agent (abilitato dopo installazione Ubuntu + Ansible)
+  # NOTA: enabled = false fino a quando qemu-guest-agent non è installato,
+  # altrimenti Terraform va in timeout durante refresh/create.
+  # Dopo aver eseguito Ansible (che installa il guest agent), cambia a true.
   agent {
-    enabled = true
+    enabled = false
     type    = "virtio"
   }
 
@@ -76,9 +84,12 @@ resource "proxmox_virtual_environment_vm" "workstation" {
     model  = "virtio"
   }
 
-  # Display — QXL per buone performance con SPICE/noVNC
+  # Display — VirtIO-GPU per supporto DRI/EGL (necessario per GNOME Remote Desktop)
+  # VirtIO-GPU espone /dev/dri/card0 nella VM, che GNOME Shell e gnome-remote-desktop
+  # necessitano per il rendering. QXL non espone render nodes e causa
+  # "surfaceless renderer without GPU" → handover RDP fallisce.
   vga {
-    type   = "qxl"
+    type   = "virtio-gpu"
     memory = 32
   }
 

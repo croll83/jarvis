@@ -6,14 +6,18 @@ anti-bot di Cloudflare e gestisce SPA dinamiche — impossibile con Chrome headl
 
 **Funzioni principali:**
 - Chrome reale + estensione browser OpenClaw (controllo browser non-headless)
-- IDE di sviluppo (Cursor)
+- IDE di sviluppo (Zed)
 - Git, Node.js (nvm), Python 3
 - Email, browsing, workspace generale
 
 **Accesso:**
-- RDP (xrdp) da host Proxmox con XFCE + Remmina (schermo locale)
-- RDP da qualsiasi PC in LAN
-- noVNC dalla Proxmox Web UI (per installazione iniziale e troubleshooting)
+- **RustDesk** dal Mac (Direct IP via Tailscale o ID numerico)
+- **RDP** (GNOME Remote Desktop) da Proxmox host con Remmina
+- **noVNC** dalla Proxmox Web UI (per installazione iniziale e troubleshooting)
+
+> **Nota:** GNOME Remote Desktop RDP ha un bug noto su Ubuntu 24.04 con i client
+> Mac (kkRemote, Windows App, Microsoft Remote Desktop) → black screen.
+> RustDesk risolve il problema completamente.
 
 ---
 
@@ -45,9 +49,7 @@ wget https://releases.ubuntu.com/24.04.2/ubuntu-24.04.2-desktop-amd64.iso
 
 ---
 
-## Step 2 — Crea la VM
-
-### Opzione A: Terraform (consigliato)
+## Step 2 — Crea la VM (Terraform)
 
 ```bash
 cd infrastructure/terraform
@@ -57,7 +59,7 @@ cp terraform.tfvars.example terraform.tfvars
 nano terraform.tfvars
 ```
 
-Modifica `terraform.tfvars` — abilita solo la workstation (disabilita il resto se non ti serve):
+Modifica `terraform.tfvars` — abilita la workstation:
 
 ```hcl
 # Scegli cosa creare:
@@ -82,36 +84,8 @@ terraform plan    # verifica cosa verrà creato
 terraform apply   # crea la VM
 ```
 
-Terraform crea la VM con disco VirtIO, display QXL, rete bridge, e la avvia
+Terraform crea la VM con disco VirtIO, display VirtIO-GPU, rete bridge, e la avvia
 automaticamente dall'ISO.
-
-### Opzione B: Manuale da Proxmox Web UI
-
-1. **Create VM** (non CT!)
-2. **General:**
-   - Name: `jarvis-workstation`
-   - VM ID: 200
-3. **OS:**
-   - ISO image: `ubuntu-24.04.2-desktop-amd64.iso`
-   - Type: Linux, Version: 6.x - 2.6 Kernel
-4. **System:**
-   - Machine: q35
-   - BIOS: SeaBIOS
-   - SCSI Controller: VirtIO SCSI single
-   - Qemu Agent: abilitato
-5. **Disks:**
-   - Bus: SCSI, Disco: 400 GB
-   - Storage: local-lvm
-   - Discard: abilitato, IO Thread: abilitato, SSD emulation: si
-6. **CPU:**
-   - Cores: 6
-   - Type: host
-7. **Memory:**
-   - RAM: 12288 MB (12 GB)
-8. **Network:**
-   - Bridge: vmbr0
-   - Model: VirtIO (paravirtualized)
-9. **Confirm** e **Start**
 
 ---
 
@@ -133,14 +107,27 @@ automaticamente dall'ISO.
      ```bash
      qm set 200 -ide2 none,media=cdrom
      ```
+5. **Prepara la VM per Ansible** (dalla console noVNC, loggato come `jarvis`):
+   ```bash
+   # Installa SSH server (Ubuntu Desktop non lo include)
+   sudo apt update && sudo apt install -y openssh-server
+
+   # Abilita sudo senza password (necessario per Ansible)
+   echo "jarvis ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/jarvis
+   ```
+6. **Copia la chiave SSH dal Mac** (dal terminale del Mac):
+   ```bash
+   # Se non hai una chiave SSH, generala prima:
+   # ssh-keygen -t ed25519 -C "jarvis-admin"
+
+   ssh-copy-id jarvis@<IP_DELLA_VM>
+   ```
 
 ---
 
-## Step 4 — Setup automatico (Ansible) o manuale
+## Step 4 — Setup Software (Ansible)
 
-### Opzione A: Ansible (consigliato — fa tutto in un comando)
-
-Dopo aver installato Ubuntu e verificato che SSH funziona:
+Prerequisiti: SSH attivo, sudo passwordless, chiave SSH copiata (vedi Step 3.5-3.6).
 
 ```bash
 cd infrastructure/ansible
@@ -149,250 +136,78 @@ cd infrastructure/ansible
 ansible-playbook playbooks/workstation.yml
 ```
 
-Il playbook installa: qemu-guest-agent, XFCE, xrdp, Chrome, Git, nvm + Node.js,
-Python 3, Cursor IDE, Tailscale, firewall. Fatto — salta al **Step 12** (desktop host).
+Il playbook installa automaticamente:
+- **qemu-guest-agent** (integrazione Proxmox)
+- **Gruppi video/render** per utente jarvis e gdm (necessari per VirtIO-GPU/DRI)
+- **GNOME Remote Desktop** (RDP nativo :3389 — per Remmina da Proxmox)
+- **RustDesk** (accesso remoto da Mac, Direct IP via Tailscale)
+- **Google Chrome** (browser reale, non headless)
+- **Git** + generazione chiave SSH
+- **nvm + Node.js LTS** (v22.x) + symlink in /usr/local/bin per sudo
+- **Python 3** + pip + venv
+- **Zed IDE**
+- **Tailscale** (opzionale — default: abilitato)
+- **UFW firewall** (SSH + RDP + RustDesk aperti)
+- **/dev/shm** aumentato a 2 GB (fix Chrome in VM)
+- **SSSD disabilitato** (non necessario, genera warning inutili)
 
-### Opzione B: Manuale (step 4–11)
+### Post-Ansible (manuale)
 
-Entra nella VM (console noVNC o SSH dopo aver configurato la rete):
+#### 1. Connettiti via RustDesk dal Mac
 
-```bash
-# Aggiorna tutto
-sudo apt update && sudo apt upgrade -y
-
-# Installa utility base
-sudo apt install -y curl wget git nano htop jq ca-certificates gnupg \
-  lsb-release build-essential software-properties-common unzip \
-  apt-transport-https
-
-# Installa QEMU Guest Agent (per Proxmox integration)
-sudo apt install -y qemu-guest-agent
-sudo systemctl enable --now qemu-guest-agent
-```
-
----
-
-## Step 5 — Desktop XFCE (leggero, se non usi Ubuntu default)
-
-Se hai installato Ubuntu Desktop standard, hai gia GNOME.
-Se preferisci XFCE (piu leggero, ~300 MB RAM in meno):
+Scarica RustDesk da [rustdesk.com](https://rustdesk.com) e installalo sul Mac.
 
 ```bash
-sudo apt install -y xfce4 xfce4-goodies
-# Al login, seleziona "Xfce Session" dal menu sessione
+# Ottieni l'ID RustDesk dalla VM:
+ssh jarvis@<IP_VM> "rustdesk --get-id"
+
+# Nel client RustDesk sul Mac:
+# - Inserisci l'ID (o l'IP Tailscale per Direct IP)
+# - Password: quella configurata in workstation_rdp_password
 ```
 
-> **Nota:** Puoi tenere sia GNOME che XFCE e scegliere al login.
-> XFCE consuma ~1 GB RAM vs ~1.5 GB di GNOME — su 12 GB totali non è critico ma comunque meglio.
+**Via Tailscale (Direct IP, zero relay):**
+Una volta connesso Tailscale su entrambi, inserisci l'IP Tailscale della VM
+nel campo ID di RustDesk → connessione diretta peer-to-peer via WireGuard.
 
----
+#### 2. Connettiti via RDP da Proxmox (con Remmina)
 
-## Step 6 — xrdp (accesso RDP)
+Dalla XFCE del host Proxmox, apri Remmina → RDP → `<IP_VM>:3389`.
+Funziona perfettamente con GNOME Remote Desktop.
+
+#### 3. Configurazione iniziale
 
 ```bash
-# Installa xrdp
-sudo apt install -y xrdp
+# Connetti Tailscale
+sudo tailscale up --hostname=jarvis-workstation
 
-# Abilita e avvia
-sudo systemctl enable --now xrdp
+# Configura Git
+git config --global user.name "Il Tuo Nome"
+git config --global user.email "tua@email.com"
 
-# Aggiungi utente al gruppo ssl-cert
-sudo adduser jarvis ssl-cert
+# Aggiungi chiave SSH a GitHub
+cat ~/.ssh/id_ed25519.pub
+# Copia e incolla in GitHub > Settings > SSH keys
 
-# Configura xrdp per usare XFCE (se installato)
-echo "xfce4-session" > ~/.xsession
-chmod +x ~/.xsession
-
-# Riavvia xrdp
-sudo systemctl restart xrdp
-
-# Verifica
-sudo systemctl status xrdp
+# Apri Chrome e installa l'estensione OpenClaw browser
+# (dal Chrome Web Store o da file .crx)
+# Configura l'estensione con l'URL del gateway:
+#   LAN: http://192.168.1.51:18789
+#   Tailscale: http://jarvis-openclaw:18789
 ```
-
-Ora puoi connetterti via RDP da:
-- **Host Proxmox** (con Remmina): `192.168.1.60:3389`
-- **Qualsiasi PC in LAN**: client RDP → `192.168.1.60`
-
----
-
-## Step 7 — Google Chrome
-
-```bash
-# Scarica e installa Chrome
-wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-sudo apt install -y ./google-chrome-stable_current_amd64.deb
-rm google-chrome-stable_current_amd64.deb
-
-# Verifica
-google-chrome --version
-```
-
-### Estensione OpenClaw Browser
-
-1. Apri Chrome nella VM
-2. Vai al Chrome Web Store (o installa da file .crx se distribuzione interna)
-3. Cerca e installa l'estensione OpenClaw per il controllo browser
-4. Configura l'estensione con l'URL del gateway OpenClaw:
-   - Se sulla stessa LAN: `http://192.168.1.51:18789`
-   - Se via Tailscale: `http://jarvis-openclaw:18789`
 
 > **Nota:** Il browser reale con profilo persistente supera i controlli anti-bot
 > di Cloudflare. Per costruire un profilo pulito, naviga manualmente per qualche
 > giorno prima di attivare l'automazione OpenClaw. Risolvi i CAPTCHA
-> manualmente quando compaiono — il profilo imparera e ne vedrai sempre meno.
+> manualmente quando compaiono — il profilo imparer e ne vedrai sempre meno.
 
 ---
 
-## Step 8 — Git
+## Step 5 — Desktop sull'host Proxmox (KVM switch virtuale)
 
-```bash
-# Git è gia installato (step 4), configura identità
-git config --global user.name "Il Tuo Nome"
-git config --global user.email "tua@email.com"
-git config --global init.defaultBranch main
-
-# Genera chiave SSH per GitHub/GitLab
-ssh-keygen -t ed25519 -C "jarvis-workstation"
-cat ~/.ssh/id_ed25519.pub
-# Copia la chiave pubblica nelle impostazioni SSH di GitHub/GitLab
-```
-
----
-
-## Step 9 — Node.js (nvm)
-
-```bash
-# Installa nvm
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-
-# Ricarica il profilo
-source ~/.bashrc
-
-# Installa Node.js LTS
-nvm install --lts
-nvm alias default lts/*
-
-# Verifica
-node --version    # v22.x
-npm --version
-```
-
----
-
-## Step 10 — Python 3
-
-```bash
-# Python 3 è preinstallato su Ubuntu 24.04, installa pip e venv
-sudo apt install -y python3-pip python3-venv python3-dev
-
-# Verifica
-python3 --version   # 3.12.x
-pip3 --version
-
-# (Opzionale) pyenv per gestire più versioni Python
-curl https://pyenv.run | bash
-# Aggiungi a ~/.bashrc:
-echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc
-echo '[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc
-echo 'eval "$(pyenv init -)"' >> ~/.bashrc
-source ~/.bashrc
-```
-
----
-
-## Step 11 — Cursor IDE
-
-```bash
-# Scarica Cursor AppImage
-curl -fL "https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=stable" \
-  -o ~/cursor.appimage
-chmod +x ~/cursor.appimage
-
-# Sposta in una directory dedicata
-mkdir -p ~/.local/bin
-mv ~/cursor.appimage ~/.local/bin/cursor
-
-# Crea desktop entry (per launcher XFCE/GNOME)
-mkdir -p ~/.local/share/applications
-cat > ~/.local/share/applications/cursor.desktop << 'EOF'
-[Desktop Entry]
-Name=Cursor
-Exec=/home/jarvis/.local/bin/cursor --no-sandbox %U
-Icon=cursor
-Type=Application
-Categories=Development;IDE;
-StartupWMClass=Cursor
-EOF
-
-# Installa dipendenza FUSE per AppImage
-sudo apt install -y libfuse2t64
-
-# Lancia Cursor
-~/.local/bin/cursor --no-sandbox &
-```
-
-> **Nota:** `--no-sandbox` è necessario dentro una VM. Cursor funziona come
-> VS Code con AI integrata. Le estensioni VS Code sono compatibili.
-
----
-
-## Step 12 — Desktop sull'host Proxmox (KVM switch virtuale)
-
-Per controllare la VM Workstation (e altre VM in futuro) dallo schermo
-fisico collegato all'AtomMan G7 Pro, installa un desktop leggero sull'host Proxmox:
-
-```bash
-# SSH nell'host Proxmox (o dalla console locale)
-
-# Installa XFCE leggero + Remmina (client RDP)
-apt update
-apt install -y xfce4 xfce4-terminal lightdm remmina remmina-plugin-rdp
-
-# LightDM si avvia automaticamente — lo schermo locale mostra il login
-# Username: root (o l'utente Proxmox)
-
-# Dopo il login XFCE:
-# 1. Apri Remmina
-# 2. Crea connessione RDP: 192.168.1.60 (IP VM Workstation)
-# 3. Salva e connetti — full screen con F11
-#
-# Per aggiungere altre VM in futuro:
-# - Nuova connessione Remmina → IP della nuova VM
-# - Switcha tra VM con le tab di Remmina o Alt+Tab
-```
-
-### Accesso rapido alla console Proxmox
-
-Dallo stesso desktop XFCE sull'host, apri il browser:
-```
-https://localhost:8006
-```
-
-Hai la Web UI Proxmox direttamente sullo schermo locale — gestisci VM, backup,
-storage, rete, tutto senza un altro PC.
-
----
-
-## Step 13 — Tailscale (opzionale)
-
-Se vuoi raggiungere la workstation da fuori LAN:
-
-```bash
-# Nella VM Workstation
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --hostname=jarvis-workstation
-```
-
----
-
-## Step 14 — Firewall (opzionale)
-
-```bash
-sudo ufw allow ssh
-sudo ufw allow 3389/tcp   # RDP
-sudo ufw enable
-```
+Per usare lo schermo/tastiera/mouse fisici dell'AtomMan per controllare questa VM
+(e altre in futuro) come un KVM switch virtuale, vedi:
+**[PROXMOX.md — Desktop locale sull'host](PROXMOX.md#9-desktop-locale-sullhost-proxmox-kvm-switch-virtuale)**
 
 ---
 
@@ -403,41 +218,53 @@ sudo ufw enable
 | CPU | 6 core (host passthrough) |
 | RAM | 12 GB |
 | Disco | 400 GB VirtIO SCSI (SSD, iothread, discard) |
-| Display | QXL (buona qualita con noVNC e SPICE) |
+| Display | VirtIO-GPU (DRI/EGL per GNOME) |
 | Rete | VirtIO bridge vmbr0 |
-| Accesso | RDP :3389 + noVNC Proxmox |
-| GPU | Nessuna dedicata (rendering software) |
+| Accesso | RustDesk :21118 + RDP :3389 + noVNC Proxmox |
+| GPU | Nessuna dedicata (rendering software via VirtIO-GPU) |
 
 ---
 
 ## Troubleshooting
 
-### xrdp non si connette
+### RustDesk non si connette
 
 ```bash
-# Verifica che xrdp sia attivo
-sudo systemctl status xrdp
+# Verifica che il servizio sia attivo
+sudo systemctl status rustdesk
+
+# Verifica porta Direct IP
+ss -tlnp | grep 21118
+
+# Verifica ID e password
+rustdesk --get-id
+# Password impostata con: sudo rustdesk --password <password>
+
+# Riavvia
+sudo systemctl restart rustdesk
+
+# Log
+sudo journalctl -u rustdesk --since '5 min ago'
+```
+
+### GNOME Remote Desktop (RDP) — black screen da Mac
+
+Questo e un **bug noto** di gnome-remote-desktop 46 su Ubuntu 24.04 con client Mac.
+Non risolvibile cambiando versione Ubuntu (presente anche in 25.04).
+
+**Soluzione:** usa RustDesk per l'accesso da Mac.
+
+RDP funziona correttamente da **Remmina** (installato sull'host Proxmox XFCE).
+
+```bash
+# Verifica servizio RDP
+sudo systemctl status gnome-remote-desktop
 
 # Verifica porta
 ss -tlnp | grep 3389
 
-# Riavvia
-sudo systemctl restart xrdp
-
 # Log
-sudo journalctl -u xrdp --since '5 min ago'
-```
-
-### Schermo nero dopo login RDP
-
-```bash
-# Problema comune con GNOME — configura XFCE come sessione:
-echo "xfce4-session" > ~/.xsession
-chmod +x ~/.xsession
-
-# Disabilita il screen locker di GNOME (interferisce con xrdp)
-sudo apt remove -y gnome-screensaver
-sudo systemctl restart xrdp
+sudo journalctl -u gnome-remote-desktop --since '5 min ago'
 ```
 
 ### Chrome non si avvia
@@ -450,38 +277,33 @@ sudo apt install -y --fix-broken
 google-chrome --no-sandbox
 
 # Se errore shared memory (comune in VM)
-# Aumenta /dev/shm:
-echo "tmpfs /dev/shm tmpfs defaults,size=2g 0 0" | sudo tee -a /etc/fstab
-sudo mount -o remount /dev/shm
+# Il playbook Ansible già configura /dev/shm a 2 GB.
+# Per verificare:
+df -h /dev/shm
 ```
 
-### Cursor AppImage non parte
+### sudo node/npm non trovato
+
+I binari nvm sono nella home utente e `sudo` resetta il PATH.
+Il playbook crea automaticamente i symlink in `/usr/local/bin/`.
 
 ```bash
-# Verifica FUSE
-ls /dev/fuse
-# Se non esiste:
-sudo modprobe fuse
-sudo apt install -y libfuse2t64
-
-# Altrimenti estrai manualmente
-cd ~/.local/bin
-./cursor --appimage-extract
-# Usa squashfs-root/cursor al posto dell'appimage
+# Fix manuale se necessario:
+sudo ln -sf $(which node) /usr/local/bin/node
+sudo ln -sf $(which npm) /usr/local/bin/npm
+sudo ln -sf $(which npx) /usr/local/bin/npx
 ```
 
-### Performance lenta via RDP
+### Keyring locked dopo reboot (auto-login)
+
+L'auto-login non passa la password a PAM, quindi gnome-keyring resta bloccato.
+Non impatta RustDesk. Impatta solo `grdctl` (GNOME Remote Desktop credenziali).
 
 ```bash
-# Usa XFCE invece di GNOME (molto piu leggero)
-sudo apt install -y xfce4
-echo "xfce4-session" > ~/.xsession
-sudo systemctl restart xrdp
-
-# Disabilita compositing in XFCE:
-# Settings > Window Manager Tweaks > Compositor > deseleziona "Enable display compositing"
-
-# In Remmina, abbassa la qualità colore a 16 bit se serve
+# Per sbloccare via SSH:
+echo -n 'LA_TUA_PASSWORD' | gnome-keyring-daemon --unlock --replace
+# ATTENZIONE: questo rimpiazza il keyring daemon della sessione desktop.
+# Fallo solo se necessario per configurare grdctl.
 ```
 
 ---
@@ -490,13 +312,13 @@ sudo systemctl restart xrdp
 
 ```
 Host Proxmox (AtomMan G7 Pro)
-├── NVIDIA Driver (host) ─── GPU condivisa
-├── XFCE + Remmina (schermo locale) ─── KVM switch virtuale
-│
-├── [LXC 100] LXC-JARVIS ─── Ollama, Whisper, Orchestrator (GPU)
-├── [LXC 101] LXC-OpenClaw ─── Gateway OpenClaw + Chrome headless (CDP)
-├── [LXC 210] LXC-Wakeword ─── Wake word detection (CPU)
-├── [VM  200] VM-Workstation ─── Ubuntu XFCE + Chrome reale + Cursor
-├── [VM  xxx] VM-HAOS ─── Home Assistant OS (opzionale)
-└── [LXC xxx] LXC-Alexa ─── Alexa Media Server (opzionale)
++-- NVIDIA Driver (host) --- GPU condivisa
++-- XFCE + Remmina (schermo locale) --- KVM switch virtuale
+|
++-- [LXC 100] LXC-JARVIS --- Ollama, Whisper, Orchestrator (GPU)
++-- [LXC 101] LXC-OpenClaw --- Gateway OpenClaw + Chrome headless (CDP)
++-- [LXC 210] LXC-Wakeword --- Wake word detection (CPU)
++-- [VM  200] VM-Workstation --- Ubuntu GNOME + Chrome reale + Zed
++-- [VM  xxx] VM-HAOS --- Home Assistant OS (opzionale)
++-- [LXC xxx] LXC-Alexa --- Alexa Media Server (opzionale)
 ```

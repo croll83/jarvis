@@ -1,6 +1,8 @@
-# Docker + Docker Compose — Guida Installazione
+# Docker + NVIDIA Container Toolkit — Riferimento
 
-Installazione di Docker Engine e Docker Compose plugin su Ubuntu 22.04/24.04, sia per VM/LXC Proxmox che per VPS cloud.
+> **NOTA:** L'installazione di Docker e NVIDIA Container Toolkit e' completamente
+> automatizzata da Ansible (`common.yml` + `nvidia.yml`). Questo file serve come
+> riferimento per troubleshooting e configurazione avanzata.
 
 ---
 
@@ -14,136 +16,15 @@ Installazione di Docker Engine e Docker Compose plugin su Ubuntu 22.04/24.04, si
 
 ---
 
-## Step 1 — Aggiorna il sistema
+## NVIDIA Container Toolkit (riferimento)
+
+Il NVIDIA Container Toolkit permette ai container Docker di accedere alla GPU.
+Necessario per Ollama e Whisper. Ansible `nvidia.yml` lo installa automaticamente.
+
+### Cosa installa Ansible
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-```
-
----
-
-## Step 2 — Installa Docker Engine
-
-### Metodo rapido (script ufficiale)
-
-```bash
-curl -fsSL https://get.docker.com | sh
-```
-
-### Metodo manuale (se preferisci controllare ogni step)
-
-```bash
-# Rimuovi versioni vecchie
-sudo apt remove -y docker docker-engine docker.io containerd runc 2>/dev/null
-
-# Installa dipendenze
-sudo apt install -y \
-    ca-certificates \
-    curl \
-    gnupg \
-    lsb-release
-
-# Aggiungi la GPG key di Docker
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
-
-# Aggiungi il repository Docker
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-# Installa Docker
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
-```
-
----
-
-## Step 3 — Installa Docker Compose Plugin
-
-```bash
-sudo apt install -y docker-compose-plugin
-```
-
-Verifica:
-
-```bash
-docker compose version
-```
-
-Output atteso: `Docker Compose version v2.x.x`
-
-> **Nota:** JARVIS usa la sintassi `docker compose` (con spazio, plugin nativo), non `docker-compose` (versione standalone legacy).
-
----
-
-## Step 4 — Post-installazione
-
-### Aggiungi il tuo utente al gruppo docker
-
-Per evitare di usare `sudo` per ogni comando Docker:
-
-```bash
-# Sostituisci "jarvis" con il tuo username
-sudo usermod -aG docker jarvis
-
-# Applica il cambio (oppure fai logout/login)
-newgrp docker
-```
-
-### Abilita Docker all'avvio
-
-```bash
-sudo systemctl enable docker
-sudo systemctl enable containerd
-```
-
-### Testa l'installazione
-
-```bash
-docker run --rm hello-world
-```
-
-Deve stampare un messaggio di successo.
-
-### Verifica versioni
-
-```bash
-docker --version
-docker compose version
-```
-
-Output atteso:
-
-```
-Docker version 27.x.x, build ...
-Docker Compose version v2.x.x
-```
-
----
-
-## Step 5 — NVIDIA Container Toolkit (solo deploy locale con GPU)
-
-> **DEPLOY CLOUD**: Salta questo step. Il toolkit NVIDIA non serve se usi `AI_BACKEND=api`.
-
-Il NVIDIA Container Toolkit permette ai container Docker di accedere alla GPU. Necessario per Ollama e Whisper in modalita locale.
-
-### Prerequisiti GPU
-
-Verifica che i driver NVIDIA siano installati sull'host:
-
-```bash
-nvidia-smi
-```
-
-Se non funziona, installa prima i driver (vedi [PROXMOX.md](PROXMOX.md) sezione A.9).
-
-### Installa il toolkit
-
-```bash
-# Aggiungi il repository NVIDIA
+# Repository NVIDIA
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
     sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
 
@@ -162,6 +43,18 @@ sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
 
+### Configurazione critica per LXC
+
+In un container LXC, e' necessario disabilitare i cgroups nel toolkit NVIDIA:
+
+```bash
+# /etc/nvidia-container-runtime/config.toml
+# Ansible imposta questa riga automaticamente:
+no-cgroups = true
+```
+
+Senza `no-cgroups = true`, Docker non puo' accedere alla GPU dentro un LXC.
+
 ### Verifica GPU in Docker
 
 ```bash
@@ -169,16 +62,6 @@ docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
 ```
 
 Deve mostrare la stessa GPU vista con `nvidia-smi` sull'host.
-
-Se il comando fallisce con errore, verifica:
-
-```bash
-# Il runtime NVIDIA e configurato?
-docker info | grep -i nvidia
-
-# Il file di configurazione e stato aggiornato?
-cat /etc/docker/daemon.json
-```
 
 Il file `daemon.json` deve contenere:
 
@@ -197,54 +80,27 @@ Il file `daemon.json` deve contenere:
 
 ## Panoramica Rete Docker per JARVIS
 
-### Deploy Locale (VM-GPU)
-
 L'orchestrator usa `network_mode: host` — vede direttamente le porte dell'host.
 Ollama e Whisper espongono le porte sull'host, l'orchestrator li raggiunge su `localhost`.
 
 ```
-Host (VM-GPU)
-├── Tailscale (host-level)          — VPN mesh
-├── jarvis_ollama       (:11434)    — Docker
-├── jarvis_whisper      (:9000)     — Docker
-├── jarvis_core         (:5000)     — Docker (network_mode: host)
-├── jarvis_postgres     (:5432)     — Docker
-└── jarvis_mongo        (:27017)    — Docker
+Host (LXC-JARVIS)
++-- Tailscale (host-level)          — VPN mesh
++-- jarvis_ollama       (:11434)    — Docker
++-- jarvis_whisper      (:9000)     — Docker
++-- jarvis_core         (:5000)     — Docker (network_mode: host)
++-- jarvis_ontology     (:8100)     — Docker (127.0.0.1)
++-- jarvis_postgres     (:5432)     — Docker
++-- jarvis_mongo        (:27017)    — Docker
 ```
 
 L'orchestrator raggiunge i servizi su `localhost`:
 - `http://localhost:11434` per Ollama
 - `http://localhost:9000` per Whisper
-- `http://jarvis-openclaw:18789` per OpenClaw (VM separata, via Tailscale MagicDNS)
+- `http://jarvis-openclaw:18789` per OpenClaw (LXC separato, via Tailscale MagicDNS)
 
-> **Nota**: OpenClaw gira bare-metal su una **VM separata** (non in Docker).
+> **Nota**: OpenClaw gira bare-metal su un **LXC separato** (non in Docker).
 > Tailscale gira **host-level** (non in Docker) — l'orchestrator vede l'interfaccia Tailscale direttamente.
-
-### Deploy Cloud
-
-L'orchestrator usa `network_mode: host` — unico container Docker.
-
-```
-Host (VPS)
-├── Tailscale (host-level)          — VPN mesh
-├── OpenClaw  (bare-metal, systemd) — :18789
-└── jarvis_orchestrator (:5000)     — Docker (network_mode: host)
-```
-
-> L'orchestrator raggiunge OpenClaw su `http://localhost:18789` e HA remoti via Tailscale `100.x.x.x`.
-
-### Security Stack
-
-Lo stack security usa una rete separata definita in `security/docker-compose.security.yml`:
-
-```
-security_net (bridge)
-├── jarvis_frigate    (frigate:5001)
-├── jarvis_doubletake (doubletake:3000)
-└── jarvis_mqtt       (mqtt:1883)
-```
-
-Lo stack security comunica con l'orchestrator tramite le porte esposte sull'host.
 
 ---
 
@@ -252,27 +108,19 @@ Lo stack security comunica con l'orchestrator tramite le porte esposte sull'host
 
 ### Limiti memoria (consigliati)
 
-Per evitare che un container monopolizzi la RAM:
-
-| Container | Deploy Locale | Deploy Cloud |
-|-----------|--------------|-------------|
-| Ollama | Nessun limite (usa GPU VRAM) | N/A |
-| Whisper | Nessun limite (usa GPU VRAM) | N/A |
-| Orchestrator | 2 GB | 1 GB |
-| OpenClaw | 1 GB | 512 MB |
-| PostgreSQL | 512 MB | 512 MB |
+| Container | Limite |
+|-----------|--------|
+| Ollama | Nessun limite (usa GPU VRAM) |
+| Whisper | Nessun limite (usa GPU VRAM) |
+| Orchestrator | 2 GB |
+| PostgreSQL | 512 MB |
+| MongoDB | 512 MB |
 
 Questi limiti sono gia configurati nei rispettivi `docker-compose.yml`.
 
 ### Log rotation
 
 Per evitare che i log Docker riempiano il disco:
-
-```bash
-sudo nano /etc/docker/daemon.json
-```
-
-Aggiungi (o integra se esiste gia):
 
 ```json
 {
@@ -284,27 +132,7 @@ Aggiungi (o integra se esiste gia):
 }
 ```
 
-```bash
-sudo systemctl restart docker
-```
-
----
-
-## Verifica Installazione
-
-```bash
-# Docker Engine
-docker --version
-
-# Docker Compose
-docker compose version
-
-# Docker funzionante
-docker ps
-
-# (Solo locale) GPU in Docker
-docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
-```
+> Ansible `common.yml` configura automaticamente il `daemon.json` con log rotation e runtime NVIDIA.
 
 ---
 
@@ -353,10 +181,3 @@ docker system df
 # Pulizia (rimuove container/immagini/volumi non usati)
 docker system prune -a --volumes
 ```
-
----
-
-## Prossimo Step
-
-- **Deploy Locale:** Procedi con l'installazione di Ollama: **[OLLAMA.md](OLLAMA.md)**
-- **Deploy Cloud:** Salta Ollama e Whisper, vai direttamente al [deploy cloud](../cloud/README.md)

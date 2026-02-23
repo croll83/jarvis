@@ -5,16 +5,24 @@
 # Configura la VM Workstation dopo l'installazione manuale di Ubuntu.
 #
 # Prerequisiti:
-#   - Ubuntu Desktop installato (da ISO via noVNC Proxmox)
-#   - SSH accessibile (utente jarvis con sudo)
+#   - Ubuntu Desktop 24.04 installato (da ISO via noVNC Proxmox)
+#   - SSH accessibile (utente jarvis con sudo NOPASSWD)
 #   - Rete configurata (IP statico o DHCP)
 #
 # Utilizzo:
 #   ansible-playbook playbooks/workstation.yml
 #
-# Installa: qemu-guest-agent, XFCE (opzionale), xrdp, Chrome, Git,
-#           nvm + Node.js LTS, Python 3 + pip + venv, Cursor IDE,
-#           Tailscale (opzionale)
+# Installa: qemu-guest-agent, Chrome, Git, nvm + Node.js LTS,
+#           Python 3 + pip + venv, Zed IDE, RustDesk, Tailscale
+#
+# Accesso remoto:
+#   - RustDesk (dal Mac, Direct IP via Tailscale o ID numerico)
+#   - GNOME Remote Desktop (RDP :3389 — funziona da Remmina/Proxmox)
+#   - noVNC dalla Proxmox Web UI (installazione e troubleshooting)
+#
+# NOTA: GNOME Remote Desktop RDP ha un bug noto con i client Mac
+# (kkRemote, Windows App, Microsoft Remote Desktop) → black screen.
+# RustDesk è la soluzione per accesso da Mac.
 
 - name: Setup VM Workstation
   hosts: workstation
@@ -24,8 +32,10 @@
   vars:
     ws_user: "{{ jarvis_user | default('jarvis') }}"
     nvm_version: "0.40.1"
-    install_xfce: true
+    rustdesk_version: "1.4.5"
     install_tailscale: true
+    # Password per GNOME Remote Desktop (RDP nativo) e RustDesk
+    rdp_password: "{{ workstation_rdp_password | default('jarvis') }}"
 
   tasks:
     # -----------------------------------------------------------------
@@ -67,61 +77,141 @@
         name: qemu-guest-agent
         state: present
 
-    - name: Abilita QEMU Guest Agent
+    - name: Abilita QEMU Guest Agent (si avvia dopo reboot con agent=true in Proxmox)
       ansible.builtin.systemd:
         name: qemu-guest-agent
-        state: started
         enabled: true
+      failed_when: false
 
     # -----------------------------------------------------------------
-    # XFCE (opzionale — piu leggero di GNOME)
+    # USER GROUPS (video + render per VirtIO-GPU / DRI)
     # -----------------------------------------------------------------
-    - name: Installa XFCE Desktop
-      ansible.builtin.apt:
-        name:
-          - xfce4
-          - xfce4-goodies
-        state: present
-      when: install_xfce | default(true)
-
-    # -----------------------------------------------------------------
-    # XRDP (accesso RDP)
-    # -----------------------------------------------------------------
-    - name: Installa xrdp
-      ansible.builtin.apt:
-        name: xrdp
-        state: present
-
-    - name: Abilita e avvia xrdp
-      ansible.builtin.systemd:
-        name: xrdp
-        state: started
-        enabled: true
-
-    - name: Aggiungi utente al gruppo ssl-cert
+    - name: Aggiungi utente ai gruppi video e render
       ansible.builtin.user:
         name: "{{ ws_user }}"
-        groups: ssl-cert
+        groups:
+          - video
+          - render
         append: true
 
-    - name: Configura xrdp per XFCE
-      ansible.builtin.copy:
-        dest: "/home/{{ ws_user }}/.xsession"
-        content: "xfce4-session"
-        owner: "{{ ws_user }}"
-        group: "{{ ws_user }}"
-        mode: "0755"
-      when: install_xfce | default(true)
+    - name: Aggiungi gdm ai gruppi video e render (per GNOME Remote Desktop)
+      ansible.builtin.user:
+        name: gdm
+        groups:
+          - video
+          - render
+        append: true
 
-    - name: Riavvia xrdp
+    # -----------------------------------------------------------------
+    # GNOME REMOTE DESKTOP (RDP nativo — porta 3389)
+    # -----------------------------------------------------------------
+    # Nota: funziona perfettamente da Remmina (Proxmox host).
+    # Bug noto: client Mac (kkRemote, Windows App) → black screen.
+    # Per accesso da Mac usare RustDesk (vedi sezione successiva).
+    - name: Installa GNOME Remote Desktop
+      ansible.builtin.apt:
+        name: gnome-remote-desktop
+        state: present
+
+    - name: Disabilita Wayland in GDM (RDP richiede X11)
+      ansible.builtin.lineinfile:
+        path: /etc/gdm3/custom.conf
+        regexp: '^#?WaylandEnable='
+        line: 'WaylandEnable=false'
+
+    - name: Abilita auto-login per l'utente
+      ansible.builtin.blockinfile:
+        path: /etc/gdm3/custom.conf
+        insertafter: '^\[daemon\]'
+        marker: "# {mark} ANSIBLE MANAGED - Auto-login"
+        block: |
+          AutomaticLoginEnable=True
+          AutomaticLogin={{ ws_user }}
+
+    - name: Abilita GNOME Remote Desktop system service
       ansible.builtin.systemd:
-        name: xrdp
-        state: restarted
+        name: gnome-remote-desktop
+        enabled: true
+        state: started
+
+    - name: Configura credenziali RDP (system service)
+      ansible.builtin.copy:
+        dest: /var/lib/gnome-remote-desktop/credentials.ini
+        content: |
+          [RDP]
+          username={{ ws_user }}
+          password={{ rdp_password }}
+        owner: gnome-remote-desktop
+        group: gnome-remote-desktop
+        mode: "0600"
+
+    # -----------------------------------------------------------------
+    # RUSTDESK (accesso remoto da Mac — alternativa a RDP)
+    # -----------------------------------------------------------------
+    # RustDesk risolve il bug black screen dei client Mac con GNOME RDP.
+    # Supporta Direct IP (via Tailscale) → zero relay, connessione diretta.
+    - name: Verifica se RustDesk è installato
+      ansible.builtin.command: rustdesk --version
+      register: rustdesk_check
+      changed_when: false
+      failed_when: false
+
+    - name: Installa RustDesk
+      when: rustdesk_check.rc != 0
+      block:
+        - name: Scarica RustDesk .deb
+          ansible.builtin.get_url:
+            url: "https://github.com/rustdesk/rustdesk/releases/download/{{ rustdesk_version }}/rustdesk-{{ rustdesk_version }}-x86_64.deb"
+            dest: /tmp/rustdesk.deb
+            mode: "0644"
+
+        - name: Installa RustDesk
+          ansible.builtin.apt:
+            deb: /tmp/rustdesk.deb
+            state: present
+
+        - name: Rimuovi .deb
+          ansible.builtin.file:
+            path: /tmp/rustdesk.deb
+            state: absent
+
+    - name: Imposta password RustDesk per accesso unattended
+      ansible.builtin.command: "rustdesk --password {{ rdp_password }}"
+      changed_when: true
+
+    - name: Configura RustDesk — permanent password + Direct IP
+      ansible.builtin.command: "rustdesk --option {{ item.key }} {{ item.value }}"
+      loop:
+        - { key: "verification-method", value: "use-permanent-password" }
+        - { key: "direct-server", value: "Y" }
+        - { key: "allow-direct-server", value: "Y" }
+      changed_when: true
+
+    - name: Abilita servizio RustDesk
+      ansible.builtin.systemd:
+        name: rustdesk
+        enabled: true
+        state: started
+
+    - name: Ottieni RustDesk ID
+      ansible.builtin.command: rustdesk --get-id
+      register: rustdesk_id
+      changed_when: false
+
+    # -----------------------------------------------------------------
+    # DISABILITA SERVIZI INUTILI
+    # -----------------------------------------------------------------
+    - name: Disabilita SSSD (non configurato, genera warning)
+      ansible.builtin.systemd:
+        name: sssd
+        enabled: false
+        state: stopped
+      failed_when: false
 
     # -----------------------------------------------------------------
     # GOOGLE CHROME
     # -----------------------------------------------------------------
-    - name: Verifica se Chrome e installato
+    - name: Verifica se Chrome è installato
       ansible.builtin.command: google-chrome --version
       register: chrome_check
       changed_when: false
@@ -172,7 +262,7 @@
     # -----------------------------------------------------------------
     # NVM + NODE.JS
     # -----------------------------------------------------------------
-    - name: Verifica se nvm e installato
+    - name: Verifica se nvm è installato
       ansible.builtin.stat:
         path: "/home/{{ ws_user }}/.nvm/nvm.sh"
       register: nvm_check
@@ -200,6 +290,19 @@
         executable: /bin/bash
       register: node_install
       changed_when: "'is already installed' not in node_install.stderr"
+
+    - name: Crea symlink node/npm/npx in /usr/local/bin (per sudo)
+      ansible.builtin.shell: |
+        NODE_PATH=$(su - {{ ws_user }} -c 'which node' 2>/dev/null)
+        if [ -n "$NODE_PATH" ]; then
+          NODE_DIR=$(dirname "$NODE_PATH")
+          ln -sf "$NODE_PATH" /usr/local/bin/node
+          ln -sf "$NODE_DIR/npm" /usr/local/bin/npm
+          ln -sf "$NODE_DIR/npx" /usr/local/bin/npx
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
 
     - name: Verifica Node.js
       ansible.builtin.shell: |
@@ -230,53 +333,20 @@
         state: present
 
     # -----------------------------------------------------------------
-    # CURSOR IDE (AppImage)
+    # ZED IDE
     # -----------------------------------------------------------------
-    - name: Installa libfuse2 (per AppImage)
-      ansible.builtin.apt:
-        name: libfuse2t64
-        state: present
-      failed_when: false
+    - name: Verifica se Zed è installato
+      ansible.builtin.stat:
+        path: "/home/{{ ws_user }}/.local/bin/zed"
+      register: zed_check
 
-    - name: Installa libfuse2 (fallback nome pacchetto)
-      ansible.builtin.apt:
-        name: libfuse2
-        state: present
-      failed_when: false
-
-    - name: Crea directory bin
-      ansible.builtin.file:
-        path: "/home/{{ ws_user }}/.local/bin"
-        state: directory
-        owner: "{{ ws_user }}"
-        group: "{{ ws_user }}"
-        mode: "0755"
-
-    - name: Scarica Cursor AppImage
-      ansible.builtin.get_url:
-        url: "https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=stable"
-        dest: "/home/{{ ws_user }}/.local/bin/cursor"
-        owner: "{{ ws_user }}"
-        group: "{{ ws_user }}"
-        mode: "0755"
-      register: cursor_download
-      failed_when: false
-
-    - name: Crea desktop entry per Cursor
-      ansible.builtin.copy:
-        dest: "/home/{{ ws_user }}/.local/share/applications/cursor.desktop"
-        owner: "{{ ws_user }}"
-        group: "{{ ws_user }}"
-        mode: "0644"
-        content: |
-          [Desktop Entry]
-          Name=Cursor
-          Exec=/home/{{ ws_user }}/.local/bin/cursor --no-sandbox %U
-          Icon=cursor
-          Type=Application
-          Categories=Development;IDE;
-          StartupWMClass=Cursor
-      when: cursor_download is succeeded
+    - name: Installa Zed IDE
+      ansible.builtin.shell: |
+        curl -fsSL https://zed.dev/install.sh | sh
+      become_user: "{{ ws_user }}"
+      environment:
+        HOME: "/home/{{ ws_user }}"
+      when: not zed_check.stat.exists
 
     # -----------------------------------------------------------------
     # TAILSCALE (opzionale)
@@ -301,7 +371,7 @@
       failed_when: false
 
     # -----------------------------------------------------------------
-    # UFW FIREWALL (opzionale)
+    # UFW FIREWALL
     # -----------------------------------------------------------------
     - name: Installa UFW
       ansible.builtin.apt:
@@ -313,11 +383,22 @@
         rule: allow
         name: OpenSSH
 
-    - name: UFW — consenti RDP
+    - name: UFW — consenti RDP (GNOME Remote Desktop, per Remmina da Proxmox)
       community.general.ufw:
         rule: allow
         port: "3389"
         proto: tcp
+
+    - name: UFW — consenti RustDesk Direct IP
+      community.general.ufw:
+        rule: allow
+        port: "21118"
+        proto: tcp
+
+    - name: UFW — consenti RustDesk relay (21115-21119 TCP + UDP)
+      community.general.ufw:
+        rule: allow
+        port: "21115:21119"
 
     - name: UFW — abilita
       community.general.ufw:
@@ -335,20 +416,31 @@
 
           Installati:
             - QEMU Guest Agent
-            - XFCE Desktop + xrdp (RDP :3389)
+            - GNOME Remote Desktop (RDP :3389 — per Remmina da Proxmox)
+            - RustDesk {{ rustdesk_version }} (per accesso da Mac)
             - Google Chrome {{ chrome_version.stdout | default('') }}
             - Git + chiave SSH generata
             - nvm + Node.js {{ node_version.stdout | default('LTS') }}
             - Python 3 + pip + venv
-            - Cursor IDE (AppImage)
+            - Zed IDE
             - Tailscale (da connettere: tailscale up --hostname=jarvis-workstation)
 
-          Accesso RDP:
-            remmina → {{ ansible_default_ipv4.address | default('IP della VM') }}:3389
+          Accesso remoto:
+            RustDesk (Mac/ovunque):
+              ID: {{ rustdesk_id.stdout | default('vedi rustdesk --get-id') }}
+              Password: quella configurata
+              Direct IP (Tailscale): inserisci IP Tailscale nel client RustDesk
+
+            RDP (da Proxmox con Remmina):
+              {{ ansible_default_ipv4.address | default('IP della VM') }}:3389
+              Username: {{ ws_user }}
+
+            noVNC: dalla Proxmox Web UI (per troubleshooting)
 
           Prossimi passi:
-            1. Connettiti via RDP
-            2. Apri Chrome e installa l'estensione OpenClaw browser
+            1. Installa RustDesk sul Mac (rustdesk.com) e connettiti
+            2. Connetti Tailscale: sudo tailscale up --hostname=jarvis-workstation
             3. Configura Git: git config --global user.name/email
-            4. Connetti Tailscale: sudo tailscale up --hostname=jarvis-workstation
+            4. Aggiungi chiave SSH a GitHub: cat ~/.ssh/id_ed25519.pub
+            5. Apri Chrome e installa l'estensione OpenClaw browser
           ================================================================

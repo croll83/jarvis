@@ -1,11 +1,8 @@
-# Ollama — Riferimento Modelli e Troubleshooting
+# Ollama — Guida Installazione
 
-> **NOTA:** L'installazione di Ollama e il download dei modelli sono gestiti
-> automaticamente da Ansible (`jarvis.yml` + `setup.sh`). Questo file serve come
-> riferimento per la configurazione avanzata e il troubleshooting.
+Server LLM locale per JARVIS. Esegue il modello Qwen 2.5 (routing e pre-routing) e nomic-embed-text (embeddings) su GPU NVIDIA.
 
-Server LLM locale per JARVIS. Esegue Qwen 2.5 (routing e pre-routing) e
-nomic-embed-text (embeddings) su GPU NVIDIA.
+> **DEPLOY CLOUD**: Salta questo file. In modalita cloud (`AI_BACKEND=api`), Ollama non e necessario. Il routing viene gestito da OpenRouter (Qwen 2.5 7B) e lo STT da Groq API.
 
 ---
 
@@ -15,7 +12,7 @@ nomic-embed-text (embeddings) su GPU NVIDIA.
 |-----------|--------|-------------|
 | GPU NVIDIA | 6 GB VRAM | 8+ GB VRAM |
 | Driver NVIDIA | 535+ | 550+ |
-| NVIDIA Container Toolkit | Installato | Vedi [DOCKER.md](DOCKER.md) |
+| NVIDIA Container Toolkit | Installato | Vedi [DOCKER.md](DOCKER.md) Step 5 |
 | Docker | 24.0+ | latest |
 | RAM sistema | 16 GB | 32 GB |
 | Disco | 10 GB | 15 GB (per i modelli) |
@@ -29,12 +26,15 @@ nomic-embed-text (embeddings) su GPU NVIDIA.
 
 **Totale VRAM stimata** con tutti i modelli caricati + Whisper: ~6 GB.
 
-> Con `OLLAMA_MAX_LOADED_MODELS=2`, Ollama tiene in VRAM solo 2 modelli alla volta.
-> Con l'architettura semplificata (qwen + nomic-embed-text), questo e' piu' che sufficiente.
+> Con `OLLAMA_MAX_LOADED_MODELS=2`, Ollama tiene in VRAM solo 2 modelli alla volta. Con l'architettura semplificata (qwen + nomic-embed-text), questo e piu che sufficiente.
 
 ---
 
-## Configurazione nel docker-compose.yml
+## Step 1 — Avvio via Docker Compose
+
+Ollama e gia configurato nel `docker-compose.yml` principale di JARVIS. Non serve installarlo separatamente.
+
+### Configurazione nel docker-compose.yml
 
 ```yaml
 ollama:
@@ -72,20 +72,86 @@ ollama:
 | `OLLAMA_MAX_LOADED_MODELS` | `2` | Modelli in VRAM contemporaneamente |
 | `NVIDIA_VISIBLE_DEVICES` | `all` | GPU visibili al container |
 
----
-
-## Download modelli (riferimento)
-
-Ansible esegue `setup.sh` automaticamente. Per download manuale o re-pull:
+### Avvia solo Ollama
 
 ```bash
-# Scarica Qwen 2.5 7B Instruct (routing + pre-routing)
-docker exec jarvis_ollama ollama pull qwen2.5:7b-instruct-q4_K_M
+cd jarvis/
+docker compose up -d ollama
+```
 
-# Scarica nomic-embed-text (embedding per vector store)
+Attendi che sia healthy:
+
+```bash
+# Controlla lo stato
+docker compose ps ollama
+
+# Attendi che il healthcheck passi
+watch -n 2 'docker inspect --format="{{.State.Health.Status}}" jarvis_ollama'
+```
+
+---
+
+## Step 2 — Download modelli e setup
+
+Usa lo script `setup.sh` incluso nel repository:
+
+```bash
+cd jarvis/
+bash setup.sh
+```
+
+### Cosa fa setup.sh
+
+Lo script esegue queste operazioni in sequenza:
+
+1. **Attende che Ollama sia pronto** — Polling su `http://localhost:11434/api/tags`
+2. **Scarica Qwen 2.5 7B Instruct** — Modello per il routing e pre-routing (~4.4 GB download)
+3. **Scarica nomic-embed-text** — Modello per gli embeddings del vector store (~270 MB download)
+4. **Warmup del modello** — Carica Qwen in VRAM con una richiesta test
+
+### Contenuto dello script setup.sh
+
+```bash
+#!/bin/bash
+set -e
+
+# Attendi che Ollama sia pronto
+until curl -s http://localhost:11434/api/tags > /dev/null 2>&1; do
+    sleep 2
+done
+
+# Download modelli
+docker exec jarvis_ollama ollama pull qwen2.5:7b-instruct-q4_K_M
 docker exec jarvis_ollama ollama pull nomic-embed-text
 
-# Warmup Qwen (carica in VRAM)
+# Warmup Qwen
+curl -s http://localhost:11434/api/generate -d '{
+  "model": "qwen2.5:7b-instruct-q4_K_M",
+  "prompt": "test",
+  "options": {"num_predict": 1}
+}' > /dev/null
+```
+
+### Esecuzione manuale (se preferisci step-by-step)
+
+Se preferisci eseguire i comandi manualmente:
+
+```bash
+# 1. Scarica Qwen 2.5 7B Instruct (routing + pre-routing)
+docker exec jarvis_ollama ollama pull qwen2.5:7b-instruct-q4_K_M
+
+# 2. Scarica nomic-embed-text (embedding per vector store)
+docker exec jarvis_ollama ollama pull nomic-embed-text
+```
+
+---
+
+## Step 3 — Warmup
+
+Dopo il download, e buona pratica fare un warmup per caricare il modello in VRAM:
+
+```bash
+# Warmup Qwen (routing + pre-routing)
 curl -s http://localhost:11434/api/generate -d '{
   "model": "qwen2.5:7b-instruct-q4_K_M",
   "prompt": "ciao",
@@ -93,14 +159,31 @@ curl -s http://localhost:11434/api/generate -d '{
 }' > /dev/null && echo "Qwen warmup OK"
 ```
 
+Il primo warmup puo richiedere 10-30 secondi (caricamento pesi in VRAM). Le richieste successive saranno immediate.
+
+> **Nota**: nomic-embed-text non richiede warmup separato; viene caricato automaticamente alla prima richiesta di embedding.
+
 ---
 
-## Verifica
+## Step 4 — Verifica
+
+### Lista modelli installati
 
 ```bash
-# Lista modelli installati
 docker exec jarvis_ollama ollama list
+```
 
+Output atteso:
+
+```
+NAME                              ID              SIZE      MODIFIED
+qwen2.5:7b-instruct-q4_K_M       abc123...       4.4 GB    ...
+nomic-embed-text:latest           def456...       274 MB    ...
+```
+
+### Test API
+
+```bash
 # Health check
 curl http://localhost:11434/api/tags
 
@@ -116,9 +199,16 @@ curl http://localhost:11434/api/embeddings -d '{
   "model": "nomic-embed-text",
   "prompt": "Test embedding per vector store"
 }'
+```
 
-# Verifica utilizzo GPU
+### Verifica utilizzo GPU
+
+```bash
+# Sull'host (fuori dal container)
 nvidia-smi
+
+# Deve mostrare il processo ollama con VRAM utilizzata
+watch -n 1 nvidia-smi
 ```
 
 ---
@@ -164,27 +254,38 @@ docker run --rm -v ollama_storage:/data -v $(pwd):/backup alpine tar czf /backup
 ### Ollama non risponde
 
 ```bash
+# Verifica che il container giri
 docker ps | grep ollama
+
+# Logs del container
 docker logs jarvis_ollama --tail 50
+
+# Test diretto
 curl http://localhost:11434/api/tags
 ```
 
 ### GPU non rilevata dal container
 
 ```bash
+# Verifica driver sull'host
 nvidia-smi
+
+# Verifica NVIDIA Container Toolkit
 docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
-# Se fallisce, vedi DOCKER.md per reinstallare il toolkit
+
+# Se fallisce, reinstalla il toolkit (vedi DOCKER.md Step 5)
 ```
 
 ### Out of Memory (OOM)
 
-Riduci il numero di modelli caricati contemporaneamente:
+Se Ollama va in OOM, riduci il numero di modelli caricati contemporaneamente:
 
 ```yaml
 environment:
   - OLLAMA_MAX_LOADED_MODELS=1
 ```
+
+> Con l'architettura semplificata (solo Qwen 2.5 7B + nomic-embed-text), gli OOM dovrebbero essere rari su GPU con almeno 6 GB VRAM.
 
 ### Download modello fallisce
 
@@ -199,6 +300,13 @@ docker system df
 
 ### Modello lento
 
+Se il routing e troppo lento:
 1. Verifica che la GPU sia effettivamente usata: `nvidia-smi` durante una richiesta
 2. Assicurati che tutti i layer siano su GPU (Qwen 2.5 7B Q4 dovrebbe stare interamente in ~4.4 GB VRAM)
 3. Riduci `num_ctx` se non servono context window grandi
+
+---
+
+## Prossimo Step
+
+Procedi con l'installazione di Whisper: **[WHISPER.md](WHISPER.md)**
