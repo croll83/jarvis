@@ -40,12 +40,9 @@ resource "proxmox_virtual_environment_vm" "workstation" {
   # Controller SCSI — virtio-scsi-single per supporto iothread sui dischi
   scsi_hardware = "virtio-scsi-single"
 
-  # QEMU Guest Agent (abilitato dopo installazione Ubuntu + Ansible)
-  # NOTA: enabled = false fino a quando qemu-guest-agent non è installato,
-  # altrimenti Terraform va in timeout durante refresh/create.
-  # Dopo aver eseguito Ansible (che installa il guest agent), cambia a true.
+  # QEMU Guest Agent — qemu-guest-agent installato da Ansible
   agent {
-    enabled = false
+    enabled = true
     type    = "virtio"
   }
 
@@ -89,7 +86,7 @@ resource "proxmox_virtual_environment_vm" "workstation" {
   # necessitano per il rendering. QXL non espone render nodes e causa
   # "surfaceless renderer without GPU" → handover RDP fallisce.
   vga {
-    type   = "virtio-gpu"
+    type   = "virtio"
     memory = 32
   }
 
