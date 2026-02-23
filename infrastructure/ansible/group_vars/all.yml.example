@@ -67,6 +67,15 @@ openclaw_gateway_token: ""
 # OpenClaw Telegram bot — Crea con @BotFather su Telegram
 openclaw_telegram_bot_token: ""
 
+# OpenClaw Gateway WS — operator mode per exec approval buttons
+# Same IP/port as openclaw_url but con ws:// scheme
+openclaw_ws_url: "ws://jarvis-openclaw:18789"
+
+# OpenClaw Exec Approval Socket — token from ~/.openclaw/exec-approvals.json
+# L'orchestrator ascolta su questo socket; OpenClaw si connette per chiedere approvazioni.
+openclaw_approval_socket_path: "/home/jarvis/.openclaw/exec-approvals.sock"
+openclaw_approval_socket_token: ""
+
 # =============================================================================
 # JARVIS APPROVAL BOT (L3 critical actions)
 # =============================================================================
@@ -113,6 +122,33 @@ postgres_password: ""           # Password PostgreSQL
 postgres_db: "main"
 mongo_user: "jarvis"
 mongo_password: ""              # Password MongoDB
+
+# =============================================================================
+# DEVICE FIRMWARE AUTH (AtomS3R Bearer Token)
+# =============================================================================
+# Token statico per autenticazione device firmware (AtomS3R).
+# Genera con: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+# Deve corrispondere a CONFIG_JARVIS_API_TOKEN nell'sdkconfig AtomS3R.
+# Se vuoto, autenticazione device disabilitata.
+device_api_token: ""
+
+# =============================================================================
+# TELEGRAM WEBHOOK (opzionale)
+# =============================================================================
+# URL HTTPS pubblico per webhook Telegram bot.
+# Se impostato, registra webhook all'avvio invece di usare getUpdates polling.
+# Richiede reverse proxy (nginx) con certificato SSL valido.
+# Esempio: https://jarvis-pub.yourdomain.com/telegram_webhook
+telegram_webhook_url: ""
+
+# =============================================================================
+# WAKEWORD SERVERS (opzionale — uno per casa/LAN)
+# =============================================================================
+# JSON map di location_id → URL del wakeword-server LXC.
+# Usato per push di wake_word_sensitivity e trigger_listen ai wakeword-server.
+# Lasciare vuoto se non si usano wakeword-server dedicati.
+# Format: '{"location_id":"http://<ip>:8200"}'
+wakeword_server_urls: ""
 
 # =============================================================================
 # OPZIONALI
