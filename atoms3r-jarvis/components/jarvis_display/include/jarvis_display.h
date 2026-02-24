@@ -124,4 +124,19 @@ bool jarvis_display_screensaver_tick(void);
  */
 void jarvis_display_screensaver_stop(void);
 
+/**
+ * @brief Set display rotation (180° flip)
+ * @param rotated true = 180° rotated, false = normal
+ *
+ * Flips the frame buffer in software before each flush.
+ * Caller should save the rotation state to NVS if needed.
+ */
+void jarvis_display_set_rotation(bool rotated);
+
+/**
+ * @brief Get current rotation state
+ * @return true if display is rotated 180°
+ */
+bool jarvis_display_is_rotated(void);
+
 #endif // JARVIS_DISPLAY_H

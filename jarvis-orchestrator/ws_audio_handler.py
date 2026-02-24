@@ -353,6 +353,7 @@ class PersistentDeviceConnection:
         self.last_pong_at: Optional[float] = None
         self.firmware_version: Optional[str] = None
         self.audio_session: Optional[WsAudioSession] = None
+        self._last_session_ended_at: float = 0.0  # cooldown per stray frames post-session
         self._closed = False
 
     async def send_command(self, command: dict) -> bool:
@@ -392,6 +393,7 @@ class PersistentDeviceConnection:
         if self.audio_session:
             self.audio_session._closed = True
             self.audio_session = None
+            self._last_session_ended_at = time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +540,12 @@ async def ws_audio_endpoint(
 
                 # Auto-create session if binary arrives without audio_start (legacy compat)
                 if not conn.audio_session:
+                    # Cooldown: ignore stray frames arriving shortly after a session ends
+                    # (prevents spurious legacy sessions from leftover device frames)
+                    if conn._last_session_ended_at and (time.time() - conn._last_session_ended_at) < 2.0:
+                        logger.debug(f"Device {device_id}: ignoring stray binary frame "
+                                     f"({time.time() - conn._last_session_ended_at:.1f}s after session end)")
+                        continue
                     if not legacy_session_started:
                         logger.info(f"Device {device_id}: legacy mode — auto-creating audio session on first binary frame")
                         legacy_session_started = True
