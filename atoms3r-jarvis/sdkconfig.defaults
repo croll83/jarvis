@@ -104,8 +104,10 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_WIFI_SSID="YOUR_WIFI_SSID"
 CONFIG_WIFI_PASSWORD="YOUR_WIFI_PASSWORD"
 CONFIG_JARVIS_SERVER_HOST="jarvis.local"
-CONFIG_JARVIS_SERVER_PORT=5000
+CONFIG_JARVIS_SERVER_PORT=8200
 CONFIG_JARVIS_API_TOKEN=""
-# NOTA: DEVICE_ROOM e DEVICE_ID rimossi.
-# Il device_id è ora il MAC address (letto a runtime).
+# NOTA: JARVIS_SERVER_HOST:PORT punta al wakeword-server (LAN), che fa proxy
+# delle chiamate HTTP management (device_config, heartbeat, device_status,
+# room_temperature, speaker/suppress) all'orchestrator via Tailscale.
+# Il device_id è il MAC address (letto a runtime).
 # La configurazione viene recuperata dal server via /device_config.

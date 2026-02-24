@@ -11,15 +11,16 @@ import logging
 import time
 from typing import Dict, Optional
 
+import httpx
 import numpy as np
 import opuslib
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from config import (
     DEVICE_API_TOKEN, OPUS_SAMPLE_RATE, OPUS_CHANNELS,
-    OPUS_FRAME_SAMPLES, WAKEWORD_THRESHOLD,
+    OPUS_FRAME_SAMPLES, WAKEWORD_THRESHOLD, ORCHESTRATOR_URL,
 )
 from wakeword import DeviceWakeWordEngine
 from multiroom import MultiroomCooldown
@@ -32,6 +33,33 @@ logging.basicConfig(
 logger = logging.getLogger("wakeword-server")
 
 app = FastAPI(title="jarvis-wakeword-server")
+
+
+# ---------------------------------------------------------------------------
+# HTTP proxy client (management calls → orchestrator via Tailscale)
+# ---------------------------------------------------------------------------
+
+_http_client: Optional[httpx.AsyncClient] = None
+
+
+@app.on_event("startup")
+async def _startup_http_client():
+    global _http_client
+    if ORCHESTRATOR_URL:
+        _http_client = httpx.AsyncClient(
+            base_url=ORCHESTRATOR_URL,
+            timeout=httpx.Timeout(15.0, connect=5.0),
+        )
+        logger.info(f"HTTP proxy client ready → {ORCHESTRATOR_URL}")
+    else:
+        logger.warning("ORCHESTRATOR_URL not set — HTTP proxy endpoints disabled")
+
+
+@app.on_event("shutdown")
+async def _shutdown_http_client():
+    global _http_client
+    if _http_client:
+        await _http_client.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -391,3 +419,99 @@ async def list_devices():
                 "relay_connected": conn.relay.is_connected if conn.relay else False,
             })
     return result
+
+
+# ---------------------------------------------------------------------------
+# HTTP Proxy: Device management calls → Orchestrator via Tailscale
+# ---------------------------------------------------------------------------
+# These endpoints allow AtomS3R devices to reach the orchestrator through
+# the wakeword-server (LAN) instead of directly via the public internet.
+# Bearer tokens never leave the LAN + Tailscale encrypted tunnel.
+# ---------------------------------------------------------------------------
+
+async def _proxy_request(request: Request, path: str) -> JSONResponse:
+    """Forward an HTTP request to the orchestrator and return the response."""
+    if not _http_client:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Orchestrator URL not configured"},
+        )
+
+    # Validate device bearer token
+    auth_header = request.headers.get("authorization", "")
+    token = auth_header[7:] if auth_header.lower().startswith("bearer ") else auth_header
+    if not _check_token(token):
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    # Build target URL preserving query string
+    query_string = str(request.url.query)
+    target_url = f"{path}?{query_string}" if query_string else path
+
+    # Read body for POST/PUT/PATCH
+    body = None
+    content_type = request.headers.get("content-type", "")
+    if request.method in ("POST", "PUT", "PATCH"):
+        body = await request.body()
+
+    # Forward auth + content-type headers
+    forward_headers = {}
+    if auth_header:
+        forward_headers["Authorization"] = auth_header
+    if content_type:
+        forward_headers["Content-Type"] = content_type
+
+    try:
+        resp = await _http_client.request(
+            method=request.method,
+            url=target_url,
+            content=body,
+            headers=forward_headers,
+        )
+        # Return orchestrator response as-is
+        try:
+            return JSONResponse(status_code=resp.status_code, content=resp.json())
+        except Exception:
+            return JSONResponse(status_code=resp.status_code,
+                                content={"raw": resp.text})
+    except httpx.TimeoutException:
+        logger.error(f"Proxy timeout: {request.method} {path}")
+        return JSONResponse(status_code=504, content={"error": "Orchestrator timeout"})
+    except Exception as e:
+        logger.error(f"Proxy error: {request.method} {path} → {e}")
+        return JSONResponse(status_code=502, content={"error": f"Proxy error: {e}"})
+
+
+@app.get("/device_config")
+async def proxy_device_config(request: Request):
+    """Proxy device config fetch to orchestrator."""
+    return await _proxy_request(request, "/device_config")
+
+
+@app.post("/heartbeat")
+async def proxy_heartbeat(request: Request):
+    """Proxy device heartbeat to orchestrator."""
+    return await _proxy_request(request, "/heartbeat")
+
+
+@app.get("/room_temperature/{room:path}")
+async def proxy_room_temperature(room: str, request: Request):
+    """Proxy room temperature fetch to orchestrator."""
+    return await _proxy_request(request, f"/room_temperature/{room}")
+
+
+@app.get("/device_status")
+async def proxy_device_status_get(request: Request):
+    """Proxy device status query to orchestrator."""
+    return await _proxy_request(request, "/device_status")
+
+
+@app.post("/device_status")
+async def proxy_device_status_post(request: Request):
+    """Proxy device status update to orchestrator."""
+    return await _proxy_request(request, "/device_status")
+
+
+@app.post("/speaker/suppress")
+async def proxy_speaker_suppress(request: Request):
+    """Proxy speaker suppress to orchestrator."""
+    return await _proxy_request(request, "/speaker/suppress")

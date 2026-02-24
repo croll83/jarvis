@@ -15,6 +15,7 @@
 #   - tailscale_hostname: nome del nodo Tailscale (es. jarvis-wakeword)
 #
 # Variabili opzionali:
+#   - orchestrator_url: HTTP base URL dell'orchestrator (derivato da WS URL se vuoto)
 #   - wakeword_threshold: soglia di default (0.5)
 #   - multiroom_cooldown_s: cooldown multi-room in secondi (5)
 #   - jarvis_repo: URL del repo git
@@ -37,6 +38,7 @@
     wakeword_threshold: "{{ wakeword_threshold | default('0.5') }}"
     multiroom_cooldown_s: "{{ multiroom_cooldown_s | default('5') }}"
     tailscale_hostname: "{{ tailscale_hostname | default('jarvis-wakeword') }}"
+    orchestrator_url: "{{ orchestrator_url | default('') }}"
 
   tasks:
     # -----------------------------------------------------------------
@@ -114,6 +116,7 @@
         dest: "{{ wakeword_dir }}/wakeword-server/.env"
         content: |
           ORCHESTRATOR_WS_URL={{ orchestrator_ws_url }}
+          ORCHESTRATOR_URL={{ orchestrator_url }}
           DEVICE_API_TOKEN={{ device_api_token }}
           WAKEWORD_MODEL=hey_jarvis
           WAKEWORD_THRESHOLD={{ wakeword_threshold }}
@@ -162,6 +165,8 @@
               WAKEWORD_SERVER_URLS={"LOCATION_ID": "http://{{ tailscale_ip.stdout | default('IP') }}:8200"}
 
             Firmware sdkconfig.local:
+              CONFIG_JARVIS_SERVER_HOST="{{ ansible_host }}"
+              CONFIG_JARVIS_SERVER_PORT=8200
               CONFIG_JARVIS_WS_URL="ws://{{ ansible_host }}:8200/ws/audio"
               CONFIG_USE_LOCAL_WAKEWORD=n
           ================================================================

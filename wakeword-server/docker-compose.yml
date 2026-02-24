@@ -2,10 +2,10 @@ services:
   wakeword-server:
     build: .
     container_name: jarvis_wakeword
-    ports:
-      - "8200:8200"
+    network_mode: host
     environment:
       - ORCHESTRATOR_WS_URL=${ORCHESTRATOR_WS_URL}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-}
       - DEVICE_API_TOKEN=${DEVICE_API_TOKEN}
       - WAKEWORD_MODEL=${WAKEWORD_MODEL:-hey_jarvis}
       - WAKEWORD_THRESHOLD=${WAKEWORD_THRESHOLD:-0.5}
