@@ -58,9 +58,10 @@ static const char *TAG = "JARVIS";
 static device_state_t current_state = STATE_IDLE;
 static bool dnd_mode = false;
 
-// NVS helpers for DND persistence across reboots
+// NVS helpers for persistence across reboots
 #define NVS_NAMESPACE "jarvis"
-#define NVS_KEY_DND   "dnd_mode"
+#define NVS_KEY_DND      "dnd_mode"
+#define NVS_KEY_ROTATION "rotation"
 
 static void save_dnd_to_nvs(bool enabled) {
     nvs_handle_t h;
@@ -76,6 +77,25 @@ static bool load_dnd_from_nvs(void) {
     uint8_t val = 0;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
         nvs_get_u8(h, NVS_KEY_DND, &val);
+        nvs_close(h);
+    }
+    return val != 0;
+}
+
+static void save_rotation_to_nvs(bool rotated) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, NVS_KEY_ROTATION, rotated ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static bool load_rotation_from_nvs(void) {
+    nvs_handle_t h;
+    uint8_t val = 0;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, NVS_KEY_ROTATION, &val);
         nvs_close(h);
     }
     return val != 0;
@@ -128,6 +148,7 @@ static volatile float config_new_sensitivity = 0.82f;
 static void on_wake_word_detected(void);
 static void activate_listening(bool silent);
 static void handle_short_press(void);
+static void handle_double_tap(void);
 static void handle_long_press(void);
 static void handle_triple_tap(void);
 static void on_session_done(bool success);
@@ -197,15 +218,17 @@ static void update_local_time(void) {
 }
 
 // =============================================================================
-// BUTTON HANDLER (single tap, long press, triple-tap)
+// BUTTON HANDLER (single tap, double tap, triple-tap, long press)
 // =============================================================================
 //
 // State machine:
 //   button_down → start hold timer
 //   button_held > 800ms → LONG PRESS (DND toggle), consume gesture
 //   button_up (< 800ms) → tap_count++
-//     tap_count == 3 within 600ms → TRIPLE TAP (speaker stop)
-//     no more taps within 300ms → SINGLE TAP (activate/stop listening)
+//     tap_count == 3 within 600ms → TRIPLE TAP (rotate display)
+//     no more taps within 300ms:
+//       tap_count == 2 → DOUBLE TAP (speaker stop)
+//       tap_count == 1 → SINGLE TAP (activate/stop listening)
 //
 
 #define LONG_PRESS_MS       800
@@ -222,11 +245,9 @@ static int tap_count = 0;
 static int64_t first_tap_time = 0;
 static int64_t last_tap_time = 0;
 
-// Deferred single-tap flag (processed in main_task after MULTI_TAP_WINDOW_MS)
-static volatile bool single_tap_pending = false;
-static int64_t single_tap_deadline = 0;
-
-static void handle_triple_tap(void);
+// Deferred tap flag (processed in main_task after MULTI_TAP_WINDOW_MS)
+static volatile bool tap_pending = false;
+static int64_t tap_deadline = 0;
 
 static void handle_button_down(void) {
     reset_activity_timer();
@@ -241,7 +262,7 @@ static void handle_button_down(void) {
             long_press_handled = true;
             // Long press cancels any pending tap sequence
             tap_count = 0;
-            single_tap_pending = false;
+            tap_pending = false;
             handle_long_press();
         }
     }
@@ -271,16 +292,16 @@ static void handle_button_up(void) {
 
     if (tap_count >= TRIPLE_TAP_COUNT) {
         // Triple tap detected!
-        ESP_LOGI(TAG, ">>> TRIPLE TAP DETECTED! <<< (speaker stop)");
+        ESP_LOGI(TAG, ">>> TRIPLE TAP DETECTED! <<< (rotate display)");
         tap_count = 0;
-        single_tap_pending = false;
+        tap_pending = false;
         handle_triple_tap();
         return;
     }
 
-    // Set deadline for single-tap (wait for more taps)
-    single_tap_pending = true;
-    single_tap_deadline = now + MULTI_TAP_WINDOW_MS;
+    // Set deadline for single/double-tap (wait for more taps)
+    tap_pending = true;
+    tap_deadline = now + MULTI_TAP_WINDOW_MS;
 }
 
 // Minimum time (ms) to wait after activation before allowing button-stop.
@@ -358,8 +379,8 @@ static void handle_long_press(void) {
     }
 }
 
-static void handle_triple_tap(void) {
-    ESP_LOGI(TAG, "🛑 TRIPLE TAP — SPEAKER STOP");
+static void handle_double_tap(void) {
+    ESP_LOGI(TAG, "🛑 DOUBLE TAP — SPEAKER STOP");
 
     // Flash red for visual feedback
     jarvis_display_flash_red();
@@ -371,6 +392,14 @@ static void handle_triple_tap(void) {
     if (current_state == STATE_BUSY) {
         set_state(dnd_mode ? STATE_DND : STATE_IDLE);
     }
+}
+
+static void handle_triple_tap(void) {
+    ESP_LOGI(TAG, "🔄 TRIPLE TAP — ROTATE DISPLAY");
+
+    bool rotated = !jarvis_display_is_rotated();
+    jarvis_display_set_rotation(rotated);
+    save_rotation_to_nvs(rotated);
 }
 
 // =============================================================================
@@ -620,11 +649,16 @@ static void main_task(void* arg) {
             handle_button_up();
         }
 
-        // Deferred single-tap: fire after MULTI_TAP_WINDOW_MS with no more taps
-        if (single_tap_pending && !button_was_pressed && now >= single_tap_deadline) {
-            single_tap_pending = false;
+        // Deferred tap: fire after MULTI_TAP_WINDOW_MS with no more taps
+        if (tap_pending && !button_was_pressed && now >= tap_deadline) {
+            tap_pending = false;
+            int final_count = tap_count;
             tap_count = 0;
-            handle_short_press();
+            if (final_count >= 2) {
+                handle_double_tap();
+            } else {
+                handle_short_press();
+            }
         }
 
         // Process audio (wake word detection — now a no-op, detection via flag)
@@ -913,6 +947,13 @@ extern "C" void app_main(void) {
         // Start listening (wake word detection)
         jarvis_audio_start_listening();
         jarvis_display_set_state(STATE_IDLE);
+    }
+
+    // Restore display rotation from NVS (persisted across reboots)
+    bool saved_rotation = load_rotation_from_nvs();
+    if (saved_rotation) {
+        ESP_LOGI(TAG, "Display rotation RESTORED from NVS — 180° mode");
+        jarvis_display_set_rotation(true);
     }
 
     // Update display

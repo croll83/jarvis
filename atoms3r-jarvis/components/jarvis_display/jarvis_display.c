@@ -98,6 +98,8 @@ static float current_temp = 0.0f;
 static char error_msg[32] = "";
 static char friendly_name[33] = "";  // 32 chars + null terminator
 
+static bool display_rotated = false;
+
 static float wave_phase = 0.0f;
 static int64_t last_wave_update = 0;
 
@@ -306,6 +308,16 @@ static void fb_draw_icon_at(const uint8_t* icon, int width, int height, uint16_t
 
 static void flush_buffer(void) {
     if (panel_handle && frame_buffer) {
+        if (display_rotated) {
+            // Rotate 180° in-place (swap pixels symmetrically)
+            int total = DISPLAY_WIDTH * DISPLAY_HEIGHT;
+            int half = total / 2;
+            for (int i = 0; i < half; i++) {
+                uint16_t tmp = frame_buffer[i];
+                frame_buffer[i] = frame_buffer[total - 1 - i];
+                frame_buffer[total - 1 - i] = tmp;
+            }
+        }
         esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, frame_buffer);
     }
 }
@@ -830,4 +842,14 @@ void jarvis_display_flash_red(void) {
 
     // Torna allo stato corrente
     jarvis_display_update();
+}
+
+void jarvis_display_set_rotation(bool rotated) {
+    display_rotated = rotated;
+    jarvis_display_update();
+    ESP_LOGI(TAG, "Display rotation: %s", display_rotated ? "180°" : "normal");
+}
+
+bool jarvis_display_is_rotated(void) {
+    return display_rotated;
 }
