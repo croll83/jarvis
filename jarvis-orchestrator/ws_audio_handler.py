@@ -628,11 +628,11 @@ async def ws_audio_endpoint(
                             logger.info(f"Device {device_id}: audio session killed by device (audio_end)")
 
                     elif msg_type == "speaker_stop":
-                        # Triple-tap emergency stop: stop the speaker associated with this device
-                        logger.info(f"Device {device_id}: speaker_stop (triple-tap)")
+                        # Double-tap emergency stop: stop the speaker associated with this device
+                        logger.info(f"Device {device_id}: speaker_stop (double-tap)")
                         try:
                             from database import get_voice_device
-                            from integrations import call_hass_service
+                            from integrations import mute_speaker_for_stop
                             dev = get_voice_device(device_id)
                             if dev and dev.output_speaker and dev.location_id:
                                 loc = dev.location_id
@@ -640,7 +640,6 @@ async def ws_audio_endpoint(
                                 # Alexa TTS (notify.alexa_media) is a cloud-driven behavior
                                 # that cannot be interrupted via media_stop or play_media.
                                 # Strategy: mute immediately, auto-unmute when speak() is called next.
-                                from integrations import mute_speaker_for_stop
                                 await mute_speaker_for_stop(loc, spk)
                                 # Clear speaking_state for this device's room
                                 from main import speaking_state, speaking_state_lock
@@ -651,6 +650,9 @@ async def ws_audio_endpoint(
                                         logger.info(f"Cleared speaking_state for room: {room}")
                             else:
                                 logger.warning(f"speaker_stop: device {device_id} has no output_speaker configured")
+                            # Cancel any pending post-TTS task (multi-turn trigger, etc.)
+                            from main import cancel_pending_tts_task
+                            cancel_pending_tts_task(device_id)
                         except Exception as e:
                             logger.error(f"speaker_stop failed for device {device_id}: {e}")
                         # Tell device to go back to IDLE
