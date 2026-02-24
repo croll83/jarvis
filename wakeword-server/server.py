@@ -210,8 +210,15 @@ async def _handle_text(conn: DeviceConnection, raw: str):
         await _ensure_relay_for_hello(conn, raw)
 
     elif msg_type == "audio_start":
-        # Device acknowledged wake, starting audio session
-        if conn.state == DeviceState.WAKING:
+        # Device starting audio session (wake word, button press, or trigger_listen)
+        if conn.state in (DeviceState.WAKING, DeviceState.IDLE, DeviceState.BUSY):
+            # From IDLE/BUSY: button press or late trigger_listen response — open relay first
+            if not conn.relay or not conn.relay.is_connected:
+                try:
+                    await _open_relay(conn)
+                except Exception as e:
+                    logger.error(f"[{conn.device_id}] Failed to open relay for audio_start: {e}")
+                    return
             conn.state = DeviceState.STREAMING
             logger.info(f"[{conn.device_id}] State → STREAMING")
             # Relay audio_start to VPS
@@ -391,6 +398,14 @@ async def trigger_listen(device_id: str, silent: bool = True):
     if not conn:
         raise HTTPException(status_code=404, detail=f"Device {device_id} not connected")
 
+    # Open relay before sending trigger_listen — device will respond with audio_start
+    try:
+        await _open_relay(conn)
+    except Exception as e:
+        logger.warning(f"[{device_id}] trigger_listen relay open failed: {e}")
+
+    conn.state = DeviceState.WAKING
+    conn.wakeword.mute(60.0)
     await conn.send_json({"type": "trigger_listen", "silent": silent})
     logger.info(f"[{device_id}] trigger_listen relayed (silent={silent})")
     return {"status": "ok", "device_id": device_id}
