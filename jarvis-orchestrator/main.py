@@ -966,7 +966,7 @@ async def set_speaking_state(room: str, speaking: bool, device_id: str = None):
 
 
 async def clear_speaking_state_after_delay(room: str, delay_seconds: float = None):
-    """Pulisce lo stato speaking dopo un delay (tempo stimato TTS)."""
+    """Pulisce lo stato speaking dopo un delay (tempo stimato TTS). Legacy fallback."""
     if delay_seconds is None:
         delay_seconds = config.INTERVALS["tts_clear_delay"]
     await asyncio.sleep(delay_seconds)
@@ -975,6 +975,139 @@ async def clear_speaking_state_after_delay(room: str, delay_seconds: float = Non
             if time.time() - speaking_state[room]["started_at"] >= delay_seconds - 0.5:
                 del speaking_state[room]
                 logger.info(f"🔇 Speaking state auto-cleared for room: {room}")
+
+
+# ===========================================================================
+# HELPER: TTS Completion Polling (replaces duration estimates)
+# ===========================================================================
+
+# Pending post-TTS tasks per device (for cancellation on speaker_stop)
+_pending_tts_tasks: Dict[str, asyncio.Task] = {}
+
+
+async def wait_for_tts_completion(
+    media_player_id: str,
+    location_id: str,
+    max_wait: float = 90.0,
+    poll_interval: float = 0.2,
+    initial_delay: float = 2.0,
+) -> float:
+    """
+    Poll Alexa media_player state to detect when TTS playback finishes.
+
+    Waits initial_delay seconds, then polls every poll_interval seconds.
+    Returns actual time waited (seconds).
+    Falls back to max_wait timeout if polling fails or Alexa never reports playing.
+    """
+    start = time.time()
+    await asyncio.sleep(initial_delay)
+
+    was_playing = False
+    consecutive_not_playing = 0
+
+    while (time.time() - start) < max_wait:
+        try:
+            state_data = await multi_ha.get_state(location_id, media_player_id)
+            if state_data:
+                current_state = (state_data.get("state") or "").lower()
+                if current_state == "playing":
+                    was_playing = True
+                    consecutive_not_playing = 0
+                elif was_playing:
+                    consecutive_not_playing += 1
+                    if consecutive_not_playing >= 2:
+                        # Two consecutive non-playing polls → TTS done
+                        break
+                elif not was_playing and (time.time() - start) > 10.0:
+                    # Never saw "playing" after 10s → TTS already done or failed
+                    break
+        except Exception as e:
+            logger.debug(f"TTS poll error for {media_player_id}: {e}")
+
+        await asyncio.sleep(poll_interval)
+
+    duration = time.time() - start
+    logger.info(f"🔊 TTS completion: {media_player_id} done after {duration:.1f}s "
+                f"(saw_playing={was_playing})")
+    return duration
+
+
+async def _post_tts_handler(
+    media_player_id: str,
+    location_id: str,
+    room: str,
+    device_id: str,
+    is_multi_turn: bool = False,
+):
+    """
+    Background task: after TTS is sent to Alexa, wait for playback to finish, then:
+    1. Clear speaking state
+    2. Send tts_done to device (BUSY → IDLE)
+    3. If multi-turn: trigger device to listen again
+    """
+    try:
+        duration = await wait_for_tts_completion(media_player_id, location_id)
+
+        # Clear speaking state
+        async with speaking_state_lock:
+            if room in speaking_state:
+                del speaking_state[room]
+                logger.info(f"🔇 Speaking state cleared (TTS done after {duration:.1f}s)")
+
+        if is_multi_turn and device_id and device_id != "unknown":
+            # Multi-turn: trigger listen directly (skip tts_done to keep relay open)
+            # Device transitions BUSY → LISTENING without going through IDLE
+            success = await trigger_device_listen(device_id, silent=True)
+            if success:
+                logger.info(f"🔄 Multi-turn: triggered listen on {device_id} "
+                            f"(after {duration:.1f}s TTS)")
+            else:
+                logger.warning(f"🔄 Multi-turn: failed to trigger {device_id}")
+        elif device_id and device_id != "unknown":
+            # Not multi-turn: notify device TTS is done (BUSY → IDLE, closes relay)
+            from ws_audio_handler import notify_tts_done
+            await notify_tts_done(device_id)
+
+    except asyncio.CancelledError:
+        logger.info(f"Post-TTS handler cancelled for device {device_id} (speaker_stop?)")
+    except Exception as e:
+        logger.error(f"Post-TTS handler error for device {device_id}: {e}")
+    finally:
+        _pending_tts_tasks.pop(device_id, None)
+
+
+def schedule_post_tts(
+    media_player_id: str,
+    location_id: str,
+    room: str,
+    device_id: str,
+    is_multi_turn: bool = False,
+):
+    """
+    Schedule a post-TTS handler that polls Alexa state and handles completion.
+    Cancels any existing handler for this device.
+    """
+    # Cancel existing task for this device
+    existing = _pending_tts_tasks.get(device_id)
+    if existing and not existing.done():
+        existing.cancel()
+        logger.debug(f"Cancelled previous post-TTS task for {device_id}")
+
+    task = asyncio.create_task(
+        _post_tts_handler(media_player_id, location_id, room, device_id, is_multi_turn)
+    )
+    _pending_tts_tasks[device_id] = task
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+def cancel_pending_tts_task(device_id: str):
+    """Cancel pending post-TTS handler for a device (called on speaker_stop)."""
+    task = _pending_tts_tasks.pop(device_id, None)
+    if task and not task.done():
+        task.cancel()
+        logger.info(f"Cancelled post-TTS task for {device_id} (speaker_stop)")
 
 
 # ===========================================================================
@@ -2295,22 +2428,6 @@ def _needs_followup(response_text: str) -> bool:
     return response_text.rstrip().endswith('?')
 
 
-async def _delayed_trigger_listen(device_id: str, delay_seconds: float):
-    """
-    Wait for TTS to finish, then trigger the device to listen again.
-    Used for multi-turn conversations where OpenClaw asks a follow-up question.
-    """
-    try:
-        await asyncio.sleep(delay_seconds)
-        success = await trigger_device_listen(device_id, silent=True)
-        if success:
-            logger.info(f"🔄 Multi-turn: triggered listen on device {device_id}")
-        else:
-            logger.warning(f"🔄 Multi-turn: failed to trigger {device_id} (not connected?)")
-    except Exception as e:
-        logger.error(f"Multi-turn trigger error for {device_id}: {e}")
-
-
 # ===========================================================================
 # OPENCLAW VOICE HANDLER (for DOMOTICA_INCERTA and ALTRO pre-routes)
 # ===========================================================================
@@ -2412,16 +2529,24 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
         # Post-streaming: save chat, update speaking state, VirtualMic tracking
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
 
-        # Speaking state management
+        # Speaking state + post-TTS handler (polls Alexa state for completion)
         room = context.get("room", "salotto").lower()
         device_id = context.get("device_id", "unknown")
+        is_multi_turn = _needs_followup(response) and source == "AtomS3R"
+
         if target_speaker and not target_speaker.startswith("telegram:"):
             await set_speaking_state(room, True, device_id)
-            estimated_duration = max(
-                config.TTS_MIN_DURATION,
-                len(response) / config.TTS_CHARS_PER_SECOND + config.TTS_SOUND_OFFSET
+            # Schedule polling-based post-TTS handler (replaces estimate-based approach)
+            schedule_post_tts(
+                media_player_id=target_speaker,
+                location_id=loc,
+                room=room,
+                device_id=device_id,
+                is_multi_turn=is_multi_turn,
             )
-            asyncio.create_task(clear_speaking_state_after_delay(room, estimated_duration))
+            if is_multi_turn:
+                logger.info(f"🔄 Multi-turn: polling Alexa state for {target_speaker} "
+                            f"(device={device_id})")
 
         # VirtualMic response tracking
         vmic_req_id = context.get("vmic_request_id")
@@ -2451,23 +2576,6 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
         if _flush_tts_sentences.chunks_sent == 0 and response:
             logger.info("TTS stream: no chunks sent during streaming, delivering full response")
             await deliver_final_response(response, context, sound_type="neutral")
-
-        # ── Multi-turn follow-up: if response ends with "?", trigger device to listen again ──
-        if _needs_followup(response) and source == "AtomS3R":
-            ft_device_id = context.get("device_id")
-            if ft_device_id:
-                ft_estimated_duration = max(
-                    config.TTS_MIN_DURATION,
-                    len(response) / config.TTS_CHARS_PER_SECOND + config.TTS_SOUND_OFFSET
-                )
-                ft_trigger_delay = ft_estimated_duration + getattr(config, 'FOLLOWUP_TRIGGER_BUFFER_S', 0.5)
-                logger.info(
-                    f"🔄 Multi-turn follow-up scheduled: device={ft_device_id}, "
-                    f"delay={ft_trigger_delay:.1f}s (tts_est={ft_estimated_duration:.1f}s)"
-                )
-                t = asyncio.create_task(_delayed_trigger_listen(ft_device_id, ft_trigger_delay))
-                _background_tasks.add(t)
-                t.add_done_callback(_background_tasks.discard)
 
     else:
         # ── Non-streaming path (Telegram, DND, silent hours, no speaker) ──
@@ -2986,19 +3094,23 @@ async def process_jarvis_logic(text: str, context: dict):
             logger.info(f"HOME_CONTROL clarification: {len(target['entity_ids'])} candidates → asking user")
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context)
-            # Multi-turn: trigger device to listen again for user's clarification
+            # Multi-turn: override post-TTS handler with multi-turn=True for clarification
             if source in ("AtomS3R", "VirtualMic"):
                 cl_device_id = context.get("device_id")
-                if cl_device_id:
-                    cl_tts_est = max(
-                        config.TTS_MIN_DURATION,
-                        len(response) / config.TTS_CHARS_PER_SECOND + config.TTS_SOUND_OFFSET
-                    )
-                    cl_delay = cl_tts_est + getattr(config, 'FOLLOWUP_TRIGGER_BUFFER_S', 0.5)
-                    logger.info(f"🔄 Clarification follow-up: device={cl_device_id}, delay={cl_delay:.1f}s")
-                    t = asyncio.create_task(_delayed_trigger_listen(cl_device_id, cl_delay))
-                    _background_tasks.add(t)
-                    t.add_done_callback(_background_tasks.discard)
+                cl_device_cfg = context.get("device_config")
+                if cl_device_id and cl_device_cfg:
+                    cl_speaker = cl_device_cfg.get("output_speaker")
+                    cl_loc = cl_device_cfg.get("location_id", context.get("location"))
+                    cl_room = context.get("room", "").lower()
+                    if cl_speaker and cl_loc:
+                        schedule_post_tts(
+                            media_player_id=cl_speaker,
+                            location_id=cl_loc,
+                            room=cl_room,
+                            device_id=cl_device_id,
+                            is_multi_turn=True,
+                        )
+                        logger.info(f"🔄 Clarification follow-up: polling Alexa for {cl_speaker}")
             return
 
         # L1-L4 security check (domain-level, come entity_bulk)
@@ -3533,25 +3645,14 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
         device_id = context.get("device_id", "unknown")
         await set_speaking_state(room, True, device_id)
 
-        # Stima durata TTS: ~N caratteri/secondo + offset secondi per il suono
-        estimated_duration = max(config.TTS_MIN_DURATION, len(text) / config.TTS_CHARS_PER_SECOND + config.TTS_SOUND_OFFSET)
-
-        # Schedula pulizia stato speaking dopo la durata stimata
-        asyncio.create_task(clear_speaking_state_after_delay(room, estimated_duration))
-
-        # Notify device that TTS is done after estimated playback duration
-        # This lets the device transition BUSY → IDLE without relying on timeout
-        async def _notify_device_tts_done(dev_id: str, delay: float):
-            await asyncio.sleep(delay)
-            try:
-                from ws_audio_handler import notify_tts_done
-                await notify_tts_done(dev_id)
-            except Exception as e:
-                logger.debug(f"notify_tts_done failed for {dev_id}: {e}")
-
-        notify_device_id = context.get("device_id")
-        if notify_device_id and notify_device_id != "unknown":
-            asyncio.create_task(_notify_device_tts_done(notify_device_id, estimated_duration))
+        # Schedule polling-based post-TTS handler (replaces estimate-based approach)
+        schedule_post_tts(
+            media_player_id=target_player,
+            location_id=location,
+            room=room,
+            device_id=device_id,
+            is_multi_turn=False,
+        )
 
     # TODO: Se use_local_speaker=True, il chiamante dovrebbe gestire
     # la risposta locale. Per ora logghiamo solo.
