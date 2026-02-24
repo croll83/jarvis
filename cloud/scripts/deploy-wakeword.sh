@@ -27,6 +27,7 @@
 #   WAKEWORD_TEMPLATE=local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst
 #   TAILSCALE_AUTHKEY=tskey-auth-xxxxx
 #   ORCHESTRATOR_WS_URL=ws://jarvis-pub.mintwork.it/ws/audio
+#   ORCHESTRATOR_URL=http://100.100.74.71:5000   (opzionale, derivato da WS URL)
 #   DEVICE_API_TOKEN=xxxxx
 #   WAKEWORD_THRESHOLD=0.5
 #   MULTIROOM_COOLDOWN_S=5
@@ -135,6 +136,7 @@ prompt_var TAILSCALE_AUTHKEY   "Tailscale auth key (tskey-auth-...)" ""
 echo ""
 echo -e "${YELLOW}Configurazione Wakeword Server:${NC}"
 prompt_var ORCHESTRATOR_WS_URL "Orchestrator WS URL"        "ws://jarvis-pub.mintwork.it/ws/audio"
+prompt_var ORCHESTRATOR_URL    "Orchestrator HTTP URL (vuoto=auto da WS URL)" ""
 prompt_var DEVICE_API_TOKEN    "Device API Token"            ""
 prompt_var WAKEWORD_THRESHOLD  "Wake word threshold"         "0.5"
 prompt_var MULTIROOM_COOLDOWN_S "Multi-room cooldown (sec)"  "5"
@@ -148,7 +150,8 @@ echo "  IP:                ${WAKEWORD_IP}"
 echo "  Gateway:           ${WAKEWORD_GW}"
 echo "  Bridge:            ${WAKEWORD_BRIDGE}"
 echo "  Template:          ${WAKEWORD_TEMPLATE}"
-echo "  Orchestrator URL:  ${ORCHESTRATOR_WS_URL}"
+echo "  Orchestrator WS:   ${ORCHESTRATOR_WS_URL}"
+echo "  Orchestrator HTTP: ${ORCHESTRATOR_URL:-auto}"
 echo ""
 read -rp "Procedere? [y/N]: " confirm
 if [[ ! "$confirm" =~ ^[yY]$ ]]; then
@@ -403,6 +406,7 @@ echo -e "${YELLOW}[6/${TOTAL_STEPS}] Configurazione e avvio wakeword-server...${
 # Scrivi .env
 lxc_exec "cat > /opt/jarvis-wakeword/wakeword-server/.env << ENVEOF
 ORCHESTRATOR_WS_URL=${ORCHESTRATOR_WS_URL}
+ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-}
 DEVICE_API_TOKEN=${DEVICE_API_TOKEN}
 WAKEWORD_MODEL=hey_jarvis
 WAKEWORD_THRESHOLD=${WAKEWORD_THRESHOLD}
@@ -471,6 +475,8 @@ echo ""
 echo "  2. FIRMWARE AtomS3R (sdkconfig.local):"
 echo "     Modifica/aggiungi queste righe:"
 echo ""
+echo "     CONFIG_JARVIS_SERVER_HOST=\"${LAN_IP}\""
+echo "     CONFIG_JARVIS_SERVER_PORT=8200"
 echo "     CONFIG_JARVIS_WS_URL=\"ws://${LAN_IP}:8200/ws/audio\""
 echo "     CONFIG_USE_LOCAL_WAKEWORD=n"
 echo ""

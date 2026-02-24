@@ -13,16 +13,21 @@ menu "JARVIS Configuration"
             Password della rete WiFi
 
     config JARVIS_SERVER_HOST
-        string "JARVIS Server Host"
+        string "JARVIS Management Server Host"
         default "jarvis.local"
         help
-            Hostname o IP del server JARVIS Orchestrator
+            Hostname o IP del wakeword-server (LAN).
+            Le chiamate HTTP di management (device_config, heartbeat,
+            device_status, room_temperature, speaker/suppress) vengono
+            inviate qui. Il wakeword-server le inoltra all'orchestrator
+            via Tailscale.
 
     config JARVIS_SERVER_PORT
-        int "JARVIS Server Port"
-        default 5000
+        int "JARVIS Management Server Port"
+        default 8200
         help
-            Porta del server JARVIS Orchestrator
+            Porta del wakeword-server per le chiamate HTTP di management.
+            Default: 8200 (porta standard del wakeword-server).
 
     config JARVIS_API_TOKEN
         string "JARVIS API Bearer Token"
