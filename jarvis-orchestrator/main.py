@@ -988,22 +988,33 @@ _pending_tts_tasks: Dict[str, asyncio.Task] = {}
 async def wait_for_tts_completion(
     media_player_id: str,
     location_id: str,
+    text_length: int = 0,
     max_wait: float = 90.0,
     poll_interval: float = 0.2,
-    initial_delay: float = 2.0,
 ) -> float:
     """
-    Poll Alexa media_player state to detect when TTS playback finishes.
+    Wait for Alexa TTS playback to finish.
 
-    Waits initial_delay seconds, then polls every poll_interval seconds.
+    Hybrid approach:
+    - First tries polling the media_player entity state (future-proof: works if
+      alexa_media_player integration is patched to report TTS as "playing")
+    - If no "playing" state is detected within 3s, falls back to a text-length
+      estimate (~45 chars/s for Italian Alexa TTS + 3.5s overhead for
+      alexa_media_player queue_delay + cloud latency)
+
     Returns actual time waited (seconds).
-    Falls back to max_wait timeout if polling fails or Alexa never reports playing.
     """
-    start = time.time()
-    await asyncio.sleep(initial_delay)
+    # Estimate based on text length: ~45 chars/s Italian Alexa TTS
+    # + 3.5s overhead (1.5s queue_delay + 2s cloud/network latency)
+    CHARS_PER_SECOND = 45.0
+    OVERHEAD_S = 3.5
+    MIN_WAIT = 3.0
+    estimated = max(MIN_WAIT, text_length / CHARS_PER_SECOND + OVERHEAD_S) if text_length > 0 else MIN_WAIT
 
+    start = time.time()
     was_playing = False
     consecutive_not_playing = 0
+    polling_gave_up = False
 
     while (time.time() - start) < max_wait:
         try:
@@ -1018,17 +1029,27 @@ async def wait_for_tts_completion(
                     if consecutive_not_playing >= 2:
                         # Two consecutive non-playing polls → TTS done
                         break
-                elif not was_playing and (time.time() - start) > 10.0:
-                    # Never saw "playing" after 10s → TTS already done or failed
+                elif not was_playing and (time.time() - start) > 3.0:
+                    # Polling can't see TTS state (expected with current alexa_media_player)
+                    # Fall back to time estimate
+                    polling_gave_up = True
                     break
         except Exception as e:
             logger.debug(f"TTS poll error for {media_player_id}: {e}")
 
         await asyncio.sleep(poll_interval)
 
+    if polling_gave_up:
+        # Wait remaining estimated time (subtract time already spent polling)
+        remaining = estimated - (time.time() - start)
+        if remaining > 0:
+            logger.info(f"🔊 TTS polling: no state change detected, using estimate "
+                        f"({estimated:.1f}s for {text_length} chars, waiting {remaining:.1f}s more)")
+            await asyncio.sleep(remaining)
+
     duration = time.time() - start
-    logger.info(f"🔊 TTS completion: {media_player_id} done after {duration:.1f}s "
-                f"(saw_playing={was_playing})")
+    logger.info(f"🔊 TTS completion: {media_player_id} after {duration:.1f}s "
+                f"(polling={'detected' if was_playing else 'fallback_estimate'})")
     return duration
 
 
@@ -1038,6 +1059,7 @@ async def _post_tts_handler(
     room: str,
     device_id: str,
     is_multi_turn: bool = False,
+    text_length: int = 0,
 ):
     """
     Background task: after TTS is sent to Alexa, wait for playback to finish, then:
@@ -1046,7 +1068,7 @@ async def _post_tts_handler(
     3. If multi-turn: trigger device to listen again
     """
     try:
-        duration = await wait_for_tts_completion(media_player_id, location_id)
+        duration = await wait_for_tts_completion(media_player_id, location_id, text_length=text_length)
 
         # Clear speaking state
         async with speaking_state_lock:
@@ -1082,6 +1104,7 @@ def schedule_post_tts(
     room: str,
     device_id: str,
     is_multi_turn: bool = False,
+    text_length: int = 0,
 ):
     """
     Schedule a post-TTS handler that polls Alexa state and handles completion.
@@ -1094,7 +1117,7 @@ def schedule_post_tts(
         logger.debug(f"Cancelled previous post-TTS task for {device_id}")
 
     task = asyncio.create_task(
-        _post_tts_handler(media_player_id, location_id, room, device_id, is_multi_turn)
+        _post_tts_handler(media_player_id, location_id, room, device_id, is_multi_turn, text_length)
     )
     _pending_tts_tasks[device_id] = task
     _background_tasks.add(task)
@@ -2543,10 +2566,11 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
                 room=room,
                 device_id=device_id,
                 is_multi_turn=is_multi_turn,
+                text_length=len(response) if response else 0,
             )
             if is_multi_turn:
-                logger.info(f"🔄 Multi-turn: polling Alexa state for {target_speaker} "
-                            f"(device={device_id})")
+                logger.info(f"🔄 Multi-turn: waiting for TTS on {target_speaker} "
+                            f"(device={device_id}, {len(response)} chars)")
 
         # VirtualMic response tracking
         vmic_req_id = context.get("vmic_request_id")
@@ -3109,8 +3133,9 @@ async def process_jarvis_logic(text: str, context: dict):
                             room=cl_room,
                             device_id=cl_device_id,
                             is_multi_turn=True,
+                            text_length=len(response) if response else 0,
                         )
-                        logger.info(f"🔄 Clarification follow-up: polling Alexa for {cl_speaker}")
+                        logger.info(f"🔄 Clarification follow-up: waiting for TTS on {cl_speaker}")
             return
 
         # L1-L4 security check (domain-level, come entity_bulk)
@@ -3645,13 +3670,14 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
         device_id = context.get("device_id", "unknown")
         await set_speaking_state(room, True, device_id)
 
-        # Schedule polling-based post-TTS handler (replaces estimate-based approach)
+        # Schedule post-TTS handler (estimate-based, future-proofed for polling)
         schedule_post_tts(
             media_player_id=target_player,
             location_id=location,
             room=room,
             device_id=device_id,
             is_multi_turn=False,
+            text_length=len(text) if text else 0,
         )
 
     # TODO: Se use_local_speaker=True, il chiamante dovrebbe gestire
