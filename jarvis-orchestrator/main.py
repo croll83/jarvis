@@ -999,17 +999,22 @@ async def wait_for_tts_completion(
     - First tries polling the media_player entity state (future-proof: works if
       alexa_media_player integration is patched to report TTS as "playing")
     - If no "playing" state is detected within 3s, falls back to a text-length
-      estimate (~45 chars/s for Italian Alexa TTS + 3.5s overhead for
-      alexa_media_player queue_delay + cloud latency)
+      estimate calibrated empirically (TTS Calibration 2026-02-25, R²=0.9977)
 
     Returns actual time waited (seconds).
     """
-    # Estimate based on text length: ~45 chars/s Italian Alexa TTS
-    # + 3.5s overhead (1.5s queue_delay + 2s cloud/network latency)
-    CHARS_PER_SECOND = 45.0
-    OVERHEAD_S = 3.5
+    # Calibrated coefficients (tts-calibration 2026-02-25, echo_dot_garage, 78 phrases)
+    # duration_s = A * chars + B  (R²=0.9977, P95 error=1.27s)
+    TTS_COEFF_A = 0.063051        # seconds per character (~15.9 chars/s)
+    TTS_COEFF_B = -0.071          # intercept
+    TTS_SAFETY_MARGIN = 1.10      # +10% buffer
+    TTS_NOTIFY_LATENCY = 1.982    # notify → speech start (measured)
     MIN_WAIT = 3.0
-    estimated = max(MIN_WAIT, text_length / CHARS_PER_SECOND + OVERHEAD_S) if text_length > 0 else MIN_WAIT
+    if text_length > 0:
+        speech_est = (TTS_COEFF_A * text_length + TTS_COEFF_B) * TTS_SAFETY_MARGIN
+        estimated = max(MIN_WAIT, speech_est + TTS_NOTIFY_LATENCY)
+    else:
+        estimated = MIN_WAIT
 
     start = time.time()
     was_playing = False
