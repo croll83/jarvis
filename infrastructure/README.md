@@ -66,11 +66,16 @@ HA remoti e il LXC OpenClaw.
 |  Node.js bare-metal | systemd service                                |
 |  Tailscale host-level - jarvis-openclaw                              |
 |                                                                      |
-|  openclaw gateway :18789                                             |
+|  openclaw gateway :18789 (localhost only)                            |
 |  Chrome headless  :18800 (CDP, solo localhost)                       |
 |  Gemini 3 Pro (API cloud)                                            |
 |  Telegram bot integrato                                              |
 |  Linuxbrew + skill dependencies                                      |
+|                                                                      |
+|  Nginx reverse proxy (TLS termination):                              |
+|    :18789 (Tailscale IP) -> ws://127.0.0.1:18789  (API + WSS)       |
+|    :443   (Tailscale IP) -> http://127.0.0.1:18789 (Dashboard)      |
+|  Certbot + Cloudflare DNS per openclaw.mintwork.it                   |
 |                                                                      |
 |  Skill (copiata):                                                    |
 |  ~/.openclaw/workspace/skills/jarvis-orchestrator/                   |
@@ -79,8 +84,8 @@ HA remoti e il LXC OpenClaw.
 |  ~/.openclaw/extensions/browser-dom/ (DOM automation via CDP)        |
 |                                                                      |
 |  Raggiungibile via:                                                  |
-|  - Tailscale MagicDNS: http://jarvis-openclaw:18789                  |
-|  - LAN IP: http://192.168.x.x:18789                                 |
+|  - API/WS (TLS): https://openclaw.mintwork.it:18789 (wss://)        |
+|  - Dashboard:    https://openclaw.mintwork.it (porta 443)            |
 +---------------------------------------------------------------------+
 
 +---------------------------------------------------------------------+
@@ -438,14 +443,14 @@ docker compose restart orchestrator
    - Configura location e entity maps
    - Monitora stato servizi
 
-3. **Dashboard OpenClaw** — `http://jarvis-openclaw:18789` (via Tailscale):
+3. **Dashboard OpenClaw** — `https://openclaw.mintwork.it` (TLS via Nginx):
    - Gestisci skill registrate
    - Vedi log conversazioni
    - Monitora stato gateway
 
 4. **Estensione OpenClaw** — nella VM Workstation:
    - Apri Chrome, installa l'estensione dal Web Store
-   - Configura URL gateway: `http://jarvis-openclaw:18789`
+   - Configura URL gateway: `https://openclaw.mintwork.it:18789`
 
 ---
 
@@ -588,7 +593,7 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-OpenClaw senza aprir
 |   | Docker: wakeword  |              trigger_listen)           |
 |   +-------------------+                                        |
 |                                                                 |
-|   wagmi -> openclaw: http://jarvis-openclaw:18789 (MagicDNS)  |
+|   wagmi -> openclaw: https://openclaw.mintwork.it:18789 (TLS) |
 |   wagmi -> albani: 100.x.x.x:8123 (HA API via Tailscale)     |
 |   wagmi -> wakeword: http://jarvis-wakeword-casa1:8200        |
 |   Zero porte aperte, NAT traversal automatico                  |
@@ -607,7 +612,9 @@ URL contiene "100." o ".ts.net"?
 
 Le location HA (URL + token) sono nel database SQLite, gestibili dalla dashboard admin.
 
-L'orchestrator raggiunge OpenClaw tramite la variabile `OPENCLAW_URL` (default: `http://jarvis-openclaw:18789` via Tailscale MagicDNS).
+L'orchestrator raggiunge OpenClaw tramite la variabile `OPENCLAW_URL` (default: `https://openclaw.mintwork.it:18789`).
+Nginx sul LXC-OpenClaw termina TLS (Let's Encrypt via Cloudflare DNS) e proxya a `ws://127.0.0.1:18789`.
+OpenClaw 2026.2.25+ richiede `wss://` per connessioni non-loopback.
 Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale direttamente senza bisogno di un container dedicato.
 
 ---
@@ -629,7 +636,9 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 
 | Porta | Servizio | Protocollo | Accesso |
 |-------|----------|------------|---------|
-| 18789 | OpenClaw Gateway + Dashboard | HTTP | LAN / Tailscale |
+| 18789 (Tailscale IP) | Nginx TLS proxy -> OpenClaw Gateway (API + WSS) | HTTPS/WSS | Tailscale (via openclaw.mintwork.it) |
+| 443 (Tailscale IP) | Nginx TLS proxy -> OpenClaw Dashboard | HTTPS | Tailscale (via openclaw.mintwork.it) |
+| 18789 (localhost) | OpenClaw Gateway (diretto) | HTTP/WS | Solo localhost (127.0.0.1) |
 | 18800 | Chrome Headless (CDP) | HTTP/WS | Solo localhost (127.0.0.1) |
 
 ### LXC-Wakeword (per ogni casa)
@@ -662,8 +671,8 @@ curl http://localhost:5000/health/services
 docker stats
 nvidia-smi
 
-# OpenClaw raggiungibile?
-curl http://jarvis-openclaw:18789/health
+# OpenClaw raggiungibile? (via TLS)
+curl https://openclaw.mintwork.it:18789/health
 
 # Tailscale ping test
 tailscale ping jarvis-openclaw
@@ -750,11 +759,21 @@ ssh user@jarvis-openclaw "sudo systemctl status openclaw"
 # Test connettivita Tailscale
 tailscale ping jarvis-openclaw
 
-# Test diretto via LAN
-curl http://192.168.x.x:18789/health
+# Test TLS endpoint (API gateway)
+curl https://openclaw.mintwork.it:18789/health
 
-# Test via Tailscale MagicDNS
-curl http://jarvis-openclaw:18789/health
+# Test TLS endpoint (dashboard, porta 443)
+curl https://openclaw.mintwork.it/health
+
+# Test diretto localhost (dal LXC-OpenClaw stesso)
+curl http://localhost:18789/health
+
+# Verifica nginx
+ssh user@jarvis-openclaw "sudo systemctl status nginx"
+ssh user@jarvis-openclaw "sudo nginx -t"
+
+# Verifica certificato TLS
+openssl s_client -connect openclaw.mintwork.it:18789 -servername openclaw.mintwork.it </dev/null 2>/dev/null | openssl x509 -noout -dates
 ```
 
 ### OpenClaw non parte (LXC-OpenClaw)

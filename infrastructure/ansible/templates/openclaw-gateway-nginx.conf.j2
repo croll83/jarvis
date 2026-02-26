@@ -1,0 +1,62 @@
+# OpenClaw Gateway — TLS reverse proxy (managed by Ansible)
+# Terminates TLS for openclaw.mintwork.it and proxies to local gateway
+# Supports HTTPS (REST API), WSS (WebSocket), and dashboard
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# API + WebSocket gateway (porta 18789)
+server {
+    listen {{ tailscale_ip.stdout }}:18789 ssl;
+    server_name openclaw.mintwork.it;
+
+    ssl_certificate     /etc/letsencrypt/live/openclaw.mintwork.it/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/openclaw.mintwork.it/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+
+    location / {
+        proxy_pass http://127.0.0.1:18789;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+}
+
+# Dashboard (porta 443)
+server {
+    listen {{ tailscale_ip.stdout }}:443 ssl;
+    server_name openclaw.mintwork.it;
+
+    ssl_certificate     /etc/letsencrypt/live/openclaw.mintwork.it/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/openclaw.mintwork.it/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+
+    location / {
+        proxy_pass http://127.0.0.1:18789;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+}

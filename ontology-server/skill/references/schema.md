@@ -400,6 +400,12 @@ relations:
     to_types: [Account]
     cardinality: many_to_one
 
+  has_credential:
+    from_types: [Account]
+    to_types: [Credential]
+    cardinality: one_to_many
+    description: "Links an account to the credentials used to authenticate with it"
+
   attendee_of:
     from_types: [Person]
     to_types: [Event]

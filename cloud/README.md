@@ -23,7 +23,7 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
                         |
                         v
               +-------------------+
-              |   Nginx + SSL     |
+              |   Nginx + SSL     |       (VPS — jarvis.mintwork.it)
               |  (certbot)        |
               +--------+----------+
                        | :5000
@@ -32,8 +32,13 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
               |  2 vCPU, 4 GB RAM, 40 GB SSD                      |
               |                                                     |
               |  OpenClaw (bare-metal, systemd)                     |
-              |  :18789 — Gemini 3 Pro — Telegram bot               |
-              |  ~/.openclaw/workspace/skills/jarvis-orchestrator/ (copied)    |
+              |  ws://127.0.0.1:18789 — loopback only              |
+              |  ~/.openclaw/workspace/skills/jarvis-orchestrator/  |
+              |                                                     |
+              |  Nginx TLS proxy (openclaw.mintwork.it)             |
+              |  :18789 TLS → ws://127.0.0.1:18789 (API/WS)       |
+              |  :443   TLS → http://127.0.0.1:18789 (dashboard)   |
+              |  Let's Encrypt cert (Cloudflare DNS challenge)      |
               |                                                     |
               |  Tailscale (host-level, systemd)                    |
               |  VPN mesh — 100.x.x.x                              |
@@ -60,8 +65,12 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
               | Proxmox locale (1 per casa)               |
               |  LXC Wakeword (100.x.x.x:8200 Tailscale) |
               |  openWakeWord + relay on-demand            |
-              |  LAN :8200 ← AtomS3R devices (WiFi)       |
+              |  LAN :8200 <- AtomS3R devices (WiFi)      |
               +-------------------------------------------+
+
+Connessioni TLS esterne:
+  orchestrator  -->  wss://openclaw.mintwork.it:18789  (API/WS)
+  browser       -->  https://openclaw.mintwork.it      (dashboard, :443)
 ```
 
 > **Wakeword server**: il VPS raggiunge i wakeword-server locali via Tailscale per push
@@ -73,15 +82,17 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
 
 ```
 1. tailscale (systemd)     → servizio host-level, parte al boot del VPS, si connette alla tailnet
-2. openclaw (systemd)      → servizio bare-metal, parte al boot del VPS
-3. ontology-server (Docker) → Knowledge Graph API, 127.0.0.1:8100
-4. orchestrator (Docker)    → network_mode: host, vede Tailscale direttamente
-                              raggiunge OpenClaw via localhost:18789
+2. openclaw (systemd)      → servizio bare-metal, bind: "auto" (loopback), parte al boot del VPS
+3. nginx (systemd)         → TLS proxy, termina TLS e proxya a localhost:18789
+4. ontology-server (Docker) → Knowledge Graph API, 127.0.0.1:8100
+5. orchestrator (Docker)    → network_mode: host, vede Tailscale direttamente
+                              raggiunge OpenClaw via wss://openclaw.mintwork.it:18789
                               raggiunge ontology via localhost:8100
 ```
 
-Tailscale e OpenClaw sono processi systemd che partono prima di Docker.
+Tailscale, OpenClaw e Nginx sono processi systemd che partono prima di Docker.
 L'orchestrator usa `network_mode: host`, quindi vede la rete dell'host direttamente (Tailscale, localhost, ecc.).
+Nginx termina TLS (Let's Encrypt) e proxya le connessioni API/WS a OpenClaw su loopback.
 
 ---
 
@@ -191,25 +202,28 @@ Lo script configura automaticamente `OPENCLAW_GATEWAY_TOKEN` e `JARVIS_ORCHESTRA
 > **IMPORTANTE**: il `OPENCLAW_GATEWAY_TOKEN` nel `.env` dell'orchestratore DEVE essere lo stesso valore. Lo trovi con:
 > `jq -r '.gateway.auth.token' ~/.openclaw/openclaw.json`
 
-### STEP 4b — Configura bind OpenClaw su Tailscale
+### STEP 4b — TLS proxy con Nginx (architettura wss://)
 
-OpenClaw di default ascolta solo su `localhost`. Per renderlo raggiungibile dall'orchestrator (che usa `network_mode: host`) tramite l'IP Tailscale, configura il bind:
+A partire dalla release OpenClaw 2026.2.25, il gateway richiede TLS (`wss://`) per le connessioni non-loopback. OpenClaw ascolta su loopback (`bind: "auto"`) e Nginx sullo stesso server termina TLS e proxya le richieste.
 
-```bash
-# Verifica il tuo IP Tailscale
-tailscale ip -4
-# Output esempio: 100.100.74.71
-
-# Modifica il config di OpenClaw
-nano ~/.openclaw/config.json5
+**Architettura:**
+```
+client (orchestrator/browser)
+  |  wss://openclaw.mintwork.it:18789 (API/WS)
+  |  https://openclaw.mintwork.it:443  (dashboard)
+  v
+Nginx TLS proxy (Let's Encrypt cert)
+  |  proxy_pass ws://127.0.0.1:18789
+  v
+OpenClaw (bind: "auto", loopback only)
 ```
 
-Imposta `bind` a `tailnet` (richiede che `auth.token` sia gia configurato dall'onboarding):
+**Configurazione OpenClaw** — verifica che il bind sia `"auto"` (default):
 
 ```json5
 {
   gateway: {
-    bind: "tailnet",
+    bind: "auto",
     // ... auth e altro gia configurato dall'onboard
   }
 }
@@ -220,12 +234,12 @@ Poi riavvia OpenClaw:
 ```bash
 sudo systemctl restart openclaw
 
-# Verifica che ascolti sull'IP Tailscale
+# Verifica che ascolti su loopback
 ss -tlnp | grep 18789
-# Deve mostrare: 100.x.x.x:18789
+# Deve mostrare: 127.0.0.1:18789
 ```
 
-> **Nota**: con `bind: "tailnet"`, OpenClaw NON ascolta su `localhost:18789` ma sull'IP Tailscale. L'orchestrator deve puntare a quell'IP nel `.env`.
+> **Nota**: NON serve piu impostare `bind: "tailnet"`. OpenClaw ascolta solo su loopback, e Nginx si occupa di terminare TLS e proxyare le connessioni esterne. La configurazione Nginx e descritta nello STEP 9.
 
 ### STEP 4c — Browser DOM Plugin (automazione browser headless)
 
@@ -291,23 +305,16 @@ cp .env.example .env
 nano .env
 ```
 
-Recupera prima l'IP Tailscale del VPS (serve per `OPENCLAW_URL`):
-
-```bash
-tailscale ip -4
-# Output esempio: 100.100.74.71
-```
-
 Variabili obbligatorie da compilare:
 
 | Variabile | Come ottenerla |
 |-----------|----------------|
-| `OPENCLAW_URL` | `http://<IP-TAILSCALE-VPS>:18789` (es: `http://100.100.74.71:18789`) — usa `tailscale ip -4` |
+| `OPENCLAW_URL` | `https://openclaw.mintwork.it:18789` — dominio TLS del gateway |
 | `GEMINI_API_KEY` | [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
 | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) |
 | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | `OPENCLAW_GATEWAY_TOKEN` | Stesso valore usato in `openclaw onboard` |
-| `OPENCLAW_WS_URL` | `ws://<IP-TAILSCALE-VPS>:18789` — stesso IP di `OPENCLAW_URL` ma con `ws://` |
+| `OPENCLAW_WS_URL` | `wss://openclaw.mintwork.it:18789` — WebSocket TLS del gateway |
 | `OPENCLAW_TELEGRAM_BOT_TOKEN` | @BotFather su Telegram |
 | `JARVIS_APPROVAL_BOT_TOKEN` | @BotFather (secondo bot, separato da OpenClaw) |
 | `JARVIS_APPROVAL_CHAT_ID` | Scrivi al bot, poi `curl https://api.telegram.org/bot<TOKEN>/getUpdates` |
@@ -342,10 +349,13 @@ tailscale status
 # 2. Avvia OpenClaw (systemd)
 sudo systemctl start openclaw
 
-# 3. Verifica che OpenClaw sia attivo (bind=tailnet → usa IP Tailscale)
-curl http://$(tailscale ip -4):18789/health
+# 3. Verifica che OpenClaw sia attivo su loopback
+curl http://127.0.0.1:18789/health
 
-# 4. Avvia lo stack Docker (orchestrator + ontology-server)
+# 4. Verifica che Nginx TLS proxy sia attivo
+curl https://openclaw.mintwork.it:18789/health
+
+# 5. Avvia lo stack Docker (orchestrator + ontology-server)
 cd /opt/jarvis/cloud
 docker compose -f docker-compose.cloud.yml up -d
 ```
@@ -353,8 +363,14 @@ docker compose -f docker-compose.cloud.yml up -d
 ### STEP 7 — Verifica
 
 ```bash
-# OpenClaw healthy? (bare-metal, bind=tailnet → IP Tailscale)
-curl http://$(tailscale ip -4):18789/health
+# OpenClaw healthy? (bare-metal, loopback)
+curl http://127.0.0.1:18789/health
+
+# OpenClaw raggiungibile via TLS? (Nginx proxy)
+curl https://openclaw.mintwork.it:18789/health
+
+# Dashboard OpenClaw via TLS?
+curl https://openclaw.mintwork.it/health
 
 # Tailscale connesso alla tailnet? (host-level)
 tailscale status
@@ -365,8 +381,8 @@ curl http://127.0.0.1:8100/health
 # Orchestrator healthy?
 curl http://localhost:5000/health
 
-# L'orchestrator raggiunge OpenClaw? (network_mode: host, via IP Tailscale)
-curl -s http://$(tailscale ip -4):18789/health
+# L'orchestrator raggiunge OpenClaw? (network_mode: host, via TLS)
+curl -s https://openclaw.mintwork.it:18789/health
 
 # HA raggiungibile?
 curl -s -H "Authorization: Bearer <HASS_TOKEN>" \
@@ -375,9 +391,14 @@ curl -s -H "Authorization: Bearer <HASS_TOKEN>" \
 # Wakeword server raggiungibile via Tailscale? (se deployato)
 curl http://<TAILSCALE_IP_WAKEWORD>:8200/health
 
+# Nginx TLS proxy status
+sudo systemctl status nginx
+sudo nginx -t
+
 # Logs in tempo reale
 docker compose -f docker-compose.cloud.yml logs -f   # Docker (orchestrator)
 journalctl -u openclaw -f                             # OpenClaw (systemd)
+journalctl -u nginx -f                                # Nginx (systemd)
 journalctl -u tailscaled -f                           # Tailscale (systemd)
 ```
 
@@ -397,7 +418,7 @@ Quando un agente richiede l'esecuzione di un comando, l'approval arriva come
 messaggio Telegram con bottoni inline (✅ Once, 🔓 Always, ❌ Deny) sul **JARVIS Approval Bot**.
 
 **Prerequisiti (già nel .env):**
-- `OPENCLAW_WS_URL` — URL WebSocket del gateway (`ws://<IP-TAILSCALE>:18789`)
+- `OPENCLAW_WS_URL` — URL WebSocket TLS del gateway (`wss://openclaw.mintwork.it:18789`)
 - `OPENCLAW_GATEWAY_TOKEN` — token di autenticazione gateway
 - `JARVIS_APPROVAL_BOT_TOKEN` — token del secondo bot Telegram (separato da OpenClaw)
 - `JARVIS_APPROVAL_CHAT_ID` — chat ID per ricevere le notifiche
@@ -426,11 +447,22 @@ Il file configura `security: "allowlist"` + `ask: "on-miss"` con glob patterns p
 
 ### STEP 9 — Nginx + SSL (certbot DNS Cloudflare)
 
-Prerequisiti:
+Ci sono **due configurazioni Nginx** distinte:
+
+| Nginx | Server | Scopo | Domini/Porte |
+|-------|--------|-------|--------------|
+| **A** | VPS | Proxy HTTPS pubblico per orchestratore | `jarvis.mintwork.it:443` → `localhost:5000` |
+| **B** | VPS (stesso server) | TLS termination per gateway OpenClaw API/WS + dashboard | `openclaw.mintwork.it:18789` → `ws://127.0.0.1:18789` |
+|       |     |                                                          | `openclaw.mintwork.it:443` → `http://127.0.0.1:18789` |
+
+**Prerequisiti:**
 1. Crea un **API Token** su [Cloudflare](https://dash.cloudflare.com/profile/api-tokens) con permesso `Zone:DNS:Edit`
-2. Crea due **record A** su Cloudflare che puntano all'IP Tailscale del VPS:
-   - `jarvis.mintwork.it` -> `$(tailscale ip -4)`
-   - `openclaw.mintwork.it` -> `$(tailscale ip -4)`
+2. Esporta il token come variabile d'ambiente: `export CLOUDFLARE_API_TOKEN=<il-tuo-token>`
+3. Crea i **record A** su Cloudflare:
+   - `jarvis.mintwork.it` → IP Tailscale del VPS (`tailscale ip -4`)
+   - `openclaw.mintwork.it` → IP Tailscale del VPS (`tailscale ip -4`)
+
+> **Nota**: entrambi i record puntano all'IP Tailscale del VPS. Il traffico arriva via Tailscale, non da internet pubblico. Se in futuro OpenClaw viene spostato su un server separato, `openclaw.mintwork.it` dovra puntare all'IP Tailscale di quel server.
 
 ```bash
 # Esegui lo script (da root)
@@ -439,14 +471,60 @@ sudo CLOUDFLARE_API_TOKEN=<il-tuo-token> bash /opt/jarvis/cloud/scripts/setup-ng
 
 Lo script:
 - Installa Nginx + certbot + plugin Cloudflare
-- Configura i vhost per `jarvis.mintwork.it` (orchestratore) e `openclaw.mintwork.it` (dashboard)
+- Configura i vhost:
+  - **jarvis.mintwork.it** (:443) — proxy verso orchestratore (:5000)
+  - **openclaw.mintwork.it** (:443) — proxy verso dashboard OpenClaw (loopback :18789)
+  - **openclaw.mintwork.it** (:18789 TLS) — TLS termination per API/WS gateway (loopback :18789)
 - Genera i certificati SSL via DNS challenge (non serve esporre porte pubbliche)
-- Configura auto-renewal
+- Configura auto-renewal con deploy hook che copia i certificati e ricarica Nginx
 
-Verifica:
+La configurazione Nginx per il gateway OpenClaw include:
+```nginx
+# Esempio semplificato — :18789 TLS per API/WS
+server {
+    listen 100.116.99.9:18789 ssl;
+    server_name openclaw.mintwork.it;
+
+    ssl_certificate /etc/letsencrypt/live/openclaw.mintwork.it/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/openclaw.mintwork.it/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:18789;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+
+# :443 per dashboard
+server {
+    listen 100.116.99.9:443 ssl;
+    server_name openclaw.mintwork.it;
+
+    ssl_certificate /etc/letsencrypt/live/openclaw.mintwork.it/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/openclaw.mintwork.it/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:18789;
+    }
+}
+```
+
+> **Nota**: il listen su `100.116.99.9:18789` (IP Tailscale) evita conflitti con OpenClaw che ascolta su `127.0.0.1:18789`. Le connessioni esterne arrivano sull'IP Tailscale, Nginx termina TLS e proxya a loopback.
+
+**Verifica:**
 ```bash
+# Orchestratore (VPS)
 curl -k https://jarvis.mintwork.it/health
-curl -k https://openclaw.mintwork.it/health
+
+# Gateway OpenClaw (TLS, porta 18789)
+curl https://openclaw.mintwork.it:18789/health
+
+# Dashboard OpenClaw (TLS, porta 443)
+curl https://openclaw.mintwork.it/health
+
+# Certificato valido?
+openssl s_client -connect openclaw.mintwork.it:18789 -servername openclaw.mintwork.it < /dev/null 2>/dev/null | openssl x509 -noout -dates
 ```
 
 ---
@@ -557,9 +635,9 @@ ls -la ~/.config/gog/keyring/
 OpenClaw espone una dashboard web accessibile su:
 
 - **Locale** (dal VPS): `http://localhost:18789`
-- **Via Tailscale** (da altri dispositivi sulla tailnet): `http://jarvis-cloud:18789` oppure `http://100.x.x.x:18789`
+- **Via TLS** (da altri dispositivi sulla tailnet): `https://openclaw.mintwork.it` (porta 443)
 
-La porta 18789 NON e esposta su internet (non e in Docker, e un processo locale). E raggiungibile solo da localhost o via Tailscale.
+La porta 18789 su loopback NON e esposta su internet. L'accesso esterno avviene tramite Nginx TLS proxy su `openclaw.mintwork.it:443` (dashboard) e `openclaw.mintwork.it:18789` (API/WS).
 
 ---
 

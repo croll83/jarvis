@@ -374,6 +374,109 @@
         msg: "{{ gateway_install_result.stdout | default('') }}"
 
     # -----------------------------------------------------------------
+    # NGINX + CERTBOT TLS (reverse proxy per gateway API/WS + dashboard)
+    # OpenClaw 2026.2.25+ richiede wss:// per connessioni non-loopback.
+    # Nginx termina TLS e proxya a ws://127.0.0.1:18789.
+    # -----------------------------------------------------------------
+    - name: Installa Nginx + Certbot + Cloudflare DNS plugin
+      ansible.builtin.apt:
+        name:
+          - nginx
+          - certbot
+          - python3-certbot-dns-cloudflare
+        state: present
+        update_cache: true
+
+    - name: Rimuovi default nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload Nginx
+
+    - name: Crea Cloudflare credentials per certbot
+      ansible.builtin.copy:
+        dest: /etc/letsencrypt/cloudflare.ini
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          dns_cloudflare_api_token = {{ cloudflare_api_token }}
+      when: cloudflare_api_token is defined and cloudflare_api_token != ''
+
+    - name: Genera certificato SSL per openclaw.mintwork.it
+      ansible.builtin.command: >
+        certbot certonly
+        --dns-cloudflare
+        --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini
+        -d openclaw.mintwork.it
+        --non-interactive
+        --agree-tos
+        -m {{ certbot_email | default('admin@mintwork.it') }}
+      args:
+        creates: /etc/letsencrypt/live/openclaw.mintwork.it/fullchain.pem
+      when: cloudflare_api_token is defined and cloudflare_api_token != ''
+
+    - name: Crea directory certs per OpenClaw
+      ansible.builtin.file:
+        path: "/home/{{ openclaw_user }}/.openclaw/certs"
+        state: directory
+        owner: "{{ openclaw_user }}"
+        group: "{{ openclaw_user }}"
+        mode: "0755"
+
+    - name: Copia certificati in directory OpenClaw-readable
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "/home/{{ openclaw_user }}/.openclaw/certs/{{ item.dest }}"
+        owner: "{{ openclaw_user }}"
+        group: "{{ openclaw_user }}"
+        mode: "{{ item.mode }}"
+        remote_src: true
+      loop:
+        - { src: "/etc/letsencrypt/live/openclaw.mintwork.it/fullchain.pem", dest: "fullchain.pem", mode: "0644" }
+        - { src: "/etc/letsencrypt/live/openclaw.mintwork.it/privkey.pem", dest: "privkey.pem", mode: "0600" }
+      when: cloudflare_api_token is defined and cloudflare_api_token != ''
+
+    - name: Recupera IP Tailscale per nginx bind
+      ansible.builtin.command: tailscale ip -4
+      register: tailscale_ip
+      changed_when: false
+      failed_when: false
+
+    - name: Configura nginx reverse proxy TLS per OpenClaw
+      ansible.builtin.template:
+        src: openclaw-gateway-nginx.conf.j2
+        dest: /etc/nginx/sites-available/openclaw-gateway
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload Nginx
+      when: tailscale_ip.rc == 0
+
+    - name: Abilita nginx site OpenClaw
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/openclaw-gateway
+        dest: /etc/nginx/sites-enabled/openclaw-gateway
+        state: link
+      notify: Reload Nginx
+
+    - name: Crea certbot deploy hook per auto-renewal
+      ansible.builtin.copy:
+        dest: /etc/letsencrypt/renewal-hooks/deploy/openclaw.sh
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          cp /etc/letsencrypt/live/openclaw.mintwork.it/fullchain.pem /home/{{ openclaw_user }}/.openclaw/certs/fullchain.pem
+          cp /etc/letsencrypt/live/openclaw.mintwork.it/privkey.pem /home/{{ openclaw_user }}/.openclaw/certs/privkey.pem
+          chown {{ openclaw_user }}:{{ openclaw_user }} /home/{{ openclaw_user }}/.openclaw/certs/*.pem
+          chmod 600 /home/{{ openclaw_user }}/.openclaw/certs/privkey.pem
+          chmod 644 /home/{{ openclaw_user }}/.openclaw/certs/fullchain.pem
+          systemctl reload nginx 2>/dev/null || true
+      when: cloudflare_api_token is defined and cloudflare_api_token != ''
+
+    # -----------------------------------------------------------------
     # RIEPILOGO
     # -----------------------------------------------------------------
     - name: Riepilogo setup OpenClaw
@@ -389,6 +492,12 @@
             - Docker Engine (per lab-server e futuri container)
             - Linuxbrew + skill dependencies
               (codexbar, ffmpeg, gcc, gogcli, gifgrep, goplaces, wacli, summarize)
+            - Nginx reverse proxy TLS (Let's Encrypt + Cloudflare DNS)
+            - Certbot auto-renewal con deploy hook
+
+          TLS Endpoints:
+            API + WSS: https://openclaw.mintwork.it:18789
+            Dashboard: https://openclaw.mintwork.it (porta 443)
 
           Gestione servizi (come utente {{ openclaw_user }}, SENZA sudo):
             openclaw gateway start     # Avvia gateway + Chrome
@@ -399,8 +508,9 @@
           Prossimi passi:
             1. Importa dati dal VPS (migrate-import-lxc.sh)
             2. Connetti Tailscale: sudo tailscale up --hostname=jarvis-openclaw
-            3. Avvia: openclaw gateway start
-            4. Verifica: openclaw health
+            3. Configura cloudflare_api_token in group_vars/all.yml
+            4. Avvia: openclaw gateway start
+            5. Verifica: curl https://openclaw.mintwork.it:18789/health
           ================================================================
 
   handlers:
@@ -412,3 +522,8 @@
       ansible.builtin.systemd:
         name: docker
         state: restarted
+
+    - name: Reload Nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded

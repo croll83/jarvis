@@ -69,7 +69,7 @@ if WAKEWORD_SERVER_URLS_RAW:
         pass
 
 # OpenClaw (AI Brain - Gemini 3 Pro)
-OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://localhost:18789")
+OPENCLAW_URL = os.getenv("OPENCLAW_URL", "https://openclaw.mintwork.it:18789")
 OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "")
 OPENCLAW_TIMEOUT = int(os.getenv("OPENCLAW_TIMEOUT", "30"))  # legacy (non-streaming fallback)
 OPENCLAW_TIMEOUT_TOTAL = int(os.getenv("OPENCLAW_TIMEOUT_TOTAL", "300"))  # Max totale streaming SSE (5 min)
@@ -77,7 +77,7 @@ OPENCLAW_TIMEOUT_READ = int(os.getenv("OPENCLAW_TIMEOUT_READ", "90"))     # Max 
 
 # OpenClaw Gateway WebSocket (operator mode for exec approvals)
 # Connect as operator to receive exec.approval.requested events and resolve them.
-OPENCLAW_WS_URL = os.getenv("OPENCLAW_WS_URL", "ws://localhost:18789")
+OPENCLAW_WS_URL = os.getenv("OPENCLAW_WS_URL", "wss://openclaw.mintwork.it:18789")
 OPENCLAW_EXEC_APPROVAL_TIMEOUT = int(os.getenv("OPENCLAW_EXEC_APPROVAL_TIMEOUT", "120"))
 
 # JARVIS Approval Bot (L3 critical actions - separate from OpenClaw Telegram)
