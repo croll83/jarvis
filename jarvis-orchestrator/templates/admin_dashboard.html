@@ -2041,6 +2041,16 @@
                 </div>
 
                 <div class="form-group">
+                    <label>Volume Speaker: <span id="vdVolumeValue">80</span>%</label>
+                    <input type="range" id="vdSpeakerVolume" min="0" max="100" step="5" value="80"
+                           oninput="document.getElementById('vdVolumeValue').textContent = this.value"
+                           style="width: 100%;">
+                    <small style="color: var(--text-secondary);">
+                        Volume DAC dello speaker integrato (beep, buzz, e risposte TTS se Speaker Interno attivo)
+                    </small>
+                </div>
+
+                <div class="form-group">
                     <label>Note</label>
                     <textarea id="vdNotes" rows="2" placeholder="Note opzionali..."></textarea>
                 </div>
@@ -3457,6 +3467,8 @@
             document.getElementById('vdEnabled').checked = true;
             document.getElementById('vdWakeWordSensitivity').value = 0.82;
             document.getElementById('vdSensitivityValue').textContent = '0.82';
+            document.getElementById('vdSpeakerVolume').value = 80;
+            document.getElementById('vdVolumeValue').textContent = '80';
             document.getElementById('vdNotes').value = '';
             toggleInternalSpeaker();
 
@@ -3475,6 +3487,8 @@
                     toggleInternalSpeaker();
                     document.getElementById('vdWakeWordSensitivity').value = device.wake_word_sensitivity || 0.82;
                     document.getElementById('vdSensitivityValue').textContent = device.wake_word_sensitivity || 0.82;
+                    document.getElementById('vdSpeakerVolume').value = device.speaker_volume != null ? device.speaker_volume : 80;
+                    document.getElementById('vdVolumeValue').textContent = device.speaker_volume != null ? device.speaker_volume : 80;
                     document.getElementById('vdNotes').value = device.notes || '';
 
                     // Load media players for this location
@@ -3558,6 +3572,7 @@
                 use_internal_speaker: useInternalSpeaker,
                 enabled: document.getElementById('vdEnabled').checked,
                 wake_word_sensitivity: parseFloat(document.getElementById('vdWakeWordSensitivity').value),
+                speaker_volume: parseInt(document.getElementById('vdSpeakerVolume').value),
                 notes: document.getElementById('vdNotes').value || null
             };
 

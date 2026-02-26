@@ -193,6 +193,7 @@ def get_device_speaker_config(device_id: str) -> Optional[dict]:
         "fallback_telegram": device.fallback_telegram,
         "fallback_local_speaker": device.fallback_local_speaker,
         "use_internal_speaker": device.use_internal_speaker,
+        "speaker_volume": device.speaker_volume,
         "location_id": device.location_id,
         "enabled": device.enabled,
         "friendly_name": device.friendly_name

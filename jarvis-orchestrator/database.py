@@ -345,7 +345,8 @@ def init_db():
         firmware_version TEXT,
         ip_address TEXT,
         notes TEXT,
-        wake_word_sensitivity REAL DEFAULT 0.85
+        wake_word_sensitivity REAL DEFAULT 0.85,
+        speaker_volume INTEGER DEFAULT 80
     )''')
 
     # Migration: add wake_word_sensitivity column for existing DBs
@@ -357,6 +358,12 @@ def init_db():
     # Migration: add use_internal_speaker column for existing DBs
     try:
         c.execute("ALTER TABLE voice_devices ADD COLUMN use_internal_speaker BOOLEAN DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Migration: add speaker_volume column for existing DBs
+    try:
+        c.execute("ALTER TABLE voice_devices ADD COLUMN speaker_volume INTEGER DEFAULT 80")
     except sqlite3.OperationalError:
         pass  # Column already exists
 
@@ -2873,6 +2880,7 @@ class VoiceDevice:
     notes: Optional[str]
     wake_word_sensitivity: float = 0.85
     use_internal_speaker: bool = False
+    speaker_volume: int = 80
 
     @property
     def is_configured(self) -> bool:
@@ -2903,6 +2911,7 @@ class VoiceDevice:
             "ip_address": self.ip_address,
             "notes": self.notes,
             "wake_word_sensitivity": self.wake_word_sensitivity,
+            "speaker_volume": self.speaker_volume,
             "is_configured": self.is_configured,
             "is_online": self.is_online
         }
@@ -2925,7 +2934,8 @@ def _row_to_voice_device(row) -> VoiceDevice:
         ip_address=row['ip_address'],
         notes=row['notes'],
         wake_word_sensitivity=row['wake_word_sensitivity'] if 'wake_word_sensitivity' in row.keys() else 0.85,
-        use_internal_speaker=bool(row['use_internal_speaker']) if 'use_internal_speaker' in row.keys() else False
+        use_internal_speaker=bool(row['use_internal_speaker']) if 'use_internal_speaker' in row.keys() else False,
+        speaker_volume=row['speaker_volume'] if 'speaker_volume' in row.keys() else 80
     )
 
 
@@ -2999,7 +3009,8 @@ def upsert_voice_device(
     enabled: bool = True,
     notes: Optional[str] = None,
     wake_word_sensitivity: Optional[float] = None,
-    use_internal_speaker: bool = False
+    use_internal_speaker: bool = False,
+    speaker_volume: Optional[int] = None
 ) -> bool:
     """
     Crea o aggiorna un voice device.
@@ -3049,6 +3060,10 @@ def upsert_voice_device(
             updates.append("wake_word_sensitivity = ?")
             params.append(wake_word_sensitivity)
 
+        if speaker_volume is not None:
+            updates.append("speaker_volume = ?")
+            params.append(speaker_volume)
+
         params.append(device_id)
         c.execute(
             f"UPDATE voice_devices SET {', '.join(updates)} WHERE device_id = ?",
@@ -3066,12 +3081,13 @@ def upsert_voice_device(
             INSERT INTO voice_devices (
                 device_id, friendly_name, location_id, output_speaker,
                 fallback_speaker, fallback_telegram, fallback_local_speaker,
-                use_internal_speaker, enabled, notes, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                use_internal_speaker, enabled, notes, last_seen_at, speaker_volume
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             device_id, friendly_name, location_id, output_speaker or None,
             fallback_speaker, fallback_telegram, fallback_local_speaker,
-            use_internal_speaker, enabled, notes, time.time()
+            use_internal_speaker, enabled, notes, time.time(),
+            speaker_volume if speaker_volume is not None else 80
         ))
 
     conn.commit()
