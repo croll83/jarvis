@@ -81,6 +81,7 @@ class DeviceConnection:
         self.ws = ws
         self.state = DeviceState.IDLE
         self.firmware_version: str = "unknown"
+        self.live_session: bool = False  # True during live session
 
         # Opus decoder (16 kHz mono, same as firmware encoder)
         self._opus_decoder = opuslib.Decoder(OPUS_SAMPLE_RATE, OPUS_CHANNELS)
@@ -346,14 +347,27 @@ async def _open_relay(conn: DeviceConnection):
             elif msg_type == "speech_end":
                 conn.state = DeviceState.BUSY
                 logger.info(f"[{conn.device_id}] State → BUSY")
+            elif msg_type == "live_session_start":
+                conn.live_session = True
+                conn.wakeword.mute(3600)  # Mute wakeword for entire session
+                logger.info(f"[{conn.device_id}] 🎙️ Live session STARTED (wakeword muted)")
+            elif msg_type == "live_session_end":
+                conn.live_session = False
+                conn.wakeword.mute(0)  # Unmute wakeword
+                conn.wakeword.reset()
+                logger.info(f"[{conn.device_id}] 🎙️ Live session ENDED (wakeword unmuted)")
             elif msg_type == "tts_done":
                 conn.state = DeviceState.IDLE
                 conn.wakeword.reset()
-                conn.wakeword.mute(0)  # Unmute
-                logger.info(f"[{conn.device_id}] State → IDLE (tts_done)")
-                await conn.close_relay()
+                if not conn.live_session:
+                    conn.wakeword.mute(0)  # Unmute only if not in live session
+                    await conn.close_relay()
+                    logger.info(f"[{conn.device_id}] State → IDLE (tts_done, relay closed)")
+                else:
+                    # Live session: keep relay open, wakeword stays muted
+                    logger.info(f"[{conn.device_id}] State → IDLE (tts_done, live session — relay kept open)")
             elif msg_type == "trigger_listen":
-                # VPS wants multi-turn follow-up
+                # VPS wants multi-turn follow-up (or next live session turn)
                 conn.state = DeviceState.WAKING
                 logger.info(f"[{conn.device_id}] State → WAKING (trigger_listen)")
 

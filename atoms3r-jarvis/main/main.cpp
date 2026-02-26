@@ -144,6 +144,9 @@ static volatile bool tts_done_pending = false;
 static volatile bool config_update_pending = false;
 static volatile float config_new_sensitivity = 0.82f;
 
+// Live session display tracking (synced from jarvis_ws_audio in main_task)
+static bool live_session_display_active = false;
+
 // Forward declarations
 static void on_wake_word_detected(void);
 static void activate_listening(bool silent);
@@ -708,6 +711,14 @@ static void main_task(void* arg) {
             jarvis_audio_set_sensitivity(new_sens);
         }
 
+        // Sync live session display state from ws_audio module
+        bool ws_live = jarvis_ws_audio_is_live_session();
+        if (ws_live != live_session_display_active) {
+            live_session_display_active = ws_live;
+            jarvis_display_set_live_session(ws_live);
+            ESP_LOGI(TAG, "Live session display: %s", ws_live ? "ON" : "OFF");
+        }
+
         // Deferred display state update (from callbacks running in other tasks)
         if (display_state_dirty) {
             display_state_dirty = false;
@@ -763,8 +774,9 @@ static void main_task(void* arg) {
         // Busy state safety timeout (in case server never responds)
         // Note: with persistent WS, state transitions come via WebSocket,
         // but we keep a generous timeout as safety net
+        // During live session, skip this timeout — orchestrator manages session lifecycle
         static int64_t busy_entered_at = 0;
-        if (current_state == STATE_BUSY) {
+        if (current_state == STATE_BUSY && !live_session_display_active) {
             if (busy_entered_at == 0) busy_entered_at = now;
             if (now - busy_entered_at > BUSY_STATE_TIMEOUT_MS) {
                 ESP_LOGW(TAG, "BUSY safety timeout - returning to IDLE");

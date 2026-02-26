@@ -90,6 +90,7 @@ static volatile conn_state_t conn_state = CONN_STATE_DISCONNECTED;
 static volatile bool task_should_run = false;
 static volatile bool audio_session_requested = false;  // Flag: main_task requests audio start
 static volatile bool audio_session_active = false;      // Audio is streaming
+volatile bool live_session_active = false;               // Live session mode (no session timeout)
 
 // Callbacks
 static ws_audio_session_done_callback_t session_done_cb = NULL;
@@ -290,6 +291,14 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
                                     if (wake_detected_cb) {
                                         wake_detected_cb();
                                     }
+
+                                } else if (strcmp(type, "live_session_start") == 0) {
+                                    ESP_LOGI(TAG, "Server: live_session_start");
+                                    live_session_active = true;
+
+                                } else if (strcmp(type, "live_session_end") == 0) {
+                                    ESP_LOGI(TAG, "Server: live_session_end");
+                                    live_session_active = false;
 
                                 } else if (strcmp(type, "ping") == 0) {
                                     ESP_LOGD(TAG, "Server ping — sending pong");
@@ -750,6 +759,10 @@ bool jarvis_ws_audio_is_active(void) {
 
 bool jarvis_ws_audio_is_connected(void) {
     return (conn_state >= CONN_STATE_CONNECTED);
+}
+
+bool jarvis_ws_audio_is_live_session(void) {
+    return live_session_active;
 }
 
 void jarvis_ws_audio_send_state(const char *state_str) {

@@ -12,6 +12,7 @@ import uuid
 import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Dict, Optional, List, Tuple
 
 from fastapi import FastAPI, Request, UploadFile, File, Form, Query, WebSocket
@@ -719,6 +720,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Silero VAD init failed (WS audio disabled): {e}")
 
+    # Live session timeout monitor
+    _keep(asyncio.create_task(live_session_monitor()))
+
     logger.info("✅ JARVIS Core ready!")
     yield
     logger.info("👋 JARVIS Core shutting down...")
@@ -975,6 +979,280 @@ async def clear_speaking_state_after_delay(room: str, delay_seconds: float = Non
             if time.time() - speaking_state[room]["started_at"] >= delay_seconds - 0.5:
                 del speaking_state[room]
                 logger.info(f"🔇 Speaking state auto-cleared for room: {room}")
+
+
+# ===========================================================================
+# LIVE SESSION — Continuous conversation mode
+# ===========================================================================
+# In live session, the device stays in a persistent conversation loop:
+# - No wakeword between turns (trigger_listen after every TTS)
+# - No speaker ID (locked to the user who activated the session)
+# - No Qwen routing (everything goes straight to OpenClaw)
+# - Concise prompt forces short, direct responses
+# - Session ends via voice command, button (speaker_stop), or timeout
+
+@dataclass
+class LiveSession:
+    device_id: str
+    user_id: Optional[str]         # speaker_id from initial recognition (None if unidentified)
+    speaker_name: str              # speaker name locked at activation
+    location_id: str
+    room: str
+    media_player_id: str
+    openclaw_session_user: str     # stable OpenClaw session key
+    started_at: float = field(default_factory=time.time)
+    last_activity: float = field(default_factory=time.time)
+    turn_count: int = 0
+    max_inactivity_s: float = 300.0   # 5 min silence → auto-close
+    max_duration_s: float = 900.0     # 15 min absolute cap
+
+
+_live_sessions: Dict[str, LiveSession] = {}
+
+# TTS instructions for live session: ultra-concise, no fluff
+_LIVE_SESSION_TTS_INSTRUCTIONS = (
+    "CRITICAL: You are in a LIVE VOICE SESSION — a real-time conversation like a phone call. "
+    "Rules: 1) Be EXTREMELY concise — max 1-2 short sentences per reply. "
+    "2) No filler words, no pleasantries, no 'certo', no 'ecco'. Go straight to the point. "
+    "3) Use natural spoken Italian with clear punctuation. "
+    "4) NO markdown, NO bullet points, NO asterisks, NO special characters. "
+    "5) If you need to ask a clarification, ask ONE short question. "
+    "6) The user CANNOT interrupt you once you start speaking, so keep it SHORT. "
+    "7) Sound warm but efficient — think quick radio exchange, not essay."
+)
+
+# Activation phrases (matched after STT, case-insensitive, substring)
+_LIVE_SESSION_ACTIVATE_PHRASES = [
+    "avvia sessione live",
+    "avvia live session",
+]
+
+# Deactivation phrases (matched during live session)
+_LIVE_SESSION_DEACTIVATE_PHRASES = [
+    "termina sessione",
+    "termina sessione live",
+    "fine sessione",
+    "fine sessione live",
+    "chiudi sessione",
+    "chiudi sessione live",
+    "stop sessione",
+    "esci dalla sessione",
+]
+
+
+def _is_live_session_activation(text: str) -> bool:
+    """Check if transcribed text is a live session activation command."""
+    t = text.lower().strip()
+    return any(phrase in t for phrase in _LIVE_SESSION_ACTIVATE_PHRASES)
+
+
+def _is_live_session_deactivation(text: str) -> bool:
+    """Check if transcribed text is a live session deactivation command."""
+    t = text.lower().strip()
+    return any(phrase in t for phrase in _LIVE_SESSION_DEACTIVATE_PHRASES)
+
+
+async def start_live_session(
+    device_id: str,
+    speaker_id: Optional[str],
+    speaker_name: str,
+    location_id: str,
+    room: str,
+    media_player_id: str,
+) -> LiveSession:
+    """Create and register a new live session for a device."""
+    # Build stable session key (same logic as _handle_openclaw_voice)
+    if speaker_id:
+        session_user = f"live-speaker-{speaker_id}"
+    else:
+        session_user = f"live-device-{room.lower()}"
+
+    session = LiveSession(
+        device_id=device_id,
+        user_id=speaker_id,
+        speaker_name=speaker_name,
+        location_id=location_id,
+        room=room,
+        media_player_id=media_player_id,
+        openclaw_session_user=session_user,
+    )
+    _live_sessions[device_id] = session
+
+    logger.info(f"🎙️ Live session STARTED: device={device_id}, room={room}, "
+                f"speaker={speaker_name}, session_user={session_user}")
+
+    # Notify device + wakeword server relay
+    from ws_audio_handler import notify_live_session_start
+    await notify_live_session_start(device_id)
+
+    # Confirm via TTS
+    await speak("Sessione live attivata. Parla pure.", media_player_id, location_id)
+
+    # Wait for TTS confirmation, then trigger first listen
+    text_length = len("Sessione live attivata. Parla pure.")
+    schedule_post_tts(
+        media_player_id=media_player_id,
+        location_id=location_id,
+        room=room,
+        device_id=device_id,
+        is_multi_turn=True,
+        text_length=text_length,
+    )
+
+    return session
+
+
+async def end_live_session(device_id: str, reason: str = "unknown"):
+    """End a live session and notify the user."""
+    session = _live_sessions.pop(device_id, None)
+    if not session:
+        return
+
+    duration = time.time() - session.started_at
+
+    # Notify device + wakeword server relay
+    from ws_audio_handler import notify_live_session_end
+    await notify_live_session_end(device_id)
+
+    # Notify user based on reason
+    goodbye_messages = {
+        "voice_command": "Sessione live terminata.",
+        "inactivity_timeout": "Sessione live terminata per inattività.",
+        "max_duration": "Sessione live terminata, tempo massimo raggiunto.",
+        "button_stop": "Sessione live terminata.",
+    }
+    msg = goodbye_messages.get(reason, "Sessione live terminata.")
+
+    try:
+        await speak(msg, session.media_player_id, session.location_id)
+    except Exception as e:
+        logger.error(f"Live session goodbye TTS failed: {e}")
+
+    # Send tts_done after goodbye message to close relay and go IDLE
+    text_length = len(msg)
+    schedule_post_tts(
+        media_player_id=session.media_player_id,
+        location_id=session.location_id,
+        room=session.room,
+        device_id=device_id,
+        is_multi_turn=False,  # Not multi-turn: session is over, go IDLE
+        text_length=text_length,
+    )
+
+    logger.info(f"🎙️ Live session ENDED: device={device_id}, reason={reason}, "
+                f"duration={duration:.0f}s, turns={session.turn_count}")
+
+
+async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
+    """
+    Process one turn of a live session.
+    Simplified pipeline: audio normalize → STT → deactivation check → OpenClaw → TTS → trigger_listen.
+    No speaker ID, no Qwen routing.
+    """
+    session = _live_sessions.get(device_id)
+    if not session:
+        return
+
+    session.last_activity = time.time()
+    session.turn_count += 1
+
+    logger.info(f"🎙️ Live session turn #{session.turn_count} from {device_id}")
+
+    # 1. Audio normalization (same as normal pipeline)
+    import numpy as _np_live
+    _raw = _np_live.frombuffer(audio_bytes, dtype=_np_live.int16).astype(_np_live.float32)
+    _peak = _np_live.max(_np_live.abs(_raw))
+    if _peak > 0:
+        _target_peak = 28000.0
+        _gain = min(_target_peak / _peak, 20.0)
+        _raw = (_raw * _gain).clip(-32768, 32767)
+    clean_audio = _raw.astype(_np_live.int16).tobytes()
+
+    # 2. STT only (no speaker ID, no Qwen normalize)
+    text = await transcribe_audio(clean_audio)
+
+    if not text or not text.strip():
+        logger.info(f"🎙️ Live session: no speech detected, re-triggering listen")
+        # Re-trigger listen (user may have been silent or audio was noise)
+        await trigger_device_listen(device_id, silent=True)
+        return
+
+    logger.info(f"🎙️ Live session turn #{session.turn_count}: '{text[:120]}'")
+
+    # 3. Check deactivation
+    if _is_live_session_deactivation(text):
+        await end_live_session(device_id, reason="voice_command")
+        return
+
+    # 4. Save chat message (with locked speaker identity)
+    save_chat_message("user", text, "AtomS3R", session.user_id, session.speaker_name)
+
+    # 5. Forward to OpenClaw (no routing, direct)
+    context = {
+        "source": "AtomS3R",
+        "room": session.room,
+        "device_id": device_id,
+        "location": session.location_id,
+        "speaker_id": session.user_id,
+        "speaker_name": session.speaker_name,
+        "speaker_identified": session.user_id is not None,
+        "device_config": get_device_speaker_config(device_id),
+    }
+
+    # Build streaming TTS callback
+    async def _live_tts_chunk(chunk: str, is_first: bool):
+        logger.info(f"🎙️ Live TTS chunk ({len(chunk)} chars): {chunk[:80]}...")
+        try:
+            await speak(chunk, session.media_player_id, session.location_id)
+        except Exception as e:
+            logger.error(f"Live TTS chunk error: {e}")
+
+    # Use live session TTS instructions (ultra-concise)
+    # We call forward_to_openclaw with the live session context
+    response, response_id = await forward_to_openclaw(
+        text, context, hint="live_session",
+        stream_tts_callback=_live_tts_chunk,
+        session_user=session.openclaw_session_user,
+    )
+
+    # 6. Save assistant response
+    save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+
+    # 7. Schedule post-TTS: always trigger_listen (multi-turn always on)
+    if response:
+        await set_speaking_state(session.room, True, device_id)
+        schedule_post_tts(
+            media_player_id=session.media_player_id,
+            location_id=session.location_id,
+            room=session.room,
+            device_id=device_id,
+            is_multi_turn=True,  # Always re-trigger listen in live session
+            text_length=len(response),
+        )
+        logger.info(f"🎙️ Live session: TTS scheduled ({len(response)} chars), "
+                    f"will trigger_listen after completion")
+    else:
+        # Empty response — still re-trigger listen
+        await trigger_device_listen(device_id, silent=True)
+
+
+async def live_session_monitor():
+    """Background task: check live session timeouts every 10s."""
+    while True:
+        await asyncio.sleep(10)
+        now = time.time()
+        for device_id, session in list(_live_sessions.items()):
+            if now - session.last_activity > session.max_inactivity_s:
+                logger.info(f"🎙️ Live session timeout (inactivity): {device_id}")
+                await end_live_session(device_id, reason="inactivity_timeout")
+            elif now - session.started_at > session.max_duration_s:
+                logger.info(f"🎙️ Live session timeout (max duration): {device_id}")
+                await end_live_session(device_id, reason="max_duration")
+
+
+def get_live_session(device_id: str) -> Optional[LiveSession]:
+    """Get live session for a device, or None."""
+    return _live_sessions.get(device_id)
 
 
 # ===========================================================================
@@ -1360,18 +1638,24 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
         message_text = text
 
     # OpenResponses API format: POST /v1/responses
-    # Inietta istruzione TTS solo per richieste voice (verrà letto da Alexa)
-    tts_instructions = (
-        "IMPORTANT: This response will be read aloud by a voice assistant (Alexa TTS). "
-        "Format accordingly: use natural spoken Italian, no markdown, no bullet points, "
-        "no asterisks, no special characters. Use short sentences with clear punctuation "
-        "(commas, periods, exclamation marks, question marks) for natural speech rhythm. "
-        "Add emphasis and expressiveness: use exclamation marks for enthusiasm, ellipsis for "
-        "suspense or pauses, rhetorical questions to engage. Vary sentence length and tone — "
-        "mix short punchy phrases with longer flowing ones. Sound warm, lively and human, "
-        "not robotic or flat. Be concise but conversational — max 3-4 sentences unless "
-        "the topic requires more."
-    ) if source in ("AtomS3R", "VirtualMic") else None
+    # Inietta istruzione TTS: live session usa prompt ultra-conciso,
+    # normale usa prompt conversazionale standard
+    if hint == "live_session":
+        tts_instructions = _LIVE_SESSION_TTS_INSTRUCTIONS
+    elif source in ("AtomS3R", "VirtualMic"):
+        tts_instructions = (
+            "IMPORTANT: This response will be read aloud by a voice assistant (Alexa TTS). "
+            "Format accordingly: use natural spoken Italian, no markdown, no bullet points, "
+            "no asterisks, no special characters. Use short sentences with clear punctuation "
+            "(commas, periods, exclamation marks, question marks) for natural speech rhythm. "
+            "Add emphasis and expressiveness: use exclamation marks for enthusiasm, ellipsis for "
+            "suspense or pauses, rhetorical questions to engage. Vary sentence length and tone — "
+            "mix short punchy phrases with longer flowing ones. Sound warm, lively and human, "
+            "not robotic or flat. Be concise but conversational — max 3-4 sentences unless "
+            "the topic requires more."
+        )
+    else:
+        tts_instructions = None
 
     payload = {
         "input": message_text,
@@ -2121,6 +2405,14 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
     """
     logger.info(f"WS speech received from {device_id}: {len(audio_bytes)} bytes")
 
+    # ── LIVE SESSION BYPASS ──────────────────────────────────────────────
+    # If device is in a live session, skip speaker ID, routing, normalize.
+    # Only do: audio normalize → STT → deactivation check → OpenClaw
+    if device_id in _live_sessions:
+        logger.info(f"🎙️ Live session active for {device_id} — using simplified pipeline")
+        await handle_live_session_turn(device_id, audio_bytes)
+        return
+
     # Recupera configurazione device
     device_config = get_device_speaker_config(device_id)
     if device_config:
@@ -2241,6 +2533,34 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         # Aggiorna user location
         if speaker_ctx.get("speaker_id"):
             set_user_location(speaker_ctx["speaker_id"], location, "voice")
+
+        # ── LIVE SESSION ACTIVATION CHECK ─────────────────────────────────
+        # Detect "avvia sessione live" / "avvia live session" BEFORE routing.
+        # Uses the speaker ID from the normal pipeline to lock the session.
+        if _is_live_session_activation(text):
+            logger.info(f"🎙️ Live session activation detected from {device_id}: '{text}'")
+            # Resolve target speaker
+            target_speaker = None
+            if device_config:
+                target_speaker = device_config.get("output_speaker")
+            if not target_speaker:
+                room_speakers_map = get_room_speakers(location)
+                target_speaker = room_speakers_map.get(room_value, None)
+
+            if target_speaker:
+                await start_live_session(
+                    device_id=device_id,
+                    speaker_id=speaker_ctx.get("speaker_id"),
+                    speaker_name=speaker_ctx.get("speaker_name", "Sconosciuto"),
+                    location_id=location,
+                    room=room_value,
+                    media_player_id=target_speaker,
+                )
+            else:
+                logger.warning(f"Live session: no speaker found for {device_id}, cannot activate")
+                from ws_audio_handler import notify_tts_done
+                await notify_tts_done(device_id)
+            return
 
         # 3-way pre-routing via Qwen 7B
         pre_route_start = time.time()
