@@ -497,7 +497,7 @@ static void ws_persistent_task(void *arg) {
         esp_websocket_client_config_t ws_cfg = {
             .uri = ws_url,
             .buffer_size = 2048,
-            .task_stack = 6144,  // 6KB: event handler runs opus_decode + codec_write
+            .task_stack = 8192,  // 8KB: event handler runs opus_decode (~5KB SILK) + codec_write
             .task_prio = 5,
         };
 
