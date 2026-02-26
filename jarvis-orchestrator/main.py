@@ -2833,17 +2833,19 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     else:
         is_silent_time = (s_start <= now_h < s_end)
 
+    # Resolve internal speaker early — bypasses DND/silent hours
+    # (lo speaker interno non disturba nessuno, risponde solo a chi ha premuto il bottone)
+    device_cfg = context.get("device_config")
+    use_internal_speaker = device_cfg.get("use_internal_speaker", False) if device_cfg else False
+
     use_streaming_tts = (
         source in ("AtomS3R", "VirtualMic")
-        and not dnd_mode
-        and not is_silent_time
+        and (use_internal_speaker or (not dnd_mode and not is_silent_time))
     )
 
     if use_streaming_tts:
         # ── Streaming TTS path ──
         # Resolve target speaker for TTS delivery
-        device_cfg = context.get("device_config")
-        use_internal_speaker = device_cfg.get("use_internal_speaker", False) if device_cfg else False
         if device_cfg:
             target_speaker = device_cfg.get("output_speaker") if not use_internal_speaker else None
             loc = device_cfg.get("location_id", location)
@@ -2992,6 +2994,10 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
                 asyncio.create_task(play_feedback_sound("neutral", fb_speaker, fb_loc))
 
         response, _ = await forward_to_openclaw(text, context, hint=hint, session_user=session_user)
+
+        # Log full response text for debugging
+        if response:
+            logger.info(f"📝 AI response ({len(response)} chars): {response[:500]}{'...' if len(response) > 500 else ''}")
 
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
         await deliver_final_response(response, context, sound_type="neutral")
@@ -4004,9 +4010,14 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
                 success, duration = await speak_to_device(text, dev_id)
                 if success:
                     logger.info(f"Audio delivered to internal speaker: {dev_id} ({duration:.1f}s)")
-                    await asyncio.sleep(0.1)  # flush DMA buffer
-                    from ws_audio_handler import notify_tts_done
-                    await notify_tts_done(dev_id)
+                    await asyncio.sleep(0.15)  # flush DMA buffer
+                    # Multi-turn: se la risposta finisce con ?, riapri ascolto
+                    if _needs_followup(text) and source == "AtomS3R":
+                        await trigger_device_listen(dev_id, silent=True)
+                        logger.info(f"🔄 Multi-turn (internal speaker fallback): triggered listen on {dev_id}")
+                    else:
+                        from ws_audio_handler import notify_tts_done
+                        await notify_tts_done(dev_id)
                     return
                 else:
                     logger.error(f"Internal speaker TTS failed for {dev_id}, trying fallbacks")

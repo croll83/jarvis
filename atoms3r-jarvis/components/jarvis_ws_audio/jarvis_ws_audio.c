@@ -288,6 +288,7 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
                                     // Speaker volume (0-100) — direct I2C write, no deferral needed
                                     cJSON *vol = cJSON_GetObjectItem(msg, "speaker_volume");
                                     if (vol && cJSON_IsNumber(vol)) {
+                                        ESP_LOGI(TAG, "Config: speaker_volume=%d", vol->valueint);
                                         jarvis_codec_set_volume(vol->valueint);
                                     }
 
