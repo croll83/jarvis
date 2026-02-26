@@ -48,6 +48,7 @@ HA remoti e il LXC OpenClaw.
 |  |  orchestrator:5000 (network_mode: host)                        | |
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
+|  |  Internal TTS (Edge TTS + Opus per AtomS3R mobile)              | |
 |  |  SQLite + ChromaDB                                              | |
 |  |                                                                 | |
 |  |  ontology-server:8100 (127.0.0.1 only)                         | |
@@ -197,6 +198,28 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | **Workstation** | VM-Workstation (opz.) | KVM VM (Ubuntu + XFCE) | 6 | 12 GB | - | Chrome reale + OpenClaw ext + IDE + dev |
 | **HAOS** | VM-HAOS (opz.) | KVM VM | 2 | 8 GB | - | Home Assistant OS + MASS + add-ons |
 | **Alexa Media** | LXC-Alexa (opz.) | Docker/nativo | 1 | 1 GB | - | Echo come speaker JARVIS |
+
+### Speaker Interno (AtomS3R Mobile)
+
+Un AtomS3R con batteria accessoria può funzionare in mobilità senza speaker HA esterno.
+Quando "Speaker Interno" è attivo per un device, il TTS viene generato dall'orchestrator
+(Edge TTS, voce `it-IT-ElsaNeural`) e inviato come frame Opus via WebSocket direttamente
+allo speaker integrato del device (ES8311 DAC + NS4150B amp).
+
+**Flusso:**
+```
+AI Response → Edge TTS (MP3) → ffmpeg (PCM 16kHz) → Opus encode → WS binary → Device speaker
+```
+
+**Nessuna modifica firmware**: il firmware AtomS3R gestisce già la ricezione e decodifica
+di frame Opus binari via WebSocket (opcode 0x02 in `jarvis_ws_audio.c`).
+
+**Configurazione**: Dashboard orchestrator → Dispositivi → checkbox "Speaker Interno".
+Quando attivo, i campi Speaker Principale e Speaker Fallback vengono ignorati.
+
+**Dipendenze aggiuntive orchestrator** (già nel Dockerfile):
+- `edge-tts` (Python, in requirements.txt)
+- `ffmpeg` + `libopus-dev` (sistema, già installati)
 
 ---
 

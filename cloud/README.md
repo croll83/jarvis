@@ -663,6 +663,19 @@ La porta 18789 su loopback NON e esposta su internet. L'accesso esterno avviene 
 | 18800 | Chrome CDP (headless) | Solo localhost (browser-dom plugin) |
 | 41641/udp | Tailscale NAT traversal | WAN (host-level, servizio systemd) |
 
+### Speaker Interno (AtomS3R Mobile)
+
+Un AtomS3R con batteria può essere configurato per usare lo speaker integrato (ES8311)
+invece di un media_player HA esterno. L'orchestrator genera il TTS con Edge TTS
+(`it-IT-ElsaNeural`), lo converte in frame Opus e li invia via WebSocket al device.
+
+**Nessuna modifica al docker-compose**: il Dockerfile dell'orchestrator include già
+`ffmpeg`, `libopus-dev` e `edge-tts` (in requirements.txt). Il flusso è interamente
+gestito dal container orchestrator esistente.
+
+**Configurazione**: Dashboard orchestrator → Dispositivi → checkbox "Speaker Interno".
+Quando attivo, i campi Speaker Principale e Speaker Fallback non sono necessari.
+
 ---
 
 ## Monitoring

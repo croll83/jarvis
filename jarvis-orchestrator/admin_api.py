@@ -91,10 +91,11 @@ class VoiceDeviceCreate(BaseModel):
     device_id: str
     friendly_name: str
     location_id: str
-    output_speaker: str
+    output_speaker: Optional[str] = None
     fallback_speaker: Optional[str] = None
     fallback_telegram: bool = True
     fallback_local_speaker: bool = True
+    use_internal_speaker: bool = False
     enabled: bool = True
     notes: Optional[str] = None
     wake_word_sensitivity: Optional[float] = 0.82
@@ -107,6 +108,7 @@ class VoiceDeviceUpdate(BaseModel):
     fallback_speaker: Optional[str] = None
     fallback_telegram: Optional[bool] = None
     fallback_local_speaker: Optional[bool] = None
+    use_internal_speaker: Optional[bool] = None
     enabled: Optional[bool] = None
     notes: Optional[str] = None
     wake_word_sensitivity: Optional[float] = None
@@ -1893,6 +1895,7 @@ async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, An
         fallback_speaker=data.fallback_speaker,
         fallback_telegram=data.fallback_telegram,
         fallback_local_speaker=data.fallback_local_speaker,
+        use_internal_speaker=data.use_internal_speaker,
         enabled=data.enabled,
         notes=data.notes,
         wake_word_sensitivity=data.wake_word_sensitivity
@@ -1951,6 +1954,8 @@ async def update_voice_device_endpoint(
         update_params['fallback_telegram'] = data.fallback_telegram
     if data.fallback_local_speaker is not None:
         update_params['fallback_local_speaker'] = data.fallback_local_speaker
+    if data.use_internal_speaker is not None:
+        update_params['use_internal_speaker'] = data.use_internal_speaker
     if data.enabled is not None:
         update_params['enabled'] = data.enabled
     if data.notes is not None:

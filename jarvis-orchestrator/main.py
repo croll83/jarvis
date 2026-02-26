@@ -2835,35 +2835,57 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
         # ── Streaming TTS path ──
         # Resolve target speaker for TTS delivery
         device_cfg = context.get("device_config")
+        use_internal_speaker = device_cfg.get("use_internal_speaker", False) if device_cfg else False
         if device_cfg:
-            target_speaker = device_cfg.get("output_speaker")
+            target_speaker = device_cfg.get("output_speaker") if not use_internal_speaker else None
             loc = device_cfg.get("location_id", location)
         else:
             loc = location
             room_speakers_map = get_room_speakers(loc)
             target_speaker = room_speakers_map.get(context.get("room", ""), None)
 
-        if not target_speaker:
+        if not target_speaker and not use_internal_speaker:
             # Can't stream without a speaker — fallback to non-streaming
             logger.warning("Streaming TTS: no target speaker found, falling back to non-streaming")
             use_streaming_tts = False
 
     if use_streaming_tts:
-        # Feedback audio immediato: suono "thinking"
-        asyncio.create_task(play_feedback_sound("neutral", target_speaker, loc))
+        if not use_internal_speaker:
+            # Feedback audio immediato: suono "thinking" (solo per speaker HA)
+            asyncio.create_task(play_feedback_sound("neutral", target_speaker, loc))
 
         # Reset chunk counter per questa sessione
         _flush_tts_sentences.chunks_sent = 0
 
+        # Accumula durata TTS per internal speaker (per post-TTS timing)
+        _internal_tts_total_duration = 0.0
+
         # Build streaming TTS callback
-        async def _stream_tts_chunk(chunk: str, is_first: bool):
-            """Deliver a sentence chunk to TTS speaker immediately."""
-            logger.info(f"🔊 TTS stream chunk ({len(chunk)} chars, first={is_first}): {chunk[:80]}...")
-            try:
-                # No intro sound on chunks — the "thinking" beep was already played above
-                await speak(chunk, target_speaker, loc)
-            except Exception as e:
-                logger.error(f"TTS stream chunk delivery error: {e}")
+        if use_internal_speaker:
+            from internal_tts import speak_to_device
+            _internal_device_id = context.get("device_id", "unknown")
+
+            async def _stream_tts_chunk(chunk: str, is_first: bool):
+                """Deliver a sentence chunk to device internal speaker via Opus streaming."""
+                nonlocal _internal_tts_total_duration
+                logger.info(f"🔊 Internal TTS chunk ({len(chunk)} chars, first={is_first}): {chunk[:80]}...")
+                try:
+                    success, duration = await speak_to_device(chunk, _internal_device_id)
+                    if success:
+                        _internal_tts_total_duration += duration
+                    else:
+                        logger.error(f"Internal TTS chunk delivery failed for {_internal_device_id}")
+                except Exception as e:
+                    logger.error(f"Internal TTS chunk delivery error: {e}")
+        else:
+            async def _stream_tts_chunk(chunk: str, is_first: bool):
+                """Deliver a sentence chunk to TTS speaker immediately."""
+                logger.info(f"🔊 TTS stream chunk ({len(chunk)} chars, first={is_first}): {chunk[:80]}...")
+                try:
+                    # No intro sound on chunks — the "thinking" beep was already played above
+                    await speak(chunk, target_speaker, loc)
+                except Exception as e:
+                    logger.error(f"TTS stream chunk delivery error: {e}")
 
         # Forward to OpenClaw with streaming callback + multi-turn session
         response, response_id = await forward_to_openclaw(
@@ -2877,12 +2899,25 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
         # Post-streaming: save chat, update speaking state, VirtualMic tracking
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
 
-        # Speaking state + post-TTS handler (polls Alexa state for completion)
+        # Speaking state + post-TTS handler
         room = context.get("room", "salotto").lower()
         device_id = context.get("device_id", "unknown")
         is_multi_turn = _needs_followup(response) and source == "AtomS3R"
 
-        if target_speaker and not target_speaker.startswith("telegram:"):
+        if use_internal_speaker and device_id and device_id != "unknown":
+            # Internal speaker: niente polling HA, gestione diretta
+            # Piccolo delay per flush DMA buffer del device (100ms)
+            await asyncio.sleep(0.1)
+            if is_multi_turn:
+                success = await trigger_device_listen(device_id, silent=True)
+                if success:
+                    logger.info(f"🔄 Multi-turn (internal speaker): triggered listen on {device_id} "
+                                f"(after {_internal_tts_total_duration:.1f}s TTS)")
+            else:
+                from ws_audio_handler import notify_tts_done
+                await notify_tts_done(device_id)
+                logger.info(f"🔊 Internal TTS done for {device_id} ({_internal_tts_total_duration:.1f}s)")
+        elif target_speaker and not target_speaker.startswith("telegram:"):
             await set_speaking_state(room, True, device_id)
             # Schedule polling-based post-TTS handler (replaces estimate-based approach)
             schedule_post_tts(
@@ -3944,6 +3979,22 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
         fallback_speaker = device_config.get("fallback_speaker")
         fallback_telegram = device_config.get("fallback_telegram", True)
         fallback_local = device_config.get("fallback_local_speaker", True)
+        use_internal = device_config.get("use_internal_speaker", False)
+
+        # 0. Internal speaker: TTS diretto al device
+        if use_internal:
+            dev_id = context.get("device_id")
+            if dev_id and dev_id != "unknown":
+                from internal_tts import speak_to_device
+                success, duration = await speak_to_device(text, dev_id)
+                if success:
+                    logger.info(f"Audio delivered to internal speaker: {dev_id} ({duration:.1f}s)")
+                    await asyncio.sleep(0.1)  # flush DMA buffer
+                    from ws_audio_handler import notify_tts_done
+                    await notify_tts_done(dev_id)
+                    return
+                else:
+                    logger.error(f"Internal speaker TTS failed for {dev_id}, trying fallbacks")
 
         # 1. Prova speaker principale
         if output_speaker:
@@ -4005,10 +4056,21 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
             text_length=len(text) if text else 0,
         )
 
-    # TODO: Se use_local_speaker=True, il chiamante dovrebbe gestire
-    # la risposta locale. Per ora logghiamo solo.
+    # Fallback a speaker locale del device
     if use_local_speaker:
-        logger.warning(f"Local speaker fallback triggered for device {context.get('device_id')}")
+        dev_id = context.get("device_id")
+        if dev_id and dev_id != "unknown":
+            from internal_tts import speak_to_device
+            success, duration = await speak_to_device(text, dev_id)
+            if success:
+                logger.info(f"Fallback to local speaker for {dev_id} ({duration:.1f}s)")
+                await asyncio.sleep(0.1)
+                from ws_audio_handler import notify_tts_done
+                await notify_tts_done(dev_id)
+            else:
+                logger.error(f"Local speaker fallback also failed for {dev_id}")
+        else:
+            logger.warning(f"Local speaker fallback triggered but no device_id available")
 
     # Virtual Microphone: salva risposta e notifica dashboard via SSE
     vmic_req_id = context.get("vmic_request_id")
