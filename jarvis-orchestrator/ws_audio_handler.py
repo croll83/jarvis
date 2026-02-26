@@ -483,10 +483,16 @@ async def ws_audio_endpoint(
                             pass
                         await conn.audio_session.deliver_speech()
                     conn.end_audio_session()
-                    # No speech delivered → tell device to go back to IDLE
+                    # No speech delivered → handle based on live session state
                     if not had_speech:
-                        await conn.send_command({"type": "tts_done"})
-                        logger.info(f"Device {device_id}: session timeout without speech → tts_done")
+                        if _is_device_in_live_session(device_id):
+                            # Live session: re-trigger listen instead of closing
+                            await conn.send_command({"type": "trigger_listen", "silent": True})
+                            logger.info(f"Device {device_id}: session timeout without speech → "
+                                        f"re-trigger (live session)")
+                        else:
+                            await conn.send_command({"type": "tts_done"})
+                            logger.info(f"Device {device_id}: session timeout without speech → tts_done")
                     if not is_persistent:
                         break  # Legacy mode: close after session ends
 
@@ -505,10 +511,15 @@ async def ws_audio_endpoint(
                                 pass
                             await conn.audio_session.deliver_speech()
                         conn.end_audio_session()
-                        # No speech delivered → tell device to go back to IDLE
+                        # No speech delivered → handle based on live session state
                         if not had_speech:
-                            await conn.send_command({"type": "tts_done"})
-                            logger.info(f"Device {device_id}: no-audio timeout → tts_done")
+                            if _is_device_in_live_session(device_id):
+                                await conn.send_command({"type": "trigger_listen", "silent": True})
+                                logger.info(f"Device {device_id}: no-audio timeout → "
+                                            f"re-trigger (live session)")
+                            else:
+                                await conn.send_command({"type": "tts_done"})
+                                logger.info(f"Device {device_id}: no-audio timeout → tts_done")
                         if not is_persistent:
                             break
 
@@ -630,6 +641,19 @@ async def ws_audio_endpoint(
                     elif msg_type == "speaker_stop":
                         # Double-tap emergency stop: stop the speaker associated with this device
                         logger.info(f"Device {device_id}: speaker_stop (double-tap)")
+
+                        # If device is in a live session, end it
+                        try:
+                            from main import get_live_session, end_live_session
+                            if get_live_session(device_id):
+                                logger.info(f"Device {device_id}: speaker_stop during live session — ending session")
+                                await end_live_session(device_id, reason="button_stop")
+                                # end_live_session handles tts_done via schedule_post_tts
+                                # Skip normal speaker_stop flow
+                                continue
+                        except Exception as e:
+                            logger.error(f"Live session check on speaker_stop failed: {e}")
+
                         try:
                             from database import get_voice_device
                             from integrations import mute_speaker_for_stop
@@ -852,4 +876,43 @@ async def push_config_to_device(device_id: str, config: dict) -> bool:
     })
     if result:
         logger.info(f"push_config_to_device({device_id}): {config}")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Live session helpers
+# ---------------------------------------------------------------------------
+
+def _is_device_in_live_session(device_id: str) -> bool:
+    """Check if a device is currently in a live session (non-async, no import cycle)."""
+    try:
+        from main import get_live_session
+        return get_live_session(device_id) is not None
+    except Exception:
+        return False
+
+
+async def notify_live_session_start(device_id: str) -> bool:
+    """Notify device (and relay) that a live session is starting."""
+    device_id = device_id.upper().strip()
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id)
+    if not conn:
+        return False
+    result = await conn.send_command({"type": "live_session_start"})
+    if result:
+        logger.info(f"notify_live_session_start({device_id}): sent")
+    return result
+
+
+async def notify_live_session_end(device_id: str) -> bool:
+    """Notify device (and relay) that a live session has ended."""
+    device_id = device_id.upper().strip()
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id)
+    if not conn:
+        return False
+    result = await conn.send_command({"type": "live_session_end"})
+    if result:
+        logger.info(f"notify_live_session_end({device_id}): sent")
     return result

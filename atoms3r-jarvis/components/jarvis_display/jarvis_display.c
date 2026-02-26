@@ -99,6 +99,10 @@ static char error_msg[32] = "";
 static char friendly_name[33] = "";  // 32 chars + null terminator
 
 static bool display_rotated = false;
+static bool live_session_mode = false;
+
+// Green color for LIVE badge (sent_B=31 → display_G max on GC9107 color-rotated display)
+#define COLOR_GREEN_BRIGHT  0x001F
 
 static float wave_phase = 0.0f;
 static int64_t last_wave_update = 0;
@@ -326,6 +330,13 @@ static void flush_buffer(void) {
 // RENDER FUNCTIONS
 // =============================================================================
 
+// Draw "LIVE" badge at bottom-right corner (green text, scale 1)
+static void draw_live_badge(void) {
+    if (!live_session_mode) return;
+    // "LIVE" at bottom-right: 4 chars * 6px = 24px wide, at scale 1
+    fb_draw_string(DISPLAY_WIDTH - 28, DISPLAY_HEIGHT - 12, "LIVE", COLOR_GREEN_BRIGHT, 1);
+}
+
 static void render_idle(bool with_border) {
     fb_clear(COLOR_BLACK);
 
@@ -368,6 +379,7 @@ static void render_idle(bool with_border) {
         fb_draw_string_centered(DISPLAY_HEIGHT - 16, "MUTED", COLOR_RED, 1);
     }
 
+    draw_live_badge();
     flush_buffer();
 }
 
@@ -414,6 +426,7 @@ static void render_listening(void) {
     draw_wave_animation();
     fb_draw_icon_at(ICON_MIC, ICON_MIC_WIDTH, ICON_MIC_HEIGHT, JARVIS_BLUE, ICON_CENTER_Y);
     fb_draw_string_centered(TEXT_Y, "Listening...", JARVIS_BLUE_DARK, 1);
+    draw_live_badge();
     flush_buffer();
 }
 
@@ -421,6 +434,7 @@ static void render_busy(void) {
     fb_clear(COLOR_BLACK);
     fb_draw_icon_at(ICON_SPEAKER, ICON_SPEAKER_WIDTH, ICON_SPEAKER_HEIGHT, JARVIS_BLUE, ICON_CENTER_Y);
     fb_draw_string_centered(TEXT_Y, "Speaking...", JARVIS_BLUE_DARK, 1);
+    draw_live_badge();
     flush_buffer();
 }
 
@@ -852,4 +866,12 @@ void jarvis_display_set_rotation(bool rotated) {
 
 bool jarvis_display_is_rotated(void) {
     return display_rotated;
+}
+
+void jarvis_display_set_live_session(bool active) {
+    if (live_session_mode != active) {
+        live_session_mode = active;
+        jarvis_display_update();
+        ESP_LOGI(TAG, "Live session display: %s", active ? "ON" : "OFF");
+    }
 }

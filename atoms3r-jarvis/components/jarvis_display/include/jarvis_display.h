@@ -139,4 +139,12 @@ void jarvis_display_set_rotation(bool rotated);
  */
 bool jarvis_display_is_rotated(void);
 
+/**
+ * @brief Set live session indicator
+ * @param active true to show "LIVE" overlay on display, false to hide
+ *
+ * When active, a green "LIVE" badge is drawn on the display in all states.
+ */
+void jarvis_display_set_live_session(bool active);
+
 #endif // JARVIS_DISPLAY_H

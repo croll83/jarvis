@@ -149,6 +149,12 @@ void jarvis_ws_audio_send_state(const char *state_str);
 void jarvis_ws_audio_send_speaker_stop(void);
 
 /**
+ * Check if a live session is currently active.
+ * During live session, audio session timeout is extended and display shows LIVE icon.
+ */
+bool jarvis_ws_audio_is_live_session(void);
+
+/**
  * Disconnect and stop the persistent connection task.
  * Call only on shutdown.
  */
