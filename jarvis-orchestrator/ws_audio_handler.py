@@ -604,17 +604,20 @@ async def ws_audio_endpoint(
                         conn.firmware_version = ctrl.get("fw", "unknown")
                         logger.info(f"Device {device_id}: persistent mode (fw={conn.firmware_version})")
 
-                        # Push saved config to device (sensitivity etc.)
+                        # Push saved config to device (sensitivity, volume, etc.)
                         try:
                             from database import get_voice_device
                             dev = get_voice_device(device_id)
-                            if dev and dev.wake_word_sensitivity is not None:
-                                await conn.send_command({
-                                    "type": "config_update",
-                                    "wake_word_sensitivity": dev.wake_word_sensitivity
-                                })
+                            if dev:
+                                config_msg = {"type": "config_update"}
+                                if dev.wake_word_sensitivity is not None:
+                                    config_msg["wake_word_sensitivity"] = dev.wake_word_sensitivity
+                                if dev.speaker_volume is not None:
+                                    config_msg["speaker_volume"] = dev.speaker_volume
+                                await conn.send_command(config_msg)
                                 logger.info(f"Device {device_id}: pushed saved config "
-                                            f"(sensitivity={dev.wake_word_sensitivity})")
+                                            f"(sensitivity={dev.wake_word_sensitivity}, "
+                                            f"volume={dev.speaker_volume})")
                         except Exception as e:
                             logger.debug(f"Device {device_id}: config push on hello failed: {e}")
 

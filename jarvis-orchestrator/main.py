@@ -1643,16 +1643,19 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
     if hint == "live_session":
         tts_instructions = _LIVE_SESSION_TTS_INSTRUCTIONS
     elif source in ("AtomS3R", "VirtualMic"):
+        device_cfg = context.get("device_config") or {}
+        is_internal = device_cfg.get("use_internal_speaker", False)
+        tts_target = "the device's built-in speaker (Edge TTS)" if is_internal else "a voice assistant (Alexa TTS)"
         tts_instructions = (
-            "IMPORTANT: This response will be read aloud by a voice assistant (Alexa TTS). "
+            f"IMPORTANT: This response will be read aloud via {tts_target}. "
             "Format accordingly: use natural spoken Italian, no markdown, no bullet points, "
-            "no asterisks, no special characters. Use short sentences with clear punctuation "
-            "(commas, periods, exclamation marks, question marks) for natural speech rhythm. "
-            "Add emphasis and expressiveness: use exclamation marks for enthusiasm, ellipsis for "
-            "suspense or pauses, rhetorical questions to engage. Vary sentence length and tone — "
-            "mix short punchy phrases with longer flowing ones. Sound warm, lively and human, "
-            "not robotic or flat. Be concise but conversational — max 3-4 sentences unless "
-            "the topic requires more."
+            "no asterisks, no emojis, no special characters. Use short sentences with clear "
+            "punctuation (commas, periods, exclamation marks, question marks) for natural speech "
+            "rhythm. Add emphasis and expressiveness: use exclamation marks for enthusiasm, "
+            "ellipsis for suspense or pauses, rhetorical questions to engage. Vary sentence "
+            "length and tone — mix short punchy phrases with longer flowing ones. Sound warm, "
+            "lively and human, not robotic or flat. Be concise but conversational — max 3-4 "
+            "sentences unless the topic requires more."
         )
     else:
         tts_instructions = None
@@ -2770,10 +2773,15 @@ def _needs_followup(response_text: str) -> bool:
 
     Simple regex is the right choice: OpenClaw produces well-punctuated Italian,
     and false positives (rhetorical questions) are harmless (device just times out).
+
+    Strips markdown artifacts (**, *, _) and whitespace before checking,
+    so "vuoi sapere altro?**" or "dimmi pure? " still match.
     """
     if not response_text:
         return False
-    return response_text.rstrip().endswith('?')
+    import re
+    cleaned = re.sub(r'[\s*_`#]+$', '', response_text)
+    return cleaned.endswith('?')
 
 
 # ===========================================================================
@@ -2896,6 +2904,10 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
         if response_id:
             logger.debug(f"OpenClaw response_id={response_id[:30]}... for session={session_user}")
 
+        # Log full response text for debugging
+        if response:
+            logger.info(f"📝 AI response ({len(response)} chars): {response[:500]}{'...' if len(response) > 500 else ''}")
+
         # Post-streaming: save chat, update speaking state, VirtualMic tracking
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
 
@@ -2906,8 +2918,11 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
 
         if use_internal_speaker and device_id and device_id != "unknown":
             # Internal speaker: niente polling HA, gestione diretta
-            # Piccolo delay per flush DMA buffer del device (100ms)
-            await asyncio.sleep(0.1)
+            # speak_to_device() invia frame Opus in modo sincrono — il device
+            # riproduce man mano. Dopo l'ultimo frame serve solo un piccolo
+            # delay per il flush del buffer DMA (~150ms).
+            await asyncio.sleep(0.15)
+
             if is_multi_turn:
                 success = await trigger_device_listen(device_id, silent=True)
                 if success:

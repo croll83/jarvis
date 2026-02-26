@@ -99,6 +99,7 @@ class VoiceDeviceCreate(BaseModel):
     enabled: bool = True
     notes: Optional[str] = None
     wake_word_sensitivity: Optional[float] = 0.82
+    speaker_volume: Optional[int] = 80
 
 
 class VoiceDeviceUpdate(BaseModel):
@@ -112,6 +113,7 @@ class VoiceDeviceUpdate(BaseModel):
     enabled: Optional[bool] = None
     notes: Optional[str] = None
     wake_word_sensitivity: Optional[float] = None
+    speaker_volume: Optional[int] = None
 
 
 # ===========================================================================
@@ -1898,19 +1900,24 @@ async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, An
         use_internal_speaker=data.use_internal_speaker,
         enabled=data.enabled,
         notes=data.notes,
-        wake_word_sensitivity=data.wake_word_sensitivity
+        wake_word_sensitivity=data.wake_word_sensitivity,
+        speaker_volume=data.speaker_volume
     )
 
-    # Push config update to device via WebSocket if sensitivity specified
+    # Push config update to device via WebSocket
+    config_push = {}
     if data.wake_word_sensitivity is not None:
+        config_push["wake_word_sensitivity"] = data.wake_word_sensitivity
+    if data.speaker_volume is not None:
+        config_push["speaker_volume"] = data.speaker_volume
+    if config_push:
         try:
             from ws_audio_handler import push_config_to_device
-            await push_config_to_device(device_id, {
-                "wake_word_sensitivity": data.wake_word_sensitivity
-            })
+            await push_config_to_device(device_id, config_push)
         except Exception:
             pass  # Device may not be connected
 
+    if data.wake_word_sensitivity is not None:
         # Also push to wakeword-server LXC if configured
         await _push_wakeword_config(device_id, data.wake_word_sensitivity)
 
@@ -1962,20 +1969,26 @@ async def update_voice_device_endpoint(
         update_params['notes'] = data.notes
     if data.wake_word_sensitivity is not None:
         update_params['wake_word_sensitivity'] = data.wake_word_sensitivity
+    if data.speaker_volume is not None:
+        update_params['speaker_volume'] = data.speaker_volume
 
     if update_params:
         upsert_voice_device(device_id=device_id, **update_params)
 
-    # Push config update to device via WebSocket if sensitivity changed
+    # Push config update to device via WebSocket
+    config_push = {}
     if data.wake_word_sensitivity is not None:
+        config_push["wake_word_sensitivity"] = data.wake_word_sensitivity
+    if data.speaker_volume is not None:
+        config_push["speaker_volume"] = data.speaker_volume
+    if config_push:
         try:
             from ws_audio_handler import push_config_to_device
-            await push_config_to_device(device_id, {
-                "wake_word_sensitivity": data.wake_word_sensitivity
-            })
+            await push_config_to_device(device_id, config_push)
         except Exception:
             pass  # Device may not be connected
 
+    if data.wake_word_sensitivity is not None:
         # Also push to wakeword-server LXC if configured
         await _push_wakeword_config(device_id, data.wake_word_sensitivity)
 
