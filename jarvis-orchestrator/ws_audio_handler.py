@@ -850,6 +850,28 @@ async def notify_tts_done(device_id: str) -> bool:
     return result
 
 
+async def send_tts_frame(device_id: str, opus_data: bytes) -> bool:
+    """
+    Invia un singolo frame Opus TTS al device via WebSocket persistente.
+    Il device decodifica e riproduce il frame sullo speaker interno.
+
+    Returns True se inviato, False se device non connesso.
+    """
+    device_id = device_id.upper().strip()
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id)
+
+    if not conn or conn._closed:
+        return False
+
+    try:
+        await conn.websocket.send_bytes(opus_data)
+        return True
+    except Exception as e:
+        logger.warning(f"send_tts_frame({device_id}): invio fallito: {e}")
+        return False
+
+
 async def push_config_to_device(device_id: str, config: dict) -> bool:
     """
     Push configuration update to a connected device via WebSocket.

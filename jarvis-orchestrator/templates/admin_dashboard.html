@@ -1977,17 +1977,29 @@
                 </div>
 
                 <div class="form-group">
-                    <label>Speaker Principale (TTS Output) *</label>
-                    <select id="vdOutputSpeaker" required>
-                        <option value="">Seleziona prima la location...</option>
-                    </select>
+                    <label style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" id="vdUseInternalSpeaker" onchange="toggleInternalSpeaker()">
+                        Speaker Interno (mobile)
+                    </label>
+                    <small style="color: var(--text-secondary);">
+                        Usa lo speaker integrato dell'AtomS3R per le risposte TTS (Edge TTS). Per device in mobilità con batteria.
+                    </small>
                 </div>
 
-                <div class="form-group">
-                    <label>Speaker Fallback</label>
-                    <select id="vdFallbackSpeaker">
-                        <option value="">Nessuno</option>
-                    </select>
+                <div id="vdExternalSpeakerGroup">
+                    <div class="form-group">
+                        <label>Speaker Principale (TTS Output) *</label>
+                        <select id="vdOutputSpeaker">
+                            <option value="">Seleziona prima la location...</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Speaker Fallback</label>
+                        <select id="vdFallbackSpeaker">
+                            <option value="">Nessuno</option>
+                        </select>
+                    </div>
                 </div>
 
                 <div class="form-group">
@@ -3394,7 +3406,7 @@
                             <td><strong>${d.friendly_name}</strong></td>
                             <td style="font-family: monospace; font-size: 0.8rem;">${d.device_id}</td>
                             <td>${d.location_id || '-'}</td>
-                            <td style="font-size: 0.85rem;">${d.output_speaker || '-'}</td>
+                            <td style="font-size: 0.85rem;">${d.use_internal_speaker ? '<span class="badge badge-info" style="font-size: 0.75rem;">Speaker Interno</span>' : (d.output_speaker || '-')}</td>
                             <td>
                                 <span class="badge ${d.is_online ? 'badge-success' : 'badge-secondary'}" style="display: inline-flex; align-items: center; gap: 4px;">
                                     <span style="width: 8px; height: 8px; border-radius: 50%; background: ${d.is_online ? 'var(--success)' : 'var(--text-muted)'}; ${d.is_online ? 'animation: pulse 2s infinite;' : ''}"></span>
@@ -3437,6 +3449,7 @@
             document.getElementById('vdDeviceId').value = deviceId;
             document.getElementById('vdDeviceIdDisplay').value = deviceId;
             document.getElementById('vdFriendlyName').value = '';
+            document.getElementById('vdUseInternalSpeaker').checked = false;
             document.getElementById('vdOutputSpeaker').innerHTML = '<option value="">Seleziona prima la location...</option>';
             document.getElementById('vdFallbackSpeaker').innerHTML = '<option value="">Nessuno</option>';
             document.getElementById('vdFallbackTelegram').checked = true;
@@ -3445,6 +3458,7 @@
             document.getElementById('vdWakeWordSensitivity').value = 0.82;
             document.getElementById('vdSensitivityValue').textContent = '0.82';
             document.getElementById('vdNotes').value = '';
+            toggleInternalSpeaker();
 
             // If editing, load device data
             if (isEdit) {
@@ -3454,9 +3468,11 @@
 
                     document.getElementById('vdFriendlyName').value = device.friendly_name || '';
                     document.getElementById('vdLocationId').value = device.location_id || '';
+                    document.getElementById('vdUseInternalSpeaker').checked = device.use_internal_speaker || false;
                     document.getElementById('vdFallbackTelegram').checked = device.fallback_telegram;
                     document.getElementById('vdFallbackLocalSpeaker').checked = device.fallback_local_speaker;
                     document.getElementById('vdEnabled').checked = device.enabled;
+                    toggleInternalSpeaker();
                     document.getElementById('vdWakeWordSensitivity').value = device.wake_word_sensitivity || 0.82;
                     document.getElementById('vdSensitivityValue').textContent = device.wake_word_sensitivity || 0.82;
                     document.getElementById('vdNotes').value = device.notes || '';
@@ -3478,6 +3494,19 @@
             }
 
             openModal('voiceDeviceModal');
+        }
+
+        function toggleInternalSpeaker() {
+            const useInternal = document.getElementById('vdUseInternalSpeaker').checked;
+            const externalGroup = document.getElementById('vdExternalSpeakerGroup');
+            if (useInternal) {
+                externalGroup.style.display = 'none';
+                // Rimuovi required da output speaker quando usa speaker interno
+                document.getElementById('vdOutputSpeaker').removeAttribute('required');
+            } else {
+                externalGroup.style.display = 'block';
+                document.getElementById('vdOutputSpeaker').setAttribute('required', '');
+            }
         }
 
         async function loadMediaPlayersForLocation() {
@@ -3517,14 +3546,16 @@
             event.preventDefault();
 
             const deviceId = document.getElementById('vdDeviceId').value;
+            const useInternalSpeaker = document.getElementById('vdUseInternalSpeaker').checked;
             const data = {
                 device_id: deviceId,
                 friendly_name: document.getElementById('vdFriendlyName').value,
                 location_id: document.getElementById('vdLocationId').value,
-                output_speaker: document.getElementById('vdOutputSpeaker').value,
-                fallback_speaker: document.getElementById('vdFallbackSpeaker').value || null,
+                output_speaker: useInternalSpeaker ? null : document.getElementById('vdOutputSpeaker').value,
+                fallback_speaker: useInternalSpeaker ? null : (document.getElementById('vdFallbackSpeaker').value || null),
                 fallback_telegram: document.getElementById('vdFallbackTelegram').checked,
                 fallback_local_speaker: document.getElementById('vdFallbackLocalSpeaker').checked,
+                use_internal_speaker: useInternalSpeaker,
                 enabled: document.getElementById('vdEnabled').checked,
                 wake_word_sensitivity: parseFloat(document.getElementById('vdWakeWordSensitivity').value),
                 notes: document.getElementById('vdNotes').value || null

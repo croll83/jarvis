@@ -35,3 +35,6 @@ chromadb>=0.4.0
 # WebSocket audio reception (Opus + Silero VAD)
 opuslib>=3.0.1
 silero-vad>=5.1
+
+# Internal TTS (Edge TTS per speaker integrato AtomS3R)
+edge-tts>=6.1.0

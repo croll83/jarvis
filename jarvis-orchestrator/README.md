@@ -146,7 +146,7 @@ OpenClaw ──▶ jarvis_home_control (L3 action)
 | 6 | `/api/tools/entity_resolve` | POST | Risolvi friendly name -> entity_id HA |
 | 7 | `/api/tools/entity_discover` | POST | Scopri entita per stanza, zona, piano, dominio |
 | 8 | `/api/tools/entity_bulk` | POST | **Query/azione bulk** su gruppi di entita (room/zone/floor/domain) |
-| 9 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker |
+| 9 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker o speaker interno AtomS3R (Edge TTS) |
 | 10 | `/api/tools/locations` | GET | Lista location con stato health HA |
 | 11 | `/api/tools/audit_log` | POST | Registra evento nel trail di audit |
 
@@ -191,6 +191,53 @@ Embedding model: `nomic-embed-text` via Ollama. Threshold: >= 0.3 per messaggi, 
 ### HA Memory Sidecar
 
 Ogni istanza Home Assistant ha un sidecar che traccia state changes, genera summary orari/giornalieri e espone API per vector search contestuale alla location.
+
+---
+
+## Speaker Interno (AtomS3R Mobile)
+
+Per device AtomS3R in mobilita (con batteria accessoria), le risposte TTS vengono riprodotte
+direttamente sullo speaker integrato del device (ES8311 DAC + NS4150B amp) invece di passare
+da un media_player Home Assistant (Alexa/Echo).
+
+### Flusso audio
+
+```
+AI Response text
+  ↓
+Edge TTS (it-IT-ElsaNeural) → MP3
+  ↓
+ffmpeg → PCM 16kHz mono int16
+  ↓
+Opus encode (320 samples/frame, 20ms)
+  ↓
+WS binary frames → Wakeword relay → Device
+  ↓
+Device: opus_decode → jarvis_codec_write → I2S → Speaker
+  ↓
+Server invia tts_done → Device: BUSY → IDLE
+```
+
+### Configurazione
+
+Dalla dashboard admin (tab Voice Devices), attivare il checkbox **Speaker Interno (mobile)**.
+Quando attivato:
+- L'output speaker HA diventa opzionale (non necessario)
+- Le risposte TTS vengono generate server-side con Edge TTS (voce `it-IT-ElsaNeural`)
+- L'audio viene codificato in frame Opus e inviato al device via WebSocket
+- Il firmware decodifica e riproduce direttamente (nessuna modifica firmware richiesta)
+- Speaker suppress HA non viene attivato (non necessario)
+- Multi-turn funziona normalmente via `trigger_listen`
+
+### Dipendenze
+
+- `edge-tts` (Python, in requirements.txt)
+- `ffmpeg` (sistema, gia nel Dockerfile)
+- `opuslib` (Python, gia presente)
+
+### Modulo
+
+`internal_tts.py` — genera TTS, converte MP3→PCM→Opus, invia frame via `ws_audio_handler.send_tts_frame()`.
 
 ---
 
@@ -329,7 +376,7 @@ Accessibile via `http://jarvis:5000/admin` (richiede login).
 | **Location** | Multi-HA: CRUD locations, entity maps, sync da HA, test connessione |
 | **Sistema** | Preferenze editabili, config read-only, system state, backup/restore |
 | **Audit Log** | Log eventi con filtri categoria/speaker |
-| **Dispositivi** | Device failures, voice devices (AtomS3R) |
+| **Dispositivi** | Device failures, voice devices (AtomS3R), configurazione speaker interno |
 | **Cache** | Query cache, statistiche hit/miss |
 | **Memory** | Stats ChromaDB vectors, SQL summaries, per-user breakdown, HA Memory |
 | **Access Log** | HTTP access log, auth attempts, anomaly detection |
@@ -353,7 +400,7 @@ audit_log (id, timestamp, category, message, speaker_id, speaker_name)
 locations (id, name, city, hass_url, hass_token, has_security, enabled, keywords, ...)
 user_locations (user_id, location_id, source, updated_at)
 entity_maps (id, location_id, zone, area, room, entity_type, entity_name, entity_id)
-voice_devices (device_id, friendly_name, location_id, output_speaker, fallback_speaker, ...)
+voice_devices (device_id, friendly_name, location_id, output_speaker, fallback_speaker, use_internal_speaker, ...)
 device_failures (entity_id, count, last_error, timestamp)
 
 -- ===== MEMORIA =====

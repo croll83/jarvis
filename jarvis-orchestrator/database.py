@@ -334,10 +334,11 @@ def init_db():
         device_id TEXT PRIMARY KEY,
         friendly_name TEXT,
         location_id TEXT REFERENCES locations(id),
-        output_speaker TEXT NOT NULL,
+        output_speaker TEXT,
         fallback_speaker TEXT,
         fallback_telegram BOOLEAN DEFAULT 1,
         fallback_local_speaker BOOLEAN DEFAULT 1,
+        use_internal_speaker BOOLEAN DEFAULT 0,
         enabled BOOLEAN DEFAULT 1,
         created_at REAL DEFAULT (strftime('%s', 'now')),
         last_seen_at REAL,
@@ -350,6 +351,12 @@ def init_db():
     # Migration: add wake_word_sensitivity column for existing DBs
     try:
         c.execute("ALTER TABLE voice_devices ADD COLUMN wake_word_sensitivity REAL DEFAULT 0.85")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Migration: add use_internal_speaker column for existing DBs
+    try:
+        c.execute("ALTER TABLE voice_devices ADD COLUMN use_internal_speaker BOOLEAN DEFAULT 0")
     except sqlite3.OperationalError:
         pass  # Column already exists
 
@@ -2854,7 +2861,7 @@ class VoiceDevice:
     device_id: str  # MAC address senza separatori (AABBCCDDEEFF)
     friendly_name: Optional[str]
     location_id: Optional[str]
-    output_speaker: str
+    output_speaker: Optional[str]
     fallback_speaker: Optional[str]
     fallback_telegram: bool
     fallback_local_speaker: bool
@@ -2865,6 +2872,7 @@ class VoiceDevice:
     ip_address: Optional[str]
     notes: Optional[str]
     wake_word_sensitivity: float = 0.85
+    use_internal_speaker: bool = False
 
     @property
     def is_configured(self) -> bool:
@@ -2887,6 +2895,7 @@ class VoiceDevice:
             "fallback_speaker": self.fallback_speaker,
             "fallback_telegram": self.fallback_telegram,
             "fallback_local_speaker": self.fallback_local_speaker,
+            "use_internal_speaker": self.use_internal_speaker,
             "enabled": self.enabled,
             "created_at": self.created_at,
             "last_seen_at": self.last_seen_at,
@@ -2915,7 +2924,8 @@ def _row_to_voice_device(row) -> VoiceDevice:
         firmware_version=row['firmware_version'],
         ip_address=row['ip_address'],
         notes=row['notes'],
-        wake_word_sensitivity=row['wake_word_sensitivity'] if 'wake_word_sensitivity' in row.keys() else 0.85
+        wake_word_sensitivity=row['wake_word_sensitivity'] if 'wake_word_sensitivity' in row.keys() else 0.85,
+        use_internal_speaker=bool(row['use_internal_speaker']) if 'use_internal_speaker' in row.keys() else False
     )
 
 
@@ -2982,13 +2992,14 @@ def upsert_voice_device(
     device_id: str,
     friendly_name: Optional[str] = None,
     location_id: Optional[str] = None,
-    output_speaker: str = "",
+    output_speaker: Optional[str] = "",
     fallback_speaker: Optional[str] = None,
     fallback_telegram: bool = True,
     fallback_local_speaker: bool = True,
     enabled: bool = True,
     notes: Optional[str] = None,
-    wake_word_sensitivity: Optional[float] = None
+    wake_word_sensitivity: Optional[float] = None,
+    use_internal_speaker: bool = False
 ) -> bool:
     """
     Crea o aggiorna un voice device.
@@ -3025,6 +3036,8 @@ def upsert_voice_device(
         params.append(fallback_telegram)
         updates.append("fallback_local_speaker = ?")
         params.append(fallback_local_speaker)
+        updates.append("use_internal_speaker = ?")
+        params.append(use_internal_speaker)
         updates.append("enabled = ?")
         params.append(enabled)
 
@@ -3053,12 +3066,12 @@ def upsert_voice_device(
             INSERT INTO voice_devices (
                 device_id, friendly_name, location_id, output_speaker,
                 fallback_speaker, fallback_telegram, fallback_local_speaker,
-                enabled, notes, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                use_internal_speaker, enabled, notes, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            device_id, friendly_name, location_id, output_speaker or "tts.speak",
+            device_id, friendly_name, location_id, output_speaker or None,
             fallback_speaker, fallback_telegram, fallback_local_speaker,
-            enabled, notes, time.time()
+            use_internal_speaker, enabled, notes, time.time()
         ))
 
     conn.commit()
