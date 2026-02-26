@@ -109,9 +109,11 @@ services:
       - AI_BACKEND=${AI_BACKEND:-local}
       - OLLAMA_URL=http://localhost:11434
       - WHISPER_URL=http://localhost:9000
-      # OpenClaw gira su VM separata — raggiungibile via Tailscale MagicDNS
-      - OPENCLAW_URL=${OPENCLAW_URL:-http://jarvis-openclaw:18789}
+      # OpenClaw gira su VM separata — raggiungibile via Tailscale + TLS
+      - OPENCLAW_URL=${OPENCLAW_URL:-https://openclaw.mintwork.it:18789}
       - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      # Gateway WS for exec approval operator (same host/port, wss:// scheme)
+      - OPENCLAW_WS_URL=${OPENCLAW_WS_URL:-wss://openclaw.mintwork.it:18789}
       # Device firmware auth (AtomS3R Bearer token)
       - DEVICE_API_TOKEN=${DEVICE_API_TOKEN:-}
       # JARVIS Approval Bot (L3 critical actions - separate from OpenClaw Telegram)

@@ -2,16 +2,19 @@
 # =============================================================================
 # Nginx + SSL Setup Script (certbot DNS Cloudflare)
 # =============================================================================
-# Installa Nginx, configura i vhost per jarvis.mintwork.it e openclaw.mintwork.it,
-# e genera i certificati SSL tramite Cloudflare DNS challenge.
+# Installa Nginx, configura il vhost per jarvis.mintwork.it e genera il
+# certificato SSL tramite Cloudflare DNS challenge.
+#
+# NOTA: openclaw.mintwork.it ha il proprio certificato TLS gestito dal nginx
+# sul server OpenClaw (vedi setup-openclaw.sh Step 10). Il VPS non genera
+# piu' il cert per openclaw.mintwork.it.
 #
 # Prerequisiti:
 #   - JARVIS repo clonato in /opt/jarvis
 #   - Un Cloudflare API token con permesso "Zone:DNS:Edit"
 #     (crealo su https://dash.cloudflare.com/profile/api-tokens)
 #   - Record A su Cloudflare:
-#     jarvis.mintwork.it   -> <tailscale-ip>
-#     openclaw.mintwork.it -> <tailscale-ip>
+#     jarvis.mintwork.it -> <tailscale-ip>
 #
 # Usage:
 #   sudo CLOUDFLARE_API_TOKEN=<token> bash /opt/jarvis/cloud/scripts/setup-nginx.sh
@@ -53,7 +56,6 @@ fi
 
 JARVIS_DIR="${JARVIS_DIR:-/opt/jarvis}"
 DOMAIN_JARVIS="jarvis.mintwork.it"
-DOMAIN_OPENCLAW="openclaw.mintwork.it"
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-admin@mintwork.it}"
 
 # =============================================================================
@@ -91,15 +93,19 @@ echo -e "${YELLOW}[3/5] Configuring Nginx vhosts...${NC}"
 # Remove default site
 rm -f /etc/nginx/sites-enabled/default
 
-# Copy configs
+# Copy configs (solo jarvis; openclaw e' OPZIONALE — vedi openclaw.conf header)
 cp "${JARVIS_DIR}/cloud/nginx/jarvis.conf" /etc/nginx/sites-available/
-cp "${JARVIS_DIR}/cloud/nginx/openclaw.conf" /etc/nginx/sites-available/
 
 # Enable sites
 ln -sf /etc/nginx/sites-available/jarvis.conf /etc/nginx/sites-enabled/
-ln -sf /etc/nginx/sites-available/openclaw.conf /etc/nginx/sites-enabled/
 
-echo "Vhosts configured: ${DOMAIN_JARVIS}, ${DOMAIN_OPENCLAW}"
+# OPZIONALE: abilita il proxy VPS verso la dashboard OpenClaw
+# Se vuoi esporre la dashboard anche dal VPS, decommenta le righe seguenti
+# e genera un certificato separato per openclaw.mintwork.it sul VPS.
+# cp "${JARVIS_DIR}/cloud/nginx/openclaw.conf" /etc/nginx/sites-available/
+# ln -sf /etc/nginx/sites-available/openclaw.conf /etc/nginx/sites-enabled/
+
+echo "Vhost configured: ${DOMAIN_JARVIS}"
 
 # =============================================================================
 # Step 4: Generate SSL certificates (DNS challenge)
@@ -107,28 +113,21 @@ echo "Vhosts configured: ${DOMAIN_JARVIS}, ${DOMAIN_OPENCLAW}"
 echo -e "${YELLOW}[4/5] Generating SSL certificates via Cloudflare DNS...${NC}"
 echo "This may take 30-60 seconds per domain for DNS propagation..."
 
-# Certificate for both domains in one cert (SAN)
+# Certificate for jarvis.mintwork.it only
+# NOTA: openclaw.mintwork.it ha il proprio cert Let's Encrypt gestito
+# dal nginx sul server OpenClaw (certbot + Cloudflare DNS plugin).
 certbot certonly \
     --dns-cloudflare \
     --dns-cloudflare-credentials "$CLOUDFLARE_CREDS" \
     --dns-cloudflare-propagation-seconds 30 \
     -d "$DOMAIN_JARVIS" \
-    -d "$DOMAIN_OPENCLAW" \
     --email "$CERTBOT_EMAIL" \
     --agree-tos \
     --non-interactive
 
-# Certbot creates certs under the first domain name
-# Symlink so each vhost finds its own cert path
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN_JARVIS}"
-OPENCLAW_CERT_DIR="/etc/letsencrypt/live/${DOMAIN_OPENCLAW}"
 
-if [ ! -d "$OPENCLAW_CERT_DIR" ]; then
-    ln -s "$CERT_DIR" "$OPENCLAW_CERT_DIR"
-    echo "Symlinked cert dir: ${OPENCLAW_CERT_DIR} -> ${CERT_DIR}"
-fi
-
-echo "SSL certificates generated successfully"
+echo "SSL certificate generated for ${DOMAIN_JARVIS}"
 
 # =============================================================================
 # Step 5: Test and reload Nginx
@@ -148,17 +147,20 @@ echo -e "${GREEN}=============================================="
 echo "       Nginx + SSL Setup Complete!"
 echo "==============================================${NC}"
 echo ""
-echo "Sites configured:"
-echo "  - https://${DOMAIN_JARVIS}    -> Orchestrator (127.0.0.1:5000)"
-echo "  - https://${DOMAIN_OPENCLAW}  -> OpenClaw Dashboard (Tailscale:18789)"
+echo "VPS site configured:"
+echo "  - https://${DOMAIN_JARVIS}  -> Orchestrator (127.0.0.1:5000)"
 echo ""
-echo "SSL certificates:"
+echo "SSL certificate:"
 echo "  - ${CERT_DIR}/"
 echo "  - Auto-renewal via certbot timer"
 echo ""
+echo "OpenClaw TLS (separato, sul server OpenClaw):"
+echo "  - https://openclaw.mintwork.it:18789  (API/WebSocket)"
+echo "  - https://openclaw.mintwork.it        (Dashboard)"
+echo "  - Cert gestito da setup-openclaw.sh Step 10"
+echo ""
 echo "Verify:"
 echo "  curl -k https://${DOMAIN_JARVIS}/health"
-echo "  curl -k https://${DOMAIN_OPENCLAW}/health"
 echo ""
 echo "Cert renewal test:"
 echo "  sudo certbot renew --dry-run"

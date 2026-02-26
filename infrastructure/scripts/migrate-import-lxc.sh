@@ -205,8 +205,8 @@ echo "       openclaw cron list                           # Cron jobs"
 echo ""
 if [ -n "$NEW_TS_IP" ]; then
     echo "  5. Aggiorna .env sul VPS:"
-    echo "       OPENCLAW_URL=http://$NEW_TS_IP:18789"
-    echo "       OPENCLAW_WS_URL=ws://$NEW_TS_IP:18789"
+    echo "       OPENCLAW_URL=https://openclaw.mintwork.it:18789"
+    echo "       OPENCLAW_WS_URL=wss://openclaw.mintwork.it:18789"
     echo "       Poi: docker compose restart jarvis_orchestrator"
 fi
 echo ""
