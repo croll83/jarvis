@@ -146,7 +146,7 @@ OpenClaw ──▶ jarvis_home_control (L3 action)
 | 6 | `/api/tools/entity_resolve` | POST | Risolvi friendly name -> entity_id HA |
 | 7 | `/api/tools/entity_discover` | POST | Scopri entita per stanza, zona, piano, dominio |
 | 8 | `/api/tools/entity_bulk` | POST | **Query/azione bulk** su gruppi di entita (room/zone/floor/domain) |
-| 9 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker o speaker interno AtomS3R (Edge TTS) |
+| 9 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker o speaker interno AtomS3R (Kokoro TTS) |
 | 10 | `/api/tools/locations` | GET | Lista location con stato health HA |
 | 11 | `/api/tools/audit_log` | POST | Registra evento nel trail di audit |
 
@@ -205,9 +205,9 @@ da un media_player Home Assistant (Alexa/Echo).
 ```
 AI Response text
   ↓
-Edge TTS (it-IT-ElsaNeural) → MP3
+Kokoro TTS (if_sara, italiano) → PCM 24kHz
   ↓
-ffmpeg → PCM 16kHz mono int16
+scipy resample → PCM 16kHz mono int16
   ↓
 Opus encode (320 samples/frame, 20ms)
   ↓
@@ -223,7 +223,7 @@ Server invia tts_done → Device: BUSY → IDLE
 Dalla dashboard admin (tab Voice Devices), attivare il checkbox **Speaker Interno (mobile)**.
 Quando attivato:
 - L'output speaker HA diventa opzionale (non necessario)
-- Le risposte TTS vengono generate server-side con Edge TTS (voce `it-IT-ElsaNeural`)
+- Le risposte TTS vengono generate server-side con Kokoro TTS (voce `if_sara`, italiano)
 - L'audio viene codificato in frame Opus e inviato al device via WebSocket
 - Il firmware decodifica e riproduce direttamente (nessuna modifica firmware richiesta)
 - Speaker suppress HA non viene attivato (non necessario)
@@ -231,13 +231,13 @@ Quando attivato:
 
 ### Dipendenze
 
-- `edge-tts` (Python, in requirements.txt)
-- `ffmpeg` (sistema, gia nel Dockerfile)
+- `kokoro-tts` container (Kokoro-FastAPI, porta 8890)
 - `opuslib` (Python, gia presente)
+- `scipy` (Python, gia presente — resample 24kHz → 16kHz)
 
 ### Modulo
 
-`internal_tts.py` — genera TTS, converte MP3→PCM→Opus, invia frame via `ws_audio_handler.send_tts_frame()`.
+`internal_tts.py` — chiama Kokoro TTS via HTTP, resampla PCM 24→16kHz, codifica Opus, invia frame via `ws_audio_handler.send_tts_frame()`.
 
 ---
 
@@ -343,6 +343,7 @@ Definiti in `docker-compose.yml` nella root del progetto:
 |----------|----------|-------|-------|
 | `ollama` | ollama/ollama | 11434 | Qwen 7B Q4 + nomic-embed-text (GPU) |
 | `whisper` | faster-whisper-server | 9000 | Speech-to-text (GPU) |
+| `kokoro-tts` | kokoro-fastapi-gpu/cpu | 8890 | Kokoro-82M TTS (voce italiana if_sara) |
 | `orchestrator` | build locale | 5000 | JARVIS Skill (questo progetto) |
 | `tailscale` | tailscale/tailscale | - | VPN mesh per HA remoti |
 | `postgres` | postgres:16-alpine | 5432 | Database principale |

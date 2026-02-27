@@ -5,6 +5,7 @@
 # ARCHITECTURE (OpenClaw + Gemini 3 Pro):
 # - OpenClaw (Gemini 3 Pro): Brain — gira su VM separata (bare-metal)
 # - JARVIS Orchestrator: Skill — domotics, memory, speaker ID, security, TTS
+# - Kokoro-82M: TTS engine (voce italiana if_sara, GPU accelerated)
 # - Qwen 7B Q4: Local pre-routing for domotics fast path + offline fallback
 # - Whisper: Speech-to-text (GPU accelerated)
 # - Ollama: Hosts Qwen 7B Q4 + nomic-embed-text
@@ -83,6 +84,25 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
+  # TTS - Kokoro-82M (GPU accelerated, voce italiana if_sara)
+  # ===========================================================================
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi-gpu:v0.2.1
+    container_name: jarvis_kokoro_tts
+    ports:
+      - "8890:8880"
+    environment:
+      - KOKORO_DEFAULT_VOICE=if_sara
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # ===========================================================================
   # JARVIS ORCHESTRATOR - OpenClaw Skill (FastAPI)
   # Include: Qwen pre-routing, HA control, Memory, Speaker ID, Security L1-L4
   # Admin UI (/admin), Backup/Restore, SSE event bus
@@ -99,6 +119,8 @@ services:
       ollama:
         condition: service_healthy
       whisper:
+        condition: service_started
+      kokoro-tts:
         condition: service_started
     network_mode: host
     volumes:
@@ -119,6 +141,8 @@ services:
       # JARVIS Approval Bot (L3 critical actions - separate from OpenClaw Telegram)
       - JARVIS_APPROVAL_BOT_TOKEN=${JARVIS_APPROVAL_BOT_TOKEN:-}
       - JARVIS_APPROVAL_CHAT_ID=${JARVIS_APPROVAL_CHAT_ID:-}
+      # TTS (Kokoro — porta esposta su host via kokoro-tts service)
+      - KOKORO_TTS_URL=http://localhost:8890
       # API keys (only needed if AI_BACKEND=api)
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}

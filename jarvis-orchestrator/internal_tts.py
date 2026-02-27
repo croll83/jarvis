@@ -1,8 +1,8 @@
 """
-Internal TTS Engine — Edge TTS + Opus streaming per speaker interno AtomS3R.
+Internal TTS Engine — Kokoro TTS + Opus streaming per speaker interno AtomS3R.
 
-Genera audio TTS con Edge TTS (voce Microsoft it-IT-ElsaNeural),
-converte in PCM 16kHz mono, codifica in frame Opus e invia al device
+Genera audio TTS con Kokoro-82M (voce if_sara, italiano),
+riceve PCM 24kHz, resampla a 16kHz, codifica in frame Opus e invia al device
 via WebSocket.
 
 Il device decodifica e riproduce i frame Opus direttamente sullo speaker
@@ -10,11 +10,14 @@ integrato (ES8311 DAC + NS4150B amp).
 """
 
 import asyncio
-import io
 import logging
-import struct
-import subprocess
 from typing import Optional, Tuple
+
+import aiohttp
+import numpy as np
+from scipy.signal import resample_poly
+
+from config import KOKORO_TTS_URL, KOKORO_TTS_VOICE
 
 logger = logging.getLogger("JARVIS_INTERNAL_TTS")
 
@@ -23,6 +26,7 @@ _opus_encoder = None
 
 # Costanti audio (devono matchare il firmware AtomS3R)
 SAMPLE_RATE = 16000
+KOKORO_SAMPLE_RATE = 24000
 OPUS_FRAME_SAMPLES = 320  # 20ms @ 16kHz
 OPUS_BITRATE = 30000
 OPUS_COMPLEXITY = 5  # server-side, possiamo permetterci più qualità
@@ -40,73 +44,59 @@ def _get_opus_encoder():
     return _opus_encoder
 
 
-async def generate_tts_audio(text: str, voice: str = "it-IT-ElsaNeural") -> Optional[bytes]:
+def _resample_24k_to_16k(pcm_24k: bytes) -> bytes:
+    """Resample PCM int16 da 24kHz a 16kHz."""
+    samples = np.frombuffer(pcm_24k, dtype=np.int16).astype(np.float32)
+    resampled = resample_poly(samples, up=2, down=3)  # 24000 * 2/3 = 16000
+    return np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
+
+
+async def generate_tts_audio(text: str) -> Optional[bytes]:
     """
-    Genera audio PCM 16kHz mono int16 da testo usando Edge TTS + ffmpeg.
+    Genera audio PCM 16kHz mono int16 da testo usando Kokoro TTS.
 
     Args:
         text: Testo da sintetizzare
-        voice: Voce Edge TTS (default: ElsaNeural italiana)
 
     Returns:
         bytes PCM raw (int16 little-endian, 16kHz mono) o None se errore
     """
     try:
-        import edge_tts
+        url = f"{KOKORO_TTS_URL}/v1/audio/speech"
+        payload = {
+            "model": "kokoro",
+            "voice": KOKORO_TTS_VOICE,
+            "input": text,
+            "response_format": "pcm",
+        }
 
-        communicate = edge_tts.Communicate(text, voice)
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=payload) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.error(f"Kokoro TTS error (HTTP {resp.status}): {body[:200]}")
+                    return None
+                pcm_24k = await resp.read()
 
-        # Raccogli tutti i chunk audio MP3
-        mp3_chunks = []
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                mp3_chunks.append(chunk["data"])
-
-        if not mp3_chunks:
-            logger.error(f"Edge TTS: nessun audio generato per '{text[:50]}...'")
+        if not pcm_24k:
+            logger.error(f"Kokoro TTS: nessun audio generato per '{text[:50]}...'")
             return None
 
-        mp3_data = b"".join(mp3_chunks)
-
-        # Converti MP3 → PCM 16kHz mono int16 via ffmpeg (pipe, no file temporanei)
-        pcm_data = await _mp3_to_pcm(mp3_data)
-        if pcm_data:
-            duration = len(pcm_data) / (SAMPLE_RATE * 2)  # 2 bytes per sample
-            logger.info(f"TTS generato: {len(text)} chars → {duration:.1f}s audio ({len(pcm_data)} bytes PCM)")
+        # Resample 24kHz → 16kHz
+        pcm_data = _resample_24k_to_16k(pcm_24k)
+        duration = len(pcm_data) / (SAMPLE_RATE * 2)  # 2 bytes per sample
+        logger.info(f"TTS generato: {len(text)} chars -> {duration:.1f}s audio ({len(pcm_data)} bytes PCM)")
         return pcm_data
 
-    except Exception as e:
-        logger.error(f"Edge TTS error: {e}", exc_info=True)
+    except asyncio.TimeoutError:
+        logger.error("Kokoro TTS timeout")
         return None
-
-
-async def _mp3_to_pcm(mp3_data: bytes) -> Optional[bytes]:
-    """Converte MP3 → PCM 16kHz mono int16 via ffmpeg (subprocess async)."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-i", "pipe:0",
-            "-f", "s16le",         # raw PCM int16
-            "-acodec", "pcm_s16le",
-            "-ar", str(SAMPLE_RATE),  # 16kHz
-            "-ac", "1",             # mono
-            "pipe:1",
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate(input=mp3_data)
-
-        if proc.returncode != 0:
-            logger.error(f"ffmpeg error (rc={proc.returncode}): {stderr.decode()[:200]}")
-            return None
-
-        return stdout
-
-    except FileNotFoundError:
-        logger.error("ffmpeg non trovato! Installare con: sudo apt install ffmpeg")
+    except aiohttp.ClientError as e:
+        logger.error(f"Kokoro TTS connection error: {e}")
         return None
     except Exception as e:
-        logger.error(f"MP3→PCM conversion error: {e}")
+        logger.error(f"Kokoro TTS error: {e}", exc_info=True)
         return None
 
 
@@ -137,16 +127,15 @@ def pcm_to_opus_frames(pcm_data: bytes) -> list[bytes]:
     return frames
 
 
-async def speak_to_device(text: str, device_id: str, voice: str = "it-IT-ElsaNeural") -> Tuple[bool, float]:
+async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
     """
     Genera TTS e invia frame Opus al device via WebSocket.
 
-    Flusso: text → Edge TTS → MP3 → ffmpeg → PCM 16kHz → Opus frames → WS binary → Device
+    Flusso: text -> Kokoro TTS -> PCM 24kHz -> resample 16kHz -> Opus frames -> WS binary -> Device
 
     Args:
         text: Testo da sintetizzare
         device_id: MAC address del device target
-        voice: Voce Edge TTS
 
     Returns:
         (success: bool, duration_seconds: float)
@@ -158,7 +147,7 @@ async def speak_to_device(text: str, device_id: str, voice: str = "it-IT-ElsaNeu
         return False, 0.0
 
     # Genera audio PCM
-    pcm_data = await generate_tts_audio(text, voice=voice)
+    pcm_data = await generate_tts_audio(text)
     if pcm_data is None:
         logger.error(f"speak_to_device: TTS generation failed per '{text[:50]}...'")
         return False, 0.0
@@ -174,7 +163,7 @@ async def speak_to_device(text: str, device_id: str, voice: str = "it-IT-ElsaNeu
 
     # Invia frame al device via WebSocket con pacing ~real-time.
     # Ogni frame = 20ms di audio. Senza pacing, centinaia di frame vengono
-    # sparati a raffica saturando il buffer TCP dell'ESP32 → connection reset.
+    # sparati a raffica saturando il buffer TCP dell'ESP32 -> connection reset.
     # Invio i primi BURST_FRAMES senza delay (pre-buffer), poi paco a ~18ms/frame.
     BURST_FRAMES = 5  # 100ms di pre-buffer iniziale
     FRAME_INTERVAL = 0.018  # ~18ms (leggermente sotto 20ms per evitare underrun)
