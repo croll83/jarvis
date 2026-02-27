@@ -1022,35 +1022,78 @@ _LIVE_SESSION_TTS_INSTRUCTIONS = (
     "7) Sound warm but efficient — think quick radio exchange, not essay."
 )
 
-# Activation phrases (matched after STT, case-insensitive, substring)
-_LIVE_SESSION_ACTIVATE_PHRASES = [
-    "avvia sessione live",
-    "avvia live session",
+# Activation: keyword-based (all keywords must be present, order-independent)
+# Handles: "avvia una sessione live", "avvia la live session", "inizia sessione live", etc.
+_LIVE_SESSION_ACTIVATE_KEYWORDS = [
+    {"sessione", "live"},  # "avvia una sessione live", "sessione live per favore"
+    {"live", "session"},   # "avvia una live session", "start live session"
 ]
+_LIVE_SESSION_ACTIVATE_VERBS = {
+    "avvia", "avviare", "inizia", "iniziare", "apri", "aprire",
+    "attiva", "attivare", "start", "parti", "partire",
+}
 
-# Deactivation phrases (matched during live session)
-_LIVE_SESSION_DEACTIVATE_PHRASES = [
-    "termina sessione",
-    "termina sessione live",
-    "fine sessione",
-    "fine sessione live",
-    "chiudi sessione",
-    "chiudi sessione live",
-    "stop sessione",
-    "esci dalla sessione",
+# Deactivation: keyword-based (same approach)
+_LIVE_SESSION_DEACTIVATE_KEYWORDS = [
+    {"termina", "sessione"},
+    {"fine", "sessione"},
+    {"chiudi", "sessione"},
+    {"stop", "sessione"},
+    {"esci", "sessione"},
+    {"end", "session"},
+    {"stop", "session"},
 ]
 
 
 def _is_live_session_activation(text: str) -> bool:
-    """Check if transcribed text is a live session activation command."""
-    t = text.lower().strip()
-    return any(phrase in t for phrase in _LIVE_SESSION_ACTIVATE_PHRASES)
+    """Check if transcribed text is a live session activation command.
+
+    Matches when text contains an activation verb AND a keyword set.
+    E.g.: 'avvia una sessione live' → verb 'avvia' + keywords {'sessione', 'live'} → True
+    """
+    words = set(text.lower().split())
+    has_verb = bool(words & _LIVE_SESSION_ACTIVATE_VERBS)
+    has_keywords = any(kw_set <= words for kw_set in _LIVE_SESSION_ACTIVATE_KEYWORDS)
+    return has_verb and has_keywords
 
 
 def _is_live_session_deactivation(text: str) -> bool:
     """Check if transcribed text is a live session deactivation command."""
-    t = text.lower().strip()
-    return any(phrase in t for phrase in _LIVE_SESSION_DEACTIVATE_PHRASES)
+    words = set(text.lower().split())
+    return any(kw_set <= words for kw_set in _LIVE_SESSION_DEACTIVATE_KEYWORDS)
+
+
+async def _activate_live_session(
+    device_id: str,
+    device_config: Optional[dict],
+    speaker_ctx: dict,
+    location: str,
+    room: str,
+):
+    """Resolve speaker and start live session. Used by both keyword fast-path and Qwen routing."""
+    _use_internal = device_config.get("use_internal_speaker", False) if device_config else False
+    target_speaker = None
+    if not _use_internal:
+        if device_config:
+            target_speaker = device_config.get("output_speaker")
+        if not target_speaker:
+            room_speakers_map = get_room_speakers(location)
+            target_speaker = room_speakers_map.get(room, None)
+
+    if target_speaker or _use_internal:
+        await start_live_session(
+            device_id=device_id,
+            speaker_id=speaker_ctx.get("speaker_id"),
+            speaker_name=speaker_ctx.get("speaker_name", "Sconosciuto"),
+            location_id=location,
+            room=room,
+            media_player_id=target_speaker,
+            use_internal_speaker=_use_internal,
+        )
+    else:
+        logger.warning(f"Live session: no speaker found for {device_id}, cannot activate")
+        from ws_audio_handler import notify_tts_done
+        await notify_tts_done(device_id)
 
 
 async def start_live_session(
@@ -2569,45 +2612,25 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         if speaker_ctx.get("speaker_id"):
             set_user_location(speaker_ctx["speaker_id"], location, "voice")
 
-        # ── LIVE SESSION ACTIVATION CHECK ─────────────────────────────────
-        # Detect "avvia sessione live" / "avvia live session" BEFORE routing.
-        # Uses the speaker ID from the normal pipeline to lock the session.
+        # ── LIVE SESSION ACTIVATION CHECK (fast-path keyword) ────────────
+        # Quick keyword check BEFORE Qwen to save ~100ms latency.
+        # Qwen also classifies SESSIONE_LIVE as fallback if keywords miss.
         if _is_live_session_activation(text):
-            logger.info(f"🎙️ Live session activation detected from {device_id}: '{text}'")
-            # Resolve target speaker (or internal speaker)
-            _use_internal = device_config.get("use_internal_speaker", False) if device_config else False
-            target_speaker = None
-            if not _use_internal:
-                if device_config:
-                    target_speaker = device_config.get("output_speaker")
-                if not target_speaker:
-                    room_speakers_map = get_room_speakers(location)
-                    target_speaker = room_speakers_map.get(room_value, None)
-
-            if target_speaker or _use_internal:
-                await start_live_session(
-                    device_id=device_id,
-                    speaker_id=speaker_ctx.get("speaker_id"),
-                    speaker_name=speaker_ctx.get("speaker_name", "Sconosciuto"),
-                    location_id=location,
-                    room=room_value,
-                    media_player_id=target_speaker,
-                    use_internal_speaker=_use_internal,
-                )
-            else:
-                logger.warning(f"Live session: no speaker found for {device_id}, cannot activate")
-                from ws_audio_handler import notify_tts_done
-                await notify_tts_done(device_id)
+            logger.info(f"🎙️ Live session activation (keyword match) from {device_id}: '{text}'")
+            await _activate_live_session(device_id, device_config, speaker_ctx, location, room_value)
             return
 
-        # 3-way pre-routing via Qwen 7B
+        # Pre-routing via Qwen 7B
         pre_route_start = time.time()
         pre_result = await pre_route(text)
         pre_route_ms = (time.time() - pre_route_start) * 1000
         classification = pre_result.get("classification", "ALTRO")
         logger.info(f"WS pre-route: {classification} (conf={pre_result.get('confidence', 0):.2f}, {pre_route_ms:.0f}ms)")
 
-        if classification == "DOMOTICA_CERTA":
+        if classification == "SESSIONE_LIVE":
+            logger.info(f"🎙️ Live session activation (Qwen) from {device_id}: '{text}'")
+            await _activate_live_session(device_id, device_config, speaker_ctx, location, room_value)
+        elif classification == "DOMOTICA_CERTA":
             await process_jarvis_logic(text, context)
         elif classification == "DOMOTICA_INCERTA":
             await _handle_openclaw_voice(text, context, hint="domotics")
