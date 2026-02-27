@@ -430,6 +430,12 @@ PROACTIVE_NIGHT_END = int(os.getenv("PROACTIVE_NIGHT_END", "5"))
 SECURITY_ANIMAL_LABELS = os.getenv("SECURITY_ANIMAL_LABELS", "cat,dog").split(",")
 
 # ===========================================================================
+# TTS ENGINE (Kokoro)
+# ===========================================================================
+KOKORO_TTS_URL = os.getenv("KOKORO_TTS_URL", "http://localhost:8890")
+KOKORO_TTS_VOICE = os.getenv("KOKORO_TTS_VOICE", "if_sara")
+
+# ===========================================================================
 # WS AUDIO + VAD (server-side audio reception via WebSocket + Opus)
 # ===========================================================================
 WS_AUDIO_SESSION_TIMEOUT = int(os.getenv("WS_AUDIO_SESSION_TIMEOUT", "60"))
