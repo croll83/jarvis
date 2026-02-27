@@ -604,6 +604,16 @@ async def ws_audio_endpoint(
                         conn.firmware_version = ctrl.get("fw", "unknown")
                         logger.info(f"Device {device_id}: persistent mode (fw={conn.firmware_version})")
 
+                        # Device reconnected — clean up stale live session if any
+                        try:
+                            from main import get_live_session, end_live_session
+                            stale_session = get_live_session(device_id)
+                            if stale_session:
+                                logger.warning(f"Device {device_id}: stale live session detected on reconnect — ending it")
+                                await end_live_session(device_id, reason="device_reconnect")
+                        except Exception as e:
+                            logger.debug(f"Device {device_id}: live session cleanup on hello: {e}")
+
                         # Push saved config to device (sensitivity, volume, etc.)
                         try:
                             from database import get_voice_device

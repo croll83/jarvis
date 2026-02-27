@@ -82,6 +82,7 @@ class DeviceConnection:
         self.state = DeviceState.IDLE
         self.firmware_version: str = "unknown"
         self.live_session: bool = False  # True during live session
+        self._ws_write_lock = asyncio.Lock()  # Serializza write verso device
 
         # Opus decoder (16 kHz mono, same as firmware encoder)
         self._opus_decoder = opuslib.Decoder(OPUS_SAMPLE_RATE, OPUS_CHANNELS)
@@ -105,14 +106,16 @@ class DeviceConnection:
     async def send_json(self, data: dict):
         """Send JSON to device."""
         try:
-            await self.ws.send_text(json.dumps(data))
+            async with self._ws_write_lock:
+                await self.ws.send_text(json.dumps(data))
         except Exception as e:
             logger.error(f"[{self.device_id}] send_json error: {e}")
 
     async def send_binary(self, data: bytes):
         """Send binary (TTS Opus) to device."""
         try:
-            await self.ws.send_bytes(data)
+            async with self._ws_write_lock:
+                await self.ws.send_bytes(data)
         except Exception as e:
             logger.error(f"[{self.device_id}] send_binary error: {e}")
 
