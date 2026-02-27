@@ -998,7 +998,8 @@ class LiveSession:
     speaker_name: str              # speaker name locked at activation
     location_id: str
     room: str
-    media_player_id: str
+    media_player_id: Optional[str]  # None when using internal speaker
+    use_internal_speaker: bool
     openclaw_session_user: str     # stable OpenClaw session key
     started_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
@@ -1058,7 +1059,8 @@ async def start_live_session(
     speaker_name: str,
     location_id: str,
     room: str,
-    media_player_id: str,
+    media_player_id: Optional[str],
+    use_internal_speaker: bool = False,
 ) -> LiveSession:
     """Create and register a new live session for a device."""
     # Build stable session key (same logic as _handle_openclaw_voice)
@@ -1074,30 +1076,38 @@ async def start_live_session(
         location_id=location_id,
         room=room,
         media_player_id=media_player_id,
+        use_internal_speaker=use_internal_speaker,
         openclaw_session_user=session_user,
     )
     _live_sessions[device_id] = session
 
     logger.info(f"🎙️ Live session STARTED: device={device_id}, room={room}, "
-                f"speaker={speaker_name}, session_user={session_user}")
+                f"speaker={speaker_name}, session_user={session_user}, "
+                f"internal_speaker={use_internal_speaker}")
 
     # Notify device + wakeword server relay
     from ws_audio_handler import notify_live_session_start
     await notify_live_session_start(device_id)
 
     # Confirm via TTS
-    await speak("Sessione live attivata. Parla pure.", media_player_id, location_id)
-
-    # Wait for TTS confirmation, then trigger first listen
-    text_length = len("Sessione live attivata. Parla pure.")
-    schedule_post_tts(
-        media_player_id=media_player_id,
-        location_id=location_id,
-        room=room,
-        device_id=device_id,
-        is_multi_turn=True,
-        text_length=text_length,
-    )
+    confirm_msg = "Sessione live attivata. Parla pure."
+    if use_internal_speaker:
+        from internal_tts import speak_to_device
+        success, duration = await speak_to_device(confirm_msg, device_id)
+        # Small delay for audio flush, then trigger first listen
+        await asyncio.sleep(0.15)
+        await trigger_device_listen(device_id, silent=True)
+    else:
+        await speak(confirm_msg, media_player_id, location_id)
+        text_length = len(confirm_msg)
+        schedule_post_tts(
+            media_player_id=media_player_id,
+            location_id=location_id,
+            room=room,
+            device_id=device_id,
+            is_multi_turn=True,
+            text_length=text_length,
+        )
 
     return session
 
@@ -1124,20 +1134,26 @@ async def end_live_session(device_id: str, reason: str = "unknown"):
     msg = goodbye_messages.get(reason, "Sessione live terminata.")
 
     try:
-        await speak(msg, session.media_player_id, session.location_id)
+        if session.use_internal_speaker:
+            from internal_tts import speak_to_device
+            success, _tts_dur = await speak_to_device(msg, device_id)
+            await asyncio.sleep(0.15)
+            from ws_audio_handler import notify_tts_done
+            await notify_tts_done(device_id)
+        else:
+            await speak(msg, session.media_player_id, session.location_id)
+            # Send tts_done after goodbye message to close relay and go IDLE
+            text_length = len(msg)
+            schedule_post_tts(
+                media_player_id=session.media_player_id,
+                location_id=session.location_id,
+                room=session.room,
+                device_id=device_id,
+                is_multi_turn=False,  # Not multi-turn: session is over, go IDLE
+                text_length=text_length,
+            )
     except Exception as e:
         logger.error(f"Live session goodbye TTS failed: {e}")
-
-    # Send tts_done after goodbye message to close relay and go IDLE
-    text_length = len(msg)
-    schedule_post_tts(
-        media_player_id=session.media_player_id,
-        location_id=session.location_id,
-        room=session.room,
-        device_id=device_id,
-        is_multi_turn=False,  # Not multi-turn: session is over, go IDLE
-        text_length=text_length,
-    )
 
     logger.info(f"🎙️ Live session ENDED: device={device_id}, reason={reason}, "
                 f"duration={duration:.0f}s, turns={session.turn_count}")
@@ -1200,12 +1216,21 @@ async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
     }
 
     # Build streaming TTS callback
-    async def _live_tts_chunk(chunk: str, is_first: bool):
-        logger.info(f"🎙️ Live TTS chunk ({len(chunk)} chars): {chunk[:80]}...")
-        try:
-            await speak(chunk, session.media_player_id, session.location_id)
-        except Exception as e:
-            logger.error(f"Live TTS chunk error: {e}")
+    if session.use_internal_speaker:
+        from internal_tts import speak_to_device
+        async def _live_tts_chunk(chunk: str, is_first: bool):
+            logger.info(f"🎙️ Live TTS chunk internal ({len(chunk)} chars): {chunk[:80]}...")
+            try:
+                success, duration = await speak_to_device(chunk, device_id)
+            except Exception as e:
+                logger.error(f"Live TTS chunk error: {e}")
+    else:
+        async def _live_tts_chunk(chunk: str, is_first: bool):
+            logger.info(f"🎙️ Live TTS chunk ({len(chunk)} chars): {chunk[:80]}...")
+            try:
+                await speak(chunk, session.media_player_id, session.location_id)
+            except Exception as e:
+                logger.error(f"Live TTS chunk error: {e}")
 
     # Use live session TTS instructions (ultra-concise)
     # We call forward_to_openclaw with the live session context
@@ -1218,19 +1243,26 @@ async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
     # 6. Save assistant response
     save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
 
-    # 7. Schedule post-TTS: always trigger_listen (multi-turn always on)
+    # 7. Post-TTS: always trigger_listen (multi-turn always on in live session)
     if response:
-        await set_speaking_state(session.room, True, device_id)
-        schedule_post_tts(
-            media_player_id=session.media_player_id,
-            location_id=session.location_id,
-            room=session.room,
-            device_id=device_id,
-            is_multi_turn=True,  # Always re-trigger listen in live session
-            text_length=len(response),
-        )
-        logger.info(f"🎙️ Live session: TTS scheduled ({len(response)} chars), "
-                    f"will trigger_listen after completion")
+        if session.use_internal_speaker:
+            # Internal speaker: small delay for audio flush, then re-trigger listen
+            await asyncio.sleep(0.15)
+            await trigger_device_listen(device_id, silent=True)
+            logger.info(f"🎙️ Live session: internal TTS done ({len(response)} chars), "
+                        f"triggered listen on {device_id}")
+        else:
+            await set_speaking_state(session.room, True, device_id)
+            schedule_post_tts(
+                media_player_id=session.media_player_id,
+                location_id=session.location_id,
+                room=session.room,
+                device_id=device_id,
+                is_multi_turn=True,  # Always re-trigger listen in live session
+                text_length=len(response),
+            )
+            logger.info(f"🎙️ Live session: TTS scheduled ({len(response)} chars), "
+                        f"will trigger_listen after completion")
     else:
         # Empty response — still re-trigger listen
         await trigger_device_listen(device_id, silent=True)
@@ -2542,15 +2574,17 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         # Uses the speaker ID from the normal pipeline to lock the session.
         if _is_live_session_activation(text):
             logger.info(f"🎙️ Live session activation detected from {device_id}: '{text}'")
-            # Resolve target speaker
+            # Resolve target speaker (or internal speaker)
+            _use_internal = device_config.get("use_internal_speaker", False) if device_config else False
             target_speaker = None
-            if device_config:
-                target_speaker = device_config.get("output_speaker")
-            if not target_speaker:
-                room_speakers_map = get_room_speakers(location)
-                target_speaker = room_speakers_map.get(room_value, None)
+            if not _use_internal:
+                if device_config:
+                    target_speaker = device_config.get("output_speaker")
+                if not target_speaker:
+                    room_speakers_map = get_room_speakers(location)
+                    target_speaker = room_speakers_map.get(room_value, None)
 
-            if target_speaker:
+            if target_speaker or _use_internal:
                 await start_live_session(
                     device_id=device_id,
                     speaker_id=speaker_ctx.get("speaker_id"),
@@ -2558,6 +2592,7 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
                     location_id=location,
                     room=room_value,
                     media_player_id=target_speaker,
+                    use_internal_speaker=_use_internal,
                 )
             else:
                 logger.warning(f"Live session: no speaker found for {device_id}, cannot activate")
