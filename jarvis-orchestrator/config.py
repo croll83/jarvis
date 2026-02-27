@@ -434,6 +434,7 @@ SECURITY_ANIMAL_LABELS = os.getenv("SECURITY_ANIMAL_LABELS", "cat,dog").split(",
 # ===========================================================================
 KOKORO_TTS_URL = os.getenv("KOKORO_TTS_URL", "http://localhost:8890")
 KOKORO_TTS_VOICE = os.getenv("KOKORO_TTS_VOICE", "if_sara")
+TTS_PREPROCESS_ENABLED = os.getenv("TTS_PREPROCESS_ENABLED", "true").lower() == "true"
 
 # ===========================================================================
 # WS AUDIO + VAD (server-side audio reception via WebSocket + Opus)
