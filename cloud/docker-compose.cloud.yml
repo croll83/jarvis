@@ -1,6 +1,6 @@
 # =============================================================================
 # JARVIS Cloud Stack
-# Deploy su VPS senza GPU - Usa API esterne per AI
+# Deploy su VPS senza GPU - Usa API esterne per AI + Kokoro TTS (CPU)
 #
 # NOTA: OpenClaw gira bare-metal (non in Docker) sulla stessa macchina.
 # NOTA: Tailscale gira host-level (non in Docker) per connettere HA remoti,
@@ -13,6 +13,22 @@
 
 services:
   # ---------------------------------------------------------------------------
+  # TTS - Kokoro-82M (CPU, voce italiana if_sara)
+  # ---------------------------------------------------------------------------
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.1
+    container_name: jarvis_kokoro_tts
+    ports:
+      - "8890:8880"
+    environment:
+      - KOKORO_DEFAULT_VOICE=if_sara
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # ---------------------------------------------------------------------------
   # Orchestrator - JARVIS Core (OpenClaw Skill)
   # ---------------------------------------------------------------------------
   orchestrator:
@@ -20,6 +36,9 @@ services:
       context: ../jarvis-orchestrator
       dockerfile: Dockerfile
     container_name: jarvis_orchestrator
+    depends_on:
+      kokoro-tts:
+        condition: service_started
     network_mode: host
     volumes:
       - ../data:/app/data
@@ -33,6 +52,8 @@ services:
       - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
       # Gateway WS for exec approval operator (same host/port, wss:// scheme)
       - OPENCLAW_WS_URL=${OPENCLAW_WS_URL:-wss://openclaw.mintwork.it:18789}
+      # TTS (Kokoro — porta esposta su host via kokoro-tts service)
+      - KOKORO_TTS_URL=http://localhost:8890
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
