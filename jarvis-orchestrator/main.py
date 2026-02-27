@@ -3906,14 +3906,30 @@ async def process_jarvis_logic(text: str, context: dict):
                             pass
                         logger.info(f"VirtualMic HOME_CONTROL response stored for {vmic_req_id} (no TTS)")
                 else:
-                    # AtomS3R: suono breve dallo speaker della stanza
-                    room = context.get("room", "salotto").lower()
-                    room_speakers = get_room_speakers(target_location)
-                    if room_speakers:
-                        target_player = room_speakers.get(room) or next(iter(room_speakers.values()), config.DEFAULT_FALLBACK_SPEAKER)
+                    # AtomS3R: feedback rapido
+                    device_id = context.get("device_id", "unknown")
+                    if use_internal_speaker and device_id != "unknown":
+                        # Speaker interno: breve TTS via Opus streaming
+                        from internal_tts import speak_to_device
+                        from ws_audio_handler import notify_tts_done
+                        feedback_text = response if not success else "Fatto!"
+                        try:
+                            await speak_to_device(feedback_text, device_id)
+                        except Exception as e:
+                            logger.error(f"Internal speaker feedback failed: {e}")
+                        await asyncio.sleep(0.15)
+                        await notify_tts_done(device_id)
                     else:
-                        target_player = config.DEFAULT_FALLBACK_SPEAKER
-                    await quick_feedback(success, target_player, err, target_location)
+                        # Speaker Alexa della stanza
+                        from ws_audio_handler import notify_tts_done
+                        room = context.get("room", "salotto").lower()
+                        room_speakers = get_room_speakers(target_location)
+                        if room_speakers:
+                            target_player = room_speakers.get(room) or next(iter(room_speakers.values()), config.DEFAULT_FALLBACK_SPEAKER)
+                        else:
+                            target_player = config.DEFAULT_FALLBACK_SPEAKER
+                        await quick_feedback(success, target_player, err, target_location)
+                        await notify_tts_done(device_id)
             else:
                 # Telegram o quick feedback disabilitato: risposta TTS completa
                 # Solo in caso di errore forza il TTS, altrimenti suono

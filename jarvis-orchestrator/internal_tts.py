@@ -227,6 +227,89 @@ def _preprocess_tts_text(text: str) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# TTS Text Preprocessing — LLM (opzionale, disabilitato di default)
+# ---------------------------------------------------------------------------
+_TTS_PREPROCESS_PROMPT = (
+    "Sei un preprocessore di testo per un motore TTS italiano (Kokoro). "
+    "Il tuo compito è preparare il testo per una lettura naturale ad alta voce.\n\n"
+    "Regole:\n"
+    "1. Parole inglesi comuni: translittera in fonetica italiana "
+    "(es. \"trading\" → \"tréiding\", \"monitor\" → \"mònitor\", \"budget\" → \"bàdget\", "
+    "\"server\" → \"sèrver\", \"router\" → \"ràuter\", \"file\" → \"fàil\")\n"
+    "2. Numeri: scrivi in lettere (es. \"3\" → \"tre\", \"2024\" → \"duemilaventiquattro\")\n"
+    "3. Abbreviazioni: espandi (es. \"ecc.\" → \"eccetera\", \"km\" → \"chilometri\")\n"
+    "4. Accenti tonici ambigui: aggiungi accento grafico dove la pronuncia potrebbe "
+    "essere sbagliata (es. \"monitora\" → \"monìtora\", \"subito\" → \"sùbito\")\n"
+    "5. NON cambiare il significato, la struttura o il contenuto della frase\n"
+    "6. NON aggiungere spiegazioni, rispondi SOLO con il testo trasformato"
+)
+
+
+async def _preprocess_tts_text_llm(text: str) -> str:
+    """Pre-processa testo per TTS via LLM. Disabilitato di default (TTS_PREPROCESS_LLM=true)."""
+    if not _cfg.TTS_PREPROCESS_LLM or len(text) < 10:
+        return text
+
+    t0 = time.monotonic()
+    try:
+        if _cfg.AI_BACKEND == "api" and _cfg.OPENROUTER_API_KEY:
+            headers = {
+                "Authorization": f"Bearer {_cfg.OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": _cfg.OPENROUTER_REFERER,
+                "X-Title": _cfg.OPENROUTER_TITLE,
+            }
+            payload = {
+                "model": _cfg.OPENROUTER_ROUTER_MODEL,
+                "messages": [
+                    {"role": "system", "content": _TTS_PREPROCESS_PROMPT},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 500,
+            }
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{_cfg.OPENROUTER_API_URL}/chat/completions",
+                    headers=headers, json=payload,
+                ) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        content = result["choices"][0]["message"]["content"].strip()
+                        if content:
+                            elapsed = time.monotonic() - t0
+                            logger.info(f"TTS LLM preprocess ({elapsed:.2f}s): '{text[:40]}...' -> '{content[:40]}...'")
+                            return content
+        else:
+            payload = {
+                "model": _cfg.ROUTER_MODEL,
+                "messages": [
+                    {"role": "system", "content": _TTS_PREPROCESS_PROMPT},
+                    {"role": "user", "content": text},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.2, "num_predict": 500},
+            }
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    _cfg.OLLAMA_CHAT_URL, json=payload, timeout=timeout,
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        content = data.get("message", {}).get("content", "").strip()
+                        if content:
+                            elapsed = time.monotonic() - t0
+                            logger.info(f"TTS LLM preprocess ({elapsed:.2f}s): '{text[:40]}...' -> '{content[:40]}...'")
+                            return content
+    except Exception as e:
+        logger.warning(f"TTS LLM preprocess failed, using original: {e}")
+
+    return text
+
+
 async def generate_tts_audio(text: str) -> Optional[bytes]:
     """
     Genera audio PCM 16kHz mono int16 da testo (non-streaming, full buffer).
@@ -307,6 +390,8 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
 
     # Pre-processing deterministico: markdown, numeri, translittering inglese
     text = _preprocess_tts_text(text)
+    # Pre-processing LLM opzionale (disabilitato di default)
+    text = await _preprocess_tts_text_llm(text)
 
     url = f"{_cfg.KOKORO_TTS_URL}/v1/audio/speech"
     payload = {
