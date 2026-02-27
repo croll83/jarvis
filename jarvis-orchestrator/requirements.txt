@@ -36,4 +36,5 @@ chromadb>=0.4.0
 opuslib>=3.0.1
 silero-vad>=5.1
 
-# Internal TTS (Kokoro via HTTP — no extra deps needed, uses aiohttp + scipy)
+# Internal TTS (Kokoro via HTTP)
+num2words>=0.5.0
