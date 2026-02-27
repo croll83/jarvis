@@ -1010,6 +1010,28 @@ class LiveSession:
 
 _live_sessions: Dict[str, LiveSession] = {}
 
+
+@dataclass
+class PendingLiveSession:
+    """Pre-session negotiation state when speaker is not recognized."""
+    device_id: str
+    device_config: Optional[dict]
+    speaker_ctx: dict
+    location: str
+    room: str
+    created_at: float = field(default_factory=time.time)
+    attempts: int = 0
+    max_attempts: int = 2
+    timeout_s: float = 30.0
+
+
+_pending_live_sessions: Dict[str, PendingLiveSession] = {}
+
+# Keyword sets for pending session confirmation
+_CONFIRM_YES = {"sì", "si", "ok", "vai", "certo", "procedi", "avvia", "yes", "sí"}
+_CONFIRM_NO = {"no", "annulla", "lascia", "niente", "stop", "esci"}
+_RETRY_ID = {"sono", "riconoscimi", "riconoscere", "prova", "riprova", "identifica", "identificami"}
+
 # TTS instructions for live session: ultra-concise, no fluff
 _LIVE_SESSION_TTS_INSTRUCTIONS = (
     "CRITICAL: You are in a LIVE VOICE SESSION — a real-time conversation like a phone call. "
@@ -1070,7 +1092,11 @@ async def _activate_live_session(
     location: str,
     room: str,
 ):
-    """Resolve speaker and start live session. Used by both keyword fast-path and Qwen routing."""
+    """Resolve speaker and start live session. Used by both keyword fast-path and Qwen routing.
+
+    If speaker is recognized → immediate start with personalized greeting.
+    If not recognized → enter pending state, ask for confirmation.
+    """
     _use_internal = device_config.get("use_internal_speaker", False) if device_config else False
     target_speaker = None
     if not _use_internal:
@@ -1080,20 +1106,169 @@ async def _activate_live_session(
             room_speakers_map = get_room_speakers(location)
             target_speaker = room_speakers_map.get(room, None)
 
-    if target_speaker or _use_internal:
+    if not (target_speaker or _use_internal):
+        logger.warning(f"Live session: no speaker found for {device_id}, cannot activate")
+        from ws_audio_handler import notify_tts_done
+        await notify_tts_done(device_id)
+        return
+
+    # Speaker recognized → immediate start with greeting
+    if speaker_ctx.get("speaker_identified"):
+        name = speaker_ctx.get("speaker_name", "")
+        greeting = f"Ciao {name}, sessione live attivata."
         await start_live_session(
             device_id=device_id,
             speaker_id=speaker_ctx.get("speaker_id"),
-            speaker_name=speaker_ctx.get("speaker_name", "Sconosciuto"),
+            speaker_name=name,
             location_id=location,
             room=room,
             media_player_id=target_speaker,
             use_internal_speaker=_use_internal,
+            greeting=greeting,
         )
+        return
+
+    # Speaker NOT recognized → pending state, ask for confirmation
+    pending = PendingLiveSession(
+        device_id=device_id,
+        device_config=device_config,
+        speaker_ctx=speaker_ctx,
+        location=location,
+        room=room,
+    )
+    _pending_live_sessions[device_id] = pending
+    logger.info(f"🎙️ Live session PENDING: speaker not recognized for {device_id}, asking confirmation")
+
+    # TTS question + trigger listen for response
+    question = "Non ti ho riconosciuto. Vuoi avviare una sessione live anonima?"
+    if _use_internal:
+        from internal_tts import speak_to_device
+        await speak_to_device(question, device_id)
+        await asyncio.sleep(0.15)
+        await trigger_device_listen(device_id, silent=True)
     else:
-        logger.warning(f"Live session: no speaker found for {device_id}, cannot activate")
+        await speak(question, target_speaker, location)
+        schedule_post_tts(
+            media_player_id=target_speaker,
+            location_id=location,
+            room=room,
+            device_id=device_id,
+            is_multi_turn=True,
+            text_length=len(question),
+        )
+
+
+async def _handle_pending_live_session(device_id: str, audio_bytes: bytes):
+    """Handle audio response during pre-live-session speaker verification.
+
+    Called from _process_ws_audio() when device has a pending live session.
+    Processes the user's yes/no/re-id response.
+    """
+    pending = _pending_live_sessions.get(device_id)
+    if not pending:
+        return
+
+    # Check timeout
+    if time.time() - pending.created_at > pending.timeout_s:
+        logger.info(f"🎙️ Pending live session TIMEOUT for {device_id}")
+        _pending_live_sessions.pop(device_id, None)
         from ws_audio_handler import notify_tts_done
         await notify_tts_done(device_id)
+        return
+
+    # Audio normalize → STT
+    import numpy as _np_pend
+    _raw = _np_pend.frombuffer(audio_bytes, dtype=_np_pend.int16).astype(_np_pend.float32)
+    _peak = _np_pend.max(_np_pend.abs(_raw))
+    if _peak > 0:
+        _gain = min(28000.0 / _peak, 20.0)
+        _raw = (_raw * _gain).clip(-32768, 32767)
+    clean_audio = _raw.astype(_np_pend.int16).tobytes()
+
+    text = await transcribe_audio(clean_audio)
+    if not text or not text.strip():
+        logger.info(f"🎙️ Pending live session: no speech, re-triggering listen")
+        await trigger_device_listen(device_id, silent=True)
+        return
+
+    logger.info(f"🎙️ Pending live session response from {device_id}: '{text}'")
+    words = set(text.lower().split())
+
+    _use_internal = pending.device_config.get("use_internal_speaker", False) if pending.device_config else False
+
+    # Helper: send TTS + trigger listen for this pending session
+    async def _pending_tts_and_listen(msg: str):
+        if _use_internal:
+            from internal_tts import speak_to_device
+            await speak_to_device(msg, device_id)
+            await asyncio.sleep(0.15)
+            await trigger_device_listen(device_id, silent=True)
+        else:
+            target = pending.device_config.get("output_speaker") if pending.device_config else None
+            if not target:
+                room_speakers_map = get_room_speakers(pending.location)
+                target = room_speakers_map.get(pending.room)
+            if target:
+                await speak(msg, target, pending.location)
+                schedule_post_tts(
+                    media_player_id=target, location_id=pending.location,
+                    room=pending.room, device_id=device_id,
+                    is_multi_turn=True, text_length=len(msg),
+                )
+
+    # Helper: resolve speaker and start session
+    async def _start_with_ctx(ctx: dict, greet: Optional[str] = None):
+        _pending_live_sessions.pop(device_id, None)
+        target = pending.device_config.get("output_speaker") if pending.device_config else None
+        if not target and not _use_internal:
+            room_speakers_map = get_room_speakers(pending.location)
+            target = room_speakers_map.get(pending.room)
+        await start_live_session(
+            device_id=device_id,
+            speaker_id=ctx.get("speaker_id"),
+            speaker_name=ctx.get("speaker_name", "Anonimo"),
+            location_id=pending.location,
+            room=pending.room,
+            media_player_id=target,
+            use_internal_speaker=_use_internal,
+            greeting=greet,
+        )
+
+    # Check for re-identification request ("sono Marco", "riconoscimi", "prova")
+    if words & _RETRY_ID:
+        pending.attempts += 1
+        logger.info(f"🎙️ Pending live session: re-ID attempt #{pending.attempts}")
+
+        # Run speaker ID on THIS audio (the user just spoke to identify themselves)
+        loop = asyncio.get_running_loop()
+        new_ctx = await loop.run_in_executor(None, build_speaker_context, audio_bytes, "AtomS3R")
+
+        if new_ctx.get("speaker_identified"):
+            name = new_ctx.get("speaker_name", "")
+            logger.info(f"🎙️ Re-ID successful: {name}")
+            await _start_with_ctx(new_ctx, f"Ciao {name}, sessione live attivata.")
+        elif pending.attempts >= pending.max_attempts:
+            logger.info(f"🎙️ Re-ID failed after {pending.attempts} attempts, starting anonymous")
+            await _start_with_ctx(pending.speaker_ctx, "Non riesco a riconoscerti. Sessione avviata come anonimo.")
+        else:
+            await _pending_tts_and_listen("Ancora non ti riconosco. Prova di nuovo, oppure di' sì per una sessione anonima.")
+        return
+
+    # Check for "no" / reject
+    if words & _CONFIRM_NO:
+        logger.info(f"🎙️ Pending live session REJECTED by user for {device_id}")
+        _pending_live_sessions.pop(device_id, None)
+        if _use_internal:
+            from internal_tts import speak_to_device
+            await speak_to_device("Ok, annullato.", device_id)
+            await asyncio.sleep(0.15)
+        from ws_audio_handler import notify_tts_done
+        await notify_tts_done(device_id)
+        return
+
+    # "sì" or any other response → start anonymous session
+    logger.info(f"🎙️ Pending live session ACCEPTED (anonymous) for {device_id}")
+    await _start_with_ctx(pending.speaker_ctx, "Sessione live anonima attivata.")
 
 
 async def start_live_session(
@@ -1104,8 +1279,12 @@ async def start_live_session(
     room: str,
     media_player_id: Optional[str],
     use_internal_speaker: bool = False,
+    greeting: Optional[str] = None,
 ) -> LiveSession:
     """Create and register a new live session for a device."""
+    # Clean up any pending session for this device
+    _pending_live_sessions.pop(device_id, None)
+
     # Build stable session key (same logic as _handle_openclaw_voice)
     if speaker_id:
         session_user = f"live-speaker-{speaker_id}"
@@ -1133,7 +1312,7 @@ async def start_live_session(
     await notify_live_session_start(device_id)
 
     # Confirm via TTS
-    confirm_msg = "Sessione live attivata. Parla pure."
+    confirm_msg = greeting or "Sessione live attivata. Parla pure."
     if use_internal_speaker:
         from internal_tts import speak_to_device
         success, duration = await speak_to_device(confirm_msg, device_id)
@@ -1312,10 +1491,12 @@ async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
 
 
 async def live_session_monitor():
-    """Background task: check live session timeouts every 10s."""
+    """Background task: check live session and pending session timeouts every 10s."""
     while True:
         await asyncio.sleep(10)
         now = time.time()
+
+        # Active live sessions
         for device_id, session in list(_live_sessions.items()):
             if now - session.last_activity > session.max_inactivity_s:
                 logger.info(f"🎙️ Live session timeout (inactivity): {device_id}")
@@ -1323,6 +1504,14 @@ async def live_session_monitor():
             elif now - session.started_at > session.max_duration_s:
                 logger.info(f"🎙️ Live session timeout (max duration): {device_id}")
                 await end_live_session(device_id, reason="max_duration")
+
+        # Pending live sessions (speaker verification timeout)
+        for device_id, pending in list(_pending_live_sessions.items()):
+            if now - pending.created_at > pending.timeout_s:
+                logger.info(f"🎙️ Pending live session timeout: {device_id}")
+                _pending_live_sessions.pop(device_id, None)
+                from ws_audio_handler import notify_tts_done
+                await notify_tts_done(device_id)
 
 
 def get_live_session(device_id: str) -> Optional[LiveSession]:
@@ -2482,6 +2671,12 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
     audio_bytes: PCM 16-bit mono 16 kHz
     """
     logger.info(f"WS speech received from {device_id}: {len(audio_bytes)} bytes")
+
+    # ── PENDING LIVE SESSION (speaker verification) ──────────────────────
+    if device_id in _pending_live_sessions:
+        logger.info(f"🎙️ Pending live session for {device_id} — handling verification response")
+        await _handle_pending_live_session(device_id, audio_bytes)
+        return
 
     # ── LIVE SESSION BYPASS ──────────────────────────────────────────────
     # If device is in a live session, skip speaker ID, routing, normalize.
