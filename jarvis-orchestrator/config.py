@@ -92,7 +92,7 @@ TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 # ===========================================================================
 # MODEL NAMES (richiedono che i modelli siano caricati in Ollama)
 # ===========================================================================
-ROUTER_MODEL = "qwen2.5:7b-instruct-q4_K_M"
+ROUTER_MODEL = os.getenv("ROUTER_MODEL", "qwen2.5:7b-instruct-q4_K_M")
 
 # ===========================================================================
 # MEMORY CONTEXT LIMITS (potenzialmente modificabili a runtime ma meno critici)
@@ -219,7 +219,7 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 # --- API Model Names ---
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
-OPENROUTER_ROUTER_MODEL = "qwen/qwen-2.5-7b-instruct"
+OPENROUTER_ROUTER_MODEL = os.getenv("OPENROUTER_ROUTER_MODEL", "qwen/qwen-2.5-7b-instruct")
 GEMINI_REASONING_MODEL = "gemini-2.0-flash"
 
 # --- API Timeouts (seconds) ---
