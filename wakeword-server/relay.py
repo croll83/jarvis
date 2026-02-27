@@ -33,6 +33,7 @@ class OrchestratorRelay:
         self._on_vps_message = on_vps_message
         self._ws: Optional[ClientConnection] = None
         self._recv_task: Optional[asyncio.Task] = None
+        self._write_lock = asyncio.Lock()  # Serializza write per evitare drain concorrenti
 
     @property
     def is_connected(self) -> bool:
@@ -51,8 +52,7 @@ class OrchestratorRelay:
         try:
             self._ws = await websockets.connect(
                 url,
-                ping_interval=30,
-                ping_timeout=10,
+                ping_interval=None,  # Disabilitato: il relay è attivo solo durante sessioni, no keepalive necessario
                 close_timeout=5,
                 max_size=2**20,  # 1 MB
             )
@@ -81,7 +81,8 @@ class OrchestratorRelay:
             logger.warning(f"[{self.device_id}] Relay send_text but not connected")
             return
         try:
-            await self._ws.send(text)
+            async with self._write_lock:
+                await self._ws.send(text)
         except Exception as e:
             logger.error(f"[{self.device_id}] Relay send_text error: {e}")
 
@@ -90,7 +91,8 @@ class OrchestratorRelay:
         if not self.is_connected:
             return
         try:
-            await self._ws.send(data)
+            async with self._write_lock:
+                await self._ws.send(data)
         except Exception as e:
             logger.error(f"[{self.device_id}] Relay send_binary error: {e}")
 

@@ -172,14 +172,23 @@ async def speak_to_device(text: str, device_id: str, voice: str = "it-IT-ElsaNeu
     duration = len(pcm_data) / (SAMPLE_RATE * 2)
     logger.info(f"speak_to_device({device_id}): invio {len(opus_frames)} frame Opus ({duration:.1f}s)")
 
-    # Invia frame al device via WebSocket
+    # Invia frame al device via WebSocket con pacing ~real-time.
+    # Ogni frame = 20ms di audio. Senza pacing, centinaia di frame vengono
+    # sparati a raffica saturando il buffer TCP dell'ESP32 → connection reset.
+    # Invio i primi BURST_FRAMES senza delay (pre-buffer), poi paco a ~18ms/frame.
+    BURST_FRAMES = 5  # 100ms di pre-buffer iniziale
+    FRAME_INTERVAL = 0.018  # ~18ms (leggermente sotto 20ms per evitare underrun)
+
     sent_count = 0
-    for frame in opus_frames:
+    for i, frame in enumerate(opus_frames):
         success = await send_tts_frame(device_id, frame)
         if not success:
             logger.error(f"speak_to_device: invio frame fallito dopo {sent_count}/{len(opus_frames)} frame")
             return False, 0.0
         sent_count += 1
+        # Pacing: burst iniziale poi ~real-time
+        if i >= BURST_FRAMES:
+            await asyncio.sleep(FRAME_INTERVAL)
 
     logger.info(f"speak_to_device({device_id}): {sent_count} frame inviati ({duration:.1f}s)")
     return True, duration
