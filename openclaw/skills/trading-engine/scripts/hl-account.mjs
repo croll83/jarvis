@@ -13,6 +13,7 @@ const getArg = (name, def) => {
   return idx >= 0 && args[idx + 1] ? args[idx + 1] : def;
 };
 const address = getArg('address', undefined);
+const hasFlag = (name) => args.includes(`--${name}`);
 
 async function main() {
   const hl = new HLClient({ address });
@@ -20,7 +21,21 @@ async function main() {
   switch (cmd) {
     case 'balance': {
       const b = await hl.getBalance(address);
-      console.log(JSON.stringify(b, null, 2));
+      if (hasFlag('json')) {
+        console.log(JSON.stringify(b, null, 2));
+      } else {
+        console.log(`Overview: $${b.overview}`);
+        console.log(`  Perps:   $${b.perps.equity}`);
+        console.log(`  Spot (${b.spot.count}): $${b.spot.total}`);
+        for (const s of b.spot.balances) {
+          console.log(`    ${s.coin}: ${s.amount} ($${s.usdValue.toFixed(2)})`);
+        }
+        console.log(`  Vault:   $${b.vault}`);
+        console.log(`  Staked:  $${b.staked}`);
+        if (parseFloat(b.perps.marginUsed) > 0) {
+          console.log(`  Margin Used: $${b.perps.marginUsed} (${b.perps.marginRatio})`);
+        }
+      }
       break;
     }
     case 'positions': {

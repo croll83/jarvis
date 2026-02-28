@@ -79,10 +79,18 @@ async function main() {
   console.log('=== JARVIS Trading Report ===');
   console.log(`Date: ${today}`);
   console.log('');
-  console.log('--- Account ---');
-  console.log(`  Equity: $${balance.equity}`);
-  console.log(`  Available: $${balance.available}`);
-  console.log(`  Margin Used: $${balance.marginUsed} (${balance.marginRatio})`);
+  console.log('--- Account Overview ---');
+  console.log(`  Total: $${balance.overview}`);
+  console.log(`  Perps:   $${balance.perps.equity}`);
+  console.log(`  Spot (${balance.spot.count}): $${balance.spot.total}`);
+  for (const s of balance.spot.balances) {
+    console.log(`    ${s.coin}: ${s.amount} ($${s.usdValue.toFixed(2)})`);
+  }
+  console.log(`  Vault:   $${balance.vault}`);
+  console.log(`  Staked:  $${balance.staked}`);
+  if (parseFloat(balance.perps.marginUsed) > 0) {
+    console.log(`  Margin Used: $${balance.perps.marginUsed} (${balance.perps.marginRatio})`);
+  }
   console.log('');
 
   if (positions.length > 0) {

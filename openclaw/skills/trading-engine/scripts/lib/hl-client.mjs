@@ -60,14 +60,65 @@ export class HLClient {
   async getBalance(address) {
     const sdk = await this.sdk();
     const target = address || this.address;
-    const state = await sdk.info.perpetuals.getClearinghouseState(target);
-    const equity = parseFloat(state.marginSummary.accountValue);
-    const margin = parseFloat(state.marginSummary.totalMarginUsed);
+
+    // Fetch all account sections in parallel
+    const [perpState, spotState, vaultEquities, delegatorSummary] = await Promise.all([
+      sdk.info.perpetuals.getClearinghouseState(target),
+      sdk.info.spot.getSpotClearinghouseState(target),
+      sdk.info.getUserVaultEquities(target).catch(() => []),
+      sdk.info.getDelegatorSummary(target).catch(() => null),
+    ]);
+
+    // Perps
+    const perpEquity = parseFloat(perpState.marginSummary.accountValue);
+    const margin = parseFloat(perpState.marginSummary.totalMarginUsed);
+
+    // Spot — value each token. USDC is 1:1, others need price lookup.
+    const spotBalances = spotState.balances || [];
+    let spotTotal = 0;
+    const spotDetails = [];
+    if (spotBalances.length > 0) {
+      const mids = await sdk.info.getAllMids();
+      for (const b of spotBalances) {
+        const total = parseFloat(b.total);
+        if (total === 0) continue;
+        let usdValue;
+        const coinName = b.coin.replace(/-SPOT$/, '');
+        if (['USDC', 'USDT', 'USDT0', 'USDE', 'USDH'].includes(coinName)) {
+          usdValue = total;
+        } else {
+          const price = parseFloat(mids[coinName] || 0);
+          usdValue = total * price;
+        }
+        spotTotal += usdValue;
+        spotDetails.push({ coin: coinName, amount: total, usdValue: usdValue });
+      }
+    }
+
+    // Vaults
+    const vaultTotal = (vaultEquities || []).reduce((sum, v) => sum + parseFloat(v.equity || 0), 0);
+
+    // Staked
+    const stakedTotal = delegatorSummary ? parseFloat(delegatorSummary.delegated || 0) : 0;
+
+    // Overview
+    const overview = perpEquity + spotTotal + vaultTotal + stakedTotal;
+
     return {
-      equity: equity.toFixed(2),
-      available: (equity - margin).toFixed(2),
-      marginUsed: margin.toFixed(2),
-      marginRatio: equity > 0 ? ((margin / equity) * 100).toFixed(1) + '%' : '0%',
+      overview: overview.toFixed(2),
+      perps: {
+        equity: perpEquity.toFixed(2),
+        available: (perpEquity - margin).toFixed(2),
+        marginUsed: margin.toFixed(2),
+        marginRatio: perpEquity > 0 ? ((margin / perpEquity) * 100).toFixed(1) + '%' : '0%',
+      },
+      spot: {
+        total: spotTotal.toFixed(2),
+        count: spotDetails.length,
+        balances: spotDetails,
+      },
+      vault: vaultTotal.toFixed(2),
+      staked: stakedTotal.toFixed(2),
     };
   }
 
@@ -92,7 +143,7 @@ export class HLClient {
 
   async getOrders() {
     const sdk = await this.sdk();
-    const orders = await sdk.info.perpetuals.getOpenOrders(this.address);
+    const orders = await sdk.info.getUserOpenOrders(this.address);
     return orders.map(o => ({
       coin: o.coin,
       side: o.side,
@@ -105,7 +156,7 @@ export class HLClient {
 
   async getFills(limit = 20) {
     const sdk = await this.sdk();
-    const fills = await sdk.info.perpetuals.getUserFills(this.address);
+    const fills = await sdk.info.getUserFills(this.address);
     return fills.slice(0, limit).map(f => ({
       coin: f.coin,
       side: f.side,
@@ -121,13 +172,13 @@ export class HLClient {
 
   async getPrice(coin) {
     const sdk = await this.sdk();
-    const mids = await sdk.info.perpetuals.getAllMids();
+    const mids = await sdk.info.getAllMids();
     return parseFloat(mids[coin]);
   }
 
   async getAllPrices() {
     const sdk = await this.sdk();
-    return await sdk.info.perpetuals.getAllMids();
+    return await sdk.info.getAllMids();
   }
 
   async getMeta() {
@@ -143,7 +194,7 @@ export class HLClient {
     };
     const ms = intervalMs[interval] || 300000;
     const startTime = now - ms * limit;
-    const candles = await sdk.info.perpetuals.getCandleSnapshot(coin, interval, startTime, now);
+    const candles = await sdk.info.getCandleSnapshot(coin, interval, startTime, now);
     return candles.map(c => ({
       time: c.t,
       open: parseFloat(c.o),

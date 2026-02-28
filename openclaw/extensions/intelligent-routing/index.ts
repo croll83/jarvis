@@ -308,9 +308,13 @@ const plugin: OpenClawPluginDefinition = {
         return {};
       }
 
+      // Strip gateway-injected prefixes (e.g. "[cron:ID Name] ") so markers
+      // like [routed], [force-model:X], [tier:X] are detected correctly.
+      const promptForMarkers = rawPrompt.replace(/^\[cron:[^\]]*\]\s*/, "");
+
       // ── Check [routed] marker ──
       // spawn-with-routing.js adds this to prevent re-routing subagent spawns
-      if (rawPrompt.startsWith(ROUTED_MARKER)) {
+      if (promptForMarkers.startsWith(ROUTED_MARKER)) {
         api.logger.debug(
           `[intelligent-routing] Skipping pre-routed subagent prompt`,
         );
@@ -328,7 +332,7 @@ const plugin: OpenClawPluginDefinition = {
       // ── Check [force-model:X] marker ──
       // Bypasses classification entirely, forces the specified model.
       // Accepts "provider/model" or bare "model" formats.
-      const forceModelMatch = rawPrompt.match(/^\[force-model:([^\]]+)\]/);
+      const forceModelMatch = promptForMarkers.match(/^\[force-model:([^\]]+)\]/);
       if (forceModelMatch) {
         const requested = forceModelMatch[1].trim();
         const split = splitModelId(requested);
@@ -375,7 +379,7 @@ const plugin: OpenClawPluginDefinition = {
       // ── Check [tier:X] marker ──
       // Bypasses classification, uses the tier's primary model from TIER_PRIMARY map.
       // Accepts: SIMPLE, MEDIUM, COMPLEX, REASONING, CRITICAL (case-insensitive).
-      const tierMatch = rawPrompt.match(/^\[tier:([^\]]+)\]/);
+      const tierMatch = promptForMarkers.match(/^\[tier:([^\]]+)\]/);
       if (tierMatch) {
         const requestedTier = tierMatch[1].trim().toUpperCase();
         const agentId = ctx.agentId || "main";
