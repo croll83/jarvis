@@ -88,7 +88,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - SPEAKER=/app/speakers                 # Speaker folder override (default: /app/example)
+      - EXAMPLE_FOLDER=/app/speakers            # Speaker folder override (CMD uses -sf $EXAMPLE_FOLDER)
       # DeepSpeed per 2-4x speedup (opzionale, richiede piu RAM di sistema)
       # - DEEPSPEED=1
     volumes:
