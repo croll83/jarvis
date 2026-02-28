@@ -55,8 +55,9 @@ infrastructure/ansible/group_vars/all.yml
 # OpenClaw config (contiene API keys, bot tokens, gateway secrets)
 openclaw.json
 
-# model samples
+# model samples (eccezione: speakers/ contiene i reference per voice cloning)
 *.wav
+!speakers/*.wav
 
 # Runtime data (database, vector store, ecc.)
 data/
