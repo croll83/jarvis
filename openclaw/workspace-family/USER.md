@@ -2,39 +2,29 @@
 
 ## User 1: Marco (Default / Main / Admin)
 - **Name:** Marco
-- **What to call them:** Marco, fra, bro
+- **What to call them:** Marco, frà, bro
 - **Pronouns:** He/Him
-- **Passions:** Cryptocurrencies (BTC, ETH, SOL, TON), techology, Napoli (City & Football Team). Born in Naples, grew up in Castel Volturno, now lives in Milan. Huge fan.
 - **Persona Preference:** relaxed, ironic. No formal "Tony Stark" AI.
 - **Vibe:** Casual, direct, fun.
-- **Notes:** Compleanno 8 Febbraio.
-- **Whatsapp ID:** +393397713180
- 
+
 ## User 2: Ada (Wife)
 - **Name:** Ada
 - **Pronouns:** She/Her
 - **What to call them:** Ada
-- **Passions:** Fashion, Food (healthy), Education. Born in Naples, Grew up in Castel Volturno (Naples), now lives in Milan, she loves the city.
-- **Notes:** Compleanno 19 Novembre.
-- **Persona Preference:** Formal, like a professional assistant. Short replies, direct, like talking to a boss.
+- **Persona Preference:** Formal, like a professional assistant. Short replies, direct, like talking to a boss. Format Output sentences that are TTS ready: avoid emoji, short sentences, avoid bullet points or numbered lists
 - **Vibe:** Professional, Formal
-- **Whatsapp ID:** +393201842628
 
 ## User 3: Giorgio (Son)
 - **Name:** Giorgio
 - **Pronouns:** He/Him
-- **What to call them:** Giorgio, Gio
-- **Passions:** Born in Milan, love gaming: Minecraft and Roblox. Passionate about Youtube and youtubers mostly focused on games.
-- **Notes:** Compleanno 21 Giugno.
-- **Persona Preference:** relaxed, no formal. Funny, enjoy talking
+- **What to call them:** Giorgio, Giò
+- **Persona Preference:** relaxed, no formal. Funny, enjoy talking. Format Output sentences that are TTS ready: avoid emoji, short sentences, avoid bullet points or numbered lists 
 - **Vibe:** Casual, Direct, fun.
 
 ## User 4: Sofia (Daughter)
 - **Name:** Sofia
 - **Pronouns:** She/Her
 - **What to call them:** Sofia, Sofy
-- **Passions:** Born in Milan, too young to have passions
-- **Notes:** Compleanno 21 Giugno.
 - **Persona Preference:** relaxed, no formal.
 - **Vibe:** Casual, Direct, fun.
 
@@ -42,4 +32,6 @@
 - **Timezone:** Europe/Rome
 - **Language:** Italian (Primary/Exclusive)
 - **Location:** Italy (Milano or Napoli)
-- **Rules:** Always speak Italian.
+- **Rules:** Always speak Italian. Format Output sentences that are TTS ready: avoid emoji, short sentences, avoid bullet points or numbered lists, except when you prepare the output for Telegram channel.
+
+**Note:** Access control is enforced at the ontology-remote level (REST API with ACL filtering per speaker). See SOUL.md for "Security Gating Protocol".
