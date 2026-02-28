@@ -1,9 +1,9 @@
 {
   "id": "intelligent-routing",
   "name": "Intelligent Routing",
-  "version": "1.0.0",
-  "description": "Automatic model routing based on task complexity. Classifies incoming messages and routes MEDIUM+ tasks to stronger models, while SIMPLE tasks stay on the default (Haiku).",
-  "hooks": ["before_model_resolve"],
+  "version": "2.0.0",
+  "description": "Automatic model routing based on task complexity. Classifies incoming messages and routes MEDIUM+ tasks to stronger models, while SIMPLE tasks stay on the default (Haiku). Includes model awareness injection via before_prompt_build.",
+  "hooks": ["before_model_resolve", "before_prompt_build"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

@@ -25,6 +25,25 @@
 
   tasks:
     # -----------------------------------------------------------------
+    # PREREQUISITI SISTEMA
+    # -----------------------------------------------------------------
+    - name: Installa pacchetti base
+      ansible.builtin.apt:
+        name:
+          - curl
+          - wget
+          - git
+          - ca-certificates
+          - xz-utils
+          - gnupg
+          - lsb-release
+          - jq
+          - htop
+          - nano
+        state: present
+        update_cache: true
+
+    # -----------------------------------------------------------------
     # NODE.JS 22
     # -----------------------------------------------------------------
     - name: Verifica se Node.js >= 22 è installato
@@ -33,23 +52,48 @@
       changed_when: false
       failed_when: false
 
-    - name: Installa Node.js 22
+    - name: Installa Node.js 22 via nvm
       when: node_check.rc != 0 or (node_check.stdout | regex_replace('^v', '') | split('.') | first | int) < 22
       block:
-        - name: Aggiungi NodeSource repository
+        - name: Purge nodejs vecchio da apt
           ansible.builtin.shell: |
-            curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-          args:
-            creates: /etc/apt/sources.list.d/nodesource.list
+            apt-get purge -y nodejs npm libnode-dev 2>/dev/null || true
+            rm -f /etc/apt/sources.list.d/nodesource.list
+            rm -f /etc/apt/keyrings/nodesource.gpg
+            apt-get autoremove -y 2>/dev/null || true
+          failed_when: false
 
-        - name: Installa nodejs
-          ansible.builtin.apt:
-            name: nodejs
-            state: present
-            update_cache: true
+        - name: Installa nvm + Node.js 22 per {{ openclaw_user }}
+          ansible.builtin.shell: |
+            su - {{ openclaw_user }} -c '
+              export NVM_DIR="$HOME/.nvm"
+              if [ ! -f "$NVM_DIR/nvm.sh" ]; then
+                curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+              fi
+              . "$NVM_DIR/nvm.sh"
+              nvm install 22
+              nvm alias default 22
+              node -v && npm -v
+            '
+          args:
+            executable: /bin/bash
+
+        - name: Crea symlink globali node/npm/npx in /usr/local/bin
+          ansible.builtin.shell: |
+            NVM_DIR="/home/{{ openclaw_user }}/.nvm"
+            NODE_PATH=$(find "$NVM_DIR/versions/node" -maxdepth 1 -name 'v22*' | sort -V | tail -1)
+            ln -sf "$NODE_PATH/bin/node" /usr/local/bin/node
+            ln -sf "$NODE_PATH/bin/npm" /usr/local/bin/npm
+            ln -sf "$NODE_PATH/bin/npx" /usr/local/bin/npx
+          args:
+            executable: /bin/bash
+
+        - name: Verifica node + npm (via symlink)
+          ansible.builtin.shell: /usr/local/bin/node -v && /usr/local/bin/npm -v
+          changed_when: false
 
     - name: Mostra versione Node.js
-      ansible.builtin.command: node -v
+      ansible.builtin.shell: /usr/local/bin/node -v
       register: node_version
       changed_when: false
 
@@ -61,10 +105,14 @@
     # OPENCLAW
     # -----------------------------------------------------------------
     - name: Installa OpenClaw
-      community.general.npm:
-        name: openclaw
-        global: true
-        state: latest
+      ansible.builtin.shell: |
+        su - {{ openclaw_user }} -c '
+          export NVM_DIR="$HOME/.nvm"
+          . "$NVM_DIR/nvm.sh"
+          npm install -g openclaw
+        '
+      args:
+        executable: /bin/bash
 
     # -----------------------------------------------------------------
     # CREA UTENTE (se non esiste)
@@ -119,6 +167,15 @@
     - name: Installa Google Chrome (non snap)
       when: chrome_check.rc != 0
       block:
+        - name: Installa dipendenze Chrome
+          ansible.builtin.shell: |
+            apt-get install -y -f libasound2t64 || apt-get install -y -f libasound2 || true
+            apt-get install -y fonts-liberation libatk-bridge2.0-0 libatk1.0-0 \
+              libcups2 libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 \
+              libxcomposite1 libxdamage1 libxrandr2 xdg-utils
+          args:
+            executable: /bin/bash
+
         - name: Scarica Google Chrome .deb
           ansible.builtin.get_url:
             url: https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
@@ -126,9 +183,10 @@
             mode: "0644"
 
         - name: Installa Chrome .deb
-          ansible.builtin.apt:
-            deb: /tmp/google-chrome-stable.deb
-            state: present
+          ansible.builtin.shell: |
+            apt-get install -y -f /tmp/google-chrome-stable.deb
+          args:
+            executable: /bin/bash
 
         - name: Rimuovi file .deb
           ansible.builtin.file:
@@ -162,10 +220,9 @@
 
     - name: Installa Linuxbrew
       ansible.builtin.shell: |
-        NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-      become_user: "{{ openclaw_user }}"
-      environment:
-        HOME: "/home/{{ openclaw_user }}"
+        su - {{ openclaw_user }} -c 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+      args:
+        executable: /bin/bash
       when: not brew_check.stat.exists
 
     - name: Aggiungi brew al .bashrc di {{ openclaw_user }}
@@ -182,33 +239,34 @@
     # -----------------------------------------------------------------
     - name: Installa skill dependencies via brew
       ansible.builtin.shell: |
-        eval "$({{ brew_prefix }}/bin/brew shellenv)"
+        su - {{ openclaw_user }} -c '
+          eval "$({{ brew_prefix }}/bin/brew shellenv)"
 
-        # steipete tap
-        brew tap steipete/tap 2>/dev/null || true
+          # steipete tap
+          brew tap steipete/tap 2>/dev/null || true
 
-        # gcc + symlink
-        brew install gcc 2>/dev/null || true
-        brew postinstall gcc 2>/dev/null || true
-        GCC_VERSION=$(ls {{ brew_prefix }}/bin/gcc-* 2>/dev/null | grep -oP 'gcc-\K[0-9]+' | sort -n | tail -1)
-        if [ -n "$GCC_VERSION" ] && [ ! -e "{{ brew_prefix }}/bin/gcc" ]; then
-            ln -sf "{{ brew_prefix }}/bin/gcc-${GCC_VERSION}" "{{ brew_prefix }}/bin/gcc"
-            ln -sf "{{ brew_prefix }}/bin/g++-${GCC_VERSION}" "{{ brew_prefix }}/bin/g++"
-        fi
+          # gcc + symlink
+          brew install gcc 2>/dev/null || true
+          brew postinstall gcc 2>/dev/null || true
+          GCC_VERSION=$(ls {{ brew_prefix }}/bin/gcc-* 2>/dev/null | grep -oP "gcc-\K[0-9]+" | sort -n | tail -1)
+          if [ -n "$GCC_VERSION" ] && [ ! -e "{{ brew_prefix }}/bin/gcc" ]; then
+              ln -sf "{{ brew_prefix }}/bin/gcc-${GCC_VERSION}" "{{ brew_prefix }}/bin/gcc"
+              ln -sf "{{ brew_prefix }}/bin/g++-${GCC_VERSION}" "{{ brew_prefix }}/bin/g++"
+          fi
 
-        # Skill tools
-        brew install steipete/tap/codexbar 2>/dev/null || true
-        brew install ffmpeg-full 2>/dev/null || true
-        brew install steipete/tap/gogcli 2>/dev/null || true
-        brew install steipete/tap/gifgrep 2>/dev/null || true
-        brew install steipete/tap/goplaces 2>/dev/null || true
-        brew install steipete/tap/wacli 2>/dev/null || true
+          # Skill tools
+          brew install steipete/tap/codexbar 2>/dev/null || true
+          brew install ffmpeg-full 2>/dev/null || true
+          brew install steipete/tap/gogcli 2>/dev/null || true
+          brew install steipete/tap/gifgrep 2>/dev/null || true
+          brew install steipete/tap/goplaces 2>/dev/null || true
+          brew install steipete/tap/wacli 2>/dev/null || true
 
-        # npm global
-        npm i -g @steipete/summarize 2>/dev/null || true
-      become_user: "{{ openclaw_user }}"
-      environment:
-        HOME: "/home/{{ openclaw_user }}"
+          # npm global (via nvm)
+          export NVM_DIR="$HOME/.nvm"
+          . "$NVM_DIR/nvm.sh"
+          npm i -g @steipete/summarize 2>/dev/null || true
+        '
       args:
         executable: /bin/bash
 
@@ -327,10 +385,15 @@
             remote_src: true
 
     - name: Installa dipendenze npm browser-dom (sempre, anche post-migrazione)
-      community.general.npm:
-        path: "/home/{{ openclaw_user }}/.openclaw/extensions/browser-dom"
-        production: true
-      become_user: "{{ openclaw_user }}"
+      ansible.builtin.shell: |
+        su - {{ openclaw_user }} -c '
+          export NVM_DIR="$HOME/.nvm"
+          . "$NVM_DIR/nvm.sh"
+          cd /home/{{ openclaw_user }}/.openclaw/extensions/browser-dom
+          npm install --production
+        '
+      args:
+        executable: /bin/bash
       when: browser_dom_migrated.stat.exists or (browser_dom_repo.stat.exists | default(false))
 
     # -----------------------------------------------------------------
@@ -359,12 +422,16 @@
       changed_when: false
 
     - name: Installa OpenClaw gateway service (user-level systemd)
-      ansible.builtin.command: openclaw gateway install
-      become_user: "{{ openclaw_user }}"
-      environment:
-        HOME: "/home/{{ openclaw_user }}"
-        XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid.stdout }}"
-        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ openclaw_uid.stdout }}/bus"
+      ansible.builtin.shell: |
+        su - {{ openclaw_user }} -c '
+          export XDG_RUNTIME_DIR="/run/user/{{ openclaw_uid.stdout }}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/{{ openclaw_uid.stdout }}/bus"
+          export NVM_DIR="$HOME/.nvm"
+          . "$NVM_DIR/nvm.sh"
+          openclaw gateway install
+        '
+      args:
+        executable: /bin/bash
       register: gateway_install_result
       changed_when: "'installed' in gateway_install_result.stdout or gateway_install_result.rc == 0"
       failed_when: false
@@ -372,6 +439,21 @@
     - name: "Gateway install: {{ gateway_install_result.stdout | default('(nessun output)') }}"
       ansible.builtin.debug:
         msg: "{{ gateway_install_result.stdout | default('') }}"
+
+    # -----------------------------------------------------------------
+    # TAILSCALE (host-level)
+    # -----------------------------------------------------------------
+    - name: Installa Tailscale
+      ansible.builtin.shell: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+      args:
+        creates: /usr/bin/tailscale
+
+    - name: Mostra istruzioni Tailscale
+      ansible.builtin.debug:
+        msg: |
+          Tailscale installato. Connetti manualmente:
+            sudo tailscale up --hostname=jarvis-openclaw --force-reauth
 
     # -----------------------------------------------------------------
     # NGINX + CERTBOT TLS (reverse proxy per gateway API/WS + dashboard)
@@ -445,7 +527,7 @@
 
     - name: Configura nginx reverse proxy TLS per OpenClaw
       ansible.builtin.template:
-        src: openclaw-gateway-nginx.conf.j2
+        src: ../templates/openclaw-gateway-nginx.conf.j2
         dest: /etc/nginx/sites-available/openclaw-gateway
         owner: root
         group: root
@@ -459,6 +541,7 @@
         dest: /etc/nginx/sites-enabled/openclaw-gateway
         state: link
       notify: Reload Nginx
+      when: tailscale_ip.rc == 0
 
     - name: Crea certbot deploy hook per auto-renewal
       ansible.builtin.copy:

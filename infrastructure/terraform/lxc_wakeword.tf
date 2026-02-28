@@ -39,6 +39,10 @@ variable "wakeword_instances" {
 resource "proxmox_virtual_environment_container" "wakeword" {
   for_each = var.wakeword_instances
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   description   = "JARVIS Wakeword Server — ${each.key}"
   node_name     = each.value.node_name
   vm_id         = each.value.ct_id

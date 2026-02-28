@@ -151,6 +151,32 @@ telegram_webhook_url: ""
 wakeword_server_urls: ""
 
 # =============================================================================
+# TTS ENGINE
+# =============================================================================
+# "xtts" = XTTSv2 Coqui (GPU, voice cloning italiana)
+# "kokoro" = Kokoro-82M (CPU, fallback cloud)
+# Default: "xtts" per lxc_gpu, "kokoro" altrimenti (override con tts_engine)
+tts_engine: "xtts"
+
+# URL di XTTS API server
+# Deploy locale GPU: http://localhost:8890 (container sullo stesso host)
+# Deploy cloud (VPS → LXC remoto via Tailscale): http://<tailscale-ip-lxc>:8890
+xtts_url: "http://localhost:8890"
+
+# Speaker WAV per voice cloning (nome file senza .wav in speakers/)
+# "default" usa la voce built-in di XTTS
+xtts_speaker: "default"
+
+# Lingua per sintesi vocale
+xtts_language: "it"
+
+# Path LOCALE al file WAV per voice cloning (opzionale)
+# Se impostato, Ansible copia il WAV in speakers/<xtts_speaker>.wav sul target.
+# Il file deve essere mono, 22050Hz+, 6-15 secondi di parlato pulito.
+# Lasciare commentato per usare la voce built-in di XTTS.
+# speaker_wav_src: "/path/to/jarvis-voice.wav"
+
+# =============================================================================
 # OPZIONALI
 # =============================================================================
 

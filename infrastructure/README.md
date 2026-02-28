@@ -40,26 +40,29 @@ HA remoti e il LXC OpenClaw.
 |  +----------------------------------------------------------------+ |
 |  |                     jarvis_network                              | |
 |  |                                                                 | |
-|  |  ollama:11434   whisper:9000    postgres:5432                   | |
-|  |  GPU: 4.7 GB    GPU: 0.4 GB    (side proj)                     | |
-|  |  Qwen 7B Q4     faster-whisper                                 | |
-|  |  nomic-embed    base            mongo:27017                     | |
-|  |                                  (side proj)                    | |
+|  |  ollama:11434   whisper:9000    xtts:8890     postgres:5432     | |
+|  |  GPU: ~2.5 GB   GPU: 0.4 GB    GPU: 2.1 GB   (side proj)      | |
+|  |  Routing LLM    faster-whisper  XTTSv2 Coqui                   | |
+|  |  nomic-embed    base            voice cloning  mongo:27017      | |
+|  |                                                 (side proj)     | |
 |  |  orchestrator:5000 (network_mode: host)                        | |
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
-|  |  Internal TTS (Edge TTS + Opus per AtomS3R mobile)              | |
+|  |  Internal TTS (XTTSv2 + Opus streaming per AtomS3R mobile)     | |
 |  |  SQLite + ChromaDB                                              | |
 |  |                                                                 | |
 |  |  ontology-server:8100 (127.0.0.1 only)                         | |
 |  |  Knowledge Graph API — SQLite + ACL (X-Speaker-Id)             | |
 |  +----------------------------------------------------------------+ |
 |                                                                      |
-|  GPU VRAM Budget:                                                    |
-|  +-- Qwen 2.5 7B Q4_K_M .............. 4.4 GB                      |
+|  GPU VRAM Budget (worst case Phi-4-Mini):                            |
+|  +-- Routing LLM (Phi-4-Mini Q4) ..... ~2.5 GB                     |
+|  +-- XTTSv2 fp16 ..................... ~2.1 GB                      |
 |  +-- nomic-embed-text ................. 0.3 GB                      |
 |  +-- faster-whisper base .............. 0.4 GB                      |
-|  +-- TOTALE ........................... ~5.1 GB / 8 GB VRAM disp.  |
+|  +-- Driver/CUDA overhead ............. ~1.0 GB                     |
+|  +-- TOTALE ........................... ~6.3 GB / 8 GB VRAM disp.  |
+|  +-- HEADROOM ......................... ~1.7 GB                     |
 +---------------------------------------------------------------------+
 
 +---------------------------------------------------------------------+
@@ -169,7 +172,8 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 1. tailscaled      -> host-level service, si connette alla tailnet
 2. ollama          -> diventa healthy (modelli caricati)
 3. whisper         -> started
-4. orchestrator    -> aspetta ollama + whisper, poi parte (network_mode: host)
+4. xtts            -> started (primo boot: ~2 min per download modello)
+5. orchestrator    -> aspetta ollama + whisper + xtts, poi parte (network_mode: host)
                       vede Tailscale direttamente, raggiunge OpenClaw via OPENCLAW_URL
 ```
 
@@ -186,8 +190,9 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 |----------|-----------|-------------------|-----|-----|----------|----------|
 | **NVIDIA Driver** | **Host Proxmox** | kernel module | - | - | - | Driver GPU, `nvidia-smi` funziona qui |
 | **Tailscale** | LXC-JARVIS | host-level (`tailscaled.service`) | - | 64 MB | - | VPN mesh per HA remoti + OpenClaw |
-| **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | 4.7 GB | Qwen 7B pre-routing + embeddings |
+| **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | ~2.5 GB | Routing LLM + embeddings |
 | **Whisper** | LXC-JARVIS | `jarvis_whisper` (Docker, `--gpus all`) | - | - | 0.4 GB | Speech-to-text (faster-whisper) |
+| **XTTSv2** | LXC-JARVIS | `jarvis_xtts` (Docker, `--gpus all`) | - | - | 2.1 GB | TTS voice cloning (italiano) |
 | **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
 | **Ontology Server** | LXC-JARVIS | `jarvis_ontology` (Docker, 127.0.0.1:8100) | 0.5 | 256 MB | - | Knowledge Graph API + ACL |
 | **PostgreSQL** | LXC-JARVIS | `jarvis_postgres` (Docker) | 0.5 | 512 MB | - | Database side projects |
@@ -203,12 +208,17 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 
 Un AtomS3R con batteria accessoria può funzionare in mobilità senza speaker HA esterno.
 Quando "Speaker Interno" è attivo per un device, il TTS viene generato dall'orchestrator
-(Edge TTS, voce `it-IT-ElsaNeural`) e inviato come frame Opus via WebSocket direttamente
+via XTTSv2 (locale) o Kokoro (cloud) e inviato come frame Opus via WebSocket direttamente
 allo speaker integrato del device (ES8311 DAC + NS4150B amp).
 
-**Flusso:**
+**Flusso (locale):**
 ```
-AI Response → Edge TTS (MP3) → ffmpeg (PCM 16kHz) → Opus encode → WS binary → Device speaker
+AI Response → XTTSv2 (PCM 24kHz streaming) → resample 16kHz → Opus encode → WS binary → Device speaker
+```
+
+**Flusso (cloud):**
+```
+AI Response → Kokoro (PCM 24kHz streaming) → resample 16kHz → Opus encode → WS binary → Device speaker
 ```
 
 **Nessuna modifica firmware**: il firmware AtomS3R gestisce già la ricezione e decodifica
@@ -217,9 +227,9 @@ di frame Opus binari via WebSocket (opcode 0x02 in `jarvis_ws_audio.c`).
 **Configurazione**: Dashboard orchestrator → Dispositivi → checkbox "Speaker Interno".
 Quando attivo, i campi Speaker Principale e Speaker Fallback vengono ignorati.
 
-**Dipendenze aggiuntive orchestrator** (già nel Dockerfile):
-- `edge-tts` (Python, in requirements.txt)
-- `ffmpeg` + `libopus-dev` (sistema, già installati)
+**Voice cloning (solo locale)**: metti un WAV di riferimento (6-15s, mono, 22050Hz+)
+nella directory `speakers/` del progetto. Il nome del file (senza .wav) è il nome
+dello speaker da usare in `XTTS_SPEAKER`. Vedi `speakers/README.md` per dettagli.
 
 ---
 
@@ -373,7 +383,7 @@ ansible-playbook playbooks/site.yml --tags common,nvidia,jarvis,verify
 Il playbook:
 1. Installa Docker + NVIDIA Container Toolkit (con `no-cgroups=true` per LXC)
 2. Clona il repository, genera `.env` da template
-3. Esegue `docker compose up -d` (Ollama, Whisper, Orchestrator, Ontology, Postgres, Mongo)
+3. Esegue `docker compose up -d` (Ollama, Whisper, XTTSv2, Orchestrator, Ontology, Postgres, Mongo)
 4. Scarica i modelli AI (`setup.sh` — Qwen 7B + nomic-embed-text)
 5. Verifica health di tutti i servizi
 
@@ -649,6 +659,7 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | Porta Host | Servizio | Protocollo | Accesso |
 |------------|----------|------------|---------|
 | 5000 | Orchestrator + Admin UI | HTTP | LAN / Tailscale |
+| 8890 | XTTSv2 TTS API | HTTP | Interno / Tailscale (per OpenClaw) |
 | 9000 | Whisper STT | HTTP | Interno |
 | 11434 | Ollama API | HTTP | Interno |
 | 5432 | PostgreSQL | TCP | Interno |
@@ -759,8 +770,11 @@ curl http://localhost:11434/api/tags  # Deve rispondere con lista modelli
 ```bash
 nvidia-smi   # Verifica utilizzo VRAM
 
-# Se OOM, riduci modelli caricati contemporaneamente:
-# In docker-compose.yml, cambia OLLAMA_MAX_LOADED_MODELS=1
+# Se OOM, opzioni:
+# 1. Riduci modelli Ollama caricati: OLLAMA_MAX_LOADED_MODELS=1
+# 2. Usa Whisper tiny invece di base: WHISPER__MODEL=tiny
+# 3. Usa routing model piu piccolo (Qwen 2.5 3B invece di Phi-4-Mini)
+# 4. Disabilita DeepSpeed se abilitato in xtts
 ```
 
 ### Tailscale non si connette (LXC-JARVIS)

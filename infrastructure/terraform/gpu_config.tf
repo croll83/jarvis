@@ -56,26 +56,73 @@ resource "local_file" "gpu_config_script" {
       exit 1
     fi
 
-    # Verifica se già configurato
-    if grep -q "lxc.cgroup2.devices.allow" "$CONF" 2>/dev/null; then
-      echo "⚠️  Righe cgroup già presenti in $CONF:"
-      grep "lxc.cgroup" "$CONF"
-      echo ""
-      echo "Per riconfigurare, rimuovi le righe e riesegui lo script."
-      exit 0
+    # -----------------------------------------------------------------
+    # FASE 1: Device cgroup
+    # -----------------------------------------------------------------
+    if ! grep -q "lxc.cgroup2.devices.allow" "$CONF" 2>/dev/null; then
+      echo "" >> "$CONF"
+      echo "# NVIDIA GPU device access (aggiunto da Terraform/JARVIS)" >> "$CONF"
+      %{for major in var.gpu_cgroup_device_majors~}
+      echo "lxc.cgroup2.devices.allow: c ${major}:* rwm" >> "$CONF"
+      %{endfor~}
+      echo "✅ Righe cgroup aggiunte"
+    else
+      echo "⚠️  Righe cgroup già presenti, skip"
     fi
 
-    # Aggiungi device cgroup
-    echo "" >> "$CONF"
-    echo "# NVIDIA GPU device access (aggiunto da Terraform/JARVIS)" >> "$CONF"
-    %{for major in var.gpu_cgroup_device_majors~}
-    echo "lxc.cgroup2.devices.allow: c ${major}:* rwm" >> "$CONF"
-    %{endfor~}
+    # -----------------------------------------------------------------
+    # FASE 2: Bind mount librerie NVIDIA dall'host nel container
+    # -----------------------------------------------------------------
+    # Il container ha i device /dev/nvidia* ma NON le librerie userspace.
+    # Docker/nvidia-container-toolkit ha bisogno di libnvidia-ml.so, libcuda.so, ecc.
+    echo ""
+    echo "📚 Configurazione bind mount librerie NVIDIA..."
 
-    echo "✅ Righe cgroup aggiunte a $CONF:"
-    grep "lxc.cgroup" "$CONF"
+    if grep -q "lxc.mount.entry.*libnvidia" "$CONF" 2>/dev/null; then
+      echo "⚠️  Bind mount librerie già presenti, skip"
+    else
+      echo "" >> "$CONF"
+      echo "# NVIDIA userspace libraries bind mount (aggiunto da configure-gpu.sh)" >> "$CONF"
 
-    # Riavvia container per applicare
+      # Trova tutte le librerie NVIDIA sul host
+      NVIDIA_LIBS=$(find /usr/lib/x86_64-linux-gnu -maxdepth 1 \( \
+        -name "libnvidia-*.so*" -o \
+        -name "libcuda*.so*" -o \
+        -name "libnvcuvid.so*" -o \
+        -name "libnvoptix.so*" -o \
+        -name "libGLX_nvidia.so*" -o \
+        -name "libEGL_nvidia.so*" -o \
+        -name "libGLESv2_nvidia.so*" -o \
+        -name "libvdpau_nvidia.so*" \
+      \) 2>/dev/null | sort)
+
+      LIB_COUNT=0
+      for lib in $NVIDIA_LIBS; do
+        relative_path="$${lib#/}"
+        echo "lxc.mount.entry: $lib $relative_path none bind,optional,create=file" >> "$CONF"
+        LIB_COUNT=$((LIB_COUNT + 1))
+      done
+
+      # Monta anche nvidia-smi e nvidia-debugdump se presenti
+      for bin in /usr/bin/nvidia-smi /usr/bin/nvidia-debugdump /usr/bin/nvidia-persistenced; do
+        if [ -f "$bin" ]; then
+          relative_path="$${bin#/}"
+          echo "lxc.mount.entry: $bin $relative_path none bind,optional,create=file" >> "$CONF"
+          LIB_COUNT=$((LIB_COUNT + 1))
+        fi
+      done
+
+      # Monta firmware nvidia se presente
+      if [ -d "/usr/lib/firmware/nvidia" ]; then
+        echo "lxc.mount.entry: /usr/lib/firmware/nvidia usr/lib/firmware/nvidia none bind,optional,create=dir" >> "$CONF"
+      fi
+
+      echo "✅ $LIB_COUNT bind mount aggiunti"
+    fi
+
+    # -----------------------------------------------------------------
+    # FASE 3: Riavvia e verifica
+    # -----------------------------------------------------------------
     echo ""
     echo "🔄 Riavvio CT $CT_ID..."
     pct stop "$CT_ID" 2>/dev/null || true
@@ -88,11 +135,21 @@ resource "local_file" "gpu_config_script" {
     echo "🔍 Verifica device dentro il container:"
     pct exec "$CT_ID" -- ls -la /dev/nvidia* 2>/dev/null || echo "⚠️  Device non ancora visibili, potrebbe servire un reboot dell'host"
 
+    # Verifica librerie dentro il container
+    echo ""
+    echo "🔍 Verifica librerie NVIDIA dentro il container:"
+    pct exec "$CT_ID" -- ls /usr/lib/x86_64-linux-gnu/libnvidia-ml.so* 2>/dev/null && echo "✅ libnvidia-ml.so presente" || echo "❌ libnvidia-ml.so NON trovata!"
+
+    # Prova nvidia-smi dentro il container
+    echo ""
+    echo "🔍 Test nvidia-smi dentro il container:"
+    pct exec "$CT_ID" -- nvidia-smi 2>/dev/null || echo "⚠️  nvidia-smi non funziona (normale: servirà Docker con nvidia runtime)"
+
     echo ""
     echo "✅ Configurazione GPU completata per CT $CT_ID"
     echo ""
     echo "Prossimo passo: esegui Ansible per installare NVIDIA Container Toolkit"
-    echo "  cd infrastructure/ansible && ansible-playbook playbooks/site.yml"
+    echo "  cd infrastructure/ansible && ansible-playbook playbooks/nvidia.yml --limit jarvis"
   SCRIPT
 
   file_permission = "0755"

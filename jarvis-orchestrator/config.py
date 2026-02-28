@@ -430,10 +430,22 @@ PROACTIVE_NIGHT_END = int(os.getenv("PROACTIVE_NIGHT_END", "5"))
 SECURITY_ANIMAL_LABELS = os.getenv("SECURITY_ANIMAL_LABELS", "cat,dog").split(",")
 
 # ===========================================================================
-# TTS ENGINE (Kokoro)
+# TTS ENGINE
 # ===========================================================================
+# Engine: "xtts" (XTTSv2 Coqui, locale GPU) o "kokoro" (Kokoro-82M, cloud/CPU)
+# Default: "xtts" per deploy locale (AI_BACKEND=local), "kokoro" per cloud (AI_BACKEND=api)
+TTS_ENGINE = os.getenv("TTS_ENGINE", "xtts" if AI_BACKEND == "local" else "kokoro")
+
+# --- XTTSv2 (deploy locale, GPU ~2.1 GB VRAM fp16) ---
+XTTS_URL = os.getenv("XTTS_URL", "http://localhost:8890")
+XTTS_SPEAKER = os.getenv("XTTS_SPEAKER", "default")   # nome file WAV in speakers/ (senza .wav)
+XTTS_LANGUAGE = os.getenv("XTTS_LANGUAGE", "it")
+
+# --- Kokoro (deploy cloud, CPU) ---
 KOKORO_TTS_URL = os.getenv("KOKORO_TTS_URL", "http://localhost:8890")
 KOKORO_TTS_VOICE = os.getenv("KOKORO_TTS_VOICE", "if_sara")
+
+# --- Preprocessing (comune a entrambi gli engine) ---
 TTS_PREPROCESS_ENABLED = os.getenv("TTS_PREPROCESS_ENABLED", "true").lower() == "true"
 TTS_PREPROCESS_LLM = os.getenv("TTS_PREPROCESS_LLM", "false").lower() == "true"
 

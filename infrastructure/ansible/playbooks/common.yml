@@ -129,6 +129,8 @@
         - "{{ jarvis_dir }}/data"
         - "{{ jarvis_dir }}/config"
         - "{{ jarvis_dir }}/backups"
+        - "{{ jarvis_dir }}/speakers"
+        - "{{ jarvis_dir }}/xtts-custom"
 
     # -----------------------------------------------------------------
     # SWAP (per LXC con poca RAM)

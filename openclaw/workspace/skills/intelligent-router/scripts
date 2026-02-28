@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Intelligent Router CLI v3.0 — Bilingual (IT/EN)
+Intelligent Router CLI v3.2 — Bilingual (IT/EN)
 A tool for classifying tasks and recommending appropriate LLM models.
 Python 3.8+ compatible, no external dependencies.
 
@@ -11,6 +11,12 @@ Features:
 - Automatic fallback chains (up to 3 attempts)
 - Agentic task detection
 - Confidence-based routing
+
+v3.2 changes:
+- SIMPLE threshold lowered to 0.05 (was 0.14) — only trivial messages
+- MEDIUM threshold lowered to 0.30 (was 0.36)
+- Max booster bonus reduced to 0.20 (was 0.35)
+- Agentic bump reduced to 0.40/0.30 (was 0.48/0.33)
 """
 
 import json
@@ -140,6 +146,18 @@ class IntelligentRouter:
         "cos'è", 'cosa è', 'quanto', 'dimmi', 'trova', 'cerca',
         'ciao', 'grazie', 'ok', 'sì', 'va bene', 'perfetto',
         'che ore sono', "com'è", 'come va',
+        # Domotica / Home automation — trivial device commands
+        'accendi', 'spegni', 'alza', 'abbassa', 'apri', 'chiudi',
+        'luce', 'luci', 'lampada', 'tapparella', 'tapparelle',
+        'serranda', 'serrande', 'persiana', 'persiane',
+        'condizionatore', 'climatizzatore', 'riscaldamento',
+        'termostato', 'temperatura', 'ventilatore',
+        'turn on', 'turn off', 'switch on', 'switch off',
+        'open', 'close', 'dim', 'brighten',
+        'light', 'lights', 'lamp', 'blind', 'blinds',
+        'shutter', 'shutters', 'thermostat', 'heater', 'fan',
+        'soggiorno', 'camera', 'cucina', 'bagno', 'corridoio',
+        'garage', 'giardino', 'terrazzo', 'cantina',
     ]
 
     TECHNICAL_TERMS = [
@@ -270,7 +288,7 @@ class IntelligentRouter:
         """Initialize router with config file."""
         if config_path is None:
             script_dir = Path(__file__).parent
-            config_path = script_dir.parent / 'config.json'
+            config_path = script_dir / 'config.json'
 
         self.config_path = Path(config_path)
         self.config = self._load_config()
@@ -453,24 +471,25 @@ class IntelligentRouter:
             if score >= 0.10 or confidence >= 0.25:
                 return 'REASONING'
 
-        # Agentic task bumps
+        # Agentic task bumps (v3.2: reduced from 0.48/0.33 to 0.40/0.30)
         if is_agentic and dimension_scores:
             code_score = dimension_scores.get('code_presence', 0)
             multi_step = dimension_scores.get('multi_step_patterns', 0)
 
             if multi_step > 0.3 and code_score > 0:
-                if score < 0.48:
-                    score = 0.48
-            elif score < 0.33:
-                score = 0.33
+                if score < 0.40:
+                    score = 0.40
+            elif score < 0.30:
+                score = 0.30
 
         # Score-based classification
         # Thresholds calibrated to 15-dim weighted scoring.
-        # domain_specificity fix (v3.1) lowered baseline by ~0.02,
-        # so thresholds adjusted down accordingly.
-        if score < 0.14:
+        # v3.2: SIMPLE threshold lowered to 0.05 — only truly trivial messages
+        # (greetings, confirmations, emoji) should use SIMPLE/Haiku.
+        # MEDIUM threshold lowered to 0.30 — Sonnet handles most tasks.
+        if score < 0.05:
             return 'SIMPLE'
-        elif score < 0.36:
+        elif score < 0.30:
             return 'MEDIUM'
         elif score < 0.50:
             return 'COMPLEX'
@@ -482,9 +501,9 @@ class IntelligentRouter:
         dimension_scores = self._calculate_dimension_scores(task_description)
         weighted_score = self._calculate_weighted_score(dimension_scores)
 
-        # Complexity booster bonus
+        # Complexity booster bonus (v3.2: reduced max from 0.35 to 0.20)
         booster_count = self._count_complexity_boosters(task_description)
-        booster_bonus = min(booster_count * 0.10, 0.35)
+        booster_bonus = min(booster_count * 0.08, 0.20)
         self._current_booster_bonus = booster_bonus
 
         # Critical keyword detection
@@ -670,7 +689,7 @@ class IntelligentRouter:
 def main():
     """CLI entry point."""
     if len(sys.argv) < 2:
-        print("Intelligent Router CLI v3.0 (Bilingual IT/EN, 15-dimension scoring)")
+        print("Intelligent Router CLI v3.2 (Bilingual IT/EN, 15-dimension scoring)")
         print("\nUsage:")
         print("  router.py classify <task>       Classify a task and recommend a model")
         print("  router.py models                List all configured models by tier")
@@ -823,48 +842,50 @@ def _run_tests(router):
     """Run built-in bilingual test cases."""
     test_cases = [
         # (description, expected_tier, language)
-        # ── SIMPLE ──
-        ("what time is it", "SIMPLE", "EN"),
-        ("che ore sono", "SIMPLE", "IT"),
-        ("show me the status", "SIMPLE", "EN"),
-        ("mostrami lo stato", "SIMPLE", "IT"),
+        # v3.2: SIMPLE threshold lowered to 0.05 — only truly trivial messages
+        #
+        # ── SIMPLE (score < 0.05) ──
         ("ciao", "SIMPLE", "IT"),
         ("hello", "SIMPLE", "EN"),
         ("ok grazie", "SIMPLE", "IT"),
+        ("sì", "SIMPLE", "IT"),
+        ("no", "SIMPLE", "EN"),
 
-        # ── MEDIUM ──
+        # ── MEDIUM (score 0.05 - 0.30) ──
+        ("what time is it", "MEDIUM", "EN"),
+        ("che ore sono", "MEDIUM", "IT"),
+        ("show me the status", "MEDIUM", "EN"),
+        ("mostrami lo stato", "MEDIUM", "IT"),
+        ("quale è il meteo domani?", "MEDIUM", "IT"),
         ("fix the bug in the login page", "MEDIUM", "EN"),
         ("correggi il bug nella pagina di login", "MEDIUM", "IT"),
-        ("summarize this article and list the key points in detail", "MEDIUM", "EN"),
-        ("riassumi questo articolo ed elenca i punti chiave nel dettaglio", "MEDIUM", "IT"),
         ("create a simple script to parse CSV files", "MEDIUM", "EN"),
         ("crea uno script per parsare il CSV", "MEDIUM", "IT"),
         ("analizza questo errore nel codice", "MEDIUM", "IT"),
         ("explain how docker containers work", "MEDIUM", "EN"),
         ("spiega come funzionano i container docker", "MEDIUM", "IT"),
+        ("summarize this article and list the key points in detail", "MEDIUM", "EN"),
+        ("riassumi questo articolo ed elenca i punti chiave nel dettaglio", "MEDIUM", "IT"),
 
-        # ── COMPLEX ──
-        ("debug complesso del memory leak nel sistema distribuito", "CRITICAL", "IT"),
-        ("analisi approfondita sicurezza del sistema di autenticazione e ottimizzazione performance", "CRITICAL", "IT"),
+        # ── COMPLEX (score 0.30 - 0.50) ──
         ("refactor the entire codebase to use microservices architecture with CI/CD pipeline", "COMPLEX", "EN"),
         ("riscrivi il classificatore per supportare italiano e inglese con analisi dettagliata", "COMPLEX", "IT"),
         ("design a distributed caching system with load balancing, high availability and performance optimization", "COMPLEX", "EN"),
-        ("progetta un sistema di caching distribuito con bilanciamento carico, alta disponibilità e ottimizzazione", "CRITICAL", "IT"),
 
         # ── REASONING ──
         ("prove that sqrt(2) is irrational step by step", "REASONING", "EN"),
         ("dimostra che la radice di 2 è irrazionale passo dopo passo", "REASONING", "IT"),
         ("derive the formula using mathematical induction and verify the proof", "REASONING", "EN"),
         ("ragiona sulla dimostrazione logica del teorema", "REASONING", "IT"),
+        ("ragiona sulla strategia di trading", "REASONING", "IT"),
 
         # ── CRITICAL ──
+        ("debug complesso del memory leak nel sistema distribuito", "CRITICAL", "IT"),
+        ("analisi approfondita sicurezza del sistema di autenticazione e ottimizzazione performance", "CRITICAL", "IT"),
+        ("progetta un sistema di caching distribuito con bilanciamento carico, alta disponibilità e ottimizzazione", "CRITICAL", "IT"),
         ("comprehensive security audit of production authentication system with encryption review, disaster recovery, performance optimization and scalability assessment end to end", "CRITICAL", "EN"),
         ("audit sicurezza del sistema di produzione con revisione crittografia, piano disaster recovery, alta disponibilità e ottimizzazione performance end to end", "CRITICAL", "IT"),
-
-        # ── Marco's required test cases ──
-        ("ragiona sulla strategia di trading", "REASONING", "IT"),
         ("debug il classificatore che classifica male", "COMPLEX", "IT"),
-        ("quale è il meteo domani?", "SIMPLE", "IT"),
         ("analizza la sicurezza di OpenClaw", "CRITICAL", "IT"),
     ]
 
@@ -883,7 +904,7 @@ def _run_tests(router):
         status = "✅" if ok else "❌"
         results.append((status, lang, expected, actual, classification['weighted_score'], task))
 
-    print(f"Intelligent Router v3.0 — Bilingual Test Suite")
+    print(f"Intelligent Router v3.2 — Bilingual Test Suite")
     print(f"{'='*70}")
 
     for status, lang, expected, actual, score, task in results:

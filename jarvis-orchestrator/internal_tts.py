@@ -1,14 +1,17 @@
 """
-Internal TTS Engine — Kokoro TTS + Opus streaming per speaker interno AtomS3R.
+Internal TTS Engine — XTTSv2/Kokoro + Opus streaming per speaker interno AtomS3R.
 
-Genera audio TTS con Kokoro-82M in modalita streaming (voce if_sara, italiano).
+Supporta due engine TTS selezionabili via TTS_ENGINE in config:
+  - "xtts"  (XTTSv2 Coqui, GPU ~2.1 GB VRAM): deploy locale con voice cloning
+  - "kokoro" (Kokoro-82M, CPU/GPU ~0.5 GB):    deploy cloud / VPS
+
 La generazione audio e la riproduzione si sovrappongono: i primi frame Opus
 vengono inviati al device mentre il resto dell'audio e ancora in generazione.
-Questo riduce drasticamente il time-to-first-audio, specialmente su CPU.
+Questo riduce drasticamente il time-to-first-audio.
 
-Flusso streaming:
-  text -> Kokoro HTTP (chunked) -> PCM 24kHz chunks -> resample 16kHz -> Opus -> WS -> Device
-                                   ^^^^^ overlap con riproduzione ^^^^^
+Flusso streaming (entrambi gli engine producono PCM 24kHz):
+  text -> TTS HTTP (chunked) -> PCM 24kHz chunks -> resample 16kHz -> Opus -> WS -> Device
+                                ^^^^^ overlap con riproduzione ^^^^^
 """
 
 import asyncio
@@ -31,7 +34,7 @@ _opus_encoder = None
 
 # Costanti audio (devono matchare il firmware AtomS3R)
 SAMPLE_RATE = 16000
-KOKORO_SAMPLE_RATE = 24000
+TTS_SAMPLE_RATE = 24000   # Sia XTTS che Kokoro producono 24kHz
 OPUS_FRAME_SAMPLES = 320  # 20ms @ 16kHz
 OPUS_BITRATE = 30000
 OPUS_COMPLEXITY = 5
@@ -59,6 +62,21 @@ def _resample_24k_to_16k(pcm_24k: bytes) -> bytes:
     samples = np.frombuffer(pcm_24k, dtype=np.int16).astype(np.float32)
     resampled = resample_poly(samples, up=2, down=3)  # 24000 * 2/3 = 16000
     return np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
+
+
+def _strip_wav_header(data: bytes) -> bytes:
+    """Estrae PCM raw da un file WAV. Se non e WAV, restituisce i dati invariati."""
+    if len(data) < 44 or data[:4] != b'RIFF' or data[8:12] != b'WAVE':
+        return data
+    # Cerca il subchunk 'data'
+    pos = 12
+    while pos < len(data) - 8:
+        chunk_id = data[pos:pos + 4]
+        chunk_size = int.from_bytes(data[pos + 4:pos + 8], 'little')
+        if chunk_id == b'data':
+            return data[pos + 8:]
+        pos += 8 + chunk_size
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -317,41 +335,53 @@ async def generate_tts_audio(text: str) -> Optional[bytes]:
     Returns:
         bytes PCM raw (int16 little-endian, 16kHz mono) o None se errore
     """
+    engine = _cfg.TTS_ENGINE
     try:
-        url = f"{_cfg.KOKORO_TTS_URL}/v1/audio/speech"
-        payload = {
-            "model": "kokoro",
-            "voice": _cfg.KOKORO_TTS_VOICE,
-            "input": text,
-            "response_format": "pcm",
-        }
+        if engine == "xtts":
+            url = f"{_cfg.XTTS_URL}/tts_to_audio/"
+            payload = {
+                "text": text,
+                "speaker_wav": _cfg.XTTS_SPEAKER,
+                "language": _cfg.XTTS_LANGUAGE,
+            }
+        else:
+            url = f"{_cfg.KOKORO_TTS_URL}/v1/audio/speech"
+            payload = {
+                "model": "kokoro",
+                "voice": _cfg.KOKORO_TTS_VOICE,
+                "input": text,
+                "response_format": "pcm",
+            }
 
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, json=payload) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    logger.error(f"Kokoro TTS error (HTTP {resp.status}): {body[:200]}")
+                    logger.error(f"TTS ({engine}) error (HTTP {resp.status}): {body[:200]}")
                     return None
-                pcm_24k = await resp.read()
+                raw_data = await resp.read()
 
-        if not pcm_24k:
-            logger.error(f"Kokoro TTS: nessun audio per '{text[:50]}...'")
+        if not raw_data:
+            logger.error(f"TTS ({engine}): nessun audio per '{text[:50]}...'")
             return None
+
+        # XTTS restituisce WAV, Kokoro restituisce PCM raw
+        pcm_24k = _strip_wav_header(raw_data) if engine == "xtts" else raw_data
 
         pcm_data = _resample_24k_to_16k(pcm_24k)
         duration = len(pcm_data) / (SAMPLE_RATE * 2)
-        logger.info(f"TTS: {len(text)} chars -> {duration:.1f}s ({len(pcm_data)} bytes PCM)")
+        logger.info(f"TTS ({engine}): {len(text)} chars -> {duration:.1f}s ({len(pcm_data)} bytes PCM)")
         return pcm_data
 
     except asyncio.TimeoutError:
-        logger.error("Kokoro TTS timeout")
+        logger.error(f"TTS ({engine}) timeout")
         return None
     except aiohttp.ClientError as e:
-        logger.error(f"Kokoro TTS connection error: {e}")
+        logger.error(f"TTS ({engine}) connection error: {e}")
         return None
     except Exception as e:
-        logger.error(f"Kokoro TTS error: {e}", exc_info=True)
+        logger.error(f"TTS ({engine}) error: {e}", exc_info=True)
         return None
 
 
@@ -374,10 +404,11 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
     """
     Genera TTS in streaming e invia frame Opus al device in tempo reale.
 
-    La generazione Kokoro e la riproduzione si sovrappongono: i primi frame
+    La generazione TTS e la riproduzione si sovrappongono: i primi frame
     Opus vengono inviati al device mentre il resto dell'audio e ancora in
-    generazione sul server TTS. Riduce il time-to-first-audio da decine
-    di secondi (CPU) a pochi secondi.
+    generazione sul server TTS. Riduce il time-to-first-audio.
+
+    Supporta XTTSv2 (locale GPU) e Kokoro (cloud CPU) tramite TTS_ENGINE config.
 
     Returns:
         (success: bool, duration_seconds: float)
@@ -388,19 +419,31 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
         logger.warning("speak_to_device: testo vuoto, skip")
         return False, 0.0
 
+    engine = _cfg.TTS_ENGINE
+
     # Pre-processing deterministico: markdown, numeri, translittering inglese
     text = _preprocess_tts_text(text)
     # Pre-processing LLM opzionale (disabilitato di default)
     text = await _preprocess_tts_text_llm(text)
 
-    url = f"{_cfg.KOKORO_TTS_URL}/v1/audio/speech"
-    payload = {
-        "model": "kokoro",
-        "voice": _cfg.KOKORO_TTS_VOICE,
-        "input": text,
-        "response_format": "pcm",
-        "stream": True,
-    }
+    # Costruisci URL e payload in base all'engine
+    if engine == "xtts":
+        url = f"{_cfg.XTTS_URL}/tts_stream/"
+        payload = {
+            "text": text,
+            "speaker_wav": _cfg.XTTS_SPEAKER,
+            "language": _cfg.XTTS_LANGUAGE,
+            "add_wav_header": False,
+        }
+    else:
+        url = f"{_cfg.KOKORO_TTS_URL}/v1/audio/speech"
+        payload = {
+            "model": "kokoro",
+            "voice": _cfg.KOKORO_TTS_VOICE,
+            "input": text,
+            "response_format": "pcm",
+            "stream": True,
+        }
 
     encoder = _get_opus_encoder()
     frame_bytes = OPUS_FRAME_SAMPLES * 2  # 640 bytes per Opus frame
@@ -414,6 +457,7 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
     frame_idx = 0
     t_start = time.monotonic()
     first_frame_logged = False
+    wav_header_checked = False
 
     try:
         timeout = aiohttp.ClientTimeout(total=120)
@@ -421,10 +465,15 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
             async with session.post(url, json=payload) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    logger.error(f"Kokoro stream error (HTTP {resp.status}): {body[:200]}")
+                    logger.error(f"TTS stream ({engine}) error (HTTP {resp.status}): {body[:200]}")
                     return False, 0.0
 
                 async for http_chunk in resp.content.iter_any():
+                    # XTTS: il primo chunk potrebbe avere un header WAV, strippalo
+                    if engine == "xtts" and not wav_header_checked:
+                        http_chunk = _strip_wav_header(http_chunk)
+                        wav_header_checked = True
+
                     pcm_24k_buf += http_chunk
 
                     # Processa quando abbiamo abbastanza dati per resample pulito
@@ -451,7 +500,7 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
                             frame_idx += 1
                             if not first_frame_logged:
                                 ttfa = time.monotonic() - t_start
-                                logger.info(f"speak_to_device({device_id}): first frame at {ttfa:.2f}s")
+                                logger.info(f"speak_to_device({device_id}, {engine}): first frame at {ttfa:.2f}s")
                                 first_frame_logged = True
                             if frame_idx > BURST_FRAMES:
                                 await asyncio.sleep(FRAME_INTERVAL)
@@ -482,16 +531,16 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
 
         duration = total_16k_bytes / (SAMPLE_RATE * 2)
         elapsed = time.monotonic() - t_start
-        logger.info(f"speak_to_device({device_id}): {frame_idx} frames streamed, "
+        logger.info(f"speak_to_device({device_id}, {engine}): {frame_idx} frames streamed, "
                      f"{duration:.1f}s audio in {elapsed:.1f}s wall")
         return True, duration
 
     except asyncio.TimeoutError:
-        logger.error("speak_to_device: Kokoro timeout")
+        logger.error(f"speak_to_device: TTS ({engine}) timeout")
         return False, 0.0
     except aiohttp.ClientError as e:
-        logger.error(f"speak_to_device: connection error: {e}")
+        logger.error(f"speak_to_device: TTS ({engine}) connection error: {e}")
         return False, 0.0
     except Exception as e:
-        logger.error(f"speak_to_device: error: {e}", exc_info=True)
+        logger.error(f"speak_to_device: TTS ({engine}) error: {e}", exc_info=True)
         return False, 0.0
