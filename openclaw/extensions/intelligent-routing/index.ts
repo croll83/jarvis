@@ -36,8 +36,8 @@
  */
 
 import { execSync } from "child_process";
-import { appendFileSync, existsSync, mkdirSync } from "fs";
-import { dirname, resolve } from "path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { dirname, resolve, join } from "path";
 import type { OpenClawPluginDefinition } from "openclaw/plugin-sdk";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -255,6 +255,27 @@ function callClassifier(
   }
 }
 
+/**
+ * Look up the model assigned to a cron job by reading jobs.json.
+ * Returns the full model ID (e.g. "anthropic/claude-sonnet-4-6") or null.
+ */
+const CRON_JOBS_PATH = join(
+  process.env.HOME || "/home/jarvis",
+  ".openclaw/cron/jobs.json",
+);
+
+function lookupCronModel(cronId: string): string | null {
+  try {
+    const data = JSON.parse(readFileSync(CRON_JOBS_PATH, "utf-8"));
+    const jobs = data.jobs || data;
+    if (!Array.isArray(jobs)) return null;
+    const job = jobs.find((j: any) => j.id === cronId);
+    return job?.payload?.model || null;
+  } catch {
+    return null;
+  }
+}
+
 function logDecision(
   logPath: string,
   entry: RoutingLogEntry,
@@ -326,6 +347,31 @@ const plugin: OpenClawPluginDefinition = {
           method: "skip-routed-marker",
           skipped: true,
         });
+
+        // Resolve the actual cron model from jobs.json using the cron ID in the prefix
+        const cronIdMatch = rawPrompt.match(/^\[cron:([0-9a-f-]+)\s/);
+        const cronModel = cronIdMatch ? lookupCronModel(cronIdMatch[1]) : null;
+        const resolvedModel = cronModel || "(pre-routed)";
+        const resolvedSplit = cronModel ? splitModelId(cronModel) : { provider: "", model: "" };
+
+        const agentId = ctx.agentId || "main";
+        const messageSource = ctx.messageProvider || (ctx as any).source || "unknown";
+        logDecision(config.routingLogPath, {
+          timestamp: new Date().toISOString(),
+          source: messageSource,
+          agentId,
+          taskDescription: rawPrompt.slice(0, 200),
+          tier: "ROUTED",
+          modelSelected: resolvedModel,
+          providerSelected: resolvedSplit.provider || "(cron-assigned)",
+          fallbacks: [],
+          confidence: 1.0,
+          executionTimeMs: Date.now() - startTime,
+          success: true,
+          classificationMethod: "skip-routed-marker",
+          notes: "",
+        });
+
         return {};
       }
 
