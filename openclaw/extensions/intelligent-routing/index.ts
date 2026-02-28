@@ -6,6 +6,11 @@
  * classifies task complexity (SIMPLE / MEDIUM / COMPLEX / REASONING / CRITICAL),
  * and overrides the model for MEDIUM+ tasks.
  *
+ * v2.2 additions:
+ * - [force-model:provider/model] marker: bypass classification, force exact model
+ * - [tier:TIER_NAME] marker: bypass classification, use tier's primary model
+ * - Both markers are logged and stored in routing state for model awareness
+ *
  * v2.1 fixes:
  * - modelOverride uses bare model name (e.g. "claude-sonnet-4-6"), NOT "anthropic/claude-sonnet-4-6"
  *   OpenClaw's resolveModel(provider, modelId) prepends the provider — sending "anthropic/claude-sonnet-4-6"
@@ -270,7 +275,7 @@ function logDecision(
 const plugin: OpenClawPluginDefinition = {
   id: "intelligent-routing",
   name: "Intelligent Routing",
-  version: "2.1.0",
+  version: "2.2.0",
   description: "Classifies task complexity and routes to the appropriate model",
 
   register(api) {
@@ -284,7 +289,7 @@ const plugin: OpenClawPluginDefinition = {
     const lastRoutedPrompt = new Map<string, string>();
 
     api.logger.info(
-      `[intelligent-routing] Registering hooks v2.1` +
+      `[intelligent-routing] Registering hooks v2.2` +
       ` | script=${config.routerScriptPath}` +
       ` | fastPath=${config.enableFastPath}` +
       ` | dryRun=${config.dryRun}`,
@@ -318,6 +323,135 @@ const plugin: OpenClawPluginDefinition = {
           skipped: true,
         });
         return {};
+      }
+
+      // ── Check [force-model:X] marker ──
+      // Bypasses classification entirely, forces the specified model.
+      // Accepts "provider/model" or bare "model" formats.
+      const forceModelMatch = rawPrompt.match(/^\[force-model:([^\]]+)\]/);
+      if (forceModelMatch) {
+        const requested = forceModelMatch[1].trim();
+        const split = splitModelId(requested);
+        const agentId = ctx.agentId || "main";
+        const messageSource = ctx.messageProvider || ctx.source || "unknown";
+
+        api.logger.debug(
+          `[intelligent-routing] Force-model override: ${requested}`,
+        );
+
+        routingState.set(sessionKey, {
+          tier: "FORCED",
+          model: split.model,
+          provider: split.provider,
+          confidence: 1.0,
+          method: "force-model",
+          skipped: false,
+        });
+        lastRoutedPrompt.set(sessionKey, rawPrompt);
+
+        logDecision(config.routingLogPath, {
+          timestamp: new Date().toISOString(),
+          source: messageSource,
+          agentId,
+          taskDescription: rawPrompt.slice(0, 200),
+          tier: "FORCED",
+          modelSelected: requested,
+          providerSelected: split.provider,
+          fallbacks: [],
+          confidence: 1.0,
+          executionTimeMs: Date.now() - startTime,
+          success: true,
+          classificationMethod: "force-model",
+          notes: "",
+        });
+
+        if (!split.model) return {};
+        return {
+          modelOverride: split.model,
+          providerOverride: split.provider || undefined,
+        };
+      }
+
+      // ── Check [tier:X] marker ──
+      // Bypasses classification, uses the tier's primary model from TIER_PRIMARY map.
+      // Accepts: SIMPLE, MEDIUM, COMPLEX, REASONING, CRITICAL (case-insensitive).
+      const tierMatch = rawPrompt.match(/^\[tier:([^\]]+)\]/);
+      if (tierMatch) {
+        const requestedTier = tierMatch[1].trim().toUpperCase();
+        const agentId = ctx.agentId || "main";
+        const messageSource = ctx.messageProvider || ctx.source || "unknown";
+
+        api.logger.debug(
+          `[intelligent-routing] Tier override: ${requestedTier}`,
+        );
+
+        if (requestedTier === "SIMPLE") {
+          routingState.set(sessionKey, {
+            tier: "SIMPLE",
+            model: "(default)",
+            provider: "",
+            confidence: 1.0,
+            method: "tier-override",
+            skipped: false,
+          });
+          lastRoutedPrompt.set(sessionKey, rawPrompt);
+
+          logDecision(config.routingLogPath, {
+            timestamp: new Date().toISOString(),
+            source: messageSource,
+            agentId,
+            taskDescription: rawPrompt.slice(0, 200),
+            tier: "SIMPLE",
+            modelSelected: "(default)",
+            providerSelected: "(default)",
+            fallbacks: [],
+            confidence: 1.0,
+            executionTimeMs: Date.now() - startTime,
+            success: true,
+            classificationMethod: "tier-override",
+            notes: "",
+          });
+          return {};
+        }
+
+        const tierModel = TIER_PRIMARY[requestedTier];
+        if (tierModel) {
+          routingState.set(sessionKey, {
+            tier: requestedTier,
+            model: tierModel.model,
+            provider: tierModel.provider,
+            confidence: 1.0,
+            method: "tier-override",
+            skipped: false,
+          });
+          lastRoutedPrompt.set(sessionKey, rawPrompt);
+
+          logDecision(config.routingLogPath, {
+            timestamp: new Date().toISOString(),
+            source: messageSource,
+            agentId,
+            taskDescription: rawPrompt.slice(0, 200),
+            tier: requestedTier,
+            modelSelected: tierModel.fullId,
+            providerSelected: tierModel.provider,
+            fallbacks: [],
+            confidence: 1.0,
+            executionTimeMs: Date.now() - startTime,
+            success: true,
+            classificationMethod: "tier-override",
+            notes: "",
+          });
+
+          return {
+            modelOverride: tierModel.model,
+            providerOverride: tierModel.provider,
+          };
+        }
+
+        // Unknown tier — fall through to normal classification
+        api.logger.warn(
+          `[intelligent-routing] Unknown tier override "${requestedTier}", falling through to classifier`,
+        );
       }
 
       // ── Dedup: if same prompt was already routed in this session, return cached result ──
