@@ -1,0 +1,16 @@
+services:
+  lab-server:
+    container_name: openclaw-lab-server
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ${WORKSPACE:-/home/jarvis/.openclaw/workspace}/projects:/projects:ro
+      - ${WORKSPACE:-/home/jarvis/.openclaw/workspace}/state/routing-log.jsonl:/app/routing-log.jsonl:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=10m

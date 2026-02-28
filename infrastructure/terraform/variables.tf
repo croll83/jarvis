@@ -238,6 +238,12 @@ variable "openclaw_ip_address" {
   default     = "dhcp"
 }
 
+variable "openclaw_template_file_id" {
+  description = "Template OS per LXC-OpenClaw (separato da JARVIS per evitare ricreationi accidentali)"
+  type        = string
+  default     = ""  # Se vuoto, usa lxc_template_file_id come fallback
+}
+
 # -----------------------------------------------------------------------------
 # VM Workstation (opzionale — Ubuntu Desktop + XFCE)
 # -----------------------------------------------------------------------------

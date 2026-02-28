@@ -12,6 +12,10 @@
 resource "proxmox_virtual_environment_container" "openclaw" {
   count = var.openclaw_enabled ? 1 : 0
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   description   = "JARVIS OpenClaw — Gateway Gemini + Chrome CDP"
   node_name     = var.proxmox_node
   vm_id         = var.openclaw_ct_id > 0 ? var.openclaw_ct_id : null
@@ -28,7 +32,7 @@ resource "proxmox_virtual_environment_container" "openclaw" {
   }
 
   operating_system {
-    template_file_id = var.lxc_template_file_id
+    template_file_id = var.openclaw_template_file_id != "" ? var.openclaw_template_file_id : var.lxc_template_file_id
     type             = "ubuntu"
   }
 

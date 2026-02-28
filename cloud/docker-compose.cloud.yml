@@ -1,6 +1,12 @@
 # =============================================================================
 # JARVIS Cloud Stack
-# Deploy su VPS senza GPU - Usa API esterne per AI + Kokoro TTS (CPU)
+# Deploy su VPS senza GPU - Usa API esterne per AI
+#
+# TTS ENGINE:
+#   - Default: XTTS remoto su LXC-JARVIS via Tailscale (TTS_ENGINE=xtts nel .env)
+#   - Fallback: Kokoro-82M locale CPU (TTS_ENGINE=kokoro + profilo "kokoro")
+#   Se si usa XTTS remoto, il container kokoro-tts non serve — non avviarlo.
+#   Se si usa Kokoro: docker compose --profile kokoro up -d
 #
 # NOTA: OpenClaw gira bare-metal (non in Docker) sulla stessa macchina.
 # NOTA: Tailscale gira host-level (non in Docker) per connettere HA remoti,
@@ -13,7 +19,9 @@
 
 services:
   # ---------------------------------------------------------------------------
-  # TTS - Kokoro-82M (CPU, voce italiana if_sara)
+  # TTS FALLBACK - Kokoro-82M (CPU, voce italiana if_sara)
+  # Attivo solo con profilo "kokoro": docker compose --profile kokoro up -d
+  # Non necessario se si usa XTTS remoto via Tailscale (default)
   # ---------------------------------------------------------------------------
   kokoro-tts:
     image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.1
@@ -23,6 +31,8 @@ services:
     environment:
       - KOKORO_DEFAULT_VOICE=if_sara
     restart: unless-stopped
+    profiles:
+      - kokoro
     deploy:
       resources:
         limits:
@@ -36,9 +46,6 @@ services:
       context: ../jarvis-orchestrator
       dockerfile: Dockerfile
     container_name: jarvis_orchestrator
-    depends_on:
-      kokoro-tts:
-        condition: service_started
     network_mode: host
     volumes:
       - ../data:/app/data
@@ -52,8 +59,13 @@ services:
       - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
       # Gateway WS for exec approval operator (same host/port, wss:// scheme)
       - OPENCLAW_WS_URL=${OPENCLAW_WS_URL:-wss://openclaw.mintwork.it:18789}
-      # TTS (Kokoro — porta esposta su host via kokoro-tts service)
-      - KOKORO_TTS_URL=http://localhost:8890
+      # TTS — configurato via .env (TTS_ENGINE, XTTS_URL o KOKORO_TTS_URL)
+      # Default: XTTS su LXC-JARVIS remoto via Tailscale
+      - TTS_ENGINE=${TTS_ENGINE:-xtts}
+      - XTTS_URL=${XTTS_URL:-}
+      - XTTS_SPEAKER=${XTTS_SPEAKER:-default}
+      - XTTS_LANGUAGE=${XTTS_LANGUAGE:-it}
+      - KOKORO_TTS_URL=${KOKORO_TTS_URL:-http://localhost:8890}
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]

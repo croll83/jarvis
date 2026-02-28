@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🧠 Routing Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+  h1 { color: #58a6ff; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .card h3 { color: #58a6ff; margin-bottom: 12px; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
+  .stat { font-size: 32px; font-weight: bold; color: #f0f6fc; }
+  .stat-label { font-size: 12px; color: #8b949e; margin-top: 4px; }
+  .bar-chart { margin-top: 8px; }
+  .bar-row { display: flex; align-items: center; margin: 4px 0; }
+  .bar-label { width: 120px; font-size: 13px; color: #8b949e; }
+  .bar { height: 20px; border-radius: 3px; min-width: 2px; transition: width 0.3s; }
+  .bar-value { margin-left: 8px; font-size: 12px; color: #c9d1d9; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px; color: #8b949e; border-bottom: 1px solid #30363d; }
+  td { padding: 8px; border-bottom: 1px solid #21262d; }
+  .tier-SIMPLE { color: #3fb950; } .tier-MEDIUM { color: #58a6ff; }
+  .tier-COMPLEX { color: #d29922; } .tier-REASONING { color: #f85149; }
+  .tier-CRITICAL { color: #f778ba; }
+  .success { color: #3fb950; } .failure { color: #f85149; }
+  #drop-zone { border: 2px dashed #30363d; border-radius: 8px; padding: 40px; text-align: center; color: #8b949e; margin-bottom: 20px; cursor: pointer; }
+  #drop-zone.active { border-color: #58a6ff; color: #58a6ff; }
+  #file-input { display: none; }
+  .colors { --c0: #58a6ff; --c1: #3fb950; --c2: #d29922; --c3: #f85149; --c4: #f778ba; --c5: #a371f7; }
+</style>
+</head>
+<body class="colors">
+<h1>🧠 Intelligent Routing Dashboard</h1>
+
+<div id="status-bar" style="margin-bottom:12px;padding:10px 16px;border-radius:6px;font-size:13px;display:none"></div>
+
+<div id="drop-zone" onclick="document.getElementById('file-input').click()">
+  <div id="drop-zone-content">📂 Drop <code>routing-log.jsonl</code> here or click to load</div>
+  <div id="loading-spinner" style="display:none">⏳ Loading routing-log.jsonl…</div>
+  <input type="file" id="file-input" accept=".jsonl,.json,.txt">
+</div>
+
+<div id="dashboard" style="display:none">
+  <div class="grid" id="summary-cards"></div>
+  <div class="grid">
+    <div class="card"><h3>By Tier</h3><div id="tier-chart" class="bar-chart"></div></div>
+    <div class="card"><h3>By Model</h3><div id="model-chart" class="bar-chart"></div></div>
+    <div class="card"><h3>By Source</h3><div id="source-chart" class="bar-chart"></div></div>
+    <div class="card"><h3>Cost by Tier</h3><div id="cost-chart" class="bar-chart"></div></div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h3>Recent Routing Decisions</h3>
+    <table id="log-table"><thead><tr><th>Time</th><th>Source</th><th>Task</th><th>Tier</th><th>Model</th><th>Conf</th><th>Method</th><th>Ms</th><th>Status</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<script>
+const TIER_COLORS = { SIMPLE: '#3fb950', MEDIUM: '#58a6ff', COMPLEX: '#d29922', REASONING: '#f85149', CRITICAL: '#f778ba' };
+const MODEL_COLORS = ['#58a6ff','#3fb950','#d29922','#f85149','#f778ba','#a371f7','#79c0ff','#56d364'];
+
+function loadData(text) {
+  const entries = text.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+  if (!entries.length) return;
+  document.getElementById('dashboard').style.display = 'block';
+  document.getElementById('drop-zone').style.display = 'none';
+  render(entries);
+}
+
+function groupBy(arr, key) {
+  const g = {};
+  arr.forEach(e => { const k = e[key] || 'unknown'; (g[k] = g[k] || []).push(e); });
+  return g;
+}
+
+function render(entries) {
+  const total = entries.length;
+  const successes = entries.filter(e => e.success).length;
+  const totalCost = entries.reduce((s, e) => s + (e.costEstimate || 0), 0);
+  const avgConf = entries.reduce((s, e) => s + (e.confidence || 0), 0) / total;
+
+  document.getElementById('summary-cards').innerHTML = [
+    { stat: total, label: 'Total Decisions' },
+    { stat: `${(successes/total*100).toFixed(1)}%`, label: 'Success Rate' },
+    { stat: `$${totalCost.toFixed(4)}`, label: 'Total Cost' },
+    { stat: `${(avgConf*100).toFixed(0)}%`, label: 'Avg Confidence' },
+  ].map(c => `<div class="card"><div class="stat">${c.stat}</div><div class="stat-label">${c.label}</div></div>`).join('');
+
+  renderBarChart('tier-chart', groupBy(entries, 'tier'), TIER_COLORS);
+  
+  const modelGroups = groupBy(entries, 'modelSelected');
+  const mColors = {}; let ci = 0;
+  Object.keys(modelGroups).forEach(k => mColors[k] = MODEL_COLORS[ci++ % MODEL_COLORS.length]);
+  renderBarChart('model-chart', modelGroups, mColors);
+  
+  const srcColors = { cron: '#58a6ff', heartbeat: '#3fb950', 'sub-task': '#d29922', main: '#f85149', manual: '#8b949e' };
+  renderBarChart('source-chart', groupBy(entries, 'source'), srcColors);
+
+  // Cost by tier
+  const tierGroups = groupBy(entries, 'tier');
+  const costData = {};
+  Object.entries(tierGroups).forEach(([k, v]) => costData[k] = [{ costEstimate: v.reduce((s, e) => s + (e.costEstimate || 0), 0) }]);
+  const costEl = document.getElementById('cost-chart');
+  const maxCost = Math.max(...Object.values(costData).map(v => v[0].costEstimate), 0.001);
+  costEl.innerHTML = Object.entries(costData).map(([k, v]) => {
+    const c = v[0].costEstimate;
+    return `<div class="bar-row"><span class="bar-label">${k}</span><div class="bar" style="width:${c/maxCost*200}px;background:${TIER_COLORS[k]||'#8b949e'}"></div><span class="bar-value">$${c.toFixed(4)}</span></div>`;
+  }).join('');
+
+  // Table
+  const tbody = document.querySelector('#log-table tbody');
+  tbody.innerHTML = entries.slice(-50).reverse().map(e => {
+    const desc = (e.taskDescription || e.jobName || '-').slice(0, 80);
+    const conf = e.confidence != null ? `${(e.confidence*100).toFixed(0)}%` : '-';
+    const method = e.classificationMethod || '-';
+    const ms = e.executionTimeMs != null ? e.executionTimeMs : '-';
+    return `<tr>
+    <td>${new Date(e.timestamp).toLocaleString()}</td>
+    <td>${e.source}</td>
+    <td title="${(e.taskDescription || e.jobName || '').replace(/"/g, '&quot;')}">${desc}</td>
+    <td class="tier-${e.tier}">${e.tier}</td>
+    <td>${e.modelSelected}</td>
+    <td>${conf}</td>
+    <td>${method}</td>
+    <td>${ms}</td>
+    <td class="${e.success ? 'success' : 'failure'}">${e.success ? '✅' : '❌'}</td>
+  </tr>`;
+  }).join('');
+}
+
+function renderBarChart(id, groups, colors) {
+  const el = document.getElementById(id);
+  const max = Math.max(...Object.values(groups).map(v => v.length), 1);
+  el.innerHTML = Object.entries(groups).sort((a,b) => b[1].length - a[1].length).map(([k, v]) =>
+    `<div class="bar-row"><span class="bar-label">${k}</span><div class="bar" style="width:${v.length/max*200}px;background:${colors[k]||'#8b949e'}"></div><span class="bar-value">${v.length}</span></div>`
+  ).join('');
+}
+
+// File handling
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('active'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('active'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('active'); if(e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', e => { if(e.target.files[0]) readFile(e.target.files[0]); });
+function readFile(f) { const r = new FileReader(); r.onload = e => loadData(e.target.result); r.readAsText(f); }
+
+// Auto-load from /state/routing-log.jsonl (container mount) with fallback to relative path
+const AUTO_REFRESH_SEC = 30;
+const STATUS = document.getElementById('status-bar');
+const SPINNER = document.getElementById('loading-spinner');
+const DROP_CONTENT = document.getElementById('drop-zone-content');
+let autoRefreshTimer = null;
+
+function showStatus(msg, type) {
+  STATUS.style.display = 'block';
+  STATUS.style.background = type === 'ok' ? '#0d2818' : type === 'warn' ? '#2d1b00' : '#161b22';
+  STATUS.style.borderLeft = `3px solid ${type === 'ok' ? '#3fb950' : type === 'warn' ? '#d29922' : '#8b949e'}`;
+  STATUS.textContent = msg;
+}
+
+async function autoFetch() {
+  SPINNER.style.display = 'block';
+  DROP_CONTENT.style.display = 'none';
+  const urls = ['/routing-log.jsonl'];
+  for (const url of urls) {
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) continue;
+      const text = await r.text();
+      const lines = text.trim().split('\n').filter(Boolean);
+      if (!lines.length) continue;
+      loadData(text);
+      showStatus(`✅ Loaded ${lines.length} entries from routing-log.jsonl (auto-refresh every ${AUTO_REFRESH_SEC}s)`, 'ok');
+      startAutoRefresh();
+      return;
+    } catch(_) {}
+  }
+  // Failed — show drop zone
+  SPINNER.style.display = 'none';
+  DROP_CONTENT.style.display = 'block';
+  showStatus('⚠️ Could not load routing-log.jsonl — use drag-drop instead', 'warn');
+}
+
+function startAutoRefresh() {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(autoFetch, AUTO_REFRESH_SEC * 1000);
+}
+
+autoFetch();
+</script>
+</body>
+</html>

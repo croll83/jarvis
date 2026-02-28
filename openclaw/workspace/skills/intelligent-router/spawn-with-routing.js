@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 /**
- * Spawn With Routing v1.0
- * 
+ * Spawn With Routing v1.1
+ *
  * Automatically classifies a task, selects the right model, and spawns a sub-agent.
  * Handles fallback if the primary model fails.
- * 
+ *
+ * v1.1 changes:
+ *   - Adds [routed] marker to spawned task prompts so the intelligent-routing
+ *     plugin (before_model_resolve hook) skips re-routing for pre-routed subagents.
+ *   - Without the marker, the hook would override the model selected here,
+ *     causing routing conflicts.
+ *
  * Usage:
  *   node spawn-with-routing.js "task description"
  *   node spawn-with-routing.js --tier COMPLEX "task description"
  *   node spawn-with-routing.js --model sonnet "task description"
  *   node spawn-with-routing.js --dry-run "task description"    # just show routing, don't spawn
- * 
+ *
  * Output: JSON with routing decision and spawn result
  */
 
@@ -18,17 +24,24 @@ const { execSync } = require('child_process');
 const path = require('path');
 const { route } = require('./intelligent-router-hook');
 
+// Marker prefix: the intelligent-routing plugin checks for this in before_model_resolve.
+// When present, the hook returns {} (no override) so the model selected here prevails.
+const ROUTED_MARKER = '[routed]';
+
 function spawn(task, model, thinking, timeoutMinutes) {
+  // Prepend [routed] marker so the plugin hook skips re-routing
+  const routedTask = `${ROUTED_MARKER} ${task}`;
+
   // Build openclaw spawn command
   let cmd = `openclaw spawn`;
   cmd += ` --model "${model}"`;
   if (thinking) cmd += ` --thinking ${thinking}`;
   if (timeoutMinutes) cmd += ` --timeout ${timeoutMinutes * 60}`;
-  cmd += ` --task "${task.replace(/"/g, '\\"')}"`;
-  
+  cmd += ` --task "${routedTask.replace(/"/g, '\\"')}"`;
+
   try {
-    const output = execSync(cmd, { 
-      encoding: 'utf-8', 
+    const output = execSync(cmd, {
+      encoding: 'utf-8',
       timeout: 30000,
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -142,7 +155,7 @@ function main() {
 }
 
 function buildSpawnCmd(task, routing) {
-  let cmd = `sessions_spawn(task="${task}", model="${routing.modelAlias}"`;
+  let cmd = `sessions_spawn(task="${ROUTED_MARKER} ${task}", model="${routing.modelAlias}"`;
   if (routing.thinking) cmd += `, thinking="${routing.thinking}"`;
   cmd += `)`;
   return cmd;

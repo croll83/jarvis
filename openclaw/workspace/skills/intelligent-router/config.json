@@ -1,13 +1,6 @@
 {
-  "_comment": "Intelligent Router - Marco's model config. Updated 2026-02-19.",
+  "_comment": "Intelligent Router - Marco's model config. Updated 2026-02-28. LXC migration.",
   "models": [
-    {
-      "id": "qwen/qwen-2.5-7b-instruct",
-      "alias": "Qwen Local",
-      "tier": "SIMPLE",
-      "input_cost_per_m": 0.00,
-      "output_cost_per_m": 0.00
-    },
     {
       "id": "anthropic/claude-haiku-4-5",
       "alias": "Haiku",
@@ -21,6 +14,13 @@
       "tier": "SIMPLE",
       "input_cost_per_m": 2.00,
       "output_cost_per_m": 8.00
+    },
+    {
+      "id": "qwen/qwen-2.5-7b-instruct",
+      "alias": "Qwen",
+      "tier": "SIMPLE",
+      "input_cost_per_m": 0.00,
+      "output_cost_per_m": 0.00
     },
     {
       "id": "anthropic/claude-sonnet-4-6",
@@ -37,7 +37,7 @@
       "output_cost_per_m": 12.00
     },
     {
-      "id": "xai/grok-4-1-fast-reasoning",
+      "id": "xai/grok-4-1-fast-non-reasoning",
       "alias": "Grok",
       "tier": "MEDIUM",
       "input_cost_per_m": 0.20,
@@ -60,20 +60,20 @@
   ],
   "routing_rules": {
     "SIMPLE": {
-      "primary": "qwen/qwen-2.5-7b-instruct",
+      "primary": "anthropic/claude-haiku-4-5",
       "fallback_chain": [
-        "anthropic/claude-haiku-4-5",
-        "google/gemini-2.5-flash"
+        "google/gemini-2.5-flash",
+        "qwen/qwen-2.5-7b-instruct"
       ],
-      "use_for": ["chat", "simple questions", "status checks", "monitoring", "memory consolidation"]
+      "use_for": ["greetings", "confirmations", "trivial questions", "emoji responses"]
     },
     "MEDIUM": {
       "primary": "anthropic/claude-sonnet-4-6",
       "fallback_chain": [
         "google/gemini-3-flash-preview",
-        "xai/grok-4-1-fast-reasoning"
+        "xai/grok-4-1-fast-non-reasoning"
       ],
-      "use_for": ["document analysis", "web research", "creative writing", "moderate debugging", "multi-step tasks"]
+      "use_for": ["document analysis", "web research", "creative writing", "moderate debugging", "multi-step tasks", "general conversation"]
     },
     "COMPLEX": {
       "primary": "anthropic/claude-sonnet-4-6",

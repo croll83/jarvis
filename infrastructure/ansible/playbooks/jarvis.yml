@@ -69,6 +69,24 @@
       when: deploy_type == "lxc" or ai_backend == "api"
 
     # -----------------------------------------------------------------
+    # SPEAKERS — WAV di riferimento per XTTS voice cloning
+    # -----------------------------------------------------------------
+    # I WAV sono gitignored (troppo grandi + privati).
+    # Se speaker_wav_src è definita in group_vars, copia il file sul target.
+    # Altrimenti XTTS usa la voce built-in "default".
+    - name: Copia WAV speaker per XTTS voice cloning
+      ansible.builtin.copy:
+        src: "{{ speaker_wav_src }}"
+        dest: "{{ jarvis_dir }}/speakers/{{ xtts_speaker | default('default') }}.wav"
+        owner: "{{ jarvis_user }}"
+        group: "{{ jarvis_user }}"
+        mode: "0644"
+      when:
+        - speaker_wav_src is defined
+        - speaker_wav_src | length > 0
+        - deploy_type == "lxc_gpu"
+
+    # -----------------------------------------------------------------
     # DOCKER COMPOSE — AVVIO SERVIZI
     # -----------------------------------------------------------------
     - name: "Avvio JARVIS stack (deploy locale con GPU)"
@@ -247,6 +265,7 @@
           {% if deploy_type == 'lxc_gpu' and ai_backend == 'local' %}
             - Ollama API:              http://localhost:11434
             - Whisper STT:             http://localhost:9000
+            - XTTS TTS (GPU):         http://localhost:8890/docs
           {% endif %}
 
           Prossimi passi manuali:

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Intelligent Router Hook v1.1
+ * Intelligent Router Hook v1.2
  *
  * Input: task description (string)
  * Output (JSON): { tier, model, fallbacks, thinking, confidence }
@@ -12,11 +12,10 @@
  *   node intelligent-router-hook.js "task description here"
  *   node intelligent-router-hook.js --tier MEDIUM   # force tier override
  *
- * v1.1 changes:
- *   - stripTelegramEnvelope(): remove Telegram metadata before classifying
- *   - isFastPathSimple(): Italian/short-message fast-path to SIMPLE
- *   - confidence < 0.30 defaults to SIMPLE (classifier is uncertain, don't pay for MEDIUM)
- *   - classifier failure defaults to SIMPLE (not MEDIUM)
+ * v1.2 changes:
+ *   - Low-confidence guard REMOVED (policy moved to plugin index.ts)
+ *   - Classifier failure defaults to MEDIUM (not SIMPLE — Haiku makes bad decisions)
+ *   - Grok alias updated to grok-4-1-fast-non-reasoning
  */
 
 const { execSync } = require('child_process');
@@ -24,7 +23,7 @@ const path = require('path');
 const fs = require('fs');
 
 const ROUTER_DIR = __dirname;
-const ROUTER_PY = path.join(ROUTER_DIR, 'scripts', 'router.py');
+const ROUTER_PY = path.join(ROUTER_DIR, 'scripts');
 const CONFIG_PATH = path.join(ROUTER_DIR, 'config.json');
 
 // Confidence threshold below which we default to SIMPLE
@@ -47,7 +46,7 @@ const ALIAS_MAP = {
   'google/gemini-2.5-flash': 'gemini-flash',
   'google/gemini-3-flash-preview': 'gemini-3-flash',
   'google/gemini-3-pro-preview': 'gemini-3-pro',
-  'xai/grok-4-1-fast-reasoning': 'grok',
+  'xai/grok-4-1-fast-non-reasoning': 'grok',
   'qwen/qwen-2.5-7b-instruct': 'qwen',
 };
 
@@ -198,21 +197,18 @@ function route(task, overrideTier) {
       const result = classifyWithPython(cleanTask);
 
       if (!result) {
-        // Classifier failed → safe default is SIMPLE (was MEDIUM — expensive and wrong)
-        tier = 'SIMPLE';
+        // Classifier failed → safe default is MEDIUM (Sonnet).
+        // v1.2: Changed from SIMPLE because Haiku makes bad decisions on unknown tasks.
+        tier = 'MEDIUM';
         confidence = 0;
       } else {
         tier = result.tier;
         confidence = result.confidence;
 
-        // ── Step 4: low-confidence guard ───────────────────────────────
-        // If the classifier is uncertain (< 30% confidence), default to SIMPLE.
-        // CRITICAL and REASONING are exempt — false negatives there are costly.
-        if (confidence < LOW_CONFIDENCE_THRESHOLD
-            && tier !== 'CRITICAL'
-            && tier !== 'REASONING') {
-          tier = 'SIMPLE';
-        }
+        // v1.2: Low-confidence guard REMOVED from hook.
+        // The plugin (index.ts) now handles low-confidence policy:
+        // - Falls back to MEDIUM (Sonnet), NOT SIMPLE (Haiku)
+        // - This prevents Haiku from acting on tasks it doesn't understand
       }
     }
   }

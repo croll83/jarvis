@@ -71,8 +71,8 @@ async def bearer_auth_middleware(request: Request, call_next):
     if not ONTOLOGY_API_TOKEN:
         return await call_next(request)
 
-    # Skip auth for health/docs/dashboard/schema/speakers/app
-    if request.url.path in ("/health", "/docs", "/openapi.json", "/redoc", "/schema", "/speakers") \
+    # Skip auth for health/docs/dashboard/schema/speakers/app/env-config
+    if request.url.path in ("/health", "/docs", "/openapi.json", "/redoc", "/schema", "/speakers", "/env-config.js") \
        or request.url.path.startswith("/dashboard") \
        or request.url.path.startswith("/app"):
         return await call_next(request)
@@ -724,6 +724,13 @@ if _react_dir.is_dir():
     _react_static = _react_dir / "static"
     if _react_static.is_dir():
         app.mount("/app/static", StaticFiles(directory=str(_react_static)), name="react-static")
+
+    # Serve env-config.js at root (index.html loads it as /env-config.js)
+    _env_config = _react_dir / "env-config.js"
+    if _env_config.is_file():
+        @app.get("/env-config.js", include_in_schema=False)
+        async def env_config():
+            return FileResponse(str(_env_config), media_type="application/javascript")
 
     # SPA catch-all: any /app/* route serves index.html (React Router handles the rest)
     @app.get("/app/{full_path:path}", include_in_schema=False)
