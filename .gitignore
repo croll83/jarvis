@@ -4,6 +4,7 @@ env/
 ENV/
 bin/
 lib/
+!openclaw/skills/**/lib/
 develop-eggs/
 dist/
 eggs/
