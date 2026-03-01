@@ -65,6 +65,7 @@ interface RoutingDecision {
   tier: string;
   model: string;
   provider: string;
+  thinking: string;
   confidence: number;
   method: string;
   skipped: boolean;
@@ -84,6 +85,17 @@ interface RoutingLogEntry {
   success: boolean;
   classificationMethod: string;
   notes: string;
+}
+
+/**
+ * Extended hook result type — adds thinkingOverride (patched into OpenClaw runtime).
+ * The official PluginHookBeforeModelResolveResult only has modelOverride + providerOverride.
+ * Our patch to resolveThinkingDefault reads thinkingOverride via globalThis.__openclawHookThinking.
+ */
+interface RoutingHookResult {
+  modelOverride?: string;
+  providerOverride?: string;
+  thinkingOverride?: string;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -112,12 +124,12 @@ const LOW_CONFIDENCE_THRESHOLD = 0.30;
  * DO NOT use "anthropic/claude-sonnet-4-6" as modelOverride —
  * OpenClaw's resolveModel() prepends the provider again → double prefix error.
  */
-const TIER_PRIMARY: Record<string, { provider: string; model: string; fullId: string }> = {
-  SIMPLE:    { provider: "anthropic", model: "claude-haiku-4-5",   fullId: "anthropic/claude-haiku-4-5" },
-  MEDIUM:    { provider: "anthropic", model: "claude-sonnet-4-6",  fullId: "anthropic/claude-sonnet-4-6" },
-  COMPLEX:   { provider: "anthropic", model: "claude-sonnet-4-6",  fullId: "anthropic/claude-sonnet-4-6" },
-  REASONING: { provider: "anthropic", model: "claude-opus-4-6",    fullId: "anthropic/claude-opus-4-6" },
-  CRITICAL:  { provider: "anthropic", model: "claude-opus-4-6",    fullId: "anthropic/claude-opus-4-6" },
+const TIER_PRIMARY: Record<string, { provider: string; model: string; fullId: string; thinking: string }> = {
+  SIMPLE:    { provider: "anthropic", model: "claude-haiku-4-5",   fullId: "anthropic/claude-haiku-4-5",  thinking: "off" },
+  MEDIUM:    { provider: "anthropic", model: "claude-sonnet-4-6",  fullId: "anthropic/claude-sonnet-4-6", thinking: "off" },
+  COMPLEX:   { provider: "anthropic", model: "claude-sonnet-4-6",  fullId: "anthropic/claude-sonnet-4-6", thinking: "low" },
+  REASONING: { provider: "anthropic", model: "claude-opus-4-6",    fullId: "anthropic/claude-opus-4-6",   thinking: "high" },
+  CRITICAL:  { provider: "anthropic", model: "claude-opus-4-6",    fullId: "anthropic/claude-opus-4-6",   thinking: "high" },
 };
 
 /**
@@ -299,7 +311,7 @@ function logDecision(
 const plugin: OpenClawPluginDefinition = {
   id: "intelligent-routing",
   name: "Intelligent Routing",
-  version: "2.2.0",
+  version: "2.3.0",
   description: "Classifies task complexity and routes to the appropriate model",
 
   register(api) {
@@ -346,6 +358,7 @@ const plugin: OpenClawPluginDefinition = {
           tier: "ROUTED",
           model: "(pre-routed)",
           provider: "",
+          thinking: "",
           confidence: 1.0,
           method: "skip-routed-marker",
           skipped: true,
@@ -396,6 +409,7 @@ const plugin: OpenClawPluginDefinition = {
           tier: "FORCED",
           model: split.model,
           provider: split.provider,
+          thinking: "",
           confidence: 1.0,
           method: "force-model",
           skipped: false,
@@ -444,6 +458,7 @@ const plugin: OpenClawPluginDefinition = {
             tier: "SIMPLE",
             model: sp.model,
             provider: sp.provider,
+            thinking: sp.thinking,
             confidence: 1.0,
             method: "tier-override",
             skipped: false,
@@ -468,7 +483,8 @@ const plugin: OpenClawPluginDefinition = {
           return {
             modelOverride: sp.model,
             providerOverride: sp.provider,
-          };
+            thinkingOverride: sp.thinking,
+          } as RoutingHookResult;
         }
 
         const tierModel = TIER_PRIMARY[requestedTier];
@@ -477,6 +493,7 @@ const plugin: OpenClawPluginDefinition = {
             tier: requestedTier,
             model: tierModel.model,
             provider: tierModel.provider,
+            thinking: tierModel.thinking,
             confidence: 1.0,
             method: "tier-override",
             skipped: false,
@@ -502,7 +519,8 @@ const plugin: OpenClawPluginDefinition = {
           return {
             modelOverride: tierModel.model,
             providerOverride: tierModel.provider,
-          };
+            thinkingOverride: tierModel.thinking,
+          } as RoutingHookResult;
         }
 
         // Unknown tier — fall through to normal classification
@@ -522,7 +540,8 @@ const plugin: OpenClawPluginDefinition = {
           return {
             modelOverride: prevDecision.model,
             providerOverride: prevDecision.provider || undefined,
-          };
+            thinkingOverride: prevDecision.thinking || undefined,
+          } as RoutingHookResult;
         }
         return {};
       }
@@ -534,6 +553,7 @@ const plugin: OpenClawPluginDefinition = {
       let modelPart = "";    // bare model name (e.g. "claude-sonnet-4-6")
       let providerPart = ""; // provider (e.g. "anthropic")
       let fullModelId = "";  // full ID for logging (e.g. "anthropic/claude-sonnet-4-6")
+      let thinkingPart = "off"; // thinking level for the tier
       let fallbacks: string[] = [];
       let confidence = 1.0;
       let classificationMethod = "fast-path";
@@ -550,6 +570,7 @@ const plugin: OpenClawPluginDefinition = {
         modelPart = sp.model;
         providerPart = sp.provider;
         fullModelId = sp.fullId;
+        thinkingPart = sp.thinking;
       } else {
         // ── Stage 2: Full classifier ──
         // Pass cleanPrompt (envelope stripped) — the raw prompt contains Telegram
@@ -567,6 +588,7 @@ const plugin: OpenClawPluginDefinition = {
           const split = splitModelId(result.model);
           modelPart = split.model;
           providerPart = split.provider;
+          thinkingPart = TIER_PRIMARY[tier]?.thinking || "off";
           fallbacks = result.fallbacks || [];
           confidence = result.confidence;
           classifierFailed = result.classifierFailed === true;
@@ -581,6 +603,7 @@ const plugin: OpenClawPluginDefinition = {
           modelPart = mp.model;
           providerPart = mp.provider;
           fullModelId = mp.fullId;
+          thinkingPart = mp.thinking;
           api.logger.warn(
             `[intelligent-routing] Classifier failed/timeout, defaulting to MEDIUM (${mp.fullId})`,
           );
@@ -605,6 +628,7 @@ const plugin: OpenClawPluginDefinition = {
           modelPart = mp.model;
           providerPart = mp.provider;
           fullModelId = mp.fullId;
+          thinkingPart = mp.thinking;
           api.logger.debug(
             `[intelligent-routing] Low confidence (${confidence.toFixed(2)}) for tier ${oldTier}, upgrading to MEDIUM (${mp.fullId})`,
           );
@@ -619,6 +643,7 @@ const plugin: OpenClawPluginDefinition = {
         tier,
         model: modelPart,
         provider: providerPart,
+        thinking: thinkingPart,
         confidence,
         method: classificationMethod,
         skipped: false,
@@ -647,11 +672,11 @@ const plugin: OpenClawPluginDefinition = {
 
       api.logger.debug(
         `[intelligent-routing] ${tier} (${classificationMethod}, ${confidence.toFixed(2)}) -> ` +
-        `${providerPart}/${modelPart} [${executionTimeMs}ms]`,
+        `${providerPart}/${modelPart} thinking=${thinkingPart} [${executionTimeMs}ms]`,
       );
 
       // ── Build result ──
-      // All tiers get explicit model override (SIMPLE→Haiku, MEDIUM/COMPLEX→Sonnet, etc.)
+      // All tiers get explicit model override + thinking level
       if (config.dryRun) {
         return {};
       }
@@ -660,7 +685,8 @@ const plugin: OpenClawPluginDefinition = {
         return {
           modelOverride: modelPart,
           providerOverride: providerPart || undefined,
-        };
+          thinkingOverride: thinkingPart,
+        } as RoutingHookResult;
       }
 
       return {};
@@ -690,6 +716,7 @@ const plugin: OpenClawPluginDefinition = {
         `[Routing Info]`,
         `Tier: ${routing.tier}`,
         `Model: ${fullModel}`,
+        `Thinking: ${routing.thinking || "default"}`,
         `Confidence: ${(routing.confidence * 100).toFixed(0)}%`,
         `Method: ${routing.method}`,
       ].join(" | ");
