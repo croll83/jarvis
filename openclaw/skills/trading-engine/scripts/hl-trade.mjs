@@ -16,6 +16,7 @@
  */
 
 import { HLClient } from './lib/hl-client.mjs';
+import { randomUUID } from 'crypto';
 
 const ONTOLOGY_URL = process.env.ONTOLOGY_URL || 'http://127.0.0.1:8100';
 const ONTOLOGY_SPEAKER = process.env.ONTOLOGY_SPEAKER || 'jarvis-agent';
@@ -84,7 +85,25 @@ async function createRelation(fromId, relType, toId) {
   }
 }
 
-async function logTransaction({ type, coin, size, price, strategy }) {
+async function findOpenTradeId(coin, closeType) {
+  const openType = closeType === 'sell' ? 'buy' : 'sell';
+  try {
+    const txns = await ontologyRequest('GET', '/entities?type=Transaction');
+    if (!txns || !Array.isArray(txns)) return null;
+    const matching = txns
+      .filter(t => {
+        const p = t.properties || {};
+        return p.type === openType
+          && (p.asset_in === coin || p.asset_out === coin)
+          && p.trade_id
+          && p.status !== 'closed';
+      })
+      .sort((a, b) => new Date(b.properties.timestamp) - new Date(a.properties.timestamp));
+    return matching[0]?.properties?.trade_id || null;
+  } catch { return null; }
+}
+
+async function logTransaction({ type, coin, size, price, strategy, closedPnl, tradeId }) {
   try {
     const accountId = await getOwnedAccountId();
     const isBuy = type === 'buy';
@@ -98,15 +117,16 @@ async function logTransaction({ type, coin, size, price, strategy }) {
         amount_in: isBuy ? parseFloat(notional.toFixed(2)) : size,
         asset_out: isBuy ? coin : 'USDC',
         amount_out: isBuy ? size : parseFloat(notional.toFixed(2)),
-        status: 'confirmed',
+        status: closedPnl != null ? 'closed' : 'confirmed',
         timestamp: new Date().toISOString(),
         executor: ONTOLOGY_SPEAKER,
         visibility: 'family',
+        trade_id: tradeId || randomUUID(),
+        ...(closedPnl != null && { closed_pnl: parseFloat(closedPnl) }),
       },
     };
     const created = await ontologyRequest('POST', '/entities', entity);
     if (!created?.id) return;
-    console.log(`Transaction logged: ${created.id}`);
 
     // Create relations: originated_from Strategy, affects_account Account, executed_by Agent
     const [strategyId, agentId] = await Promise.all([
@@ -119,8 +139,7 @@ async function logTransaction({ type, coin, size, price, strategy }) {
     if (agentId) relPromises.push(createRelation(created.id, 'executed_by', agentId));
     await Promise.all(relPromises);
 
-    const relCount = [strategyId, accountId, agentId].filter(Boolean).length;
-    console.log(`Relations created: ${relCount}/3`);
+    console.log(`Transaction logged: ${created.id} | strategy: ${strategyId || 'NONE'} | trade_id: ${entity.properties.trade_id} | relations: ${[strategyId && 'strategy', accountId && 'account', agentId && 'agent'].filter(Boolean).join(',')}`);
   } catch (e) {
     console.error(`Failed to log transaction: ${e.message}`);
   }
@@ -129,6 +148,13 @@ async function logTransaction({ type, coin, size, price, strategy }) {
 async function main() {
   const hl = new HLClient();
   const coin = getArg('coin', null);
+
+  // --strategy is mandatory for all trading commands (ensures ontology attribution)
+  const strategy = getArg('strategy', null);
+  const needsStrategy = ['market-buy', 'market-sell', 'limit-buy', 'limit-sell', 'close'].includes(cmd);
+  if (needsStrategy && !strategy) {
+    throw new Error('--strategy required. Pass strategy name or ID (e.g. --strategy Scalping).');
+  }
 
   switch (cmd) {
     case 'market-buy': {
@@ -139,7 +165,7 @@ async function main() {
       const result = await hl.marketBuy(coin, size, slippage);
       console.log(JSON.stringify({ action: 'market-buy', coin, size, result }, null, 2));
       const buyPrice = await hl.getPrice(coin);
-      await logTransaction({ type: 'buy', coin, size, price: buyPrice, strategy: getArg('strategy', null) });
+      await logTransaction({ type: 'buy', coin, size, price: buyPrice, strategy, tradeId: randomUUID() });
       break;
     }
     case 'market-sell': {
@@ -150,7 +176,7 @@ async function main() {
       const result = await hl.marketSell(coin, size, slippage);
       console.log(JSON.stringify({ action: 'market-sell', coin, size, result }, null, 2));
       const sellPrice = await hl.getPrice(coin);
-      await logTransaction({ type: 'sell', coin, size, price: sellPrice, strategy: getArg('strategy', null) });
+      await logTransaction({ type: 'sell', coin, size, price: sellPrice, strategy, tradeId: randomUUID() });
       break;
     }
     case 'limit-buy': {
@@ -160,7 +186,7 @@ async function main() {
       if (size <= 0 || price <= 0) throw new Error('--size and --price required and > 0');
       const result = await hl.limitBuy(coin, size, price);
       console.log(JSON.stringify({ action: 'limit-buy', coin, size, price, result }, null, 2));
-      await logTransaction({ type: 'buy', coin, size, price, strategy: getArg('strategy', null) });
+      await logTransaction({ type: 'buy', coin, size, price, strategy, tradeId: randomUUID() });
       break;
     }
     case 'limit-sell': {
@@ -170,7 +196,7 @@ async function main() {
       if (size <= 0 || price <= 0) throw new Error('--size and --price required and > 0');
       const result = await hl.limitSell(coin, size, price);
       console.log(JSON.stringify({ action: 'limit-sell', coin, size, price, result }, null, 2));
-      await logTransaction({ type: 'sell', coin, size, price, strategy: getArg('strategy', null) });
+      await logTransaction({ type: 'sell', coin, size, price, strategy, tradeId: randomUUID() });
       break;
     }
     case 'close': {
@@ -182,7 +208,13 @@ async function main() {
       console.log(JSON.stringify({ action: 'close', coin, result }, null, 2));
       if (pos) {
         const closeType = pos.side === 'LONG' ? 'sell' : 'buy';
-        await logTransaction({ type: closeType, coin, size: pos.size, price: pos.markPrice, strategy: getArg('strategy', null) });
+        const openTradeId = await findOpenTradeId(coin, closeType);
+        await logTransaction({
+          type: closeType, coin, size: pos.size, price: pos.markPrice,
+          strategy,
+          closedPnl: pos.pnl,
+          tradeId: openTradeId,
+        });
       }
       break;
     }
@@ -206,4 +238,4 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error('Error:', e.message); process.exit(1); });
+main().then(() => process.exit(0)).catch(e => { console.error('Error:', e.message); process.exit(1); });
