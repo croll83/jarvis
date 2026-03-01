@@ -45,10 +45,24 @@ async function ontologyRequest(method, path, body = null) {
 
 async function getTrackedWhales() {
   try {
-    const resp = await ontologyRequest('GET', '/entities?type=Account&search=hl-whale');
-    return resp.entities || resp || [];
+    const resp = await ontologyRequest('POST', '/entities/query?type=Account', {
+      service: 'hl_whales',
+    });
+    return resp || [];
   } catch {
     return [];
+  }
+}
+
+async function getCopytradingStrategy() {
+  try {
+    const resp = await ontologyRequest('POST', '/entities/query?type=Strategy', {
+      name: 'Copytrading',
+    });
+    const entities = resp || [];
+    return entities[0] || null;
+  } catch {
+    return null;
   }
 }
 
@@ -93,14 +107,15 @@ async function refreshWhaleList() {
   // Store in ontology
   const existing = await getTrackedWhales();
   const existingAddrs = new Set(existing.map(e => e.properties?.username));
+  const copytradingStrategy = await getCopytradingStrategy();
 
   for (const whale of topWhales) {
     const entity = {
       type: 'Account',
       properties: {
-        service: 'hyperliquid',
-        type: 'trading',
+        service: 'hl_whales',
         username: whale.address,
+        display_name: whale.displayName,
         url: `https://app.hyperliquid.xyz/explorer/${whale.address}`,
         visibility: 'private',
       },
@@ -116,13 +131,20 @@ async function refreshWhaleList() {
     } else {
       const created = await ontologyRequest('POST', '/entities', entity);
       console.log(`  Created: ${whale.address.slice(0, 10)} (id: ${created.id})`);
-      // Tag it
-      await ontologyRequest('POST', '/relations', {
-        from_id: created.id,
-        relation_type: 'related_to',
-        to_type: 'Topic',
-        to_search: 'hl-whale-tracking',
-      }).catch(() => {}); // ignore if topic doesn't exist
+
+      // Link to Copytrading strategy
+      if (copytradingStrategy) {
+        try {
+          await ontologyRequest('POST', '/relations', {
+            from_id: created.id,
+            rel_type: 'monitored_by',
+            to_id: copytradingStrategy.id,
+          });
+          console.log(`    Linked to Copytrading strategy`);
+        } catch (e) {
+          console.error(`    Failed to link to strategy: ${e.message}`);
+        }
+      }
     }
   }
 
