@@ -179,6 +179,27 @@ def row_to_entity(row: sqlite3.Row) -> dict | None:
 # ---------------------------------------------------------------------------
 # ACL (Access Control List)
 # ---------------------------------------------------------------------------
+def resolve_person_id(speaker: str | None, db_path: str | None = None) -> str | None:
+    """Resolve a speaker string to its canonical Person entity ID.
+
+    Matches by (in order): entity id, speaker_id property, owner property.
+    Returns the Person entity ID if found, None otherwise.
+    """
+    if not speaker:
+        return None
+    conn = get_db(db_path)
+    row = conn.execute(
+        """SELECT id FROM entities
+           WHERE type = 'Person'
+             AND (id = ?
+                  OR json_extract(properties, '$.speaker_id') = ?
+                  OR json_extract(properties, '$.owner') = ?)
+           LIMIT 1""",
+        (speaker, speaker, speaker),
+    ).fetchone()
+    return row["id"] if row else None
+
+
 def is_speaker_admin(speaker: str | None, db_path: str | None = None) -> bool:
     """Check if speaker has elevated privileges (admin role OR agent type).
 
@@ -195,22 +216,36 @@ def is_speaker_admin(speaker: str | None, db_path: str | None = None) -> bool:
         """SELECT 1
            FROM entities
            WHERE type = 'Person'
-             AND (id = ? OR json_extract(properties, '$.owner') = ?)
+             AND (id = ?
+                  OR json_extract(properties, '$.speaker_id') = ?
+                  OR json_extract(properties, '$.owner') = ?)
              AND (json_extract(properties, '$.role_enum') = 'admin'
                   OR json_extract(properties, '$.role') = 'admin'
                   OR json_extract(properties, '$.type_enum') = 'Agent'
                   OR json_extract(properties, '$.type') = 'Agent')
            LIMIT 1""",
-        (speaker, speaker),
+        (speaker, speaker, speaker),
     ).fetchone()
     return row is not None
+
+
+def _speaker_resolve_subquery() -> str:
+    """SQL subquery that resolves a speaker string to Person entity ID(s).
+
+    Matches speaker by: entity id, speaker_id property, or owner property.
+    Used inside ACL clauses so all callers benefit from automatic resolution.
+    Requires 3 bind parameters (all the same speaker value).
+    """
+    return """(SELECT id FROM entities
+              WHERE type = 'Person'
+              AND (id = ? OR json_extract(properties, '$.speaker_id') = ?
+                   OR json_extract(properties, '$.owner') = ?))"""
 
 
 def get_acl_clause(table_alias: str = "", is_admin: bool = False) -> str:
     """SQL clause for READ access — filters entities based on speaker visibility.
 
-    Requires 2 bind parameters (both the same speaker value):
-        (speaker, speaker)
+    Requires 4 bind parameters (all the same speaker value).
 
     Args:
         table_alias: Optional table alias prefix (e.g. "e") for disambiguating
@@ -220,8 +255,8 @@ def get_acl_clause(table_alias: str = "", is_admin: bool = False) -> str:
     Logic:
     - If is_admin → no filtering
     - If speaker is NULL → only 'public' entities
-    - If entity owner == speaker → always visible (owner sees their own data)
-    - If visibility is 'family' and speaker is not NULL → visible (authenticated household member)
+    - If entity owner matches speaker's Person entity ID → visible (owner sees own data)
+    - If visibility is 'family' and speaker is not NULL → visible (household member)
     - If visibility is 'public' → visible to everyone
     - If visibility is 'private' → only visible to owner
     """
@@ -229,8 +264,9 @@ def get_acl_clause(table_alias: str = "", is_admin: bool = False) -> str:
         return "1=1"
 
     prefix = f"{table_alias}." if table_alias else ""
+    resolve = _speaker_resolve_subquery()
     return f"""
-        (json_extract({prefix}properties, '$.owner') = ?
+        (json_extract({prefix}properties, '$.owner') IN {resolve}
          OR coalesce(json_extract({prefix}properties, '$.visibility'), 'public') = 'public'
          OR (coalesce(json_extract({prefix}properties, '$.visibility'), 'public') = 'family'
              AND ? IS NOT NULL))
@@ -238,37 +274,38 @@ def get_acl_clause(table_alias: str = "", is_admin: bool = False) -> str:
 
 
 def get_acl_params(speaker: str | None, is_admin: bool = False) -> list:
-    """Return the bind parameters for get_acl_clause."""
+    """Return the bind parameters for get_acl_clause (4 params)."""
     if is_admin:
         return []
-    return [speaker, speaker]
+    return [speaker, speaker, speaker, speaker]
 
 
 def get_write_acl_clause(table_alias: str = "", is_admin: bool = False) -> str:
     """SQL clause for WRITE access — only owner or admin can modify/delete.
 
-    Requires 1 bind parameter (speaker) unless is_admin.
+    Requires 4 bind parameters (all speaker) unless is_admin.
 
     Logic:
     - If is_admin → allowed
     - If speaker is NULL → denied (anonymous cannot write)
-    - If entity owner == speaker → allowed
+    - If entity owner matches speaker's Person entity ID → allowed
     """
     if is_admin:
         return "1=1"
 
     prefix = f"{table_alias}." if table_alias else ""
+    resolve = _speaker_resolve_subquery()
     return f"""
         (? IS NOT NULL
-         AND json_extract({prefix}properties, '$.owner') = ?)
+         AND json_extract({prefix}properties, '$.owner') IN {resolve})
     """
 
 
 def get_write_acl_params(speaker: str | None, is_admin: bool = False) -> list:
-    """Return the bind parameters for get_write_acl_clause."""
+    """Return the bind parameters for get_write_acl_clause (4 params)."""
     if is_admin:
         return []
-    return [speaker, speaker]
+    return [speaker, speaker, speaker, speaker]
 
 
 # ---------------------------------------------------------------------------

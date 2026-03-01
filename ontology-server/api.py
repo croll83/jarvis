@@ -32,6 +32,8 @@ ONTOLOGY_API_TOKEN = os.getenv("ONTOLOGY_API_TOKEN", "")
 # Cache for admin role lookups (speaker_id → is_admin bool)
 # Cleared on entity updates to Person type
 _admin_cache: dict[str, bool] = {}
+# Cache for speaker → Person entity ID resolution
+_speaker_cache: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +63,24 @@ def resolve_admin(speaker: str | None) -> bool:
     result = ontology.is_speaker_admin(speaker, DB_PATH)
     _admin_cache[speaker] = result
     return result
+
+
+def resolve_speaker_id(speaker: str | None) -> str | None:
+    """Resolve a speaker string to the canonical Person entity ID. Cached."""
+    if not speaker:
+        return None
+    if speaker in _speaker_cache:
+        return _speaker_cache[speaker]
+    person_id = ontology.resolve_person_id(speaker, DB_PATH)
+    if person_id:
+        _speaker_cache[speaker] = person_id
+    return person_id
+
+
+def _clear_person_caches():
+    """Clear all caches that depend on Person entity data."""
+    _admin_cache.clear()
+    _speaker_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +155,32 @@ def create_entity(
 
     props = dict(entity.properties)
 
-    # Auto-assign owner from speaker
-    if speaker and "owner" not in props:
-        props["owner"] = speaker
+    # Owner enforcement: resolve speaker to Person entity ID
+    resolved = resolve_speaker_id(speaker)
+
+    if entity.type == "Person":
+        # Person entities: owner will be set to self after creation
+        # Allow even if speaker is unresolvable (bootstrap case)
+        pass
+    else:
+        # Non-Person: speaker MUST resolve to a known Person
+        if not resolved and not admin:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Speaker '{speaker}' does not match any Person entity. "
+                       "Create a Person entity first, or use a known speaker_id.",
+            )
+
+    # Set owner: use resolved Person entity ID (canonical format)
+    if "owner" not in props:
+        props["owner"] = resolved or speaker
+    elif props["owner"] != (resolved or speaker) and not admin:
+        raise HTTPException(status_code=403, detail="Only admins can set owner to a different identity")
+    elif admin and "owner" in props:
+        # Admin setting explicit owner — resolve it too
+        explicit = resolve_speaker_id(props["owner"])
+        if explicit:
+            props["owner"] = explicit
 
     # Schema validation
     errors = ontology.validate_entity_properties(
@@ -146,14 +189,44 @@ def create_entity(
     if errors:
         raise HTTPException(status_code=422, detail={"validation_errors": errors})
 
-    # Invalidate admin cache if creating/modifying a Person
-    if entity.type == "Person":
-        _admin_cache.clear()
-
     try:
-        return ontology.create_entity(entity.type, props, DB_PATH)
+        result = ontology.create_entity(entity.type, props, DB_PATH)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    # Person entities: set owner = self (canonical self-ownership)
+    if entity.type == "Person":
+        import json as _json
+        new_id = result["id"]
+        result["properties"]["owner"] = new_id
+        # Auto-generate speaker_id from the original speaker if not provided
+        if "speaker_id" not in result["properties"] and speaker:
+            result["properties"]["speaker_id"] = speaker
+        conn = ontology.get_db(DB_PATH)
+        conn.execute(
+            "UPDATE entities SET properties = ? WHERE id = ?",
+            (_json.dumps(result["properties"]), new_id),
+        )
+        conn.commit()
+        _clear_person_caches()
+    return result
+
+
+@app.get("/entities/count", response_model=Dict[str, Any], tags=["Entities"])
+def count_entities(
+    speaker: Optional[str] = Header(None, alias="X-Speaker-Id"),
+):
+    """Return entity counts grouped by type, respecting ACL."""
+    admin = resolve_admin(speaker)
+    conn = ontology.get_db(DB_PATH)
+    acl = ontology.get_acl_clause(is_admin=admin)
+    params = ontology.get_acl_params(speaker, is_admin=admin)
+    rows = conn.execute(
+        f"SELECT type, COUNT(*) c FROM entities WHERE {acl} GROUP BY type ORDER BY c DESC",
+        params,
+    ).fetchall()
+    by_type = {row["type"]: row["c"] for row in rows}
+    return {"total": sum(by_type.values()), "by_type": by_type}
 
 
 @app.get("/entities/{entity_id}", response_model=Dict[str, Any], tags=["Entities"])
@@ -201,9 +274,9 @@ def update_entity(
                 status_code=422, detail={"validation_errors": errors}
             )
 
-        # Invalidate admin cache if modifying a Person (role might change)
+        # Invalidate caches if modifying a Person (role/speaker_id might change)
         if existing["type"] == "Person":
-            _admin_cache.clear()
+            _clear_person_caches()
 
     try:
         result = ontology.update_entity(
@@ -230,8 +303,8 @@ def delete_entity(
         raise HTTPException(
             status_code=404, detail="Entity not found or access denied"
         )
-    # Invalidate admin cache on delete (might be a Person)
-    _admin_cache.pop(speaker, None) if speaker else None
+    # Invalidate caches on delete (might be a Person)
+    _clear_person_caches()
     return {"status": "deleted", "id": entity_id}
 
 
@@ -266,12 +339,20 @@ def create_entities_bulk(
     if not speaker:
         raise HTTPException(status_code=403, detail="X-Speaker-Id required to create entities")
 
+    resolved = resolve_speaker_id(speaker)
+    if not resolved:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Speaker '{speaker}' does not match any Person entity.",
+        )
+
+    import json as _json
     results = []
     has_person = False
     for entity in entities:
         props = dict(entity.properties)
-        if speaker and "owner" not in props:
-            props["owner"] = speaker
+        if "owner" not in props:
+            props["owner"] = resolved
 
         errors = ontology.validate_entity_properties(
             entity.type, props, SCHEMA_PATH, is_update=False
@@ -284,14 +365,26 @@ def create_entities_bulk(
                     "validation_errors": errors,
                 },
             )
-        if entity.type == "Person":
-            has_person = True
 
         result = ontology.create_entity(entity.type, props, DB_PATH)
+
+        if entity.type == "Person":
+            has_person = True
+            new_id = result["id"]
+            result["properties"]["owner"] = new_id
+            if "speaker_id" not in result["properties"]:
+                result["properties"]["speaker_id"] = speaker
+            conn = ontology.get_db(DB_PATH)
+            conn.execute(
+                "UPDATE entities SET properties = ? WHERE id = ?",
+                (_json.dumps(result["properties"]), new_id),
+            )
+            conn.commit()
+
         results.append(result)
 
     if has_person:
-        _admin_cache.clear()
+        _clear_person_caches()
     return results
 
 
@@ -652,8 +745,8 @@ def list_speakers():
     """Return Person entities as speaker options for dashboard.
 
     Returns [{id, name, speaker_id, type, role}] for all Person entities.
-    speaker_id is the value to send as X-Speaker-Id header.
-    It uses owner (if set and not the creator of all entities), otherwise entity id.
+    speaker_id is the canonical value to send as X-Speaker-Id header.
+    Uses the explicit speaker_id property if set, otherwise falls back to entity id.
     """
     conn = ontology.get_db(DB_PATH)
     rows = conn.execute(
@@ -662,38 +755,15 @@ def list_speakers():
 
     import json as _json
 
-    # Collect all owners to detect if they are distinct
-    all_owners = set()
-    parsed = []
+    speakers = []
     for row in rows:
         props = _json.loads(row["properties"])
-        parsed.append({"id": row["id"], "props": props})
-        if props.get("owner"):
-            all_owners.add(props["owner"])
-
-    # Count how many entities share each owner value
-    owner_counts: dict[str, int] = {}
-    for item in parsed:
-        o = item["props"].get("owner", "")
-        if o:
-            owner_counts[o] = owner_counts.get(o, 0) + 1
-
-    speakers = []
-    for item in parsed:
-        props = item["props"]
-        eid = item["id"]
-        owner = props.get("owner", "")
+        eid = row["id"]
         name = props.get("name", eid)
         etype = props.get("type_enum", props.get("type", "Human"))
         role = props.get("role_enum", props.get("role", "user"))
-
-        # Use owner as speaker_id only if this owner value is unique
-        # (i.e. only one Person entity has that owner — it's their own).
-        # Otherwise fall back to entity id to avoid collisions.
-        if owner and owner_counts.get(owner, 0) == 1:
-            speaker_id = owner
-        else:
-            speaker_id = eid
+        # Use explicit speaker_id property, fallback to entity id
+        speaker_id = props.get("speaker_id", eid)
 
         speakers.append({
             "id": eid,

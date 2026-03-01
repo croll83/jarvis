@@ -33,6 +33,26 @@ export const createEntity = (data) => api.post('/entities', data);
 export const updateEntity = (id, data) => api.patch(`/entities/${id}`, data);
 export const deleteEntity = (id) => api.delete(`/entities/${id}`);
 
+// Count (lightweight)
+export const fetchEntityCount = () => api.get('/entities/count');
+
+// Relations (bulk)
+export const fetchAllRelations = (params = {}) => api.get('/relations', { params: { limit: 1000, ...params } });
+
+// Paginated fetch: get count, then fetch all pages in parallel
+export async function fetchAllEntities(params = {}) {
+  const { data: counts } = await fetchEntityCount();
+  const total = counts.total;
+  const pageSize = 100;
+  const pages = Math.ceil(total / pageSize);
+  const results = await Promise.all(
+    Array.from({ length: pages }, (_, i) =>
+      fetchEntities({ ...params, limit: pageSize, offset: i * pageSize })
+    )
+  );
+  return results.flatMap((r) => Array.isArray(r.data) ? r.data : r.data?.entities || []);
+}
+
 // Schema & helpers
 export const fetchSchema = () => api.get('/schema');
 export const fetchShortestPath = (fromId, toId) => api.get('/helpers/path', { params: { from_id: fromId, to_id: toId } });
