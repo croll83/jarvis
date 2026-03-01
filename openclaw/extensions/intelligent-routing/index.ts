@@ -164,6 +164,8 @@ const SIMPLE_PATTERNS = [
   /^(turn on|turn off|switch on|switch off|open|close|dim)\s+.+$/i,
   // Domotica with "la/le/il/i" articles: "accendi la luce del soggiorno"
   /^(accendi|spegni|alza|abbassa|apri|chiudi)\s+(la|le|il|i|lo|gli|l')\s+.+$/i,
+  // Heartbeat: periodic keep-alive tasks (leggi HEARTBEAT.md, check heartbeat, etc.)
+  /HEARTBEAT/i,
 ];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
