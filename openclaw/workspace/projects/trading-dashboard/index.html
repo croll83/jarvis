@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+  h1 { color: #58a6ff; margin-bottom: 4px; font-size: 22px; }
+  .subtitle { color: #8b949e; font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
+  .card h3 { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .stat { font-size: 28px; font-weight: bold; color: #f0f6fc; }
+  .stat-sm { font-size: 14px; color: #8b949e; margin-top: 2px; }
+  .pos { color: #3fb950; } .neg { color: #f85149; } .neutral { color: #8b949e; }
+  .task-header { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; }
+  .task-icon { font-size: 28px; }
+  .task-title { font-size: 18px; font-weight: bold; color: #f0f6fc; }
+  .task-meta { color: #8b949e; font-size: 12px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+  .badge-active { background: #0d2818; color: #3fb950; border: 1px solid #238636; }
+  .badge-paused { background: #2d1b00; color: #d29922; border: 1px solid #9e6a03; }
+  .badge-dryrun { background: #1c1437; color: #a371f7; border: 1px solid #6e40c9; }
+  .badge-in_progress { background: #0c2d6b; color: #58a6ff; border: 1px solid #1f6feb; }
+  .strat-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
+  .strat-header { padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #21262d; cursor: pointer; }
+  .strat-header:hover { background: #1c2128; }
+  .strat-name { font-size: 16px; font-weight: 600; color: #f0f6fc; }
+  .strat-stats { display: flex; gap: 20px; font-size: 13px; }
+  .strat-stats span { color: #8b949e; }
+  .strat-stats .val { color: #c9d1d9; font-weight: 600; }
+  .strat-body { padding: 0 16px 14px; }
+  .strat-info { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 12px 0; font-size: 13px; }
+  .strat-info dt { color: #8b949e; } .strat-info dd { color: #c9d1d9; font-weight: 500; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+  th { text-align: left; padding: 6px 8px; color: #8b949e; border-bottom: 1px solid #30363d; font-weight: 500; }
+  td { padding: 6px 8px; border-bottom: 1px solid #21262d; }
+  tr.closed { opacity: 0.7; }
+  .pair-open { border-left: 3px solid #58a6ff; }
+  .pair-closed-win { border-left: 3px solid #3fb950; }
+  .pair-closed-loss { border-left: 3px solid #f85149; }
+  .wallet { font-family: 'SF Mono', Monaco, monospace; font-size: 12px; color: #8b949e; word-break: break-all; }
+  .wallet a { color: #58a6ff; text-decoration: none; }
+  .wallet a:hover { text-decoration: underline; }
+  .positions-table { margin-top: 12px; }
+  .loading { color: #8b949e; font-size: 13px; padding: 20px; text-align: center; }
+  .refresh-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .refresh-btn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .refresh-btn:hover { background: #30363d; }
+  .last-update { color: #8b949e; font-size: 12px; }
+  .expand-icon { color: #8b949e; transition: transform 0.2s; }
+  .expanded .expand-icon { transform: rotate(90deg); }
+</style>
+</head>
+<body>
+
+<div class="refresh-bar">
+  <div>
+    <h1>Trading Dashboard</h1>
+    <div class="subtitle">Hyperliquid Perpetual Futures</div>
+  </div>
+  <div style="text-align:right">
+    <button class="refresh-btn" onclick="loadAll()">Refresh</button>
+    <div class="last-update" id="last-update"></div>
+  </div>
+</div>
+
+<div id="overview" class="loading">Loading account data from Hyperliquid...</div>
+<div id="task-section"></div>
+<div id="strategies-section"></div>
+
+<script>
+const WALLET = "0x2bA250B38673Ff0Ac9c8d931B1AF17Ee6f66871b";
+const HL_API = "https://api.hyperliquid.xyz/info";
+
+// Ontology data (fetched live via /api/ontology proxy)
+let ONTOLOGY = null;
+
+const STRAT_COLORS = {
+  "Scalping": "#58a6ff",
+  "Copytrading": "#a371f7",
+  "Sentiment": "#d29922"
+};
+
+async function hlPost(type, extra = {}) {
+  const r = await fetch(HL_API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type, user: WALLET, ...extra })
+  });
+  return r.json();
+}
+
+function pnlClass(v) { return v > 0 ? "pos" : v < 0 ? "neg" : "neutral"; }
+function fmt$(v, dec = 2) {
+  const n = parseFloat(v) || 0;
+  return (n >= 0 ? "+" : "") + "$" + n.toFixed(dec);
+}
+function fmtUsd(v, dec = 2) { return "$" + (parseFloat(v) || 0).toFixed(dec); }
+function fmtPct(v) { return (parseFloat(v) || 0).toFixed(2) + "%"; }
+function fmtTs(ts) {
+  const d = new Date(typeof ts === "number" ? ts : ts);
+  return d.toLocaleString("it-IT", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+function timeSince(ts) {
+  const diff = Date.now() - new Date(ts).getTime();
+  const h = Math.floor(diff / 3600000);
+  const d = Math.floor(h / 24);
+  if (d > 0) return `${d}d ${h % 24}h`;
+  return `${h}h`;
+}
+
+function renderOverview(state, fills, spotState) {
+  const mg = state.marginSummary;
+  const perpVal = parseFloat(mg.accountValue);
+  const marginUsed = parseFloat(mg.totalMarginUsed);
+  const rawUsd = parseFloat(mg.totalRawUsd);
+  const ntlPos = parseFloat(mg.totalNtlPos);
+  const withdrawable = parseFloat(state.withdrawable);
+  const positions = state.assetPositions || [];
+
+  // Spot balance — in unified accounts, spot USDC already includes perp collateral.
+  // So totalVal = spotTotal (NOT perpVal + spotTotal, which double-counts).
+  // Free spot = spotTotal - perpVal (what's not locked in perps).
+  const STABLES = ["USDC", "USDT", "USDT0", "USDE", "USDH"];
+  const spotBals = spotState?.balances || [];
+  let spotTotal = 0;
+  for (const b of spotBals) {
+    const total = parseFloat(b.total || 0);
+    if (total === 0) continue;
+    const coinName = (b.coin || "").replace(/-SPOT$/, "");
+    if (STABLES.includes(coinName)) spotTotal += total;
+  }
+  const totalVal = spotTotal; // spot already includes perp collateral
+  const spotFree = Math.max(0, spotTotal - perpVal);
+
+  // Total realized PnL from all fills
+  const totalRealizedPnl = fills.reduce((s, f) => s + parseFloat(f.closedPnl || 0), 0);
+  // Total unrealized PnL from positions
+  const totalUnrealizedPnl = positions.reduce((s, p) => s + parseFloat(p.position.unrealizedPnl || 0), 0);
+
+  let html = `<div class="grid">
+    <div class="card">
+      <h3>Total Balance</h3>
+      <div class="stat">${fmtUsd(totalVal)}</div>
+      <div class="stat-sm">Perps: ${fmtUsd(perpVal)} | Spot: ${fmtUsd(spotFree)}</div>
+    </div>
+    <div class="card">
+      <h3>Margin Used</h3>
+      <div class="stat">${fmtUsd(marginUsed)}</div>
+      <div class="stat-sm">${fmtPct(marginUsed / totalVal * 100)} of account</div>
+    </div>
+    <div class="card">
+      <h3>Unrealized P&L</h3>
+      <div class="stat ${pnlClass(totalUnrealizedPnl)}">${fmt$(totalUnrealizedPnl)}</div>
+      <div class="stat-sm">${positions.length} open position${positions.length !== 1 ? 's' : ''}</div>
+    </div>
+    <div class="card">
+      <h3>Realized P&L</h3>
+      <div class="stat ${pnlClass(totalRealizedPnl)}">${fmt$(totalRealizedPnl)}</div>
+      <div class="stat-sm">${fills.length} total fills</div>
+    </div>
+    <div class="card">
+      <h3>Net Position</h3>
+      <div class="stat">${fmtUsd(Math.abs(ntlPos))}</div>
+      <div class="stat-sm">${ntlPos >= 0 ? 'Long' : 'Short'} bias</div>
+    </div>
+  </div>`;
+
+  // Wallet
+  html += `<div class="card" style="margin-bottom:16px">
+    <h3>Wallet</h3>
+    <div class="wallet"><a href="https://app.hyperliquid.xyz/explorer/address/${WALLET}" target="_blank">${WALLET}</a></div>
+  </div>`;
+
+  // Open positions table
+  if (positions.length > 0) {
+    html += `<div class="card" style="margin-bottom:16px">
+      <h3>Open Positions</h3>
+      <table class="positions-table">
+        <thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>uPnL</th><th>Leverage</th><th>Margin</th><th>Liq. Price</th></tr></thead>
+        <tbody>`;
+    for (const p of positions) {
+      const pos = p.position;
+      const sz = parseFloat(pos.szi);
+      const side = sz > 0 ? "LONG" : "SHORT";
+      const sideClass = sz > 0 ? "pos" : "neg";
+      const upnl = parseFloat(pos.unrealizedPnl);
+      html += `<tr>
+        <td><strong>${pos.coin}</strong></td>
+        <td class="${sideClass}">${side}</td>
+        <td>${Math.abs(sz)}</td>
+        <td>${parseFloat(pos.entryPx).toFixed(2)}</td>
+        <td>-</td>
+        <td class="${pnlClass(upnl)}">${fmt$(upnl)}</td>
+        <td>${pos.leverage?.value || '?'}x</td>
+        <td>${fmtUsd(pos.marginUsed)}</td>
+        <td>${pos.liquidationPx || '-'}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div>`;
+  }
+
+  document.getElementById("overview").innerHTML = html;
+}
+
+function renderTask(onto) {
+  const task = onto.task;
+  if (!task) return;
+  document.getElementById("task-section").innerHTML = `
+    <div class="task-header">
+      <div class="task-icon">&#x1F3AF;</div>
+      <div>
+        <div class="task-title">${task.properties.title}</div>
+        <div class="task-meta">
+          <span class="badge badge-${task.properties.status_enum}">${task.properties.status_enum}</span>
+          &nbsp; ${task.properties.description || ''}
+          &nbsp; &middot; &nbsp; Assignee: Agent Trading
+          &nbsp; &middot; &nbsp; Owner: Marco
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderStrategies(onto, fills) {
+  const strategies = onto.strategies;
+  const transactions = onto.transactions;
+
+  // Map fills by oid for quick lookup
+  const fillsByOid = {};
+  for (const f of fills) {
+    const oid = f.oid;
+    if (!fillsByOid[oid]) fillsByOid[oid] = [];
+    fillsByOid[oid].push(f);
+  }
+
+  // Group transactions by strategy
+  const txByStrat = {};
+  for (const s of strategies) txByStrat[s.id] = [];
+  for (const t of transactions) {
+    const stratId = t._strategyId;
+    if (stratId && txByStrat[stratId]) {
+      txByStrat[stratId].push(t);
+    }
+  }
+
+  // Match fills to transactions (by timestamp proximity or hl_oid)
+  for (const t of transactions) {
+    const hlOid = t.properties.hl_oid;
+    if (hlOid && fillsByOid[hlOid]) {
+      const matchedFills = fillsByOid[hlOid];
+      t._fills = matchedFills;
+      // Aggregate partial fills
+      t._totalSz = matchedFills.reduce((s, f) => s + parseFloat(f.sz), 0);
+      t._avgPx = matchedFills.length > 0 ? parseFloat(matchedFills[0].px) : 0;
+    } else {
+      // Try matching by timestamp
+      const tTs = new Date(t.properties.timestamp).getTime();
+      for (const [oid, fs] of Object.entries(fillsByOid)) {
+        const fTs = fs[0].time;
+        if (Math.abs(tTs - fTs) < 120000) { // 2 min window
+          const coin = t.properties.asset_in?.replace('-PERP','') || t.properties.asset_out?.replace('-PERP','');
+          const fCoin = fs[0].coin;
+          if (coin === fCoin) {
+            t._fills = fs;
+            t._totalSz = fs.reduce((s, f) => s + parseFloat(f.sz), 0);
+            t._avgPx = parseFloat(fs[0].px);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  let html = '';
+  for (const strat of strategies) {
+    const color = STRAT_COLORS[strat.properties.name] || "#8b949e";
+    const status = strat.properties.status;
+    const txs = txByStrat[strat.id] || [];
+
+    // Sort transactions by timestamp desc
+    txs.sort((a, b) => new Date(b.properties.timestamp) - new Date(a.properties.timestamp));
+
+    // Group by trade_id to count unique trades and P&L
+    const tradeIds = {};
+    for (const t of txs) {
+      const tid = t.properties.trade_id;
+      if (!tid) continue;
+      if (!tradeIds[tid]) tradeIds[tid] = [];
+      tradeIds[tid].push(t);
+    }
+    const tradeCount = Object.keys(tradeIds).length;
+    const stratPnl = txs.reduce((s, t) => s + (parseFloat(t.properties.closed_pnl) || 0), 0);
+    const closedPairs = Object.values(tradeIds).filter(g => g.length >= 2);
+    const openPairs = Object.values(tradeIds).filter(g => g.length === 1);
+    const wins = closedPairs.filter(g => g.some(t => parseFloat(t.properties.closed_pnl) > 0)).length;
+    const losses = closedPairs.filter(g => g.some(t => parseFloat(t.properties.closed_pnl) < 0)).length;
+    const winRate = closedPairs.length > 0 ? (wins / closedPairs.length * 100).toFixed(0) : '-';
+
+    // Parse config from description
+    let config = {};
+    const configMatch = (strat.properties.description || '').match(/---CONFIG---\s*(\{[\s\S]*?\})/);
+    if (configMatch) {
+      try { config = JSON.parse(configMatch[1]); } catch(e) {}
+    }
+
+    const since = timeSince(strat.created);
+
+    html += `<div class="strat-card" id="strat-${strat.id}">
+      <div class="strat-header" onclick="toggleStrat('${strat.id}')" style="border-left: 3px solid ${color}">
+        <div>
+          <span class="strat-name">${strat.properties.name}</span>
+          &nbsp; <span class="badge badge-${status}">${status}</span>
+        </div>
+        <div class="strat-stats">
+          <span>P&L: <span class="val ${pnlClass(stratPnl)}">${fmt$(stratPnl)}</span></span>
+          <span>Trades: <span class="val">${tradeCount} (${openPairs.length} open)</span></span>
+          <span>Win Rate: <span class="val">${winRate}%</span></span>
+          <span>Running: <span class="val">${since}</span></span>
+          <span class="expand-icon">&#x25B6;</span>
+        </div>
+      </div>
+      <div class="strat-body" style="display:none">
+        <div class="strat-info">
+          <div><dt>Timeframe</dt><dd>${config.timeframe || '-'}</dd></div>
+          <div><dt>Leverage</dt><dd>${config.leverage?.base || '?'}-${config.leverage?.max || '?'}x</dd></div>
+          <div><dt>TP / SL</dt><dd>${config.tp_pct || '?'}% / ${config.sl_pct || config.sl_mode || '?'}</dd></div>
+          <div><dt>Max Positions</dt><dd>${config.max_positions || '?'}</dd></div>
+          <div><dt>Hold Time</dt><dd>${config.hold_time ? config.hold_time.min + '-' + config.hold_time.max + ' ' + config.hold_time.unit : '-'}</dd></div>
+          <div><dt>Weights</dt><dd>T:${config.weights?.technical||0} S:${config.weights?.sentiment||0} W:${config.weights?.whales||0}</dd></div>
+          <div><dt>Wins / Losses</dt><dd class="${pnlClass(wins-losses)}">${wins}W / ${losses}L</dd></div>
+          <div><dt>Target Assets</dt><dd>${(strat.properties.target_assets || []).slice(0, 6).join(', ')}${(strat.properties.target_assets || []).length > 6 ? '...' : ''}</dd></div>
+        </div>
+        ${txs.length > 0 ? (() => {
+          // Group by trade_id into pairs (open + close)
+          const byTradeId = {};
+          for (const t of txs) {
+            const tid = t.properties.trade_id;
+            if (!tid) continue;
+            if (!byTradeId[tid]) byTradeId[tid] = [];
+            byTradeId[tid].push(t);
+          }
+          const trades = Object.values(byTradeId).map(group => {
+            group.sort((a, b) => new Date(a.properties.timestamp) - new Date(b.properties.timestamp));
+            const open = group[0];
+            const close = group.length >= 2 ? group[1] : null;
+            const op = open.properties;
+            const coin = (op.type === 'buy' ? op.asset_out : op.asset_in) || '?';
+            const side = op.type;
+            const sz = op.type === 'buy' ? op.amount_out : op.amount_in;
+            const openValue = op.type === 'buy' ? op.amount_in : op.amount_out;
+            const priceIn = sz ? parseFloat(openValue) / parseFloat(sz) : 0;
+            let priceOut = 0, pnl = 0, isClosed = false, timeOut = null;
+            if (close) {
+              const cp = close.properties;
+              const closeValue = cp.type === 'buy' ? cp.amount_in : cp.amount_out;
+              priceOut = sz ? parseFloat(closeValue) / parseFloat(sz) : 0;
+              pnl = parseFloat(cp.closed_pnl) || (side === 'buy' ? priceOut - priceIn : priceIn - priceOut) * parseFloat(sz);
+              isClosed = true;
+              timeOut = cp.timestamp;
+            }
+            return { coin, side, sz, priceIn, priceOut, pnl, isClosed, timeIn: op.timestamp, timeOut };
+          });
+          trades.sort((a, b) => new Date(b.timeIn) - new Date(a.timeIn));
+          return `<table>
+          <thead><tr><th>Time In</th><th>Time Out</th><th>Coin</th><th>Side</th><th>Size</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Status</th></tr></thead>
+          <tbody>${trades.map(t => {
+            const border = t.isClosed ? (t.pnl > 0 ? 'pair-closed-win' : 'pair-closed-loss') : 'pair-open';
+            return `<tr class="${border}">
+              <td>${fmtTs(t.timeIn)}</td>
+              <td>${t.timeOut ? fmtTs(t.timeOut) : '-'}</td>
+              <td><strong>${t.coin.replace('-PERP','')}</strong></td>
+              <td class="${t.side === 'buy' ? 'pos' : 'neg'}">${t.side.toUpperCase()}</td>
+              <td>${t.sz}</td>
+              <td>${t.priceIn.toFixed(2)}</td>
+              <td>${t.isClosed ? t.priceOut.toFixed(2) : '-'}</td>
+              <td class="${pnlClass(t.pnl)}">${t.isClosed ? fmt$(t.pnl) : '-'}</td>
+              <td>${t.isClosed ? 'Closed' : 'Open'}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>`;
+        })() : '<p style="padding:12px;color:#8b949e">No transactions yet</p>'}
+      </div>
+    </div>`;
+  }
+
+  // Unassigned transactions (no strategy relation — should not happen with fixed logging)
+  const orphaned = transactions.filter(t => !t._strategyId);
+  if (orphaned.length > 0) {
+    orphaned.sort((a, b) => new Date(b.properties.timestamp) - new Date(a.properties.timestamp));
+    const orphanPnl = orphaned.reduce((s, t) => s + (parseFloat(t.properties.closed_pnl) || 0), 0);
+    html += `<div class="strat-card" id="strat-unassigned">
+      <div class="strat-header" onclick="toggleStrat('unassigned')" style="border-left: 3px solid #f85149">
+        <div>
+          <span class="strat-name">Unassigned</span>
+          &nbsp; <span class="badge" style="background:#3d1214;color:#f85149;border:1px solid #da3633">orphaned</span>
+        </div>
+        <div class="strat-stats">
+          <span>P&L: <span class="val ${pnlClass(orphanPnl)}">${fmt$(orphanPnl)}</span></span>
+          <span>Trades: <span class="val">${orphaned.length}</span></span>
+          <span class="expand-icon">&#x25B6;</span>
+        </div>
+      </div>
+      <div class="strat-body" style="display:none">
+        <p style="padding:8px 0;color:#f85149;font-size:12px">These transactions have no strategy attribution. This indicates a logging bug.</p>
+        <table>
+          <thead><tr><th>Time</th><th>Coin</th><th>Side</th><th>Size</th><th>Price</th><th>Value</th><th>P&L</th><th>Status</th></tr></thead>
+          <tbody>${orphaned.map(t => {
+            const props = t.properties;
+            const side = props.type;
+            const coin = (side === 'buy' ? props.asset_out : props.asset_in) || '?';
+            const sz = side === 'buy' ? props.amount_out : props.amount_in;
+            const value = side === 'buy' ? props.amount_in : props.amount_out;
+            const pnl = parseFloat(props.closed_pnl) || 0;
+            const isClosed = pnl !== 0;
+            return `<tr class="pair-open" style="border-left-color:#f85149">
+              <td>${fmtTs(props.timestamp)}</td>
+              <td><strong>${coin.replace('-PERP','')}</strong></td>
+              <td class="${side === 'buy' ? 'pos' : 'neg'}">${side.toUpperCase()}</td>
+              <td>${sz}</td>
+              <td>${value && sz ? (parseFloat(value) / parseFloat(sz)).toFixed(2) : '-'}</td>
+              <td>${fmtUsd(value)}</td>
+              <td class="${pnlClass(pnl)}">${isClosed ? fmt$(pnl) : '-'}</td>
+              <td>${isClosed ? 'Closed' : 'Open'}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  document.getElementById("strategies-section").innerHTML = html;
+}
+
+function toggleStrat(id) {
+  const card = document.getElementById("strat-" + id);
+  const body = card.querySelector(".strat-body");
+  const header = card.querySelector(".strat-header");
+  if (body.style.display === "none") {
+    body.style.display = "block";
+    header.classList.add("expanded");
+  } else {
+    body.style.display = "none";
+    header.classList.remove("expanded");
+  }
+}
+
+async function loadOntology() {
+  const base = "/api/ontology";
+  try {
+    const [taskRes, stratRes, txRes, relRes] = await Promise.all([
+      fetch(base + "/entities?type=Task"),
+      fetch(base + "/entities?type=Strategy"),
+      fetch(base + "/entities?type=Transaction"),
+      fetch(base + "/relations?limit=500"),
+    ]);
+    const [tasks, strategies, transactions, relations] = await Promise.all([
+      taskRes.json(), stratRes.json(), txRes.json(), relRes.json(),
+    ]);
+    const task = tasks.find(t => t.properties?.status_enum === "in_progress") || tasks[0] || null;
+    return { task, strategies, transactions, relations };
+  } catch(e) {
+    console.error("Ontology fetch failed:", e);
+    return null;
+  }
+}
+
+async function loadAll() {
+  try {
+    const [state, fills, spotState, onto] = await Promise.all([
+      hlPost("clearinghouseState"),
+      hlPost("userFills"),
+      hlPost("spotClearinghouseState"),
+      loadOntology()
+    ]);
+
+    ONTOLOGY = onto || ONTOLOGY;
+
+    // Enrich transactions with strategy links
+    if (ONTOLOGY) {
+      for (const t of ONTOLOGY.transactions) {
+        // Find strategy relation
+        const rel = (ONTOLOGY.relations || []).find(r =>
+          r.from_id === t.id && r.rel_type === "originated_from"
+        );
+        if (rel) t._strategyId = rel.to_id;
+      }
+    }
+
+    renderOverview(state, fills, spotState);
+    if (ONTOLOGY) {
+      renderTask(ONTOLOGY);
+      renderStrategies(ONTOLOGY, fills);
+    } else {
+      document.getElementById("strategies-section").innerHTML =
+        '<div class="card"><p style="color:#d29922">Ontology data not available. Check /api/ontology proxy.</p></div>';
+    }
+
+    document.getElementById("last-update").textContent =
+      "Updated: " + new Date().toLocaleTimeString("it-IT");
+  } catch(e) {
+    document.getElementById("overview").innerHTML =
+      `<div class="card"><p style="color:#f85149">Error loading data: ${e.message}</p></div>`;
+  }
+}
+
+// Auto-refresh every 60s
+loadAll();
+setInterval(loadAll, 60000);
+</script>
+</body>
+</html>
