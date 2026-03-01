@@ -113,6 +113,7 @@ const LOW_CONFIDENCE_THRESHOLD = 0.30;
  * OpenClaw's resolveModel() prepends the provider again → double prefix error.
  */
 const TIER_PRIMARY: Record<string, { provider: string; model: string; fullId: string }> = {
+  SIMPLE:    { provider: "anthropic", model: "claude-haiku-4-5",   fullId: "anthropic/claude-haiku-4-5" },
   MEDIUM:    { provider: "anthropic", model: "claude-sonnet-4-6",  fullId: "anthropic/claude-sonnet-4-6" },
   COMPLEX:   { provider: "anthropic", model: "claude-sonnet-4-6",  fullId: "anthropic/claude-sonnet-4-6" },
   REASONING: { provider: "anthropic", model: "claude-opus-4-6",    fullId: "anthropic/claude-opus-4-6" },
@@ -438,10 +439,11 @@ const plugin: OpenClawPluginDefinition = {
         );
 
         if (requestedTier === "SIMPLE") {
+          const sp = TIER_PRIMARY.SIMPLE;
           routingState.set(sessionKey, {
             tier: "SIMPLE",
-            model: "(default)",
-            provider: "",
+            model: sp.model,
+            provider: sp.provider,
             confidence: 1.0,
             method: "tier-override",
             skipped: false,
@@ -454,8 +456,8 @@ const plugin: OpenClawPluginDefinition = {
             agentId,
             taskDescription: rawPrompt.slice(0, 200),
             tier: "SIMPLE",
-            modelSelected: "(default)",
-            providerSelected: "(default)",
+            modelSelected: sp.fullId,
+            providerSelected: sp.provider,
             fallbacks: [],
             confidence: 1.0,
             executionTimeMs: Date.now() - startTime,
@@ -463,7 +465,10 @@ const plugin: OpenClawPluginDefinition = {
             classificationMethod: "tier-override",
             notes: "",
           });
-          return {};
+          return {
+            modelOverride: sp.model,
+            providerOverride: sp.provider,
+          };
         }
 
         const tierModel = TIER_PRIMARY[requestedTier];
@@ -513,9 +518,6 @@ const plugin: OpenClawPluginDefinition = {
         api.logger.debug(
           `[intelligent-routing] Dedup: same prompt already routed → ${prevDecision.tier} (${prevDecision.model})`,
         );
-        if (prevDecision.tier === "SIMPLE") {
-          return {};
-        }
         if (prevDecision.model) {
           return {
             modelOverride: prevDecision.model,
@@ -544,6 +546,10 @@ const plugin: OpenClawPluginDefinition = {
         tier = "SIMPLE";
         confidence = 1.0;
         classificationMethod = "fast-path";
+        const sp = TIER_PRIMARY.SIMPLE;
+        modelPart = sp.model;
+        providerPart = sp.provider;
+        fullModelId = sp.fullId;
       } else {
         // ── Stage 2: Full classifier ──
         // Pass cleanPrompt (envelope stripped) — the raw prompt contains Telegram
@@ -611,8 +617,8 @@ const plugin: OpenClawPluginDefinition = {
       // ── Save routing decision for model awareness (Hook 2) + dedup ──
       routingState.set(sessionKey, {
         tier,
-        model: tier === "SIMPLE" ? "(default)" : modelPart,
-        provider: tier === "SIMPLE" ? "" : providerPart,
+        model: modelPart,
+        provider: providerPart,
         confidence,
         method: classificationMethod,
         skipped: false,
@@ -629,8 +635,8 @@ const plugin: OpenClawPluginDefinition = {
         agentId,
         taskDescription: cleanPrompt.slice(0, 200),
         tier,
-        modelSelected: tier === "SIMPLE" ? "(default)" : fullModelId,
-        providerSelected: tier === "SIMPLE" ? "(default)" : providerPart,
+        modelSelected: fullModelId,
+        providerSelected: providerPart,
         fallbacks,
         confidence,
         executionTimeMs,
@@ -641,13 +647,12 @@ const plugin: OpenClawPluginDefinition = {
 
       api.logger.debug(
         `[intelligent-routing] ${tier} (${classificationMethod}, ${confidence.toFixed(2)}) -> ` +
-        `${tier === "SIMPLE" ? "default" : `${providerPart}/${modelPart}`} [${executionTimeMs}ms]`,
+        `${providerPart}/${modelPart} [${executionTimeMs}ms]`,
       );
 
       // ── Build result ──
-      // SIMPLE: no override — gateway default model handles it
-      // MEDIUM+: override to the classified model (bare name + provider separate)
-      if (tier === "SIMPLE" || config.dryRun) {
+      // All tiers get explicit model override (SIMPLE→Haiku, MEDIUM/COMPLEX→Sonnet, etc.)
+      if (config.dryRun) {
         return {};
       }
 
