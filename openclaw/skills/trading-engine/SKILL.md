@@ -24,7 +24,7 @@ The agent (trader) uses these CLI tools via `exec`. Each tool is standalone and 
 | Tool | Purpose | Usage |
 |------|---------|-------|
 | `hl-account.mjs` | Account info | `node hl-account.mjs balance\|positions\|fills\|orders` |
-| `hl-trade.mjs` | Execute trades | `node hl-trade.mjs market-buy\|market-sell\|close --coin X --size Y` |
+| `hl-trade.mjs` | Execute trades | `node hl-trade.mjs market-buy\|market-sell\|close --coin X --size Y --strategy Z` |
 | `hl-market.mjs` | Market data | `node hl-market.mjs price\|candles\|funding\|overview` |
 | `signal-analyze.mjs` | Technical signals | `node signal-analyze.mjs --coin X [--timeframe 5m] [--json]` |
 | `whale-monitor.mjs` | Whale tracking | `node whale-monitor.mjs refresh\|scan\|list` |

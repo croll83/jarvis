@@ -4,13 +4,15 @@
  * Usage: node hl-trade.mjs <command> --coin <COIN> [options]
  *
  * Commands:
- *   market-buy   --coin BTC --size 0.01 [--slippage 0.5]
- *   market-sell  --coin BTC --size 0.01 [--slippage 0.5]
- *   limit-buy    --coin BTC --size 0.01 --price 80000
- *   limit-sell   --coin BTC --size 0.01 --price 90000
- *   close        --coin BTC [--slippage 0.5]
+ *   market-buy   --coin BTC --size 0.01 --strategy Scalping [--slippage 0.5]
+ *   market-sell  --coin BTC --size 0.01 --strategy Scalping [--slippage 0.5]
+ *   limit-buy    --coin BTC --size 0.01 --price 80000 --strategy Sentiment
+ *   limit-sell   --coin BTC --size 0.01 --price 90000 --strategy Scalping
+ *   close        --coin BTC --strategy Scalping [--slippage 0.5]
  *   set-leverage --coin BTC --leverage 10 [--mode isolated|cross]
  *   cancel-all   [--coin BTC]
+ *
+ * --strategy: Name or entity ID of the Strategy (creates originated_from relation).
  */
 
 import { HLClient } from './lib/hl-client.mjs';
@@ -48,6 +50,40 @@ async function getOwnedAccountId() {
   } catch { return null; }
 }
 
+async function resolveStrategyId(strategyHint) {
+  if (!strategyHint) return null;
+  // Already an entity ID (stra_xxxx)
+  if (strategyHint.startsWith('stra_')) return strategyHint;
+  // Resolve by name
+  try {
+    const strategies = await ontologyRequest('POST', '/entities/query?type=Strategy', {
+      name: strategyHint,
+    });
+    return strategies?.[0]?.id || null;
+  } catch { return null; }
+}
+
+async function getAgentTradingId() {
+  try {
+    const agents = await ontologyRequest('POST', '/entities/query?type=Person', {
+      name: 'Agent Trading',
+    });
+    return agents?.[0]?.id || null;
+  } catch { return null; }
+}
+
+async function createRelation(fromId, relType, toId) {
+  try {
+    await ontologyRequest('POST', '/relations', {
+      from_id: fromId,
+      rel_type: relType,
+      to_id: toId,
+    });
+  } catch (e) {
+    console.error(`Failed to create relation ${relType}: ${e.message}`);
+  }
+}
+
 async function logTransaction({ type, coin, size, price, strategy }) {
   try {
     const accountId = await getOwnedAccountId();
@@ -65,14 +101,26 @@ async function logTransaction({ type, coin, size, price, strategy }) {
         status: 'confirmed',
         timestamp: new Date().toISOString(),
         executor: ONTOLOGY_SPEAKER,
-        notes: strategy ? `strategy: ${strategy}` : undefined,
-        visibility: 'private',
+        visibility: 'family',
       },
     };
-    // Remove undefined notes
-    if (!entity.properties.notes) delete entity.properties.notes;
     const created = await ontologyRequest('POST', '/entities', entity);
-    if (created?.id) console.log(`Transaction logged: ${created.id}`);
+    if (!created?.id) return;
+    console.log(`Transaction logged: ${created.id}`);
+
+    // Create relations: originated_from Strategy, affects_account Account, executed_by Agent
+    const [strategyId, agentId] = await Promise.all([
+      resolveStrategyId(strategy),
+      getAgentTradingId(),
+    ]);
+    const relPromises = [];
+    if (strategyId) relPromises.push(createRelation(created.id, 'originated_from', strategyId));
+    if (accountId) relPromises.push(createRelation(created.id, 'affects_account', accountId));
+    if (agentId) relPromises.push(createRelation(created.id, 'executed_by', agentId));
+    await Promise.all(relPromises);
+
+    const relCount = [strategyId, accountId, agentId].filter(Boolean).length;
+    console.log(`Relations created: ${relCount}/3`);
   } catch (e) {
     console.error(`Failed to log transaction: ${e.message}`);
   }

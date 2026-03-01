@@ -245,17 +245,28 @@ If an API call returns a 400/422/500 error (constraint violation), abort the seq
 
 ### Speaker-Id Rules
 
-The `X-Speaker-Id` header identifies **who** is making the request. You MUST always set it correctly:
+The `X-Speaker-Id` header identifies **who** is making the request. It is resolved to a Person entity via `speaker_id` property match, entity ID match, or owner match.
 
 | Context | Speaker-Id | Why |
 |---|---|---|
-| Telegram session for Marco | `user_marco` | Human user, standard ACL applies |
-| Telegram session for Ada | `user_ada` | Human user, standard ACL applies |
-| Voice from microphone (AtomS3R) | `user_marco` (or detected speaker) | Matched to the person speaking |
-| Cron job, heartbeat, automated agent task | `jarvis-agent` | Agent identity → full read/write access |
-| Other service agents | Their registered Person ID | Agent identity → full read/write access |
+| Telegram session for Marco | `marco` | Matches Person `speaker_id: "marco"` |
+| Telegram session for Ada | `ada` | Matches Person `speaker_id: "ada"` |
+| Voice from microphone (AtomS3R) | `marco` (or detected speaker) | Matched to the person speaking |
+| Cron job, heartbeat, automated agent task | `jarvis-agent` | Matches Person `speaker_id: "jarvis-agent"` |
+| Trading agent (autonomous operations) | `jarvis-agent` | Agent Trading is a sub-agent of Jarvis |
+| Other service agents | Their registered `speaker_id` | Must have a Person entity with matching `speaker_id` |
 
-**Important:** When OpenClaw handles a Telegram session, it MUST present itself as the human user (e.g., `user_marco`), NOT as `jarvis-agent`. The agent identity is reserved for autonomous/background operations where no specific human initiated the request.
+**Important:** When OpenClaw handles a Telegram session, it MUST present itself as the human user (e.g., `marco`), NOT as `jarvis-agent`. The agent identity is reserved for autonomous/background operations where no specific human initiated the request.
+
+### Owner Enforcement
+
+The server enforces that every entity has a valid `owner` pointing to a real Person entity ID:
+
+- **On entity creation**, the server resolves `X-Speaker-Id` to a Person entity ID and sets `owner` to that ID
+- **Person entities** always have `owner = self` (their own entity ID) and get a `speaker_id` property auto-assigned
+- **Non-Person entities** require the speaker to resolve to a known Person (422 error otherwise)
+- **Admins** can override the owner to any identity
+- You do NOT need to set `owner` manually — the server handles it
 
 ### Privilege Tiers
 
@@ -285,25 +296,25 @@ Set visibility on entity creation:
 
 ### Bootstrapping Identities
 
-Before ACL works, create Person entities for all speakers:
+Before ACL works, create Person entities for all speakers. The server auto-assigns `owner = self` and `speaker_id = X-Speaker-Id`:
 ```bash
-# Human admin
+# Human admin (speaker_id will be "marco")
 curl -s -X POST "$ONTOLOGY_URL/entities" \
-  -H "X-Speaker-Id: user_marco" \
+  -H "X-Speaker-Id: marco" \
   -H "Authorization: Bearer $ONTOLOGY_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type": "Person", "properties": {"name": "Marco", "role_enum": "admin", "type_enum": "Human", "visibility": "public"}}'
 
-# Agent (full access for background tasks)
+# Agent (speaker_id will be "jarvis-agent")
 curl -s -X POST "$ONTOLOGY_URL/entities" \
   -H "X-Speaker-Id: jarvis-agent" \
   -H "Authorization: Bearer $ONTOLOGY_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type": "Person", "properties": {"name": "Jarvis Agent", "type_enum": "Agent", "visibility": "public"}}'
 
-# Family member (standard user)
+# Family member (speaker_id will be "ada")
 curl -s -X POST "$ONTOLOGY_URL/entities" \
-  -H "X-Speaker-Id: user_ada" \
+  -H "X-Speaker-Id: ada" \
   -H "Authorization: Bearer $ONTOLOGY_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type": "Person", "properties": {"name": "Ada", "role_enum": "user", "type_enum": "Human", "visibility": "family"}}'

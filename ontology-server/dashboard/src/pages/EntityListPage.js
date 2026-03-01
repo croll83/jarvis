@@ -6,7 +6,7 @@ import TypeFilterSidebar from '../components/TypeFilterSidebar';
 import MiniEntityCard from '../components/MiniEntityCard';
 import Breadcrumb from '../components/Breadcrumb';
 import { ShimmerGrid } from '../components/LoadingShimmer';
-import { fetchEntities } from '../services/api';
+import { fetchAllEntities } from '../services/api';
 import { entityLabel } from '../utils/labels';
 
 const Layout = styled.div`
@@ -62,7 +62,7 @@ const Empty = styled.div`
 
 const Count = styled.span`font-size: 0.8rem; color: ${({ theme }) => theme.colors.textSecondary};`;
 
-export default function EntityListPage() {
+export default function EntityListPage({ speaker }) {
   const navigate = useNavigate();
   const [entities, setEntities] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -71,11 +71,11 @@ export default function EntityListPage() {
 
   useEffect(() => {
     setLoading(true);
-    fetchEntities()
-      .then((res) => setEntities(Array.isArray(res.data) ? res.data : res.data?.entities || []))
+    fetchAllEntities()
+      .then((ents) => setEntities(ents))
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [speaker]);
 
   const filtered = useMemo(() => {
     let list = entities;

@@ -19,9 +19,9 @@ export default function App() {
       <BrowserRouter basename="/app">
         <Header auth={auth} />
         <Routes>
-          <Route path="/" element={<EntityListPage />} />
+          <Route path="/" element={<EntityListPage speaker={auth.speaker} />} />
           <Route path="/entity/:id" element={<EntityDetailPage />} />
-          <Route path="/graph" element={<GraphPage />} />
+          <Route path="/graph" element={<GraphPage speaker={auth.speaker} />} />
           <Route path="/search" element={<SearchPage />} />
         </Routes>
       </BrowserRouter>

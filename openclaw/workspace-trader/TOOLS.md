@@ -19,14 +19,16 @@ node hl-account.mjs orders                     # ordini aperti
 
 ### hl-trade.mjs — Esecuzione trade
 ```bash
-node hl-trade.mjs market-buy --coin BTC --size 0.01 [--slippage 0.5]
-node hl-trade.mjs market-sell --coin BTC --size 0.01
-node hl-trade.mjs limit-buy --coin BTC --size 0.01 --price 80000
-node hl-trade.mjs limit-sell --coin BTC --size 0.01 --price 90000
-node hl-trade.mjs close --coin BTC              # chiudi posizione
+node hl-trade.mjs market-buy --coin BTC --size 0.01 --strategy Scalping [--slippage 0.5]
+node hl-trade.mjs market-sell --coin BTC --size 0.01 --strategy Scalping
+node hl-trade.mjs limit-buy --coin BTC --size 0.01 --price 80000 --strategy Sentiment
+node hl-trade.mjs limit-sell --coin BTC --size 0.01 --price 90000 --strategy Scalping
+node hl-trade.mjs close --coin BTC --strategy Scalping
 node hl-trade.mjs set-leverage --coin BTC --leverage 10 [--mode isolated]
 node hl-trade.mjs cancel-all [--coin BTC]
 ```
+**IMPORTANTE**: Passa SEMPRE `--strategy <nome>` per collegare la Transaction alla Strategy nell'ontology.
+Lo script crea automaticamente le relazioni: `originated_from` (Strategy), `affects_account` (Account), `executed_by` (Agent Trading).
 
 ### hl-market.mjs — Dati di mercato
 ```bash
@@ -81,10 +83,13 @@ node postmortem.mjs [--days 1] [--json]
 Endpoint: definito in env `ONTOLOGY_URL`
 Speaker: `jarvis-agent`
 
-### Entita usate
+### Entita e relazioni
 - **Strategy** — configurazione e performance strategie
 - **Account** (service=hyperliquid) — whale tracciate
 - **Transaction** — log dei trade eseguiti
+  - `originated_from` → Strategy (quale strategia ha generato il trade)
+  - `affects_account` → Account (su quale wallet)
+  - `executed_by` → Person "Agent Trading" (chi ha eseguito)
 
 ## Sentiment via Browser
 
