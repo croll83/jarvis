@@ -110,6 +110,9 @@ export class HLClient {
     // so we only add vault + staked (NOT perpEquity to avoid double-counting).
     const overview = spotTotal + vaultTotal + stakedTotal;
 
+    // Free spot = spot minus what's locked in perps (collateral)
+    const spotFree = Math.max(0, spotTotal - perpEquity);
+
     return {
       overview: overview.toFixed(2),
       perps: {
@@ -120,7 +123,7 @@ export class HLClient {
         unrealizedPnl: unrealizedPnl.toFixed(2),
       },
       spot: {
-        total: spotTotal.toFixed(2),
+        total: spotFree.toFixed(2),
         count: spotDetails.length,
         balances: spotDetails,
       },
