@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# update-openclaw.sh — Aggiorna OpenClaw e ri-applica il patch per-model thinkingDefault.
-#
-# Il patch re-introduce la feature revertita in PR #19195 (commit 3211280be):
-#   - Aggiunge thinkingDefault allo schema Zod dei model entry (.strict())
-#   - Modifica resolveThinkingDefault() per leggere il per-model override
+# update-openclaw.sh — Aggiorna OpenClaw e ri-applica i patch:
+#   1. Per-model thinkingDefault (revertita in PR #19195)
+#   2. thinkingOverride dal plugin hook before_model_resolve
 #
 # Uso:
 #   ./update-openclaw.sh              # aggiorna + patch
@@ -14,8 +12,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_ONLY=false
 [[ "${1:-}" == "--patch-only" ]] && PATCH_ONLY=true
-
-MARKER='per-model thinkingDefault patch'
 
 OPENCLAW_DIR="$(npm root -g)/openclaw"
 DIST_DIR="$OPENCLAW_DIR/dist"
@@ -38,31 +34,34 @@ if [[ "$PATCH_ONLY" == false ]]; then
   fi
 fi
 
-# --- Step 2: Applica patch ---
+# --- Step 2: Trova TUTTI i file da patchare ---
 echo ""
-echo "=== Applicazione patch per-model thinkingDefault ==="
+echo "=== Applicazione patch thinkingDefault + thinkingOverride ==="
 
-TARGET_FILES=$(grep -rl 'function resolveThinkingDefault' "$DIST_DIR" --include='*.js' 2>/dev/null || true)
+# Patch 1-3: file con resolveThinkingDefault (model-selection-*.js, config-*.js, auth-*.js)
+RESOLVE_FILES=$(grep -rl 'function resolveThinkingDefault' "$DIST_DIR" --include='*.js' 2>/dev/null || true)
+# Patch 4: file con modelResolveOverride?.modelOverride (reply-*.js, pi-embedded-*.js)
+HOOK_FILES=$(grep -rl 'modelResolveOverride?.modelOverride' "$DIST_DIR" --include='*.js' 2>/dev/null || true)
+# Patch 5: file con "let resolvedThinkLevel = thinkOnce" (reply-*.js, pi-embedded-*.js)
+THINK_FILES=$(grep -rl 'let resolvedThinkLevel = thinkOnce' "$DIST_DIR" --include='*.js' 2>/dev/null || true)
 
-if [[ -z "$TARGET_FILES" ]]; then
-  echo "ERROR: resolveThinkingDefault non trovato nel bundle."
-  echo "Il codice di OpenClaw potrebbe essere cambiato significativamente."
+# Unisci tutti i file unici
+ALL_FILES=$(echo -e "${RESOLVE_FILES}\n${HOOK_FILES}\n${THINK_FILES}" | sort -u | grep -v '^$')
+
+if [[ -z "$ALL_FILES" ]]; then
+  echo "ERROR: Nessun file patchabile trovato nel bundle."
   exit 1
 fi
+
+echo "  File trovati: $(echo "$ALL_FILES" | wc -l)"
 
 PATCHED=0
 SKIPPED=0
 ERRORS=0
 
-for FILE in $TARGET_FILES; do
+for FILE in $ALL_FILES; do
   BASENAME=$(basename "$FILE")
-
-  if grep -q "$MARKER" "$FILE" 2>/dev/null; then
-    echo "  [$BASENAME] Già patchato, skip."
-    SKIPPED=$((SKIPPED + 1))
-    continue
-  fi
-
+  echo ""
   echo "  [$BASENAME] Patching..."
   if perl "$SCRIPT_DIR/patch-thinking.pl" "$FILE"; then
     PATCHED=$((PATCHED + 1))
@@ -72,25 +71,21 @@ for FILE in $TARGET_FILES; do
 done
 
 echo ""
-echo "=== Risultato: $PATCHED file patchati, $SKIPPED già patchati, $ERRORS errori ==="
+echo "=== Risultato: $PATCHED file processati, $ERRORS errori ==="
 
 if [[ $ERRORS -gt 0 ]]; then
   echo "ATTENZIONE: alcuni file non sono stati patchati correttamente."
   exit 1
 fi
 
-if [[ $PATCHED -eq 0 && $SKIPPED -eq 0 ]]; then
-  echo "ATTENZIONE: nessun file patchato!"
-  exit 1
-fi
-
 # --- Step 3: Verifica ---
 echo ""
 echo "=== Verifica patch ==="
-for FILE in $TARGET_FILES; do
+for FILE in $ALL_FILES; do
   BASENAME=$(basename "$FILE")
-  COUNT=$(grep -c "$MARKER" "$FILE" 2>/dev/null || echo 0)
-  echo "  [$BASENAME] marker trovati: $COUNT"
+  C1=$(grep -c 'per-model thinkingDefault patch' "$FILE" 2>/dev/null || echo 0)
+  C2=$(grep -c 'hook thinkingOverride patch' "$FILE" 2>/dev/null || echo 0)
+  echo "  [$BASENAME] per-model: $C1, hook-override: $C2"
 done
 
 echo ""
