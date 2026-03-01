@@ -69,9 +69,14 @@ export class HLClient {
       sdk.info.getDelegatorSummary(target).catch(() => null),
     ]);
 
-    // Perps
+    // Perps — in unified accounts, perp borrows collateral from spot USDC.
+    // accountValue = totalRawUsd + position value. totalRawUsd is typically
+    // negative (borrowed from spot). Don't add perpEquity to spot in overview.
     const perpEquity = parseFloat(perpState.marginSummary.accountValue);
     const margin = parseFloat(perpState.marginSummary.totalMarginUsed);
+    const totalRawUsd = parseFloat(perpState.marginSummary.totalRawUsd || '0');
+    // Unrealized PnL = accountValue - totalRawUsd (rawUsd is the deposited/borrowed base)
+    const unrealizedPnl = perpEquity - totalRawUsd - margin;
 
     // Spot — value each token. USDC is 1:1, others need price lookup.
     const spotBalances = spotState.balances || [];
@@ -101,8 +106,9 @@ export class HLClient {
     // Staked
     const stakedTotal = delegatorSummary ? parseFloat(delegatorSummary.delegated || 0) : 0;
 
-    // Overview
-    const overview = perpEquity + spotTotal + vaultTotal + stakedTotal;
+    // Overview — spot USDC already includes perp collateral in unified accounts,
+    // so we only add vault + staked (NOT perpEquity to avoid double-counting).
+    const overview = spotTotal + vaultTotal + stakedTotal;
 
     return {
       overview: overview.toFixed(2),
@@ -111,6 +117,7 @@ export class HLClient {
         available: (perpEquity - margin).toFixed(2),
         marginUsed: margin.toFixed(2),
         marginRatio: perpEquity > 0 ? ((margin / perpEquity) * 100).toFixed(1) + '%' : '0%',
+        unrealizedPnl: unrealizedPnl.toFixed(2),
       },
       spot: {
         total: spotTotal.toFixed(2),
