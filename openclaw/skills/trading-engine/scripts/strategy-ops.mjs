@@ -67,8 +67,8 @@ const DEFAULT_STRATEGIES = [
     status: 'paused',
     visibility: 'private',
     rules: [
-      { trigger: 'sentiment_score > 60 AND confidence > 60', action: 'open LONG' },
-      { trigger: 'sentiment_score < -60 AND confidence > 60', action: 'open SHORT' },
+      { trigger: 'sentiment_score > 40 AND confidence > 50', action: 'open LONG' },
+      { trigger: 'sentiment_score < -40 AND confidence > 50', action: 'open SHORT' },
       { trigger: 'pnl >= 5%', action: 'take profit' },
       { trigger: 'pnl <= -3%', action: 'stop loss' },
     ],
@@ -82,7 +82,7 @@ const DEFAULT_STRATEGIES = [
       tp_pct: 5,
       sl_pct: 3,
       trailing_stop: true,
-      min_sentiment_confidence: 60,
+      min_sentiment_confidence: 50,
       sentiment_window_hours: 24,
     },
   },
@@ -177,12 +177,14 @@ const getArg = (name, def) => {
   return idx >= 0 && cmdArgs[idx + 1] ? cmdArgs[idx + 1] : def;
 };
 
+const run = (fn) => fn().then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); });
+
 switch (cmd) {
-  case 'list': listStrategies().catch(e => { console.error(e.message); process.exit(1); }); break;
+  case 'list': run(listStrategies); break;
   case 'get': {
     const id = getArg('id', null);
     if (!id) { console.log('--id required'); process.exit(1); }
-    getStrategy(id).catch(e => { console.error(e.message); process.exit(1); });
+    run(() => getStrategy(id));
     break;
   }
   case 'update': {
@@ -191,7 +193,7 @@ switch (cmd) {
     if (!id) { console.log('--id required'); process.exit(1); }
     const updates = {};
     if (status) updates.status = status;
-    updateStrategy(id, updates).catch(e => { console.error(e.message); process.exit(1); });
+    run(() => updateStrategy(id, updates));
     break;
   }
   case 'perf': {
@@ -200,10 +202,10 @@ switch (cmd) {
     const trades = getArg('trades', '0');
     const wins = getArg('wins', '0');
     if (!id) { console.log('--id required'); process.exit(1); }
-    updatePerformance(id, pnl, parseInt(trades), parseInt(wins)).catch(e => { console.error(e.message); process.exit(1); });
+    run(() => updatePerformance(id, pnl, parseInt(trades), parseInt(wins)));
     break;
   }
-  case 'init': initStrategies().catch(e => { console.error(e.message); process.exit(1); }); break;
+  case 'init': run(initStrategies); break;
   default:
     console.log('Usage: node strategy-ops.mjs <list|get|update|perf|init>');
     process.exit(1);

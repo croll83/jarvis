@@ -231,10 +231,12 @@ async function listWhales() {
 
 const [,, cmd] = process.argv;
 
+const run = (fn) => fn().then(() => process.exit(0)).catch(e => { console.error('Error:', e.message); process.exit(1); });
+
 switch (cmd) {
-  case 'refresh': refreshWhaleList().catch(e => { console.error('Error:', e.message); process.exit(1); }); break;
-  case 'scan': scanWhalePositions().catch(e => { console.error('Error:', e.message); process.exit(1); }); break;
-  case 'list': listWhales().catch(e => { console.error('Error:', e.message); process.exit(1); }); break;
+  case 'refresh': run(refreshWhaleList); break;
+  case 'scan': run(scanWhalePositions); break;
+  case 'list': run(listWhales); break;
   default:
     console.log('Usage: node whale-monitor.mjs <refresh|scan|list>');
     process.exit(1);
