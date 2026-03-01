@@ -79,6 +79,7 @@ interface RoutingLogEntry {
   tier: string;
   modelSelected: string;
   providerSelected: string;
+  thinking: string;
   fallbacks: string[];
   confidence: number;
   executionTimeMs: number;
@@ -180,6 +181,37 @@ const SIMPLE_PATTERNS = [
   // Heartbeat: periodic keep-alive tasks (leggi HEARTBEAT.md, check heartbeat, etc.)
   /HEARTBEAT/i,
 ];
+
+/**
+ * Detect explicit thinking level requests in natural language.
+ * Matches patterns like "thinking high", "livello di ragionamento alto", etc.
+ * Returns the normalized thinking level or null if not found.
+ */
+const THINKING_KEYWORDS: Array<{ pattern: RegExp; level: string }> = [
+  // English: "thinking high/low/off"
+  { pattern: /\bthinking\s+(high|alto)\b/i, level: "high" },
+  { pattern: /\bthinking\s+(low|basso)\b/i, level: "low" },
+  { pattern: /\bthinking\s+(off|no|disattiv\w*)\b/i, level: "off" },
+  // Italian: "livello di ragionamento alto/basso/off"
+  { pattern: /\blivello\s+di\s+ragionamento\s+(alto|high)\b/i, level: "high" },
+  { pattern: /\blivello\s+di\s+ragionamento\s+(basso|low)\b/i, level: "low" },
+  { pattern: /\blivello\s+di\s+ragionamento\s+(off|no|disattiv\w*)\b/i, level: "off" },
+  // Italian: "ragionamento alto/basso"
+  { pattern: /\bragionamento\s+(alto|high)\b/i, level: "high" },
+  { pattern: /\bragionamento\s+(basso|low)\b/i, level: "low" },
+  // Italian: "ragiona al massimo / ragiona profondamente"
+  { pattern: /\bragiona\s+(al\s+massimo|profondamente|a\s+fondo)\b/i, level: "high" },
+  // Italian: "senza ragionamento / non ragionare"
+  { pattern: /\bsenza\s+ragionamento\b/i, level: "off" },
+  { pattern: /\bnon\s+ragionare\b/i, level: "off" },
+];
+
+function detectThinkingKeyword(text: string): string | null {
+  for (const { pattern, level } of THINKING_KEYWORDS) {
+    if (pattern.test(text)) return level;
+  }
+  return null;
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -349,16 +381,26 @@ const plugin: OpenClawPluginDefinition = {
       const promptForMarkers = rawPrompt.replace(/^\[cron:[^\]]*\]\s*/, "");
 
       // ── Check [routed] marker ──
-      // spawn-with-routing.js adds this to prevent re-routing subagent spawns
+      // spawn-with-routing.js adds this to prevent re-routing subagent spawns.
+      // Supports optional [thinking:X] marker to override thinking level
+      // without changing the model. E.g. "[routed] [thinking:off] ..."
       if (promptForMarkers.startsWith(ROUTED_MARKER)) {
+        // Check for [thinking:X] marker after [routed]
+        const afterRouted = promptForMarkers.slice(ROUTED_MARKER.length).trim();
+        const thinkingMarkerMatch = afterRouted.match(/^\[thinking:(high|low|off|on)\]/i);
+        const thinkingLevel = thinkingMarkerMatch
+          ? thinkingMarkerMatch[1].toLowerCase()
+          : null;
+
         api.logger.debug(
-          `[intelligent-routing] Skipping pre-routed subagent prompt`,
+          `[intelligent-routing] Skipping pre-routed subagent prompt` +
+          (thinkingLevel ? ` (thinking override: ${thinkingLevel})` : ""),
         );
         routingState.set(sessionKey, {
           tier: "ROUTED",
           model: "(pre-routed)",
           provider: "",
-          thinking: "",
+          thinking: thinkingLevel || "",
           confidence: 1.0,
           method: "skip-routed-marker",
           skipped: true,
@@ -380,14 +422,19 @@ const plugin: OpenClawPluginDefinition = {
           tier: "ROUTED",
           modelSelected: resolvedModel,
           providerSelected: resolvedSplit.provider || "(cron-assigned)",
+          thinking: thinkingLevel || "(default)",
           fallbacks: [],
           confidence: 1.0,
           executionTimeMs: Date.now() - startTime,
           success: true,
           classificationMethod: "skip-routed-marker",
-          notes: "",
+          notes: thinkingLevel ? `thinking-override=${thinkingLevel}` : "",
         });
 
+        // Return thinking override if [thinking:X] marker was found
+        if (thinkingLevel) {
+          return { thinkingOverride: thinkingLevel } as RoutingHookResult;
+        }
         return {};
       }
 
@@ -424,6 +471,7 @@ const plugin: OpenClawPluginDefinition = {
           tier: "FORCED",
           modelSelected: requested,
           providerSelected: split.provider,
+          thinking: "(default)",
           fallbacks: [],
           confidence: 1.0,
           executionTimeMs: Date.now() - startTime,
@@ -473,6 +521,7 @@ const plugin: OpenClawPluginDefinition = {
             tier: "SIMPLE",
             modelSelected: sp.fullId,
             providerSelected: sp.provider,
+            thinking: sp.thinking,
             fallbacks: [],
             confidence: 1.0,
             executionTimeMs: Date.now() - startTime,
@@ -508,6 +557,7 @@ const plugin: OpenClawPluginDefinition = {
             tier: requestedTier,
             modelSelected: tierModel.fullId,
             providerSelected: tierModel.provider,
+            thinking: tierModel.thinking,
             fallbacks: [],
             confidence: 1.0,
             executionTimeMs: Date.now() - startTime,
@@ -528,6 +578,11 @@ const plugin: OpenClawPluginDefinition = {
           `[intelligent-routing] Unknown tier override "${requestedTier}", falling through to classifier`,
         );
       }
+
+      // ── Detect explicit thinking level keywords (before classification) ──
+      // E.g. "thinking high", "livello di ragionamento alto", "ragionamento basso"
+      // This overrides the tier's default thinking level but lets the classifier pick the model.
+      const thinkingKeyword = detectThinkingKeyword(promptForMarkers);
 
       // ── Dedup: if same prompt was already routed in this session, return cached result ──
       const prevPrompt = lastRoutedPrompt.get(sessionKey);
@@ -635,6 +690,14 @@ const plugin: OpenClawPluginDefinition = {
         }
       }
 
+      // ── Apply thinking keyword override (if detected) ──
+      if (thinkingKeyword) {
+        thinkingPart = thinkingKeyword;
+        api.logger.info(
+          `[intelligent-routing] Thinking keyword override: "${thinkingKeyword}" (from user prompt)`,
+        );
+      }
+
       const executionTimeMs = Date.now() - startTime;
       const agentId = ctx.agentId || "main";
 
@@ -662,6 +725,7 @@ const plugin: OpenClawPluginDefinition = {
         tier,
         modelSelected: fullModelId,
         providerSelected: providerPart,
+        thinking: thinkingPart,
         fallbacks,
         confidence,
         executionTimeMs,
@@ -670,7 +734,7 @@ const plugin: OpenClawPluginDefinition = {
         notes: config.dryRun ? "dry-run" : "",
       });
 
-      api.logger.debug(
+      api.logger.info(
         `[intelligent-routing] ${tier} (${classificationMethod}, ${confidence.toFixed(2)}) -> ` +
         `${providerPart}/${modelPart} thinking=${thinkingPart} [${executionTimeMs}ms]`,
       );

@@ -23,7 +23,8 @@
   td { padding: 8px; border-bottom: 1px solid #21262d; }
   .tier-SIMPLE { color: #3fb950; } .tier-MEDIUM { color: #58a6ff; }
   .tier-COMPLEX { color: #d29922; } .tier-REASONING { color: #f85149; }
-  .tier-CRITICAL { color: #f778ba; }
+  .tier-CRITICAL { color: #f778ba; } .tier-ROUTED { color: #8b949e; } .tier-FORCED { color: #a371f7; }
+  .think-off { color: #8b949e; } .think-low { color: #d29922; } .think-high { color: #f85149; }
   .success { color: #3fb950; } .failure { color: #f85149; }
   #drop-zone { border: 2px dashed #30363d; border-radius: 8px; padding: 40px; text-align: center; color: #8b949e; margin-bottom: 20px; cursor: pointer; }
   #drop-zone.active { border-color: #58a6ff; color: #58a6ff; }
@@ -48,11 +49,11 @@
     <div class="card"><h3>By Tier</h3><div id="tier-chart" class="bar-chart"></div></div>
     <div class="card"><h3>By Model</h3><div id="model-chart" class="bar-chart"></div></div>
     <div class="card"><h3>By Source</h3><div id="source-chart" class="bar-chart"></div></div>
-    <div class="card"><h3>Cost by Tier</h3><div id="cost-chart" class="bar-chart"></div></div>
+    <div class="card"><h3>By Thinking</h3><div id="thinking-chart" class="bar-chart"></div></div>
   </div>
   <div class="card" style="margin-top:16px">
     <h3>Recent Routing Decisions</h3>
-    <table id="log-table"><thead><tr><th>Time</th><th>Source</th><th>Task</th><th>Tier</th><th>Model</th><th>Conf</th><th>Method</th><th>Ms</th><th>Status</th></tr></thead><tbody></tbody></table>
+    <table id="log-table"><thead><tr><th>Time</th><th>Source</th><th>Task</th><th>Tier</th><th>Model</th><th>Thinking</th><th>Conf</th><th>Method</th><th>Ms</th><th>Status</th></tr></thead><tbody></tbody></table>
   </div>
 </div>
 
@@ -97,16 +98,10 @@ function render(entries) {
   const srcColors = { cron: '#58a6ff', heartbeat: '#3fb950', 'sub-task': '#d29922', main: '#f85149', manual: '#8b949e' };
   renderBarChart('source-chart', groupBy(entries, 'source'), srcColors);
 
-  // Cost by tier
-  const tierGroups = groupBy(entries, 'tier');
-  const costData = {};
-  Object.entries(tierGroups).forEach(([k, v]) => costData[k] = [{ costEstimate: v.reduce((s, e) => s + (e.costEstimate || 0), 0) }]);
-  const costEl = document.getElementById('cost-chart');
-  const maxCost = Math.max(...Object.values(costData).map(v => v[0].costEstimate), 0.001);
-  costEl.innerHTML = Object.entries(costData).map(([k, v]) => {
-    const c = v[0].costEstimate;
-    return `<div class="bar-row"><span class="bar-label">${k}</span><div class="bar" style="width:${c/maxCost*200}px;background:${TIER_COLORS[k]||'#8b949e'}"></div><span class="bar-value">$${c.toFixed(4)}</span></div>`;
-  }).join('');
+  // Thinking chart
+  const thinkColors = { off: '#8b949e', low: '#d29922', high: '#f85149', '(default)': '#30363d', '': '#30363d' };
+  const thinkGroups = groupBy(entries.filter(e => e.thinking), 'thinking');
+  renderBarChart('thinking-chart', thinkGroups, thinkColors);
 
   // Table
   const tbody = document.querySelector('#log-table tbody');
@@ -115,12 +110,14 @@ function render(entries) {
     const conf = e.confidence != null ? `${(e.confidence*100).toFixed(0)}%` : '-';
     const method = e.classificationMethod || '-';
     const ms = e.executionTimeMs != null ? e.executionTimeMs : '-';
+    const think = e.thinking || '-';
     return `<tr>
     <td>${new Date(e.timestamp).toLocaleString()}</td>
     <td>${e.source}</td>
     <td title="${(e.taskDescription || e.jobName || '').replace(/"/g, '&quot;')}">${desc}</td>
     <td class="tier-${e.tier}">${e.tier}</td>
     <td>${e.modelSelected}</td>
+    <td class="think-${think}">${think}</td>
     <td>${conf}</td>
     <td>${method}</td>
     <td>${ms}</td>
