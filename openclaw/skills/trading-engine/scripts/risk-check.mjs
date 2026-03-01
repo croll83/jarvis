@@ -27,6 +27,15 @@ const MAX_SAME_DIRECTION_CORRELATED = 2;
 const BTC_CRASH_THRESHOLD = -5; // percent
 const BTC_CRASH_WINDOW_CANDLES = 15; // 1m candles
 
+// Per-strategy margin limits: Copytrading holds positions for days (whale-driven),
+// so it gets a higher margin allowance than fast strategies.
+const STRATEGY_MARGIN_LIMITS = {
+  'copytrading': 90,
+  'scalping': 80,
+  'sentiment': 80,
+};
+const DEFAULT_MARGIN_LIMIT = 80;
+
 const [,, ...args] = process.argv;
 const getArg = (name, def) => {
   const idx = args.indexOf(`--${name}`);
@@ -52,8 +61,8 @@ async function main() {
   // 1. Get current positions
   const positions = await hl.getPositions();
   const balance = await hl.getBalance();
-  const equity = parseFloat(balance.equity);
-  const marginUsed = parseFloat(balance.marginUsed);
+  const equity = parseFloat(balance.perps.equity);
+  const marginUsed = parseFloat(balance.perps.marginUsed);
 
   // 2. Check duplicate position
   const existingPos = positions.find(p => p.coin === coin);
@@ -92,11 +101,13 @@ async function main() {
   const notional = size * price;
   const newMargin = notional / leverage;
   const newMarginPct = ((marginUsed + newMargin) / equity * 100).toFixed(1);
-  if (parseFloat(newMarginPct) > 80) {
-    checks.push({ check: 'margin', status: 'block', msg: `Margin usage would reach ${newMarginPct}% (>80% limit).` });
+  const strategyLower = (strategy || '').toLowerCase();
+  const marginLimit = STRATEGY_MARGIN_LIMITS[strategyLower] || DEFAULT_MARGIN_LIMIT;
+  if (parseFloat(newMarginPct) > marginLimit) {
+    checks.push({ check: 'margin', status: 'block', msg: `Margin usage would reach ${newMarginPct}% (>${marginLimit}% limit for ${strategy}).` });
     approved = false;
   } else {
-    checks.push({ check: 'margin', status: 'ok', msg: `Margin usage: ${newMarginPct}% after trade.` });
+    checks.push({ check: 'margin', status: 'ok', msg: `Margin usage: ${newMarginPct}% after trade (limit: ${marginLimit}% for ${strategy}).` });
   }
 
   // 5. BTC crash detection
@@ -133,4 +144,4 @@ async function main() {
   process.exit(approved ? 0 : 1);
 }
 
-main().catch(e => { console.error('Error:', e.message); process.exit(1); });
+main().then(() => process.exit(0)).catch(e => { console.error('Error:', e.message); process.exit(1); });

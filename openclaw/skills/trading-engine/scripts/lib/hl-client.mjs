@@ -49,7 +49,7 @@ export class HLClient {
     this._sdk = new Hyperliquid({
       privateKey: this.privateKey || undefined,
       testnet: this.testnet,
-      walletAddress: this.address || undefined,
+      walletAddress: this.address || undefined, enableWs: false,
     });
     await this._sdk.connect();
     return this._sdk;

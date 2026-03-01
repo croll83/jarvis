@@ -1,4 +1,2 @@
-// Runtime configuration — overridden by Docker entrypoint
-window.__RUNTIME_CONFIG__ = {
-  API_URL: ""
-};
+// Runtime configuration
+window.__RUNTIME_CONFIG__ = {};
