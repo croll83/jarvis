@@ -52,7 +52,8 @@ class OrchestratorRelay:
         try:
             self._ws = await websockets.connect(
                 url,
-                ping_interval=None,  # Disabilitato: il relay è attivo solo durante sessioni, no keepalive necessario
+                ping_interval=20,   # Keepalive ogni 20s per evitare idle timeout (~587s) su proxy/LB
+                ping_timeout=10,
                 close_timeout=5,
                 max_size=2**20,  # 1 MB
             )

@@ -611,6 +611,21 @@ async def ws_audio_endpoint(
                             conn.device_type = "AtomS3R"
                         logger.info(f"Device {device_id}: persistent mode (fw={conn.firmware_version}, type={conn.device_type})")
 
+                        # Auto-register device if not already in database
+                        try:
+                            from database import get_voice_device, register_unknown_voice_device
+                            dev = get_voice_device(device_id)
+                            if not dev:
+                                dev = register_unknown_voice_device(
+                                    device_id=device_id,
+                                    firmware_version=conn.firmware_version,
+                                )
+                                logger.info(f"Device {device_id}: auto-registered in database "
+                                            f"(type={conn.device_type}, fw={conn.firmware_version})")
+                        except Exception as e:
+                            logger.error(f"Device {device_id}: auto-registration failed: {e}")
+                            dev = None
+
                         # Device reconnected — clean up stale live session if any
                         try:
                             from main import get_live_session, end_live_session
@@ -623,8 +638,9 @@ async def ws_audio_endpoint(
 
                         # Push saved config to device (sensitivity, volume, etc.)
                         try:
-                            from database import get_voice_device
-                            dev = get_voice_device(device_id)
+                            if dev is None:
+                                from database import get_voice_device
+                                dev = get_voice_device(device_id)
                             if dev:
                                 config_msg = {"type": "config_update"}
                                 if dev.wake_word_sensitivity is not None:
