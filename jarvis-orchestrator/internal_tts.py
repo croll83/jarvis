@@ -273,8 +273,7 @@ def _preprocess_tts_text(text: str) -> str:
     text = _clean_for_speech(text)
     # _expand_abbreviations: disabilitato — troppo prone a errori (false positive)
     # text = _expand_abbreviations(text)
-    # _transliterate_english: disabilitato — XTTS è multilingue, gestisce l'inglese nativamente
-    # text = _transliterate_english(text)
+    text = _transliterate_english(text)
     # _numbers_to_words: disabilitato — XTTS legge i numeri molto meglio di EdgeTTS
     # text = _numbers_to_words(text)
     # Pulisci spazi multipli
