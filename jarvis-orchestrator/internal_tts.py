@@ -165,6 +165,27 @@ _RE_BULLET = re.compile(r"^[\s]*[-*+]\s+", re.MULTILINE)
 _RE_NUMBERED = re.compile(r"^[\s]*\d+\.\s+", re.MULTILINE)
 _RE_LINK = re.compile(r"\[(.+?)\]\(.+?\)")
 _RE_NUMBER = re.compile(r"\b\d+(?:[.,]\d+)?\b")
+# Emoji: qualsiasi codepoint nelle aree emoji Unicode
+_RE_EMOJI = re.compile(
+    "[\U0001F600-\U0001F64F"   # emoticons
+    "\U0001F300-\U0001F5FF"    # symbols & pictographs
+    "\U0001F680-\U0001F6FF"    # transport & map
+    "\U0001F1E0-\U0001F1FF"    # flags
+    "\U00002702-\U000027B0"    # dingbats
+    "\U0000FE00-\U0000FE0F"    # variation selectors
+    "\U0000200D"               # ZWJ
+    "\U00002640-\U00002642"    # gender symbols
+    "\U000023CF-\U000023F3"    # misc technical
+    "\U0001FA00-\U0001FA6F"    # chess/extended-A
+    "\U0001FA70-\U0001FAFF"    # extended-B
+    "\U00002600-\U000026FF"    # misc symbols
+    "\U0001F900-\U0001F9FF"    # supplemental
+    "]+", flags=re.UNICODE
+)
+# Punti multipli alla fine (2+), con o senza spazi
+_RE_TRAILING_DOTS = re.compile(r"\.{2,}\s*$")
+# Punti esclamativi/interrogativi ripetuti
+_RE_REPEATED_PUNCT = re.compile(r"([!?]){2,}")
 
 
 def _strip_markdown(text: str) -> str:
@@ -176,6 +197,20 @@ def _strip_markdown(text: str) -> str:
     text = _RE_BULLET.sub("", text)
     text = _RE_NUMBERED.sub("", text)
     text = _RE_LINK.sub(r"\1", text)
+    return text
+
+
+def _clean_for_speech(text: str) -> str:
+    """Pulisce testo da elementi che XTTS/Kokoro leggono male: emoji, punti multipli, ecc."""
+    # Rimuovi emoji (XTTS le legge come "punto" o sbarella)
+    text = _RE_EMOJI.sub("", text)
+    # Punti multipli alla fine → punto singolo (evita "punto punto punto")
+    text = _RE_TRAILING_DOTS.sub(".", text)
+    # Punti esclamativi/interrogativi ripetuti → singolo (!!!! → !)
+    text = _RE_REPEATED_PUNCT.sub(r"\1", text)
+    # Ellissi nel mezzo del testo → virgola (pausa naturale)
+    text = text.replace("...", ",")
+    text = text.replace("…", ",")
     return text
 
 
@@ -233,10 +268,15 @@ def _preprocess_tts_text(text: str) -> str:
         return text
 
     original = text
-    text = _strip_markdown(text)
-    text = _expand_abbreviations(text)
-    text = _transliterate_english(text)
-    text = _numbers_to_words(text)
+    # _strip_markdown: disabilitato — OpenClaw già strippa markdown prima di inviare
+    # text = _strip_markdown(text)
+    text = _clean_for_speech(text)
+    # _expand_abbreviations: disabilitato — troppo prone a errori (false positive)
+    # text = _expand_abbreviations(text)
+    # _transliterate_english: disabilitato — XTTS è multilingue, gestisce l'inglese nativamente
+    # text = _transliterate_english(text)
+    # _numbers_to_words: disabilitato — XTTS legge i numeri molto meglio di EdgeTTS
+    # text = _numbers_to_words(text)
     # Pulisci spazi multipli
     text = re.sub(r"  +", " ", text).strip()
 
