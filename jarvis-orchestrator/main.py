@@ -1032,17 +1032,9 @@ _CONFIRM_YES = {"sì", "si", "ok", "vai", "certo", "procedi", "avvia", "yes", "s
 _CONFIRM_NO = {"no", "annulla", "lascia", "niente", "stop", "esci"}
 _RETRY_ID = {"sono", "riconoscimi", "riconoscere", "prova", "riprova", "identifica", "identificami"}
 
-# TTS instructions for live session: ultra-concise, no fluff
-_LIVE_SESSION_TTS_INSTRUCTIONS = (
-    "CRITICAL: You are in a LIVE VOICE SESSION — a real-time conversation like a phone call. "
-    "Rules: 1) Be EXTREMELY concise — max 1-2 short sentences per reply. "
-    "2) No filler words, no pleasantries, no 'certo', no 'ecco'. Go straight to the point. "
-    "3) Use natural spoken Italian with clear punctuation. "
-    "4) NO markdown, NO bullet points, NO asterisks, NO special characters. "
-    "5) If you need to ask a clarification, ask ONE short question. "
-    "6) The user CANNOT interrupt you once you start speaking, so keep it SHORT. "
-    "7) Sound warm but efficient — think quick radio exchange, not essay."
-)
+# Voice session instructions are now in OpenClaw SOUL.md.
+# The orchestrator sends a structured [VOICE_SESSION] block in the `instructions`
+# field of /v1/responses, and SOUL.md defines per-hint behavior rules.
 
 # Activation: keyword-based (all keywords must be present, order-independent)
 # Handles: "avvia una sessione live", "avvia la live session", "inizia sessione live", etc.
@@ -1291,11 +1283,12 @@ async def start_live_session(
     # Clean up any pending session for this device
     _pending_live_sessions.pop(device_id, None)
 
-    # Build stable session key (same logic as _handle_openclaw_voice)
-    if speaker_id:
-        session_user = f"live-speaker-{speaker_id}"
+    # Build stable session key (same logic as _handle_openclaw_voice).
+    # Uses speaker name for identified users, room for anonymous.
+    if speaker_name and speaker_name != "Sconosciuto":
+        session_user = speaker_name.lower()
     else:
-        session_user = f"live-device-{room.lower()}"
+        session_user = room.lower()
 
     session = LiveSession(
         device_id=device_id,
@@ -1887,66 +1880,42 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
     location = context.get("location", "")
     room = context.get("room", "")
 
-    # Compose context-enriched message
-    context_parts = []
-    if speaker_name and speaker_name != "Sconosciuto":
-        context_parts.append(f"user: {speaker_name}")
-    elif not speaker_identified:
-        context_parts.append("user: non identificato")
-    if location:
-        context_parts.append(f"location: {location}")
-    if room:
-        context_parts.append(f"room: {room}")
-    if source:
-        context_parts.append(f"source: {source}")
-    if hint:
-        context_parts.append(f"hint: {hint}")
+    # Build [VOICE_SESSION] structured block for OpenClaw instructions.
+    # SOUL.md on OpenClaw defines per-hint behavior (live_session, domotics, etc.)
+    # and TTS formatting rules. We only pass the structured context here.
+    speaker_payload = _json.dumps({
+        "user_id": speaker_id if speaker_id is not None else "None",
+        "user_name": speaker_name if speaker_name else "Sconosciuto",
+        "identified": speaker_identified,
+    }, ensure_ascii=False)
 
-    if context_parts:
-        message_text = f"[{', '.join(context_parts)}] {text}"
-    else:
-        message_text = text
+    voice_instructions = (
+        f"[VOICE_SESSION]\n"
+        f"hint: {hint or 'unknown'}\n"
+        f"source: {source or 'unknown'}\n"
+        f"speaker: {speaker_payload}"
+    )
 
-    # OpenResponses API format: POST /v1/responses
-    # Inietta istruzione TTS: live session usa prompt ultra-conciso,
-    # normale usa prompt conversazionale standard
-    if hint == "live_session":
-        tts_instructions = _LIVE_SESSION_TTS_INSTRUCTIONS
-    elif source in ("AtomS3R", "VirtualMic"):
-        device_cfg = context.get("device_config") or {}
-        is_internal = device_cfg.get("use_internal_speaker", False)
-        tts_target = "the device's built-in speaker (Edge TTS)" if is_internal else "a voice assistant (Alexa TTS)"
-        tts_instructions = (
-            f"IMPORTANT: This response will be read aloud via {tts_target}. "
-            "Format accordingly: use natural spoken Italian, no markdown, no bullet points, "
-            "no asterisks, no emojis, no special characters. Use short sentences with clear "
-            "punctuation (commas, periods, exclamation marks, question marks) for natural speech "
-            "rhythm. Add emphasis and expressiveness: use exclamation marks for enthusiasm, "
-            "ellipsis for suspense or pauses, rhetorical questions to engage. Vary sentence "
-            "length and tone — mix short punchy phrases with longer flowing ones. Sound warm, "
-            "lively and human, not robotic or flat. Be concise but conversational — max 3-4 "
-            "sentences unless the topic requires more."
-        )
-    else:
-        tts_instructions = None
+    # Add location/room context if available
+    if location or room:
+        loc_parts = []
+        if location:
+            loc_parts.append(f"location: {location}")
+        if room:
+            loc_parts.append(f"room: {room}")
+        voice_instructions += "\n" + "\n".join(loc_parts)
 
     payload = {
-        "input": message_text,
+        "input": text,
         "model": "openclaw:main",
         "stream": True,
+        "instructions": voice_instructions,
     }
-    # Multi-turn session: 'user' param enables stable session routing in OpenClaw
+    # Multi-turn session: 'user' param enables stable session routing in OpenClaw.
+    # Uses speaker name (identified) or device/room name (unidentified) for
+    # session key: openresponses-main-user:{session_user}
     if session_user:
         payload["user"] = str(session_user)
-    # User metadata per OpenClaw (identità parlante)
-    if speaker_id or (speaker_name and speaker_name != "Sconosciuto"):
-        payload["metadata"] = {
-            "user_id": str(speaker_id) if speaker_id is not None else None,
-            "user_name": str(speaker_name) if speaker_name else None,
-            "identified": str(speaker_identified),
-        }
-    if tts_instructions:
-        payload["instructions"] = tts_instructions
 
     try:
         timeout = aiohttp.ClientTimeout(
@@ -3058,22 +3027,26 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     For other sources (Telegram, etc.): waits for full response, then delivers.
 
     Multi-turn: uses OpenClaw 'user' parameter for stable session routing.
-    If the speaker is identified, session key = "speaker-{speaker_id}".
-    Otherwise, session key = "device-{device_id}" to group anonymous interactions per device.
+    If the speaker is identified, session key = speaker name (e.g. "marco").
+    Otherwise, session key = room/device name to group anonymous interactions.
+    OpenClaw generates: openresponses-main-user:{session_user}
     """
     context["_user_text"] = text  # Per VirtualMic response tracking
     context["_intent"] = f"OPENCLAW:{hint}" if hint else "OPENCLAW"
 
-    # Build stable session user key for OpenClaw multi-turn
+    # Build stable session user key for OpenClaw multi-turn.
+    # Uses speaker name for identified users, room/source for anonymous.
     speaker_id = context.get("speaker_id")
+    speaker_name = context.get("speaker_name", "")
+    speaker_identified = context.get("speaker_identified", False)
     device_cfg = context.get("device_config")
     room = (device_cfg.get("room") if device_cfg else None) or context.get("room", "")
-    if speaker_id:
-        session_user = f"speaker-{speaker_id}"
+    if speaker_identified and speaker_name and speaker_name != "Sconosciuto":
+        session_user = speaker_name.lower()
     elif room:
-        session_user = f"device-{room.lower()}"
+        session_user = room.lower()
     else:
-        session_user = f"source-{context.get('source', 'unknown')}"
+        session_user = context.get("source", "unknown").lower()
     logger.info(f"OpenClaw multi-turn session_user={session_user}")
 
     save_chat_message("user", text, context.get("source", "AtomS3R"),
