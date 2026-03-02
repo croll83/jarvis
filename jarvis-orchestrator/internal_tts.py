@@ -182,8 +182,6 @@ _RE_EMOJI = re.compile(
     "\U0001F900-\U0001F9FF"    # supplemental
     "]+", flags=re.UNICODE
 )
-# Punti multipli alla fine (2+), con o senza spazi
-_RE_TRAILING_DOTS = re.compile(r"\.{2,}\s*$")
 # Punti esclamativi/interrogativi ripetuti
 _RE_REPEATED_PUNCT = re.compile(r"([!?]){2,}")
 
@@ -201,16 +199,24 @@ def _strip_markdown(text: str) -> str:
 
 
 def _clean_for_speech(text: str) -> str:
-    """Pulisce testo da elementi che XTTS/Kokoro leggono male: emoji, punti multipli, ecc."""
+    """Pulisce testo da elementi che XTTS/Kokoro leggono male: emoji, punti, ecc.
+
+    XTTS legge '.' come 'punto' letteralmente — va rimosso ovunque tranne
+    che nei numeri decimali (es. 86.79, 1.500).
+    """
     # Rimuovi emoji (XTTS le legge come "punto" o sbarella)
     text = _RE_EMOJI.sub("", text)
-    # Punti multipli alla fine → punto singolo (evita "punto punto punto")
-    text = _RE_TRAILING_DOTS.sub(".", text)
-    # Punti esclamativi/interrogativi ripetuti → singolo (!!!! → !)
-    text = _RE_REPEATED_PUNCT.sub(r"\1", text)
-    # Ellissi nel mezzo del testo → virgola (pausa naturale)
+    # Ellissi → virgola (pausa naturale)
     text = text.replace("...", ",")
     text = text.replace("…", ",")
+    # Punti esclamativi/interrogativi ripetuti → singolo (!!!! → !)
+    text = _RE_REPEATED_PUNCT.sub(r"\1", text)
+    # Rimuovi TUTTI i punti tranne quelli nei numeri (es. 86.79, 1.500.000).
+    # Punto tra cifre = decimale/migliaia → preserva.
+    # Punto a fine frase o dopo parola → rimuovi (XTTS lo legge come "punto").
+    text = re.sub(r"(?<!\d)\.(?!\d)", "", text)
+    # Pulisci spazi multipli risultanti
+    text = re.sub(r"  +", " ", text).strip()
     return text
 
 
