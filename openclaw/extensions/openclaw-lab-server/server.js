@@ -1,4 +1,41 @@
 const http = require('http');
+
+// Ontology API proxy — forwards /api/ontology/* to the ontology server
+const ONTOLOGY_HOST = process.env.ONTOLOGY_HOST || 'host.docker.internal';
+const ONTOLOGY_PORT = parseInt(process.env.ONTOLOGY_PORT || '8100');
+const ONTOLOGY_TOKEN = process.env.ONTOLOGY_API_TOKEN || '';
+
+function proxyOntology(req, res, ontologyPath) {
+  const qs = req.url.includes('?') ? '?' + req.url.split('?').slice(1).join('?') : '';
+  const options = {
+    hostname: ONTOLOGY_HOST,
+    port: ONTOLOGY_PORT,
+    path: ontologyPath + qs,
+    method: req.method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Speaker-Id': req.headers['x-speaker-id'] || 'marco',
+      'Authorization': 'Bearer ' + ONTOLOGY_TOKEN,
+    },
+  };
+  const proxyReq = http.request(options, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode, {
+      'Content-Type': proxyRes.headers['content-type'] || 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    proxyRes.pipe(res);
+  });
+  proxyReq.on('error', (e) => {
+    res.writeHead(502, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Ontology proxy error', detail: e.message }));
+  });
+  if (req.method === 'POST' || req.method === 'PATCH') {
+    req.pipe(proxyReq);
+  } else {
+    proxyReq.end();
+  }
+}
+
 const fs = require('fs');
 const path = require('path');
 
@@ -35,6 +72,19 @@ function serve(res, filePath, fallback) {
 
 http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split('?')[0]);
+
+
+  // Ontology API proxy
+  if (url.startsWith('/api/ontology/')) {
+    const ontologyPath = url.replace('/api/ontology', '');
+    return proxyOntology(req, res, ontologyPath);
+  }
+
+  // CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, X-Speaker-Id, Authorization' });
+    return res.end();
+  }
 
   if (url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
