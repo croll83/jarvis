@@ -1,6 +1,6 @@
 """
 JARVIS Device API
-- Endpoints per AtomS3R: config, heartbeat
+- Endpoints per voice devices (AtomS3R, NabuVoice): config, heartbeat
 - Auto-discovery di nuovi device
 - Gestione configurazione dinamica
 """
@@ -40,14 +40,14 @@ class HeartbeatResponse(BaseModel):
 
 
 # ===========================================================================
-# ENDPOINTS PER ATOMS3R
+# ENDPOINTS PER VOICE DEVICES
 # ===========================================================================
 
 @router.get("/device/config", response_model=DeviceConfigResponse)
 @router.get("/device_config", response_model=DeviceConfigResponse, include_in_schema=False)
 async def get_device_config(device_id: str, request: Request):
     """
-    Endpoint chiamato dall'AtomS3R al boot per ottenere la sua configurazione.
+    Endpoint chiamato dal voice device al boot per ottenere la sua configurazione.
 
     Se il device è sconosciuto, viene registrato automaticamente per auto-discovery
     e ritorna status="unknown" con friendly_name=null.
@@ -108,7 +108,7 @@ async def get_device_config(device_id: str, request: Request):
 @router.post("/heartbeat", response_model=HeartbeatResponse, include_in_schema=False)
 async def device_heartbeat(data: HeartbeatRequest, request: Request):
     """
-    Heartbeat periodico dall'AtomS3R (ogni 5 minuti).
+    Heartbeat periodico dal voice device (ogni 5 minuti).
 
     Aggiorna last_seen_at e ritorna la configurazione corrente.
     Permette al device di ricevere aggiornamenti senza reboot.
@@ -196,5 +196,6 @@ def get_device_speaker_config(device_id: str) -> Optional[dict]:
         "speaker_volume": device.speaker_volume,
         "location_id": device.location_id,
         "enabled": device.enabled,
-        "friendly_name": device.friendly_name
+        "friendly_name": device.friendly_name,
+        "device_type": device.device_type
     }

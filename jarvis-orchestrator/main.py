@@ -88,7 +88,7 @@ class _QuietDevicePollingFilter(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_QuietDevicePollingFilter())
 
-# Tracking stato "speaking" per room (per notificare AtomS3R)
+# Tracking stato "speaking" per room (per notificare voice devices)
 # Struttura: {"salotto": {"speaking": True, "started_at": timestamp, "device_id": "..."}}
 speaking_state: dict = {}
 speaking_state_lock = asyncio.Lock()
@@ -731,7 +731,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Jarvis Core Orchestrator", lifespan=lifespan)
 
 # ===========================================================================
-# DEVICE AUTH MIDDLEWARE (Bearer token per AtomS3R e altri device firmware)
+# DEVICE AUTH MIDDLEWARE (Bearer token per voice devices e altri firmware)
 # ===========================================================================
 # Protegge gli endpoint usati dal firmware. Se DEVICE_API_TOKEN è vuoto,
 # l'autenticazione è disabilitata (retrocompatibilità).
@@ -950,7 +950,7 @@ def get_confidence_thresholds() -> tuple[float, float]:
 
 
 # ===========================================================================
-# HELPER: Speaking State (per AtomS3R)
+# HELPER: Speaking State (per voice devices)
 # ===========================================================================
 
 async def set_speaking_state(room: str, speaking: bool, device_id: str = None):
@@ -1422,18 +1422,20 @@ async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
         return
 
     # 4. Save chat message (with locked speaker identity)
-    save_chat_message("user", text, "AtomS3R", session.user_id, session.speaker_name)
+    _device_cfg = get_device_speaker_config(device_id)
+    _device_type = _device_cfg.get("device_type", "AtomS3R") if _device_cfg else "AtomS3R"
+    save_chat_message("user", text, _device_type, session.user_id, session.speaker_name)
 
     # 5. Forward to OpenClaw (no routing, direct)
     context = {
-        "source": "AtomS3R",
+        "source": _device_type,
         "room": session.room,
         "device_id": device_id,
         "location": session.location_id,
         "speaker_id": session.user_id,
         "speaker_name": session.speaker_name,
         "speaker_identified": session.user_id is not None,
-        "device_config": get_device_speaker_config(device_id),
+        "device_config": _device_cfg,
     }
 
     # Build streaming TTS callback
@@ -1686,15 +1688,21 @@ def cancel_pending_tts_task(device_id: str):
 def extract_location_from_device(device_id: str) -> Optional[str]:
     """
     Estrae location da device_id.
-    atoms3r_wagmi_salotto -> wagmi
-    atoms3r_albani_camera -> albani
+    1. Prima cerca nel DB voice_devices (path principale per NabuVoice e device configurati)
+    2. Fallback: parsing legacy atoms3r_wagmi_salotto -> wagmi
     """
     if not device_id:
         return None
+
+    # Path principale: DB lookup
+    device_config = get_device_speaker_config(device_id.upper().strip())
+    if device_config and device_config.get("location_id"):
+        return device_config["location_id"]
+
+    # Fallback legacy: atoms3r_location_room format
     parts = device_id.lower().split('_')
     if len(parts) >= 2:
         potential_location = parts[1]
-        # Verifica che sia una location valida
         loc = get_location(potential_location)
         if loc:
             return potential_location
@@ -1821,7 +1829,7 @@ def build_speaker_context(audio_bytes: Optional[bytes], source: str, explicit_sp
                 "identification_method": "explicit"
             }
 
-    if audio_bytes and source == "AtomS3R":
+    if audio_bytes and source in config.VOICE_SOURCES:
         return get_speaker_context(audio_bytes)
 
     # Fallback
@@ -2138,7 +2146,7 @@ def _extract_openclaw_response(data: dict) -> str:
 
 @app.post("/voice_command")
 async def voice_command(request: Request):
-    """Riceve audio raw dagli AtomS3R, processa e risponde."""
+    """Riceve audio raw dai voice devices, processa e risponde."""
     data = await request.json()
     audio_bytes = None
     text = None
@@ -2231,7 +2239,7 @@ async def health_services():
 @app.get("/device_status")
 async def get_device_status(device_id: str = None, room: str = None):
     """
-    Endpoint per AtomS3R per sapere se JARVIS sta parlando.
+    Endpoint per voice devices per sapere se JARVIS sta parlando.
     """
     # Pulisci stati vecchi (timeout 30 secondi)
     async with speaking_state_lock:
@@ -2266,7 +2274,7 @@ async def get_device_status(device_id: str = None, room: str = None):
 @app.post("/device_status")
 async def update_device_status(request: Request):
     """
-    Endpoint per AtomS3R per notificare il proprio stato DND.
+    Endpoint per voice devices per notificare il proprio stato DND.
     Riproduce feedback sonoro sullo speaker associato al device.
 
     Usa la configurazione dal database (voice_devices) per determinare
@@ -2359,7 +2367,7 @@ async def api_connected_devices():
 @app.post("/speaker/suppress")
 async def speaker_suppress_endpoint(request: Request):
     """
-    Endpoint chiamato dall'AtomS3R appena rileva la wake word.
+    Endpoint chiamato dal voice device appena rileva la wake word.
     Abbassa il volume dello speaker Echo associato al device al 10%.
 
     Flusso:
@@ -2614,7 +2622,7 @@ async def get_room_temperature(room: str, location_id: str = None):
 @app.websocket("/ws/audio")
 async def ws_audio(websocket: WebSocket):
     """
-    Persistent WebSocket for AtomS3R devices: control + audio on single channel.
+    Persistent WebSocket for voice devices (AtomS3R, NabuVoice): control + audio on single channel.
 
     Protocol:
       - Device connects and stays connected (persistent)
@@ -2728,9 +2736,10 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
 
         # Lancia STT, Speaker ID e Restore concorrentemente
         stt_task = _aio.ensure_future(transcribe_audio(clean_audio))
+        _ws_device_type = device_config.get("device_type", "AtomS3R") if device_config else "AtomS3R"
         speaker_task = loop.run_in_executor(
             None,  # default ThreadPoolExecutor
-            build_speaker_context, audio_bytes, "AtomS3R"
+            build_speaker_context, audio_bytes, _ws_device_type
         )
         restore_task = _aio.ensure_future(restore_speaker(device_id))
 
@@ -2769,7 +2778,7 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         admin_metrics.record_speaker_id(speaker_elapsed)
 
         context = {
-            "source": "AtomS3R",
+            "source": _ws_device_type,
             "room": room_value,
             "mic_id": device_id,
             "device_id": device_id,
@@ -2820,7 +2829,7 @@ async def voice_stream(
     audio: UploadFile = File(None)
 ):
     """
-    Riceve audio in streaming dagli AtomS3R.
+    Riceve audio in streaming dai voice devices.
     Supporta sia multipart/form-data streaming che JSON legacy.
 
     Il device_id è il MAC address del dispositivo (formato AABBCCDDEEFF).
@@ -2930,12 +2939,13 @@ async def voice_stream(
         text = await normalize_stt_text(text)
 
         # Speaker identification
+        source_type = "VirtualMic" if is_virtual_mic else (device_config.get("device_type", "AtomS3R") if device_config else "AtomS3R")
         speaker_start = time.time()
-        speaker_ctx = build_speaker_context(audio_bytes, "AtomS3R")
+        speaker_ctx = build_speaker_context(audio_bytes, source_type)
         admin_metrics.record_speaker_id((time.time() - speaker_start) * 1000)
 
         context = {
-            "source": "VirtualMic" if is_virtual_mic else "AtomS3R",
+            "source": source_type,
             "room": room_value,
             "mic_id": mic_id_value or device_id_value or "unknown",
             "device_id": device_id_value or mic_id_value or "unknown",
@@ -3020,7 +3030,7 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     """
     Handle voice commands that need OpenClaw (non-certain domotics or general queries).
 
-    For AtomS3R/VirtualMic sources: uses streaming TTS — sentences are spoken as they
+    For voice device sources: uses streaming TTS — sentences are spoken as they
     arrive from OpenClaw SSE, without waiting for the full response. This dramatically
     reduces perceived latency.
 
@@ -3071,7 +3081,7 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     use_internal_speaker = device_cfg.get("use_internal_speaker", False) if device_cfg else False
 
     use_streaming_tts = (
-        source in ("AtomS3R", "VirtualMic")
+        source in config.VOICE_SOURCES
         and (use_internal_speaker or (not dnd_mode and not is_silent_time))
     )
 
@@ -3148,7 +3158,7 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
         # Speaking state + post-TTS handler
         room = context.get("room", "salotto").lower()
         device_id = context.get("device_id", "unknown")
-        is_multi_turn = _needs_followup(response) and source == "AtomS3R"
+        is_multi_turn = _needs_followup(response) and source in config.VOICE_SOURCES and source != "VirtualMic"
 
         if use_internal_speaker and device_id and device_id != "unknown":
             # Internal speaker: niente polling HA, gestione diretta
@@ -3213,7 +3223,7 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
     else:
         # ── Non-streaming path (Telegram, DND, silent hours, no speaker) ──
         # Feedback audio immediato (solo se voice source con speaker)
-        if source in ("AtomS3R", "VirtualMic"):
+        if source in config.VOICE_SOURCES:
             device_cfg = context.get("device_config")
             if device_cfg:
                 fb_speaker = device_cfg.get("output_speaker")
@@ -3732,7 +3742,7 @@ async def process_jarvis_logic(text: str, context: dict):
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context)
             # Multi-turn: override post-TTS handler with multi-turn=True for clarification
-            if source in ("AtomS3R", "VirtualMic"):
+            if source in config.VOICE_SOURCES:
                 cl_device_id = context.get("device_id")
                 cl_device_cfg = context.get("device_config")
                 if cl_device_id and cl_device_cfg:
@@ -3752,7 +3762,7 @@ async def process_jarvis_logic(text: str, context: dict):
             return
 
         # L1-L4 security check (domain-level, come entity_bulk)
-        source_channel = "voice" if source in ("AtomS3R", "VirtualMic") else source.lower()
+        source_channel = "voice" if source in config.VOICE_SOURCES else source.lower()
         # Per security check usiamo il primo entity_id; domain potrebbe essere None per multi-domain
         sec_domain = (domain or target["entity_ids"][0].split(".")[0]) if target["entity_ids"] else "light"
         allowed, sec_reason, domain_level, channel_max = check_security(
@@ -3854,12 +3864,12 @@ async def process_jarvis_logic(text: str, context: dict):
 
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
 
-            # Quick feedback: suono breve per comandi vocali (AtomS3R + VirtualMic)
+            # Quick feedback: suono breve per comandi vocali (voice devices)
             # Solo Telegram riceve TTS completo, o in caso di errore
             quick_feedback_enabled = get_global_preference("ha_quick_feedback", "True") == "True"
             device_cfg = context.get("device_config")
             use_internal_speaker = device_cfg.get("use_internal_speaker", False) if device_cfg else False
-            if source in ("AtomS3R", "VirtualMic") and quick_feedback_enabled:
+            if source in config.VOICE_SOURCES and quick_feedback_enabled:
                 # VirtualMic: manda testo alla dashboard (no TTS)
                 if source == "VirtualMic":
                     vmic_req_id = context.get("vmic_request_id")
@@ -3887,7 +3897,7 @@ async def process_jarvis_logic(text: str, context: dict):
                             pass
                         logger.info(f"VirtualMic HOME_CONTROL response stored for {vmic_req_id} (no TTS)")
                 else:
-                    # AtomS3R: feedback rapido
+                    # Voice device: feedback rapido
                     device_id = context.get("device_id", "unknown")
                     if use_internal_speaker and device_id != "unknown":
                         # Speaker interno: breve TTS via Opus streaming
@@ -4189,7 +4199,7 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
     1. Speaker principale configurato (output_speaker)
     2. Speaker fallback configurato (fallback_speaker)
     3. Telegram utente (se fallback_telegram=True e utente ha Telegram)
-    4. Speaker locale AtomS3R (se fallback_local_speaker=True)
+    4. Speaker locale voice device (se fallback_local_speaker=True)
 
     Args:
         text: Testo della risposta
@@ -4238,7 +4248,7 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
         await _immediate_tts_done()
         return
 
-    # === FALLBACK CHAIN per AtomS3R ===
+    # === FALLBACK CHAIN per voice devices ===
 
     # Determina target speaker usando la fallback chain
     target_player = None
@@ -4262,7 +4272,7 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
                     logger.info(f"Audio delivered to internal speaker: {dev_id} ({duration:.1f}s)")
                     await asyncio.sleep(0.15)  # flush DMA buffer
                     # Multi-turn: se la risposta finisce con ?, riapri ascolto
-                    if _needs_followup(text) and source == "AtomS3R":
+                    if _needs_followup(text) and source in config.VOICE_SOURCES and source != "VirtualMic":
                         await trigger_device_listen(dev_id, silent=True)
                         logger.info(f"🔄 Multi-turn (internal speaker fallback): triggered listen on {dev_id}")
                     else:
@@ -4294,10 +4304,10 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
                 target_player = f"telegram:{user.telegram_id}"
                 logger.info(f"Audio delivered to Telegram user: {user.name}")
 
-        # 4. Speaker locale AtomS3R (ultimo fallback)
+        # 4. Speaker locale voice device (ultimo fallback)
         if not target_player and fallback_local:
             use_local_speaker = True
-            logger.info("All speakers failed, falling back to local AtomS3R speaker")
+            logger.info("All speakers failed, falling back to local device speaker")
 
     else:
         # Legacy mode - usa room_speakers mapping
@@ -4307,7 +4317,7 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
         else:
             target_player = config.DEFAULT_FALLBACK_SPEAKER
 
-        # Setta stato SPEAKING prima di parlare (per notificare AtomS3R)
+        # Setta stato SPEAKING prima di parlare (per notificare voice devices)
         device_id = context.get("device_id", "unknown")
         await set_speaking_state(room, True, device_id)
 

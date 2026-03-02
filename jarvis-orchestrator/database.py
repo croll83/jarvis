@@ -329,7 +329,7 @@ def init_db():
         created_at REAL DEFAULT (strftime('%s', 'now'))
     )''')
 
-    # 18. VOICE DEVICES (configurazione AtomS3R)
+    # 18. VOICE DEVICES (configurazione voice devices: AtomS3R, NabuVoice, etc.)
     c.execute('''CREATE TABLE IF NOT EXISTS voice_devices (
         device_id TEXT PRIMARY KEY,
         friendly_name TEXT,
@@ -346,7 +346,8 @@ def init_db():
         ip_address TEXT,
         notes TEXT,
         wake_word_sensitivity REAL DEFAULT 0.85,
-        speaker_volume INTEGER DEFAULT 80
+        speaker_volume INTEGER DEFAULT 80,
+        device_type TEXT DEFAULT 'AtomS3R'
     )''')
 
     # Migration: add wake_word_sensitivity column for existing DBs
@@ -364,6 +365,12 @@ def init_db():
     # Migration: add speaker_volume column for existing DBs
     try:
         c.execute("ALTER TABLE voice_devices ADD COLUMN speaker_volume INTEGER DEFAULT 80")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Migration: add device_type column for existing DBs (NabuVoice support)
+    try:
+        c.execute("ALTER TABLE voice_devices ADD COLUMN device_type TEXT DEFAULT 'AtomS3R'")
     except sqlite3.OperationalError:
         pass  # Column already exists
 
@@ -2860,7 +2867,7 @@ def get_all_cameras(location_id: str) -> Dict[str, List[str]]:
 
 
 # ===========================================================================
-# VOICE DEVICES (configurazione AtomS3R)
+# VOICE DEVICES (configurazione voice devices: AtomS3R, NabuVoice, etc.)
 # ===========================================================================
 
 @dataclass
@@ -2881,6 +2888,7 @@ class VoiceDevice:
     wake_word_sensitivity: float = 0.85
     use_internal_speaker: bool = False
     speaker_volume: int = 80
+    device_type: str = "AtomS3R"
 
     @property
     def is_configured(self) -> bool:
@@ -2935,7 +2943,8 @@ def _row_to_voice_device(row) -> VoiceDevice:
         notes=row['notes'],
         wake_word_sensitivity=row['wake_word_sensitivity'] if 'wake_word_sensitivity' in row.keys() else 0.85,
         use_internal_speaker=bool(row['use_internal_speaker']) if 'use_internal_speaker' in row.keys() else False,
-        speaker_volume=row['speaker_volume'] if 'speaker_volume' in row.keys() else 80
+        speaker_volume=row['speaker_volume'] if 'speaker_volume' in row.keys() else 80,
+        device_type=row['device_type'] if 'device_type' in row.keys() else "AtomS3R"
     )
 
 

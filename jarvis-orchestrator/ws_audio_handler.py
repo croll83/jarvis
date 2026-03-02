@@ -1,5 +1,5 @@
 """
-WebSocket Audio Handler -- Persistent bidirectional WebSocket for AtomS3R devices.
+WebSocket Audio Handler -- Persistent bidirectional WebSocket for voice devices (AtomS3R, NabuVoice, etc.).
 
 Protocol (unified: control + audio on a single persistent connection):
   1. Device connects: ws://.../ws/audio?device_id=...&token=...
@@ -339,7 +339,7 @@ class WsAudioSession:
 # ---------------------------------------------------------------------------
 class PersistentDeviceConnection:
     """
-    Represents a persistent WebSocket connection to one AtomS3R device.
+    Represents a persistent WebSocket connection to one voice device (AtomS3R, NabuVoice, etc.).
     Manages the lifecycle of multiple audio sessions over a single connection.
     """
 
@@ -352,6 +352,7 @@ class PersistentDeviceConnection:
         self.last_state_at: Optional[float] = None
         self.last_pong_at: Optional[float] = None
         self.firmware_version: Optional[str] = None
+        self.device_type: str = "AtomS3R"  # Determined from hello message firmware version
         self.audio_session: Optional[WsAudioSession] = None
         self._last_session_ended_at: float = 0.0  # cooldown per stray frames post-session
         self._closed = False
@@ -602,7 +603,13 @@ async def ws_audio_endpoint(
                         # Device announces persistent mode
                         is_persistent = True
                         conn.firmware_version = ctrl.get("fw", "unknown")
-                        logger.info(f"Device {device_id}: persistent mode (fw={conn.firmware_version})")
+                        # Determine device_type from firmware version string
+                        fw_lower = conn.firmware_version.lower()
+                        if "voicepe" in fw_lower or "nabuvoice" in fw_lower:
+                            conn.device_type = "NabuVoice"
+                        else:
+                            conn.device_type = "AtomS3R"
+                        logger.info(f"Device {device_id}: persistent mode (fw={conn.firmware_version}, type={conn.device_type})")
 
                         # Device reconnected — clean up stale live session if any
                         try:
@@ -700,6 +707,14 @@ async def ws_audio_endpoint(
                         conn.last_state = state
                         conn.last_state_at = time.time()
                         logger.debug(f"Device {device_id} state: {state}")
+
+                    elif msg_type == "volume_change":
+                        direction = ctrl.get("direction", "up")
+                        logger.info(f"Device {device_id}: volume_change {direction}")
+                        try:
+                            await _handle_volume_change(device_id, direction)
+                        except Exception as e:
+                            logger.error(f"volume_change failed for {device_id}: {e}")
 
                     elif msg_type == "pong":
                         conn.last_pong_at = time.time()
@@ -912,6 +927,43 @@ async def push_config_to_device(device_id: str, config: dict) -> bool:
     if result:
         logger.info(f"push_config_to_device({device_id}): {config}")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Volume change handler (NabuVoice rotary encoder)
+# ---------------------------------------------------------------------------
+
+async def _handle_volume_change(device_id: str, direction: str):
+    """Handle volume_change from NabuVoice rotary encoder → adjust Echo speaker."""
+    from device_api import get_device_speaker_config
+    from multi_ha import multi_ha
+
+    device_config = get_device_speaker_config(device_id)
+    if not device_config:
+        logger.warning(f"volume_change: device {device_id} not configured")
+        return
+
+    location_id = device_config.get("location_id")
+    output_speaker = device_config.get("output_speaker")
+    if not output_speaker or not location_id:
+        logger.warning(f"volume_change: no speaker configured for {device_id}")
+        return
+
+    # Fetch current volume
+    states = await multi_ha.get_states_bulk(location_id, [output_speaker])
+    speaker_state = states.get(output_speaker, {})
+    current_vol = speaker_state.get("attributes", {}).get("volume_level", 0.3)
+
+    # Step 5%
+    step = 0.05
+    new_vol = current_vol + step if direction == "up" else current_vol - step
+    new_vol = max(0.0, min(1.0, new_vol))
+
+    await multi_ha.call_service(
+        location_id, "media_player", "volume_set",
+        {"entity_id": output_speaker, "volume_level": new_vol}
+    )
+    logger.info(f"volume_change: {output_speaker} {current_vol:.2f} → {new_vol:.2f}")
 
 
 # ---------------------------------------------------------------------------

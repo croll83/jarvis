@@ -1,7 +1,7 @@
 """jarvis-wakeword-server — FastAPI + WebSocket handler.
 
-Receives continuous Opus audio from AtomS3R devices, runs openWakeWord
-detection, and relays audio sessions to the orchestrator VPS on wake.
+Receives continuous Opus audio from voice devices (AtomS3R, NabuVoice),
+runs openWakeWord detection, and relays audio sessions to the orchestrator VPS on wake.
 """
 
 import asyncio
@@ -81,6 +81,7 @@ class DeviceConnection:
         self.ws = ws
         self.state = DeviceState.IDLE
         self.firmware_version: str = "unknown"
+        self.device_type: str = "unknown"  # Determined from hello message fw string
         self.live_session: bool = False  # True during live session
         self._ws_write_lock = asyncio.Lock()  # Serializza write verso device
 
@@ -206,7 +207,13 @@ async def _handle_text(conn: DeviceConnection, raw: str):
 
     if msg_type == "hello":
         conn.firmware_version = msg.get("fw", "unknown")
-        logger.info(f"[{conn.device_id}] Hello (fw={conn.firmware_version})")
+        # Determine device type from firmware version string
+        fw_lower = conn.firmware_version.lower()
+        if "voicepe" in fw_lower or "nabuvoice" in fw_lower:
+            conn.device_type = "NabuVoice"
+        else:
+            conn.device_type = "AtomS3R"
+        logger.info(f"[{conn.device_id}] Hello (fw={conn.firmware_version}, type={conn.device_type})")
         # Send welcome
         await conn.send_json({"type": "welcome",
                               "server_time": int(time.time())})
@@ -252,6 +259,12 @@ async def _handle_text(conn: DeviceConnection, raw: str):
         conn.state = DeviceState.IDLE
         conn.wakeword.reset()
         await conn.close_relay()
+
+    elif msg_type == "volume_change":
+        # Relay volume change to orchestrator (NabuVoice rotary encoder)
+        if conn.relay and conn.relay.is_connected:
+            await conn.relay.send_text(raw)
+        logger.debug(f"[{conn.device_id}] volume_change relayed")
 
     else:
         # Unknown message — relay if connected
@@ -447,6 +460,7 @@ async def list_devices():
                 "device_id": did,
                 "state": conn.state.value,
                 "firmware": conn.firmware_version,
+                "device_type": conn.device_type,
                 "threshold": conn.wakeword.threshold,
                 "relay_connected": conn.relay.is_connected if conn.relay else False,
             })
@@ -456,7 +470,7 @@ async def list_devices():
 # ---------------------------------------------------------------------------
 # HTTP Proxy: Device management calls → Orchestrator via Tailscale
 # ---------------------------------------------------------------------------
-# These endpoints allow AtomS3R devices to reach the orchestrator through
+# These endpoints allow voice devices (AtomS3R, NabuVoice) to reach the orchestrator through
 # the wakeword-server (LAN) instead of directly via the public internet.
 # Bearer tokens never leave the LAN + Tailscale encrypted tunnel.
 # ---------------------------------------------------------------------------

@@ -415,7 +415,7 @@ class VoiceRecognizer:
         """
         Aggiunge un campione di enrollment da una sessione audio live.
 
-        Pensato per auto-enrollment dall'AtomS3R: ogni volta che l'utente parla
+        Pensato per auto-enrollment dal voice device: ogni volta che l'utente parla
         durante un enrollment in corso, l'audio della sessione viene usato come
         campione. Skippa audio troppo corto (< 0.5s). Auto-completa quando
         raggiunge MIN_ENROLLMENT_SAMPLES.

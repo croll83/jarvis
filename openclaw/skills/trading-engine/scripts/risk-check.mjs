@@ -42,8 +42,12 @@ const getArg = (name, def) => {
   return idx >= 0 && args[idx + 1] ? args[idx + 1] : def;
 };
 
+function normalizeCoin(c) {
+  return c ? c.replace(/-PERP$/i, '') : c;
+}
+
 async function main() {
-  const coin = getArg('coin', null);
+  const coin = normalizeCoin(getArg('coin', null));
   const direction = getArg('direction', null);
   const size = parseFloat(getArg('size', '0'));
   const leverage = parseInt(getArg('leverage', '1'));
@@ -97,17 +101,30 @@ async function main() {
   }
 
   // 4. Margin usage check
-  const price = await hl.getPrice(coin);
-  const notional = size * price;
-  const newMargin = notional / leverage;
-  const newMarginPct = ((marginUsed + newMargin) / equity * 100).toFixed(1);
   const strategyLower = (strategy || '').toLowerCase();
   const marginLimit = STRATEGY_MARGIN_LIMITS[strategyLower] || DEFAULT_MARGIN_LIMIT;
-  if (parseFloat(newMarginPct) > marginLimit) {
-    checks.push({ check: 'margin', status: 'block', msg: `Margin usage would reach ${newMarginPct}% (>${marginLimit}% limit for ${strategy}).` });
+  const currentMarginPct = equity > 0 ? (marginUsed / equity * 100) : 100;
+
+  // Block immediately if current margin already exceeds limit
+  if (currentMarginPct >= marginLimit) {
+    checks.push({ check: 'margin', status: 'block', msg: `Current margin already at ${currentMarginPct.toFixed(1)}% (>=${marginLimit}% limit for ${strategy}). No room for new trades.` });
     approved = false;
   } else {
-    checks.push({ check: 'margin', status: 'ok', msg: `Margin usage: ${newMarginPct}% after trade (limit: ${marginLimit}% for ${strategy}).` });
+    const price = await hl.getPrice(coin);
+    if (!price || isNaN(price)) {
+      checks.push({ check: 'margin', status: 'block', msg: `Could not fetch price for ${coin} — cannot calculate margin. Blocking trade.` });
+      approved = false;
+    } else {
+      const notional = size * price;
+      const newMargin = notional / leverage;
+      const newMarginPct = ((marginUsed + newMargin) / equity * 100).toFixed(1);
+      if (parseFloat(newMarginPct) > marginLimit) {
+        checks.push({ check: 'margin', status: 'block', msg: `Margin usage would reach ${newMarginPct}% (>${marginLimit}% limit for ${strategy}).` });
+        approved = false;
+      } else {
+        checks.push({ check: 'margin', status: 'ok', msg: `Margin usage: ${newMarginPct}% after trade (limit: ${marginLimit}% for ${strategy}).` });
+      }
+    }
   }
 
   // 5. BTC crash detection
@@ -135,7 +152,7 @@ async function main() {
     size,
     leverage,
     strategy,
-    notional: notional.toFixed(2),
+    currentMarginPct: currentMarginPct.toFixed(1),
     approved,
     checks,
   };
