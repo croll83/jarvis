@@ -2822,10 +2822,10 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         classification = pre_result.get("classification", "ALTRO")
         logger.info(f"WS pre-route: {classification} (conf={pre_result.get('confidence', 0):.2f}, {pre_route_ms:.0f}ms)")
 
-        if classification == "SESSIONE_LIVE":
-            logger.info(f"🎙️ Live session activation (Qwen) from {device_id}: '{text}'")
-            await _activate_live_session(device_id, device_config, speaker_ctx, location, room_value)
-        elif classification == "DOMOTICA_CERTA":
+        # SESSIONE_LIVE è gestita solo dal keyword matching Python (sopra).
+        # Qwen non la emette più (rimossa dal prompt); se la emettesse,
+        # ai_engines.py la downgreda a ALTRO nel validation.
+        if classification == "DOMOTICA_CERTA":
             await process_jarvis_logic(text, context)
         elif classification == "DOMOTICA_INCERTA":
             await _handle_openclaw_voice(text, context, hint="domotics")

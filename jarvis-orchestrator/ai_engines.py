@@ -366,11 +366,8 @@ _PRE_ROUTE_SYSTEM = (
     "  DOMOTICA_CERTA   - il comando riguarda chiaramente la domotica "
     "(luci, tapparelle, clima, sensori, scene, stato della casa).\n"
     "  DOMOTICA_INCERTA - il comando potrebbe riguardare la domotica ma è ambiguo.\n"
-    "  SESSIONE_LIVE    - l'utente chiede di avviare/iniziare una sessione live "
-    "(conversazione continua senza dover ripetere la wake word). "
-    "Esempi: 'avvia una sessione live', 'inizia live session', 'attiva sessione live'.\n"
     "  ALTRO            - il comando NON riguarda la domotica "
-    "(ricerche web, domande generali, email, meteo, chat).\n"
+    "(ricerche web, domande generali, email, meteo, chat, conversazione).\n"
     "Formato risposta:\n"
     '{{"classification":"<CLASSE>","intent":"<breve descrizione>","confidence":<0.0-1.0>}}'
 )
@@ -423,7 +420,9 @@ async def pre_route(text: str) -> dict:
         }
 
     classification = parsed.get("classification", "ALTRO")
-    if classification not in ("DOMOTICA_CERTA", "DOMOTICA_INCERTA", "SESSIONE_LIVE", "ALTRO"):
+    # SESSIONE_LIVE rimossa dal prompt Qwen — gestita solo da keyword matching Python.
+    # Se Qwen la emette comunque (hallucination), downgrade a ALTRO.
+    if classification not in ("DOMOTICA_CERTA", "DOMOTICA_INCERTA", "ALTRO"):
         classification = "ALTRO"
 
     return {
