@@ -3878,6 +3878,8 @@ async def process_jarvis_logic(text: str, context: dict):
             # Quick feedback: suono breve per comandi vocali (AtomS3R + VirtualMic)
             # Solo Telegram riceve TTS completo, o in caso di errore
             quick_feedback_enabled = get_global_preference("ha_quick_feedback", "True") == "True"
+            device_cfg = context.get("device_config")
+            use_internal_speaker = device_cfg.get("use_internal_speaker", False) if device_cfg else False
             if source in ("AtomS3R", "VirtualMic") and quick_feedback_enabled:
                 # VirtualMic: manda testo alla dashboard (no TTS)
                 if source == "VirtualMic":
