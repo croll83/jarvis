@@ -1067,13 +1067,19 @@ _LIVE_SESSION_DEACTIVATE_KEYWORDS = [
 ]
 
 
+def _normalize_words(text: str) -> set:
+    """Estrae parole da testo strippando punteggiatura (Whisper aggiunge '....' ecc.)."""
+    import re as _re
+    return set(_re.sub(r"[^\w\s]", "", text.lower()).split())
+
+
 def _is_live_session_activation(text: str) -> bool:
     """Check if transcribed text is a live session activation command.
 
     Matches when text contains an activation verb AND a keyword set.
     E.g.: 'avvia una sessione live' → verb 'avvia' + keywords {'sessione', 'live'} → True
     """
-    words = set(text.lower().split())
+    words = _normalize_words(text)
     has_verb = bool(words & _LIVE_SESSION_ACTIVATE_VERBS)
     has_keywords = any(kw_set <= words for kw_set in _LIVE_SESSION_ACTIVATE_KEYWORDS)
     return has_verb and has_keywords
@@ -1081,7 +1087,7 @@ def _is_live_session_activation(text: str) -> bool:
 
 def _is_live_session_deactivation(text: str) -> bool:
     """Check if transcribed text is a live session deactivation command."""
-    words = set(text.lower().split())
+    words = _normalize_words(text)
     return any(kw_set <= words for kw_set in _LIVE_SESSION_DEACTIVATE_KEYWORDS)
 
 
