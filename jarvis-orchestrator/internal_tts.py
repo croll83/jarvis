@@ -427,16 +427,19 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
     text = await _preprocess_tts_text_llm(text)
 
     # Costruisci URL e payload in base all'engine
+    # XTTS /tts_stream è un endpoint GET con query params (POST → 405)
+    # Kokoro /v1/audio/speech è POST con JSON body
     if engine == "xtts":
         url = f"{_cfg.XTTS_URL}/tts_stream/"
-        payload = {
+        xtts_params = {
             "text": text,
             "speaker_wav": _cfg.XTTS_SPEAKER,
             "language": _cfg.XTTS_LANGUAGE,
-            "add_wav_header": False,
         }
+        payload = None
     else:
         url = f"{_cfg.KOKORO_TTS_URL}/v1/audio/speech"
+        xtts_params = None
         payload = {
             "model": "kokoro",
             "voice": _cfg.KOKORO_TTS_VOICE,
@@ -462,7 +465,11 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
     try:
         timeout = aiohttp.ClientTimeout(total=120)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(url, json=payload) as resp:
+            # XTTS: GET con query params; Kokoro: POST con JSON body
+            resp_ctx = (session.get(url, params=xtts_params)
+                        if engine == "xtts"
+                        else session.post(url, json=payload))
+            async with resp_ctx as resp:
                 if resp.status != 200:
                     body = await resp.text()
                     logger.error(f"TTS stream ({engine}) error (HTTP {resp.status}): {body[:200]}")
