@@ -1,6 +1,6 @@
 """
 JARVIS Speaker Suppress Module
-- Abbassa il volume di TUTTI i media_player nella stanza dell'AtomS3R quando viene rilevata la wake word
+- Abbassa il volume di TUTTI i media_player nella stanza del voice device quando viene rilevata la wake word
 - Ripristina i volumi originali dopo lo STT (o dopo un safety timeout)
 - Evita di toccare speaker che non stanno riproducendo nulla
 - Lock per-device per gestire concorrenza
@@ -23,7 +23,7 @@ SUPPRESS_VOLUME = 0.10
 SAFETY_TIMEOUT_SECONDS = 30
 
 # Stati interni dei device soppressi
-# Chiave: device_id dell'AtomS3R
+# Chiave: device_id del voice device
 # Valore: dict con lista di speaker soppressi e info per il restore
 _suppressed_devices: Dict[str, dict] = {}
 
@@ -61,7 +61,7 @@ def _get_room_media_players(location_id: str, room_name: str) -> List[str]:
 
 async def suppress_speaker(device_id: str) -> dict:
     """
-    Abbassa il volume di TUTTI i media_player nella stanza dell'AtomS3R.
+    Abbassa il volume di TUTTI i media_player nella stanza del voice device.
 
     Flusso:
     1. Lookup device_id → room (friendly_name) + location_id
@@ -71,7 +71,7 @@ async def suppress_speaker(device_id: str) -> dict:
     5. Avvia safety timeout per auto-restore
 
     Args:
-        device_id: MAC address del device AtomS3R (formato AABBCCDDEEFF)
+        device_id: MAC address del voice device (formato AABBCCDDEEFF)
 
     Returns:
         dict con status e dettagli
@@ -185,10 +185,10 @@ async def suppress_speaker(device_id: str) -> dict:
 
 async def restore_speaker(device_id: str) -> dict:
     """
-    Ripristina il volume di tutti gli speaker soppressi per un device AtomS3R.
+    Ripristina il volume di tutti gli speaker soppressi per un voice device.
 
     Args:
-        device_id: MAC address del device AtomS3R
+        device_id: MAC address del voice device
 
     Returns:
         dict con status e dettagli

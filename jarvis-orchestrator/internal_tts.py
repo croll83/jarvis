@@ -1,5 +1,5 @@
 """
-Internal TTS Engine — XTTSv2/Kokoro + Opus streaming per speaker interno AtomS3R.
+Internal TTS Engine — XTTSv2/Kokoro + Opus streaming per speaker interno voice devices.
 
 Supporta due engine TTS selezionabili via TTS_ENGINE in config:
   - "xtts"  (XTTSv2 Coqui, GPU ~2.1 GB VRAM): deploy locale con voice cloning
@@ -32,7 +32,7 @@ logger = logging.getLogger("JARVIS_INTERNAL_TTS")
 # Opus encoder (lazy init)
 _opus_encoder = None
 
-# Costanti audio (devono matchare il firmware AtomS3R)
+# Costanti audio (devono matchare il firmware dei voice devices)
 SAMPLE_RATE = 16000
 TTS_SAMPLE_RATE = 24000   # Sia XTTS che Kokoro producono 24kHz
 OPUS_FRAME_SAMPLES = 320  # 20ms @ 16kHz

@@ -174,8 +174,8 @@ def should_require_approval(domain: str, action: str, source: str) -> bool:
     Determina se un'azione richiede approvazione manuale.
     Based on source channel trust level.
     """
-    # Voice commands from AtomS3R are trusted (speaker ID verified)
-    if source == "AtomS3R":
+    # Voice commands from voice devices are trusted (speaker ID verified)
+    if source in config.VOICE_SOURCES:
         return False
     
     # Telegram via OpenClaw — check critical domains
