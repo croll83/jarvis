@@ -7,14 +7,14 @@
 # - JARVIS Orchestrator: Skill — domotics, memory, speaker ID, security, TTS
 # - XTTSv2 (Coqui): TTS engine (voice cloning italiana, GPU accelerated)
 # - Qwen3.5 4B: Local pre-routing for domotics fast path + offline fallback
-# - Whisper large-v3-turbo: Speech-to-text (GPU, int8_float16, ~1 GB VRAM)
+# - Whisper large-v3-turbo: Speech-to-text (GPU, int8_float16, ~1.0 GB VRAM)
 # - Ollama: Hosts Qwen3.5 4B (num_ctx=3072) + nomic-embed-text
 #
 # VRAM BUDGET (RTX 5070 Laptop 8 GB, GPU dedicata — no display):
-#   Qwen3.5 4B (weights + KV 3072): ~3.5 GB
-#   XTTSv2 (PyTorch fp16):          ~3.2 GB
-#   Whisper large-v3-turbo (int8):   ~1.0 GB
-#   Totale:                          ~7.7 / 8.15 GB (~0.45 GB buffer CUDA)
+#   Ollama Qwen3.5 4B (weights + KV 3072):  ~3.9 GB  (misurato)
+#   XTTSv2 (PyTorch fp16):                  ~2.0 GB  (misurato)
+#   Whisper large-v3-turbo (int8_float16):   ~1.3 GB  (misurato, CTranslate2 4.7.1 + CUDA 12.9)
+#   Totale:                                  ~7.2 / 8.15 GB (~0.9 GB buffer CUDA)
 #
 # NOTA SU OPENCLAW:
 # OpenClaw NON e in questo compose — gira bare-metal su una VM dedicata
@@ -54,6 +54,7 @@ services:
       - OLLAMA_NUM_PARALLEL=2
       - OLLAMA_MAX_LOADED_MODELS=2
       - OLLAMA_NUM_CTX=3072            # Copre 2 location (~2280 tok) con margine, ~0.9 GB KV
+      - OLLAMA_KEEP_ALIVE=-1           # Mantiene i modelli in VRAM permanentemente
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     healthcheck:
@@ -64,17 +65,19 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
-  # SPEECH-TO-TEXT - faster-whisper (GPU accelerated)
+  # SPEECH-TO-TEXT - speaches (ex faster-whisper-server) + CTranslate2 4.7.x
+  # Image custom: CUDA 12.9 (Blackwell sm_120) + CTranslate2 int8_float16
+  # Modello nella request API: model=deepdml/faster-whisper-large-v3-turbo-ct2
   # ===========================================================================
   whisper:
-    image: fedirz/faster-whisper-server:latest-cuda
+    build: ./whisper-custom
+    image: jarvis/whisper-blackwell:latest
     container_name: jarvis_whisper
     ports:
       - "9000:8000"
     environment:
-      - WHISPER__MODEL=/models/faster-whisper-large-v3-turbo
-      - WHISPER__DEVICE=cuda
-      - WHISPER__COMPUTE_TYPE=auto              # Auto-detect (int8 non supportato su Blackwell/cuBLAS 12.2)
+      - WHISPER__INFERENCE_DEVICE=cuda
+      - WHISPER__COMPUTE_TYPE=int8_float16      # CTranslate2 >= 4.7.0 + CUDA 12.9 — INT8 su Blackwell (PR #1982)
       - WHISPER__TTL=-1                        # Mai scaricare il modello dalla VRAM
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
