@@ -75,6 +75,7 @@ services:
       - WHISPER__MODEL=/models/faster-whisper-large-v3-turbo
       - WHISPER__DEVICE=cuda
       - WHISPER__COMPUTE_TYPE=int8_float16    # Mixed precision: ~1 GB VRAM vs ~1.6 GB float16
+      - WHISPER__STT_MODEL_TTL=0              # Mai scaricare il modello dalla VRAM
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
