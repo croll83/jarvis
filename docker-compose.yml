@@ -75,7 +75,7 @@ services:
       - WHISPER__MODEL=/models/faster-whisper-large-v3-turbo
       - WHISPER__DEVICE=cuda
       - WHISPER__COMPUTE_TYPE=float16          # ~1.6 GB VRAM (int8 non supportato su Blackwell/cuBLAS 12.2)
-      - WHISPER__STT_MODEL_TTL=0              # Mai scaricare il modello dalla VRAM
+      - STT_MODEL_TTL=0                       # Mai scaricare il modello dalla VRAM
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
