@@ -877,6 +877,27 @@ async def get_persistent_connection_count() -> int:
         return len(_persistent_connections)
 
 
+async def notify_tts_start(device_id: str) -> bool:
+    """
+    Notify a device that TTS playback is about to start.
+    Device uses this to prepare internal speaker and start queuing Opus frames.
+    MUST be called before send_tts_frame() — otherwise device drops all frames.
+
+    Returns True if command was sent, False if device not connected.
+    """
+    device_id = device_id.upper().strip()
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id)
+
+    if not conn:
+        return False
+
+    result = await conn.send_command({"type": "tts_start"})
+    if result:
+        logger.info(f"notify_tts_start({device_id}): sent")
+    return result
+
+
 async def notify_tts_done(device_id: str) -> bool:
     """
     Notify a device that TTS playback is complete (response delivered).

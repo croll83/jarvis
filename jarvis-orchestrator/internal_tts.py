@@ -458,7 +458,7 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
     Returns:
         (success: bool, duration_seconds: float)
     """
-    from ws_audio_handler import send_tts_frame
+    from ws_audio_handler import send_tts_frame, notify_tts_start
 
     if not text or not text.strip():
         logger.warning("speak_to_device: testo vuoto, skip")
@@ -540,6 +540,11 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
                             frame_data = opus_buf[:frame_bytes]
                             opus_buf = opus_buf[frame_bytes:]
                             opus_frame = encoder.encode(frame_data, OPUS_FRAME_SAMPLES)
+                            # Send tts_start before the very first frame
+                            if frame_idx == 0:
+                                if not await notify_tts_start(device_id):
+                                    logger.error(f"speak_to_device: tts_start failed for {device_id}")
+                                    return False, 0.0
                             if not await send_tts_frame(device_id, opus_frame):
                                 logger.error(f"speak_to_device: send failed at frame {frame_idx}")
                                 return False, 0.0
