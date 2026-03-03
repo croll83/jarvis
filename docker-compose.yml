@@ -77,6 +77,13 @@ services:
       - WHISPER__COMPUTE_TYPE=int8_float16    # Mixed precision: ~1 GB VRAM vs ~1.6 GB float16
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
 
   # ===========================================================================
