@@ -34,6 +34,8 @@ from database import (
     get_entity_map, import_entity_map_json, export_entity_map_json,
     import_hierarchy_json, get_hierarchy_mapping,
     get_entity_map_stats, clear_entity_map, get_rooms_for_location,
+    get_entity_tree, update_entity_visibility,
+    save_visibility_snapshot, restore_visibility_snapshot,
     # Voice devices functions
     get_all_voice_devices, get_voice_device, upsert_voice_device,
     delete_voice_device, get_unconfigured_voice_devices,
@@ -1617,6 +1619,59 @@ async def get_entity_by_entity_id(location_id: str, entity_id: str) -> Dict[str,
 
 
 # ===========================================================================
+# ENTITY TREE & VISIBILITY
+# ===========================================================================
+
+class EntityVisibilityRequest(BaseModel):
+    """Request per aggiornare visibility di entity."""
+    entity_ids: List[int]
+    visible: bool
+
+
+@router.get("/locations/{location_id}/entity-tree")
+async def get_entity_tree_endpoint(location_id: str) -> Dict[str, Any]:
+    """
+    Ritorna lista flat di tutte le entity per costruire il tree view.
+    Ogni entity include id, zone, area, room, device_name, entity_type,
+    entity_name, entity_id, visible.
+    """
+    loc = get_location(location_id)
+    if not loc:
+        raise HTTPException(404, f"Location '{location_id}' non trovata")
+
+    entities = get_entity_tree(location_id)
+    stats = get_entity_map_stats(location_id)
+
+    return {
+        "location_id": location_id,
+        "entities": entities,
+        "stats": stats
+    }
+
+
+@router.patch("/locations/{location_id}/entity-visibility")
+async def patch_entity_visibility(
+    location_id: str,
+    req: EntityVisibilityRequest
+) -> Dict[str, Any]:
+    """
+    Aggiorna la visibility di un set di entity.
+    Body: {entity_ids: [1,2,3], visible: true/false}
+    """
+    loc = get_location(location_id)
+    if not loc:
+        raise HTTPException(404, f"Location '{location_id}' non trovata")
+
+    updated = update_entity_visibility(req.entity_ids, req.visible)
+
+    return {
+        "updated": updated,
+        "visible": req.visible,
+        "stats": get_entity_map_stats(location_id)
+    }
+
+
+# ===========================================================================
 # HOME ASSISTANT ENTITY SYNC
 # ===========================================================================
 
@@ -1681,12 +1736,15 @@ async def sync_entities_from_ha(
 
     req = request or HASyncRequest()
 
-    # Se overwrite è True, cancella tutto per un fresh import
+    # Snapshot visibility prima del clear (per preservare selezioni utente)
+    visibility_snapshot = None
     if req.overwrite_existing:
+        visibility_snapshot = save_visibility_snapshot(location_id)
         deleted = clear_entity_map(location_id)
         import logging
         logging.getLogger("JARVIS_HA_SYNC").info(
-            f"Cleared {deleted} existing entities for fresh sync"
+            f"Cleared {deleted} existing entities for fresh sync "
+            f"(visibility snapshot: {len(visibility_snapshot)} entries)"
         )
 
     added, updated, errors = await _sync(
@@ -1697,6 +1755,15 @@ async def sync_entities_from_ha(
         overwrite_existing=req.overwrite_existing
     )
 
+    # Ripristina visibility dallo snapshot
+    restored = 0
+    if visibility_snapshot:
+        restored = restore_visibility_snapshot(location_id, visibility_snapshot)
+        import logging
+        logging.getLogger("JARVIS_HA_SYNC").info(
+            f"Restored visibility for {restored} entities after re-sync"
+        )
+
     # Aggiorna entity_map_path per indicare che è importata da HA
     update_location(location_id, entity_map_path="[database]")
 
@@ -1705,6 +1772,7 @@ async def sync_entities_from_ha(
         "location_id": location_id,
         "added": added,
         "updated": updated,
+        "visibility_restored": restored,
         "errors": errors if errors else None
     }
 

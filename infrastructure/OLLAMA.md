@@ -4,7 +4,7 @@
 > automaticamente da Ansible (`jarvis.yml` + `setup.sh`). Questo file serve come
 > riferimento per la configurazione avanzata e il troubleshooting.
 
-Server LLM locale per JARVIS. Esegue Qwen 2.5 (routing e pre-routing) e
+Server LLM locale per JARVIS. Esegue Qwen3.5 4B (routing e pre-routing) e
 nomic-embed-text (embeddings) su GPU NVIDIA.
 
 ---
@@ -22,15 +22,21 @@ nomic-embed-text (embeddings) su GPU NVIDIA.
 
 ### Requisiti VRAM per modello
 
-| Modello | Dimensione disco | VRAM richiesta | Uso in JARVIS |
-|---------|-----------------|----------------|---------------|
-| `qwen2.5:7b-instruct-q4_K_M` | ~4.4 GB | ~4.4 GB | Routing (classificazione intent) e pre-routing |
-| `nomic-embed-text` | ~270 MB | ~270 MB | Embedding (vector store) |
+| Modello | Dimensione disco | VRAM misurata | Uso in JARVIS |
+|---------|-----------------|---------------|---------------|
+| `qwen3.5:4b` (ctx=3072) | ~3.4 GB | ~3.5 GB (weights + KV cache) | Routing (classificazione intent) e pre-routing |
+| `nomic-embed-text` | ~270 MB | ~270 MB | Embedding (vector store, on demand) |
 
-**Totale VRAM stimata** con tutti i modelli caricati + Whisper: ~6 GB.
+**VRAM Budget totale** (GPU dedicata, no display):
+- Qwen3.5 4B (ctx=3072): ~3.5 GB
+- XTTSv2 (PyTorch fp16): ~3.2 GB
+- Whisper large-v3-turbo (int8_float16): ~1.0 GB
+- **Totale: ~7.7 GB / 8.15 GB** (~0.45 GB buffer CUDA)
 
-> Con `OLLAMA_MAX_LOADED_MODELS=2`, Ollama tiene in VRAM solo 2 modelli alla volta.
-> Con l'architettura semplificata (qwen + nomic-embed-text), questo e' piu' che sufficiente.
+> La pipeline voce e' sequenziale (Whisper→Qwen→TTS): i modelli non fanno inference
+> contemporaneamente, quindi il buffer di 0.45 GB e' sufficiente per i tensor temp.
+> Con `OLLAMA_NUM_CTX=3072`, il KV cache di Qwen usa ~0.9 GB (vs ~1.3 GB a 4096).
+> Il routing prompt tipico e' ~1655 token (1 location), ~2280 token (2 location).
 
 ---
 
@@ -79,15 +85,15 @@ ollama:
 Ansible esegue `setup.sh` automaticamente. Per download manuale o re-pull:
 
 ```bash
-# Scarica Qwen 2.5 7B Instruct (routing + pre-routing)
-docker exec jarvis_ollama ollama pull qwen2.5:7b-instruct-q4_K_M
+# Scarica Qwen3.5 4B (routing + pre-routing)
+docker exec jarvis_ollama ollama pull qwen3.5:4b
 
 # Scarica nomic-embed-text (embedding per vector store)
 docker exec jarvis_ollama ollama pull nomic-embed-text
 
 # Warmup Qwen (carica in VRAM)
 curl -s http://localhost:11434/api/generate -d '{
-  "model": "qwen2.5:7b-instruct-q4_K_M",
+  "model": "qwen3.5:4b",
   "prompt": "ciao",
   "options": {"num_predict": 1}
 }' > /dev/null && echo "Qwen warmup OK"
@@ -106,7 +112,7 @@ curl http://localhost:11434/api/tags
 
 # Test generazione con Qwen
 curl http://localhost:11434/api/generate -d '{
-  "model": "qwen2.5:7b-instruct-q4_K_M",
+  "model": "qwen3.5:4b",
   "prompt": "Rispondi in una parola: qual e la capitale d Italia?",
   "stream": false
 }'
@@ -190,7 +196,7 @@ environment:
 
 ```bash
 # Riprova (Ollama riprende da dove si era fermato)
-docker exec jarvis_ollama ollama pull qwen2.5:7b-instruct-q4_K_M
+docker exec jarvis_ollama ollama pull qwen3.5:4b
 
 # Verifica spazio disco
 df -h
@@ -200,5 +206,5 @@ docker system df
 ### Modello lento
 
 1. Verifica che la GPU sia effettivamente usata: `nvidia-smi` durante una richiesta
-2. Assicurati che tutti i layer siano su GPU (Qwen 2.5 7B Q4 dovrebbe stare interamente in ~4.4 GB VRAM)
+2. Assicurati che tutti i layer siano su GPU (Qwen3.5 4B dovrebbe stare interamente in ~2.6 GB VRAM)
 3. Riduci `num_ctx` se non servono context window grandi

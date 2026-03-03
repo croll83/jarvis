@@ -295,6 +295,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Colonna già esistente
 
+    # Migration: aggiungi colonna visible per controllo visibility entity nel prompt/API
+    try:
+        c.execute("ALTER TABLE entity_maps ADD COLUMN visible BOOLEAN DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass  # Colonna già esistente
+
     # 15. SESSIONS (Autenticazione web)
     c.execute('''CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -2006,7 +2012,8 @@ def clear_user_location(user_id: int) -> bool:
 # ===========================================================================
 
 def get_entity_map(location_id: str, include_entity_ids: bool = False,
-                    exclude_unassigned: bool = False) -> dict:
+                    exclude_unassigned: bool = False,
+                    only_visible: bool = False) -> dict:
     """
     Recupera l'entity map per una location in formato gerarchico.
 
@@ -2022,24 +2029,29 @@ def get_entity_map(location_id: str, include_entity_ids: bool = False,
                            Se False, ritorna solo friendly names (per LLM/prompt)
         exclude_unassigned: Se True, esclude entity senza area assegnata su HA
                            (room = "Sconosciuto" / zone|area = "Non classificato")
+        only_visible: Se True, filtra per visible = 1
     """
     conn = _get_conn()
     c = conn.cursor()
 
+    vis_filter = " AND COALESCE(visible, 1) = 1" if only_visible else ""
+
     if exclude_unassigned:
-        c.execute("""
+        c.execute(f"""
             SELECT zone, area, room, device_name, entity_type, entity_name, entity_id
             FROM entity_maps
             WHERE location_id = ?
               AND LOWER(room) != 'sconosciuto'
               AND LOWER(zone) != 'non classificato'
+              {vis_filter}
             ORDER BY zone, area, room, device_name, entity_type
         """, (location_id,))
     else:
-        c.execute("""
+        c.execute(f"""
             SELECT zone, area, room, device_name, entity_type, entity_name, entity_id
             FROM entity_maps
             WHERE location_id = ?
+              {vis_filter}
             ORDER BY zone, area, room, device_name, entity_type
         """, (location_id,))
     rows = c.fetchall()
@@ -2100,10 +2112,59 @@ def get_entity_map(location_id: str, include_entity_ids: bool = False,
 
 def get_entity_map_for_llm(location_id: str) -> dict:
     """
-    Versione semplificata dell'entity map per il LLM (solo friendly names).
-    Esclude entity senza area assegnata su HA (room = "Sconosciuto").
+    Versione ottimizzata dell'entity map per il routing LLM.
+
+    Ottimizzazioni per ridurre i token:
+    - Solo entity types controllabili (light, switch, cover, climate, media_player,
+      fan, vacuum, lock, scene, script, camera) — esclude sensor, binary_sensor,
+      event, automation, input_*, number, button, select, update, ecc.
+    - Solo friendly names (no entity_id)
+    - Esclude entity senza area assegnata
+    - Flatten: rimuove il livello device_name (inutile per il routing)
+
+    Per query su sensor/binary_sensor, il router usa entity_discover API.
     """
-    return get_entity_map(location_id, include_entity_ids=False, exclude_unassigned=True)
+    # Entity types utili per il routing (controllabili + camera per contesto)
+    ROUTING_ENTITY_TYPES = {
+        'light', 'switch', 'cover', 'climate', 'media_player',
+        'fan', 'vacuum', 'lock', 'scene', 'script', 'camera'
+    }
+
+    conn = _get_conn()
+    c = conn.cursor()
+
+    placeholders = ','.join('?' for _ in ROUTING_ENTITY_TYPES)
+    c.execute(f"""
+        SELECT zone, area, room, entity_type, entity_name
+        FROM entity_maps
+        WHERE location_id = ?
+          AND LOWER(room) != 'sconosciuto'
+          AND LOWER(zone) != 'non classificato'
+          AND entity_type IN ({placeholders})
+          AND COALESCE(visible, 1) = 1
+        ORDER BY zone, area, room, entity_type
+    """, (location_id, *ROUTING_ENTITY_TYPES))
+    rows = c.fetchall()
+    conn.close()
+
+    # Formato compatto: zone → room → entity_type → [names]
+    # Salta il livello "area" per risparmiare token (ridondante con room)
+    entity_map = {}
+    for row in rows:
+        zone = row['zone']
+        room = row['room']
+        entity_type = row['entity_type']
+        entity_name = row['entity_name']
+
+        if zone not in entity_map:
+            entity_map[zone] = {}
+        if room not in entity_map[zone]:
+            entity_map[zone][room] = {}
+        if entity_type not in entity_map[zone][room]:
+            entity_map[zone][room][entity_type] = []
+        entity_map[zone][room][entity_type].append(entity_name)
+
+    return entity_map
 
 
 def import_entity_map_json(location_id: str, entity_map_json: dict) -> int:
@@ -2325,14 +2386,15 @@ def export_entity_map_json(location_id: str) -> dict:
 
 
 def get_entity_map_stats(location_id: str) -> dict:
-    """Ritorna statistiche sull'entity map di una location."""
+    """Ritorna statistiche sull'entity map di una location, incluso visible_count."""
     conn = _get_conn()
     c = conn.cursor()
 
     c.execute("""
         SELECT COUNT(*) as total,
                COUNT(DISTINCT room) as rooms,
-               COUNT(DISTINCT entity_type) as types
+               COUNT(DISTINCT entity_type) as types,
+               SUM(CASE WHEN COALESCE(visible, 1) = 1 THEN 1 ELSE 0 END) as visible_count
         FROM entity_maps WHERE location_id = ?
     """, (location_id,))
     row = c.fetchone()
@@ -2348,10 +2410,90 @@ def get_entity_map_stats(location_id: str) -> dict:
 
     return {
         "total_entities": row['total'] if row else 0,
+        "visible_count": row['visible_count'] if row else 0,
         "rooms": row['rooms'] if row else 0,
         "entity_types": row['types'] if row else 0,
         "by_type": type_counts
     }
+
+
+def get_entity_tree(location_id: str) -> List[Dict]:
+    """
+    Ritorna lista flat di tutte le entity per una location, con campo visible.
+    Usata dal frontend per costruire l'albero entity tree.
+    """
+    conn = _get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, zone, area, room, device_name, entity_type, entity_name, entity_id,
+               COALESCE(visible, 1) as visible
+        FROM entity_maps
+        WHERE location_id = ?
+        ORDER BY zone, area, room, device_name, entity_type, entity_name
+    """, (location_id,))
+    rows = c.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def update_entity_visibility(entity_ids: List[int], visible: bool) -> int:
+    """
+    Bulk UPDATE del campo visible per una lista di entity_maps.id.
+    Ritorna il numero di righe aggiornate.
+    """
+    if not entity_ids:
+        return 0
+    conn = _get_conn()
+    c = conn.cursor()
+    placeholders = ','.join('?' for _ in entity_ids)
+    c.execute(f"""
+        UPDATE entity_maps SET visible = ? WHERE id IN ({placeholders})
+    """, [1 if visible else 0] + entity_ids)
+    conn.commit()
+    updated = c.rowcount
+    conn.close()
+    return updated
+
+
+def save_visibility_snapshot(location_id: str) -> Dict[str, int]:
+    """
+    Salva snapshot {entity_id: visible} prima di un re-sync.
+    Matcherà per entity_id (stabile tra sync).
+    """
+    conn = _get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT entity_id, COALESCE(visible, 1) as visible
+        FROM entity_maps
+        WHERE location_id = ? AND entity_id IS NOT NULL
+    """, (location_id,))
+    snapshot = {row['entity_id']: row['visible'] for row in c.fetchall()}
+    conn.close()
+    return snapshot
+
+
+def restore_visibility_snapshot(location_id: str, snapshot: Dict[str, int]) -> int:
+    """
+    Ripristina visibility dopo re-sync, matchando per entity_id.
+    Solo le entity con visible=0 nello snapshot vengono nascoste.
+    """
+    if not snapshot:
+        return 0
+    # Trova entity_id che erano nascoste
+    hidden_ids = [eid for eid, vis in snapshot.items() if not vis]
+    if not hidden_ids:
+        return 0
+    conn = _get_conn()
+    c = conn.cursor()
+    placeholders = ','.join('?' for _ in hidden_ids)
+    c.execute(f"""
+        UPDATE entity_maps SET visible = 0
+        WHERE location_id = ? AND entity_id IN ({placeholders})
+    """, [location_id] + hidden_ids)
+    conn.commit()
+    updated = c.rowcount
+    conn.close()
+    return updated
 
 
 def clear_entity_map(location_id: str) -> int:

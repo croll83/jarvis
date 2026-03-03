@@ -18,8 +18,8 @@ echo "Ollama is ready"
 
 # Download modelli
 echo ""
-echo "Downloading Qwen 2.5 7B Instruct Q4 (Router + Pre-routing model)..."
-docker exec jarvis_ollama ollama pull qwen2.5:7b-instruct-q4_K_M
+echo "Downloading Qwen3.5 4B (Router + Pre-routing model)..."
+docker exec jarvis_ollama ollama pull qwen3.5:4b
 
 echo ""
 echo "Downloading nomic-embed-text (Embedding model for memory)..."
@@ -32,7 +32,7 @@ echo "Models downloaded"
 echo ""
 echo "Warming up models..."
 curl -s http://localhost:11434/api/generate -d '{
-  "model": "qwen2.5:7b-instruct-q4_K_M",
+  "model": "qwen3.5:4b",
   "prompt": "test",
   "options": {"num_predict": 1}
 }' > /dev/null

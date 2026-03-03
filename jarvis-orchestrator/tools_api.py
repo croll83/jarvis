@@ -620,7 +620,7 @@ async def tool_entity_resolve(
         from database import get_entity_map
 
         location_id = req.location_id or _get_admin_location()
-        entity_map = get_entity_map(location_id, include_entity_ids=True)
+        entity_map = get_entity_map(location_id, include_entity_ids=True, only_visible=True)
 
         if not entity_map:
             return EntityResolveResponse(
@@ -706,11 +706,11 @@ async def tool_entity_discover(
         conn = _get_conn()
         c = conn.cursor()
 
-        # Costruisci query con filtri
+        # Costruisci query con filtri (solo entity visibili)
         query = """
             SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
             FROM entity_maps
-            WHERE location_id = ?
+            WHERE location_id = ? AND COALESCE(visible, 1) = 1
         """
         params: list = [location_id]
 
@@ -817,7 +817,7 @@ async def tool_entity_bulk(
 
         # ── 1. DISCOVERY: find matching entities ─────────────────────────
         if req.entity_ids:
-            # Explicit entity_ids — fetch their info from DB
+            # Explicit entity_ids — fetch their info from DB (solo visibili)
             conn = _get_conn()
             c = conn.cursor()
             placeholders = ",".join("?" for _ in req.entity_ids)
@@ -825,17 +825,19 @@ async def tool_entity_bulk(
                 SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
                 FROM entity_maps
                 WHERE location_id = ? AND entity_id IN ({placeholders})
+                  AND COALESCE(visible, 1) = 1
             """, [location_id] + req.entity_ids)
             rows = c.fetchall()
             conn.close()
         else:
-            # Filter-based discovery (reuse entity_discover SQL pattern)
+            # Filter-based discovery (reuse entity_discover SQL pattern, solo visibili)
             conn = _get_conn()
             c = conn.cursor()
             query = """
                 SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
                 FROM entity_maps
                 WHERE location_id = ? AND entity_id IS NOT NULL
+                  AND COALESCE(visible, 1) = 1
             """
             params: list = [location_id]
 
