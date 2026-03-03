@@ -1910,6 +1910,7 @@ async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, An
         config_push["wake_word_sensitivity"] = data.wake_word_sensitivity
     if data.speaker_volume is not None:
         config_push["speaker_volume"] = data.speaker_volume
+    config_push["speaker_type"] = "internal" if data.use_internal_speaker else "alexa"
     if config_push:
         try:
             from ws_audio_handler import push_config_to_device
@@ -1981,6 +1982,8 @@ async def update_voice_device_endpoint(
         config_push["wake_word_sensitivity"] = data.wake_word_sensitivity
     if data.speaker_volume is not None:
         config_push["speaker_volume"] = data.speaker_volume
+    if data.use_internal_speaker is not None:
+        config_push["speaker_type"] = "internal" if data.use_internal_speaker else "alexa"
     if config_push:
         try:
             from ws_audio_handler import push_config_to_device
