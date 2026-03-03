@@ -10,7 +10,7 @@ Protocol (unified: control + audio on a single persistent connection):
   Audio session (within the persistent connection):
   5. Device sends {"type":"audio_start"} when wake word detected or trigger_listen received
   6. Server creates WsAudioSession, sends {"type":"ready","session_id":"..."}
-  7. Device sends binary Opus frames (20ms each, ~30-80 bytes)
+  7. Device sends binary audio frames (Opus: 20ms ~30-80 bytes; PCM: 640 bytes)
   8. Silero VAD detects speech end → server sends {"type":"speech_end"}
   9. Callback on_speech_complete(device_id, pcm_bytes_16k)
   10. Audio session destroyed, but WebSocket stays open → back to step 4
@@ -175,8 +175,8 @@ class WsAudioSession:
     Gestisce una singola sessione audio (un utterance) all'interno di una
     connessione WS persistente.
 
-    - Riceve frame Opus binari via WebSocket
-    - Decodifica Opus -> PCM 16 kHz mono (opuslib)
+    - Riceve frame audio binari via WebSocket (Opus o PCM raw)
+    - Decodifica Opus -> PCM 16 kHz mono (opuslib) oppure converte PCM int16 -> float32
     - Silero VAD su chunk da 512 samples @ 16 kHz
     - Detecta speech start (min_speech_ms) -> speech end (min_silence_ms)
     - Chiama callback con PCM 16 kHz concatenato
@@ -192,10 +192,12 @@ class WsAudioSession:
         device_id: str,
         on_speech_complete: Callable[[str, bytes], Awaitable[None]],
         session_id: Optional[str] = None,
+        codec: str = "opus",
     ):
         self.device_id = device_id
         self.session_id = session_id or uuid.uuid4().hex[:12]
         self.on_speech_complete = on_speech_complete
+        self.codec = codec  # "opus" (AtomS3R) or "pcm" (NabuVoice)
 
         # Config
         self._timeout = getattr(config, 'WS_AUDIO_SESSION_TIMEOUT', 60)
@@ -203,8 +205,8 @@ class WsAudioSession:
         self._min_silence_ms = config.VAD_MIN_SILENCE_MS
         self._min_speech_ms = config.VAD_MIN_SPEECH_MS
 
-        # Opus decoder: 16 kHz mono (matches firmware encoder)
-        if _OPUS_AVAILABLE:
+        # Opus decoder: 16 kHz mono (only needed for Opus codec)
+        if codec == "opus" and _OPUS_AVAILABLE:
             self._opus_decoder = opuslib.Decoder(16000, 1)
         else:
             self._opus_decoder = None
@@ -228,7 +230,7 @@ class WsAudioSession:
         self._closed = False
 
         # Stats
-        self._opus_frames_received = 0
+        self._frames_received = 0
 
     def decode_opus_frame(self, opus_data: bytes) -> Optional[np.ndarray]:
         """
@@ -242,18 +244,34 @@ class WsAudioSession:
             pcm_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
             pcm_float = pcm_int16.astype(np.float32) / 32768.0
 
-            if self._opus_frames_received % 50 == 1:
+            if self._frames_received % 50 == 1:
                 rms = float(np.sqrt(np.mean(pcm_float ** 2)))
-                logger.info(f"[{self.session_id}] Decoded frame #{self._opus_frames_received}: "
+                logger.info(f"[{self.session_id}] Decoded Opus frame #{self._frames_received}: "
                             f"{len(pcm_bytes)} bytes -> {len(pcm_int16)} samples, "
                             f"RMS={rms:.4f}, max={float(np.max(np.abs(pcm_float))):.4f}")
 
             return pcm_float
         except Exception as e:
-            if self._opus_frames_received <= 3:
+            if self._frames_received <= 3:
                 logger.warning(f"[{self.session_id}] Opus decode error on frame "
-                               f"#{self._opus_frames_received}: {e}")
+                               f"#{self._frames_received}: {e}")
             return None
+
+    def decode_pcm_frame(self, raw_data: bytes) -> Optional[np.ndarray]:
+        """
+        Convert raw 16-bit PCM bytes to float32.
+        NabuVoice sends 640-byte frames (320 samples × 2 bytes) at 16 kHz mono.
+        """
+        pcm_int16 = np.frombuffer(raw_data, dtype=np.int16)
+        pcm_float = pcm_int16.astype(np.float32) / 32768.0
+
+        if self._frames_received % 50 == 1:
+            rms = float(np.sqrt(np.mean(pcm_float ** 2)))
+            logger.info(f"[{self.session_id}] PCM frame #{self._frames_received}: "
+                        f"{len(raw_data)} bytes -> {len(pcm_int16)} samples, "
+                        f"RMS={rms:.4f}, max={float(np.max(np.abs(pcm_float))):.4f}")
+
+        return pcm_float
 
     def process_audio(self, pcm_float: np.ndarray) -> bool:
         """
@@ -270,7 +288,7 @@ class WsAudioSession:
             speech_prob = self._vad(chunk)
             is_speech = speech_prob > self._vad_threshold
 
-            if self._opus_frames_received % 50 == 1:
+            if self._frames_received % 50 == 1:
                 logger.info(f"[{self.session_id}] VAD prob={speech_prob:.3f} "
                             f"thresh={self._vad_threshold} is_speech={is_speech} "
                             f"started={self._speech_started} "
@@ -317,7 +335,7 @@ class WsAudioSession:
 
         logger.info(f"Delivering speech from session {self.session_id}: "
                     f"{duration_s:.1f}s, {len(full_pcm)} samples, "
-                    f"opus_frames_received={self._opus_frames_received}")
+                    f"codec={self.codec}, frames_received={self._frames_received}")
 
         pcm_int16 = (full_pcm * 32767).clip(-32768, 32767).astype(np.int16)
         pcm_bytes = pcm_int16.tobytes()
@@ -380,11 +398,12 @@ class PersistentDeviceConnection:
             "silent": silent,
         })
 
-    def start_audio_session(self) -> WsAudioSession:
+    def start_audio_session(self, codec: str = "opus") -> WsAudioSession:
         """Create a new audio session within this persistent connection."""
         session = WsAudioSession(
             device_id=self.device_id,
             on_speech_complete=self.on_speech_complete,
+            codec=codec,
         )
         self.audio_session = session
         return session
@@ -425,10 +444,10 @@ async def ws_audio_endpoint(
         await websocket.close(code=4002, reason="Missing device_id")
         return
 
+    # Note: opuslib is only needed for Opus codec devices (AtomS3R).
+    # PCM codec devices (NabuVoice) work without it.
     if not _OPUS_AVAILABLE:
-        logger.error("WS audio: opuslib not available")
-        await websocket.close(code=4003, reason="Opus decoder not available")
-        return
+        logger.warning("WS audio: opuslib not installed — only PCM codec devices will work")
 
     # 2. Close previous connection for this device (if any)
     async with _connections_lock:
@@ -546,9 +565,9 @@ async def ws_audio_endpoint(
                 logger.info(f"Device {device_id}: WebSocket disconnected")
                 break
 
-            # Handle binary message (Opus frame)
+            # Handle binary message (audio frame: Opus or PCM)
             if "bytes" in message and message["bytes"]:
-                opus_data = message["bytes"]
+                audio_data = message["bytes"]
 
                 # Auto-create session if binary arrives without audio_start (legacy compat)
                 if not conn.audio_session:
@@ -568,14 +587,18 @@ async def ws_audio_endpoint(
                 session = conn.audio_session
                 if session and not session._closed:
                     session._last_audio_at = time.time()
-                    session._opus_frames_received += 1
+                    session._frames_received += 1
 
-                    if session._opus_frames_received <= 3 or session._opus_frames_received % 500 == 0:
-                        logger.info(f"[{session.session_id}] Opus frame "
-                                    f"#{session._opus_frames_received}: "
-                                    f"{len(opus_data)} bytes")
+                    if session._frames_received <= 3 or session._frames_received % 500 == 0:
+                        logger.info(f"[{session.session_id}] {session.codec.upper()} frame "
+                                    f"#{session._frames_received}: "
+                                    f"{len(audio_data)} bytes")
 
-                    pcm_float = session.decode_opus_frame(opus_data)
+                    # Decode based on codec
+                    if session.codec == "pcm":
+                        pcm_float = session.decode_pcm_frame(audio_data)
+                    else:
+                        pcm_float = session.decode_opus_frame(audio_data)
                     if pcm_float is None:
                         continue
 
@@ -665,9 +688,11 @@ async def ws_audio_endpoint(
                             # Don't send tts_done here — device is already starting a new session
                             conn.end_audio_session()
 
-                        session = conn.start_audio_session()
+                        # Parse codec: "pcm" (NabuVoice) or "opus" (AtomS3R, default)
+                        codec = ctrl.get("codec", "opus")
+                        session = conn.start_audio_session(codec=codec)
                         await websocket.send_json({"type": "ready", "session_id": session.session_id})
-                        logger.info(f"Audio session {session.session_id} started for device {device_id}")
+                        logger.info(f"Audio session {session.session_id} started for device {device_id} (codec={codec})")
 
                     elif msg_type == "audio_end":
                         # Device voluntarily ends audio session (user pressed button)
