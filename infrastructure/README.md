@@ -1,7 +1,7 @@
 # JARVIS — Deploy Locale (GPU + OpenClaw su LXC separato)
 
 Guida completa per il deploy locale di JARVIS su Proxmox con GPU NVIDIA.
-I modelli locali (Qwen 7B router, Whisper STT) girano on-premise su un **LXC con
+I modelli locali (Qwen3.5 4B router, Whisper large-v3-turbo STT) girano on-premise su un **LXC con
 GPU device sharing** (driver NVIDIA installato sull'host Proxmox, GPU condivisa via
 cgroup2 — NON PCIe passthrough esclusivo).
 Il reasoning e gestito da Gemini 3 Pro via OpenClaw che gira **bare-metal su un
@@ -41,10 +41,10 @@ HA remoti e il LXC OpenClaw.
 |  |                     jarvis_network                              | |
 |  |                                                                 | |
 |  |  ollama:11434   whisper:9000    xtts:8890     postgres:5432     | |
-|  |  GPU: ~2.5 GB   GPU: 0.4 GB    GPU: 2.1 GB   (side proj)      | |
-|  |  Routing LLM    faster-whisper  XTTSv2 Coqui                   | |
-|  |  nomic-embed    base            voice cloning  mongo:27017      | |
-|  |                                                 (side proj)     | |
+|  |  GPU: ~3.5 GB   GPU: ~1.0 GB   GPU: ~3.2 GB  (side proj)      | |
+|  |  Qwen3.5 4B     faster-whisper  XTTSv2 Coqui                   | |
+|  |  ctx=3072       large-v3-turbo  voice cloning  mongo:27017      | |
+|  |  nomic-embed    int8_float16                    (side proj)     | |
 |  |  orchestrator:5000 (network_mode: host)                        | |
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
@@ -55,14 +55,14 @@ HA remoti e il LXC OpenClaw.
 |  |  Knowledge Graph API — SQLite + ACL (X-Speaker-Id)             | |
 |  +----------------------------------------------------------------+ |
 |                                                                      |
-|  GPU VRAM Budget (worst case Phi-4-Mini):                            |
-|  +-- Routing LLM (Phi-4-Mini Q4) ..... ~2.5 GB                     |
-|  +-- XTTSv2 fp16 ..................... ~2.1 GB                      |
-|  +-- nomic-embed-text ................. 0.3 GB                      |
-|  +-- faster-whisper base .............. 0.4 GB                      |
-|  +-- Driver/CUDA overhead ............. ~1.0 GB                     |
-|  +-- TOTALE ........................... ~6.3 GB / 8 GB VRAM disp.  |
-|  +-- HEADROOM ......................... ~1.7 GB                     |
+|  GPU VRAM Budget (misurato — GPU dedicata, no display):              |
+|  +-- Qwen3.5 4B (weights+KV 3072) ... ~3.5 GB                      |
+|  +-- XTTSv2 fp16 (PyTorch runtime) ... ~3.2 GB                     |
+|  +-- Whisper large-v3-turbo int8 ..... ~1.0 GB                     |
+|  +-- nomic-embed-text (on demand) .... ~0.3 GB (scaricato se serve) |
+|  +-- TOTALE ........................... ~7.7 GB / 8.15 GB VRAM     |
+|  +-- BUFFER CUDA ...................... ~0.45 GB                    |
+|  Nota: pipeline sequenziale (Whisper→Qwen→TTS), buffer sufficiente |
 +---------------------------------------------------------------------+
 
 +---------------------------------------------------------------------+
@@ -190,9 +190,9 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 |----------|-----------|-------------------|-----|-----|----------|----------|
 | **NVIDIA Driver** | **Host Proxmox** | kernel module | - | - | - | Driver GPU, `nvidia-smi` funziona qui |
 | **Tailscale** | LXC-JARVIS | host-level (`tailscaled.service`) | - | 64 MB | - | VPN mesh per HA remoti + OpenClaw |
-| **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | ~2.5 GB | Routing LLM + embeddings |
-| **Whisper** | LXC-JARVIS | `jarvis_whisper` (Docker, `--gpus all`) | - | - | 0.4 GB | Speech-to-text (faster-whisper) |
-| **XTTSv2** | LXC-JARVIS | `jarvis_xtts` (Docker, `--gpus all`) | - | - | 2.1 GB | TTS voice cloning (italiano) |
+| **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | ~3.5 GB | Qwen3.5 4B routing (ctx=3072) + nomic-embed |
+| **Whisper** | LXC-JARVIS | `jarvis_whisper` (Docker, `--gpus all`) | - | - | ~1.0 GB | STT large-v3-turbo (int8_float16) |
+| **XTTSv2** | LXC-JARVIS | `jarvis_xtts` (Docker, `--gpus all`) | - | - | ~3.2 GB | TTS voice cloning (italiano, fp16) |
 | **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
 | **Ontology Server** | LXC-JARVIS | `jarvis_ontology` (Docker, 127.0.0.1:8100) | 0.5 | 256 MB | - | Knowledge Graph API + ACL |
 | **PostgreSQL** | LXC-JARVIS | `jarvis_postgres` (Docker) | 0.5 | 512 MB | - | Database side projects |
@@ -384,7 +384,7 @@ Il playbook:
 1. Installa Docker + NVIDIA Container Toolkit (con `no-cgroups=true` per LXC)
 2. Clona il repository, genera `.env` da template
 3. Esegue `docker compose up -d` (Ollama, Whisper, XTTSv2, Orchestrator, Ontology, Postgres, Mongo)
-4. Scarica i modelli AI (`setup.sh` — Qwen 7B + nomic-embed-text)
+4. Scarica i modelli AI (`setup.sh` — Qwen3.5 4B + nomic-embed-text)
 5. Verifica health di tutti i servizi
 
 Post-setup manuale:
@@ -546,7 +546,7 @@ MEMORY_HOURLY_MINUTE=5
 MEMORY_DAILY_HOUR=3
 
 # Whisper locale
-WHISPER_MODEL=base
+WHISPER_MODEL=Systran/faster-whisper-large-v3-turbo
 WHISPER_LANGUAGE=it
 
 # Proactive monitoring
@@ -771,9 +771,9 @@ curl http://localhost:11434/api/tags  # Deve rispondere con lista modelli
 nvidia-smi   # Verifica utilizzo VRAM
 
 # Se OOM, opzioni:
-# 1. Riduci modelli Ollama caricati: OLLAMA_MAX_LOADED_MODELS=1
-# 2. Usa Whisper tiny invece di base: WHISPER__MODEL=tiny
-# 3. Usa routing model piu piccolo (Qwen 2.5 3B invece di Phi-4-Mini)
+# 1. Riduci context Qwen: OLLAMA_NUM_CTX=1024 (salva ~0.3 GB vs 2048)
+# 2. Usa Whisper piu piccolo: WHISPER__MODEL=small (salva ~0.5 GB)
+# 3. Riduci modelli Ollama caricati: OLLAMA_MAX_LOADED_MODELS=1
 # 4. Disabilita DeepSpeed se abilitato in xtts
 ```
 

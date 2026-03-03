@@ -1034,6 +1034,121 @@
             margin-bottom: 0.75rem;
             opacity: 0.5;
         }
+
+        /* Entity Tree View */
+        .tree-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0;
+            flex-wrap: wrap;
+        }
+        .tree-toolbar input[type="text"] {
+            flex: 1;
+            min-width: 180px;
+            padding: 0.4rem 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--bg-input);
+            color: var(--text);
+            font-size: 0.85rem;
+        }
+        .tree-toolbar .tree-counter {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .entity-tree {
+            max-height: 600px;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.5rem;
+            background: var(--bg-input);
+        }
+        .tree-node {
+            margin-left: 1rem;
+            border-left: 1px solid var(--border);
+            padding-left: 0.5rem;
+        }
+        .tree-node.tree-root {
+            margin-left: 0;
+            border-left: none;
+            padding-left: 0;
+        }
+        .tree-node-header {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.2rem 0;
+            cursor: pointer;
+            user-select: none;
+            border-radius: 4px;
+        }
+        .tree-node-header:hover {
+            background: rgba(255,255,255,0.03);
+        }
+        .tree-toggle {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            transition: transform 0.15s;
+            flex-shrink: 0;
+        }
+        .tree-toggle.expanded {
+            transform: rotate(90deg);
+        }
+        .tree-checkbox {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent);
+            flex-shrink: 0;
+            cursor: pointer;
+        }
+        .tree-label {
+            font-size: 0.85rem;
+            color: var(--text);
+            flex: 1;
+        }
+        .tree-count {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            background: var(--bg-card);
+            padding: 0.1rem 0.4rem;
+            border-radius: 8px;
+        }
+        .tree-children {
+            overflow: hidden;
+        }
+        .tree-children.collapsed {
+            display: none;
+        }
+        .tree-entity {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.15rem 0 0.15rem 1.5rem;
+        }
+        .tree-entity.hidden-entity .tree-label {
+            text-decoration: line-through;
+            opacity: 0.5;
+        }
+        .tree-type-badge {
+            font-size: 0.65rem;
+            padding: 0.1rem 0.35rem;
+            border-radius: 4px;
+            background: var(--bg-card);
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .tree-node-header .tree-level-icon {
+            font-size: 0.8rem;
+            flex-shrink: 0;
+        }
     </style>
 </head>
 <body>
@@ -1206,9 +1321,13 @@
                     </div>
                 </div>
                 <div id="entityMapContent" style="display: none; margin-top: 1rem;">
-                    <div style="background: var(--bg-input); padding: 1rem; border-radius: 8px; max-height: 400px; overflow: auto;">
-                        <pre id="entityMapJson" style="margin: 0; font-size: 0.8rem; white-space: pre-wrap;"></pre>
+                    <div class="tree-toolbar">
+                        <input type="text" id="entityTreeSearch" placeholder="Cerca entity..." oninput="filterEntityTree(this.value)">
+                        <button class="btn-secondary btn-sm" onclick="setAllVisibility(true)">Seleziona Tutti</button>
+                        <button class="btn-secondary btn-sm" onclick="setAllVisibility(false)">Deseleziona Tutti</button>
+                        <span class="tree-counter" id="entityTreeCounter">0/0 visibili</span>
                     </div>
+                    <div id="entityTreeContainer" class="entity-tree"></div>
                 </div>
             </div>
         </div>
@@ -4052,19 +4171,22 @@
             await loadEntityMap(locationId);
         }
 
+        // ── Entity Tree View state ──────────────────────────────────
+        window._entityTreeData = [];
+        window._visibilityQueue = new Map();
+        window._visibilityTimer = null;
+
         async function loadEntityMap(locationId) {
-            // Check hierarchy status (controlla se mostrare Sync da HA)
             checkHierarchyStatus(locationId);
 
             try {
-                const response = await fetch(`/api/admin/locations/${locationId}/entity-map`);
+                const response = await fetch(`/api/admin/locations/${locationId}/entity-tree`);
                 const data = await response.json();
 
                 const statsContainer = document.getElementById('entityMapStats');
                 const contentContainer = document.getElementById('entityMapContent');
-                const jsonContainer = document.getElementById('entityMapJson');
 
-                if (data.stats.total_entities === 0) {
+                if (!data.entities || data.entities.length === 0) {
                     statsContainer.innerHTML = `
                         <div class="empty-state">
                             <div class="empty-state-icon">📋</div>
@@ -4079,28 +4201,30 @@
                     return;
                 }
 
-                // Show stats
-                const typesList = Object.entries(data.stats.by_type)
+                window._entityTreeData = data.entities;
+                const stats = data.stats;
+
+                const typesList = Object.entries(stats.by_type)
                     .map(([type, count]) => `<span style="background: var(--bg-input); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">${type}: ${count}</span>`)
                     .join(' ');
 
                 statsContainer.innerHTML = `
                     <div class="grid-4" style="margin-bottom: 1rem;">
                         <div class="metric-card">
-                            <div class="metric-value">${data.stats.total_entities}</div>
+                            <div class="metric-value">${stats.total_entities}</div>
                             <div class="metric-label">Entity Totali</div>
                         </div>
                         <div class="metric-card">
-                            <div class="metric-value">${data.stats.rooms}</div>
+                            <div class="metric-value">${stats.visible_count || 0}</div>
+                            <div class="metric-label">Visibili</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value">${stats.rooms}</div>
                             <div class="metric-label">Stanze</div>
                         </div>
                         <div class="metric-card">
-                            <div class="metric-value">${data.stats.entity_types}</div>
+                            <div class="metric-value">${stats.entity_types}</div>
                             <div class="metric-label">Tipi Entity</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-value">${data.rooms.length}</div>
-                            <div class="metric-label">Aree</div>
                         </div>
                     </div>
                     <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
@@ -4108,14 +4232,343 @@
                     </div>
                 `;
 
-                // Show JSON preview
-                jsonContainer.textContent = JSON.stringify(data.entity_map, null, 2);
+                renderEntityTree(data.entities);
                 contentContainer.style.display = 'block';
 
             } catch (e) {
-                console.error('Entity map load failed:', e);
+                console.error('Entity tree load failed:', e);
                 document.getElementById('entityMapStats').innerHTML = '<div style="color: var(--error);">Errore caricamento entity map</div>';
             }
+        }
+
+        function buildTreeHierarchy(entities) {
+            // zone -> area -> room -> device -> [entities]
+            const tree = {};
+            for (const ent of entities) {
+                const z = ent.zone || 'Sconosciuto';
+                const a = ent.area || 'Sconosciuto';
+                const r = ent.room || 'Sconosciuto';
+                const d = ent.device_name || `Altro (${r})`;
+
+                if (!tree[z]) tree[z] = {};
+                if (!tree[z][a]) tree[z][a] = {};
+                if (!tree[z][a][r]) tree[z][a][r] = {};
+                if (!tree[z][a][r][d]) tree[z][a][r][d] = [];
+                tree[z][a][r][d].push(ent);
+            }
+            return tree;
+        }
+
+        function renderEntityTree(entities) {
+            const container = document.getElementById('entityTreeContainer');
+            const tree = buildTreeHierarchy(entities);
+            let html = '';
+
+            const levelIcons = { zone: '🏢', area: '📍', room: '🚪', device: '🔌' };
+
+            for (const [zoneName, areas] of Object.entries(tree)) {
+                const zoneEntities = entities.filter(e => (e.zone || 'Sconosciuto') === zoneName);
+                const zoneVis = zoneEntities.filter(e => e.visible).length;
+                html += `<div class="tree-node tree-root" data-search="${zoneName.toLowerCase()}">`;
+                html += renderNodeHeader(zoneName, zoneEntities.length, zoneVis, 'zone', levelIcons.zone);
+                html += `<div class="tree-children">`;
+
+                for (const [areaName, rooms] of Object.entries(areas)) {
+                    const areaEntities = zoneEntities.filter(e => (e.area || 'Sconosciuto') === areaName);
+                    const areaVis = areaEntities.filter(e => e.visible).length;
+                    html += `<div class="tree-node" data-search="${areaName.toLowerCase()}">`;
+                    html += renderNodeHeader(areaName, areaEntities.length, areaVis, 'area', levelIcons.area);
+                    html += `<div class="tree-children collapsed">`;
+
+                    for (const [roomName, devices] of Object.entries(rooms)) {
+                        const roomEntities = areaEntities.filter(e => (e.room || 'Sconosciuto') === roomName);
+                        const roomVis = roomEntities.filter(e => e.visible).length;
+                        html += `<div class="tree-node" data-search="${roomName.toLowerCase()}">`;
+                        html += renderNodeHeader(roomName, roomEntities.length, roomVis, 'room', levelIcons.room);
+                        html += `<div class="tree-children collapsed">`;
+
+                        for (const [deviceName, devEntities] of Object.entries(devices)) {
+                            const devVis = devEntities.filter(e => e.visible).length;
+                            html += `<div class="tree-node" data-search="${deviceName.toLowerCase()}">`;
+                            html += renderNodeHeader(deviceName, devEntities.length, devVis, 'device', levelIcons.device);
+                            html += `<div class="tree-children collapsed">`;
+
+                            for (const ent of devEntities) {
+                                const checked = ent.visible ? 'checked' : '';
+                                const hiddenCls = ent.visible ? '' : ' hidden-entity';
+                                html += `<div class="tree-entity${hiddenCls}" data-entity-id="${ent.id}" data-search="${ent.entity_name.toLowerCase()} ${(ent.entity_id||'').toLowerCase()}">`;
+                                html += `<input type="checkbox" class="tree-checkbox entity-cb" ${checked} data-id="${ent.id}" onchange="onEntityCheckChange(this)">`;
+                                html += `<span class="tree-label">${escapeHtml(ent.entity_name)}</span>`;
+                                html += `<span class="tree-type-badge">${ent.entity_type}</span>`;
+                                html += `</div>`;
+                            }
+                            html += `</div></div>`;
+                        }
+                        html += `</div></div>`;
+                    }
+                    html += `</div></div>`;
+                }
+                html += `</div></div>`;
+            }
+
+            container.innerHTML = html;
+            updateVisibleSummary();
+        }
+
+        function renderNodeHeader(label, total, visCount, level, icon) {
+            const allChecked = visCount === total;
+            const someChecked = visCount > 0 && visCount < total;
+            const checked = allChecked ? 'checked' : '';
+            return `<div class="tree-node-header" onclick="toggleTreeNode(this)">
+                <span class="tree-toggle">&#9654;</span>
+                <input type="checkbox" class="tree-checkbox group-cb" ${checked}
+                    ${someChecked ? 'data-indeterminate="true"' : ''}
+                    data-level="${level}" onclick="event.stopPropagation(); onGroupCheckChange(this)">
+                <span class="tree-level-icon">${icon}</span>
+                <span class="tree-label">${escapeHtml(label)}</span>
+                <span class="tree-count">${visCount}/${total}</span>
+            </div>`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Set indeterminate state after render (HTML attribute doesn't work)
+        const observer = new MutationObserver(() => {
+            document.querySelectorAll('[data-indeterminate="true"]').forEach(cb => {
+                cb.indeterminate = true;
+                cb.removeAttribute('data-indeterminate');
+            });
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        function toggleTreeNode(header) {
+            const toggle = header.querySelector('.tree-toggle');
+            const children = header.nextElementSibling;
+            if (!children) return;
+            toggle.classList.toggle('expanded');
+            children.classList.toggle('collapsed');
+        }
+
+        function onEntityCheckChange(cb) {
+            const id = parseInt(cb.dataset.id);
+            const visible = cb.checked;
+            const entityRow = cb.closest('.tree-entity');
+            if (visible) {
+                entityRow.classList.remove('hidden-entity');
+            } else {
+                entityRow.classList.add('hidden-entity');
+            }
+            queueVisibilityChange(id, visible);
+            updateParentCheckboxes(cb);
+            updateVisibleSummary();
+        }
+
+        function onGroupCheckChange(groupCb) {
+            const visible = groupCb.checked;
+            groupCb.indeterminate = false;
+            const node = groupCb.closest('.tree-node');
+            // Find all entity checkboxes under this node
+            const entityCbs = node.querySelectorAll('.entity-cb');
+            entityCbs.forEach(cb => {
+                if (cb.checked !== visible) {
+                    cb.checked = visible;
+                    const id = parseInt(cb.dataset.id);
+                    const entityRow = cb.closest('.tree-entity');
+                    if (visible) {
+                        entityRow.classList.remove('hidden-entity');
+                    } else {
+                        entityRow.classList.add('hidden-entity');
+                    }
+                    queueVisibilityChange(id, visible);
+                }
+            });
+            // Also update child group checkboxes
+            const childGroupCbs = node.querySelectorAll('.tree-node .group-cb');
+            childGroupCbs.forEach(cb => {
+                cb.checked = visible;
+                cb.indeterminate = false;
+            });
+            // Update parent checkboxes
+            updateParentCheckboxes(groupCb);
+            updateVisibleSummary();
+        }
+
+        function updateParentCheckboxes(startEl) {
+            let node = startEl.closest('.tree-node');
+            while (node) {
+                const parent = node.parentElement?.closest('.tree-node');
+                if (!parent) break;
+                const groupCb = parent.querySelector(':scope > .tree-node-header > .group-cb');
+                if (!groupCb) break;
+                const entityCbs = parent.querySelectorAll('.entity-cb');
+                const total = entityCbs.length;
+                const checked = Array.from(entityCbs).filter(c => c.checked).length;
+                groupCb.checked = checked === total;
+                groupCb.indeterminate = checked > 0 && checked < total;
+                // Update count badge
+                const countBadge = parent.querySelector(':scope > .tree-node-header > .tree-count');
+                if (countBadge) countBadge.textContent = `${checked}/${total}`;
+                node = parent;
+            }
+        }
+
+        function queueVisibilityChange(id, visible) {
+            window._visibilityQueue.set(id, visible);
+            if (window._visibilityTimer) clearTimeout(window._visibilityTimer);
+            window._visibilityTimer = setTimeout(flushVisibilityChanges, 500);
+        }
+
+        async function flushVisibilityChanges() {
+            const queue = window._visibilityQueue;
+            if (queue.size === 0) return;
+
+            // Group by visible value
+            const toShow = [], toHide = [];
+            for (const [id, vis] of queue) {
+                if (vis) toShow.push(id);
+                else toHide.push(id);
+            }
+            queue.clear();
+
+            const locationId = selectedLocationId;
+            const promises = [];
+
+            if (toShow.length > 0) {
+                promises.push(fetch(`/api/admin/locations/${locationId}/entity-visibility`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ entity_ids: toShow, visible: true })
+                }));
+            }
+            if (toHide.length > 0) {
+                promises.push(fetch(`/api/admin/locations/${locationId}/entity-visibility`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ entity_ids: toHide, visible: false })
+                }));
+            }
+
+            try {
+                const results = await Promise.all(promises);
+                // Update stats from last response
+                for (const res of results) {
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.stats) {
+                            const visMetric = document.querySelector('#entityMapStats .metric-card:nth-child(2) .metric-value');
+                            if (visMetric) visMetric.textContent = data.stats.visible_count || 0;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('Visibility update failed:', e);
+                showToast('Errore aggiornamento visibility', 'error');
+            }
+        }
+
+        async function setAllVisibility(visible) {
+            if (!selectedLocationId || !window._entityTreeData.length) return;
+            const allIds = window._entityTreeData.map(e => e.id);
+
+            try {
+                const response = await fetch(`/api/admin/locations/${selectedLocationId}/entity-visibility`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ entity_ids: allIds, visible: visible })
+                });
+
+                if (response.ok) {
+                    // Update local data and re-render
+                    window._entityTreeData.forEach(e => e.visible = visible ? 1 : 0);
+                    renderEntityTree(window._entityTreeData);
+                    const data = await response.json();
+                    if (data.stats) {
+                        const visMetric = document.querySelector('#entityMapStats .metric-card:nth-child(2) .metric-value');
+                        if (visMetric) visMetric.textContent = data.stats.visible_count || 0;
+                    }
+                    showToast(visible ? 'Tutte le entity selezionate' : 'Tutte le entity deselezionate', 'success');
+                }
+            } catch (e) {
+                console.error('Set all visibility failed:', e);
+                showToast('Errore aggiornamento visibility', 'error');
+            }
+        }
+
+        function filterEntityTree(searchText) {
+            const term = searchText.toLowerCase().trim();
+            const container = document.getElementById('entityTreeContainer');
+            const allNodes = container.querySelectorAll('[data-search]');
+
+            if (!term) {
+                // Show all, collapse back to default
+                allNodes.forEach(el => el.style.display = '');
+                return;
+            }
+
+            // First hide all entities, then show matches and their ancestors
+            const entityEls = container.querySelectorAll('.tree-entity');
+            const nodeEls = container.querySelectorAll('.tree-node');
+            entityEls.forEach(el => el.style.display = 'none');
+            nodeEls.forEach(el => el.style.display = 'none');
+
+            // Find matching entities
+            entityEls.forEach(el => {
+                const searchVal = el.dataset.search || '';
+                if (searchVal.includes(term)) {
+                    el.style.display = '';
+                    // Show all ancestor nodes
+                    let parent = el.parentElement;
+                    while (parent && parent !== container) {
+                        if (parent.classList.contains('tree-node')) {
+                            parent.style.display = '';
+                        }
+                        if (parent.classList.contains('tree-children')) {
+                            parent.classList.remove('collapsed');
+                            const toggle = parent.previousElementSibling?.querySelector('.tree-toggle');
+                            if (toggle) toggle.classList.add('expanded');
+                        }
+                        parent = parent.parentElement;
+                    }
+                }
+            });
+
+            // Also match node names (zone, area, room, device)
+            nodeEls.forEach(el => {
+                const searchVal = el.dataset.search || '';
+                if (searchVal.includes(term)) {
+                    el.style.display = '';
+                    // Show children
+                    el.querySelectorAll('.tree-entity, .tree-node').forEach(c => c.style.display = '');
+                    el.querySelectorAll('.tree-children').forEach(c => {
+                        c.classList.remove('collapsed');
+                        const toggle = c.previousElementSibling?.querySelector('.tree-toggle');
+                        if (toggle) toggle.classList.add('expanded');
+                    });
+                    // Show ancestors
+                    let parent = el.parentElement;
+                    while (parent && parent !== container) {
+                        if (parent.classList.contains('tree-node')) parent.style.display = '';
+                        if (parent.classList.contains('tree-children')) {
+                            parent.classList.remove('collapsed');
+                            const toggle = parent.previousElementSibling?.querySelector('.tree-toggle');
+                            if (toggle) toggle.classList.add('expanded');
+                        }
+                        parent = parent.parentElement;
+                    }
+                }
+            });
+        }
+
+        function updateVisibleSummary() {
+            const allCbs = document.querySelectorAll('#entityTreeContainer .entity-cb');
+            const total = allCbs.length;
+            const visible = Array.from(allCbs).filter(c => c.checked).length;
+            const counter = document.getElementById('entityTreeCounter');
+            if (counter) counter.textContent = `${visible}/${total} visibili`;
         }
 
         function loadEntityMapFile(event) {
@@ -4255,7 +4708,8 @@
 
                 if (syncRes.ok) {
                     const result = await syncRes.json();
-                    showToast(`Sync completato: ${result.added} aggiunte, ${result.updated} aggiornate`, 'success');
+                    const visMsg = result.visibility_restored ? `, ${result.visibility_restored} visibility ripristinate` : '';
+                    showToast(`Sync completato: ${result.added} aggiunte, ${result.updated} aggiornate${visMsg}`, 'success');
                     loadLocations();
                     loadEntityMap(selectedLocationId);
                 } else {

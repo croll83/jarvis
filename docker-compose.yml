@@ -6,9 +6,15 @@
 # - OpenClaw (Gemini 3 Pro): Brain — gira su VM separata (bare-metal)
 # - JARVIS Orchestrator: Skill — domotics, memory, speaker ID, security, TTS
 # - XTTSv2 (Coqui): TTS engine (voice cloning italiana, GPU accelerated)
-# - Qwen 7B Q4: Local pre-routing for domotics fast path + offline fallback
-# - Whisper: Speech-to-text (GPU accelerated)
-# - Ollama: Hosts Qwen 7B Q4 + nomic-embed-text
+# - Qwen3.5 4B: Local pre-routing for domotics fast path + offline fallback
+# - Whisper large-v3-turbo: Speech-to-text (GPU, int8_float16, ~1 GB VRAM)
+# - Ollama: Hosts Qwen3.5 4B (num_ctx=3072) + nomic-embed-text
+#
+# VRAM BUDGET (RTX 5070 Laptop 8 GB, GPU dedicata — no display):
+#   Qwen3.5 4B (weights + KV 3072): ~3.5 GB
+#   XTTSv2 (PyTorch fp16):          ~3.2 GB
+#   Whisper large-v3-turbo (int8):   ~1.0 GB
+#   Totale:                          ~7.7 / 8.15 GB (~0.45 GB buffer CUDA)
 #
 # NOTA SU OPENCLAW:
 # OpenClaw NON e in questo compose — gira bare-metal su una VM dedicata
@@ -34,7 +40,7 @@
 
 services:
   # ===========================================================================
-  # AI CORE - Ollama (Qwen 7B Q4 + nomic-embed-text)
+  # AI CORE - Ollama (Qwen3.5 4B + nomic-embed-text)
   # ===========================================================================
   ollama:
     image: ollama/ollama:latest
@@ -47,6 +53,7 @@ services:
     environment:
       - OLLAMA_NUM_PARALLEL=2
       - OLLAMA_MAX_LOADED_MODELS=2
+      - OLLAMA_NUM_CTX=3072            # Copre 2 location (~2280 tok) con margine, ~0.9 GB KV
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     healthcheck:
@@ -65,9 +72,9 @@ services:
     ports:
       - "9000:8000"
     environment:
-      - WHISPER__MODEL=base
+      - WHISPER__MODEL=Systran/faster-whisper-large-v3-turbo
       - WHISPER__DEVICE=cuda
-      - WHISPER__COMPUTE_TYPE=float16
+      - WHISPER__COMPUTE_TYPE=int8_float16    # Mixed precision: ~1 GB VRAM vs ~1.6 GB float16
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     restart: unless-stopped

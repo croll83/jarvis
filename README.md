@@ -76,7 +76,7 @@
 
 | Service | Image / Build | Port | GPU | Purpose |
 |---------|---------------|------|-----|---------|
-| `ollama` | ollama/ollama | 11434 | Yes | Qwen 7B Q4 for pre-routing |
+| `ollama` | ollama/ollama | 11434 | Yes | Qwen3.5 4B for pre-routing |
 | `whisper` | faster-whisper | 9000 | Yes | Local speech-to-text |
 | `orchestrator` | ./orchestrator | 5000 | No | Core FastAPI app + Resemblyzer + Admin UI |
 | `openclaw` | openclaw | 8080 | No | Brain (Gemini 3 Pro gateway) |

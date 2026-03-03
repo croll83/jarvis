@@ -36,7 +36,7 @@ docker_log_max_file: "3"
 # NVIDIA (solo per deploy_type: lxc_gpu)
 # =============================================================================
 # Il driver è installato sull'HOST Proxmox, non nel container.
-# GPU VRAM budget: Qwen 7B Q4 (~4.5GB) + Whisper (~1GB) + Frigate (~0.5GB)
+# GPU VRAM budget: Qwen3.5 4B (~2.6GB) + Whisper (~0.4GB) + XTTSv2 (~2.1GB) + nomic (~0.3GB)
 ollama_gpu_layers: 15           # 6GB->10, 8GB->15, 12GB->25, 16GB+->40
 ollama_num_ctx: 4096
 
