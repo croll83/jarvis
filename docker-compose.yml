@@ -72,14 +72,13 @@ services:
     ports:
       - "9000:8000"
     environment:
-      - WHISPER__MODEL=Systran/faster-whisper-large-v3-turbo
+      - WHISPER__MODEL=/models/faster-whisper-large-v3-turbo
       - WHISPER__DEVICE=cuda
       - WHISPER__COMPUTE_TYPE=int8_float16    # Mixed precision: ~1 GB VRAM vs ~1.6 GB float16
-      - HF_HUB_OFFLINE=0                     # Permetti download modello da HuggingFace
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
-      - whisper_cache:/root/.cache/huggingface  # Cache modello persistente
+      - ./models/faster-whisper-large-v3-turbo:/models/faster-whisper-large-v3-turbo:ro
     deploy:
       resources:
         reservations:
@@ -254,7 +253,6 @@ services:
 volumes:
   ollama_storage:
   xtts_models:
-  whisper_cache:
   postgres_data:
   mongo_data:
   ontology_data:
