@@ -636,7 +636,7 @@ async def ws_audio_endpoint(
                         except Exception as e:
                             logger.debug(f"Device {device_id}: live session cleanup on hello: {e}")
 
-                        # Push saved config to device (sensitivity, volume, etc.)
+                        # Push saved config to device (sensitivity, volume, speaker type, etc.)
                         try:
                             if dev is None:
                                 from database import get_voice_device
@@ -647,10 +647,13 @@ async def ws_audio_endpoint(
                                     config_msg["wake_word_sensitivity"] = dev.wake_word_sensitivity
                                 if dev.speaker_volume is not None:
                                     config_msg["speaker_volume"] = dev.speaker_volume
+                                # Tell device whether to use internal speaker for TTS
+                                config_msg["speaker_type"] = "internal" if dev.use_internal_speaker else "alexa"
                                 await conn.send_command(config_msg)
                                 logger.info(f"Device {device_id}: pushed saved config "
                                             f"(sensitivity={dev.wake_word_sensitivity}, "
-                                            f"volume={dev.speaker_volume})")
+                                            f"volume={dev.speaker_volume}, "
+                                            f"speaker_type={'internal' if dev.use_internal_speaker else 'alexa'})")
                         except Exception as e:
                             logger.debug(f"Device {device_id}: config push on hello failed: {e}")
 
