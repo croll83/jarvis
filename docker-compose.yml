@@ -53,7 +53,9 @@ services:
     environment:
       - OLLAMA_NUM_PARALLEL=2
       - OLLAMA_MAX_LOADED_MODELS=2
-      - OLLAMA_NUM_CTX=3072            # Copre 2 location (~2280 tok) con margine, ~0.9 GB KV
+      - OLLAMA_CONTEXT_LENGTH=3072     # Copre 2 location (~2280 tok) con margine
+      - OLLAMA_NUM_CTX=3072            # Fallback per vecchie versioni Ollama
+      - OLLAMA_FLASH_ATTENTION=1       # Flash attention per KV cache piu efficiente
       - OLLAMA_KEEP_ALIVE=-1           # Mantiene i modelli in VRAM permanentemente
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -62,7 +64,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    restart: unless-stopped
+    # restart gestito da jarvis.sh (ordine VRAM-aware)
 
   # ===========================================================================
   # SPEECH-TO-TEXT - speaches (ex faster-whisper-server) + CTranslate2 4.7.x
@@ -90,7 +92,7 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    restart: unless-stopped
+    # restart gestito da jarvis.sh
 
   # ===========================================================================
   # TTS - XTTSv2 / Coqui (GPU accelerated, voice cloning italiana)
@@ -109,6 +111,10 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - EXAMPLE_FOLDER=/app/speakers            # Speaker folder override (CMD uses -sf $EXAMPLE_FOLDER)
+      # Limita il caching allocator PyTorch — libera VRAM per Ollama
+      # garbage_collection_threshold:0.5 = rilascia cache quando >50% della reserved e inutilizzata
+      # expandable_segments:True = riduce frammentazione allocando segmenti espandibili
+      - PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.5,expandable_segments:True
       # DeepSpeed per 2-4x speedup (opzionale, richiede piu RAM di sistema)
       # - DEEPSPEED=1
     volumes:
@@ -120,7 +126,7 @@ services:
       timeout: 10s
       retries: 10
       start_period: 120s  # Primo avvio: download modello + caricamento GPU
-    restart: unless-stopped
+    # restart gestito da jarvis.sh
 
   # ===========================================================================
   # JARVIS ORCHESTRATOR - OpenClaw Skill (FastAPI)
@@ -173,7 +179,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    restart: always
+    # restart gestito da jarvis.sh
 
   # ===========================================================================
   # ONTOLOGY SERVER - Knowledge Graph API (SQLite + FastAPI + ACL)
@@ -199,7 +205,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    restart: unless-stopped
+    # restart gestito da jarvis.sh
 
   # ===========================================================================
   # SECURITY (Frigate + DoubleTake)
@@ -227,7 +233,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    restart: unless-stopped
+    # restart gestito da jarvis.sh
 
   mongo:
     image: mongo:7
@@ -239,7 +245,7 @@ services:
       - mongo_data:/data/db
     ports:
       - "27017:27017"
-    restart: unless-stopped
+    # restart gestito da jarvis.sh
 
   # ===========================================================================
   # OPTIONAL: Adminer (DB Web UI)
@@ -250,7 +256,6 @@ services:
     container_name: jarvis_adminer
     ports:
       - "8080:8080"
-    restart: unless-stopped
     profiles:
       - tools
 
