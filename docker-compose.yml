@@ -86,6 +86,7 @@ services:
       - WHISPER__INFERENCE_DEVICE=cuda
       - WHISPER__COMPUTE_TYPE=int8_float16      # CTranslate2 >= 4.7.0 + CUDA 12.9 — INT8 su Blackwell (PR #1982)
       - WHISPER__TTL=-1                        # Mai scaricare il modello dalla VRAM
+      - HF_HUB_OFFLINE=1                      # Previene ri-download da HuggingFace (modello montato via volume)
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
