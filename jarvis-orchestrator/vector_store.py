@@ -100,11 +100,18 @@ class OllamaEmbeddingFunction:
     def embed_documents(self, documents: List[str]) -> List[List[float]]:
         return self(documents)
 
-    def embed_query(self, input: str = None, query: str = None) -> List[float]:
+    def embed_query(self, input=None, query=None):
+        """Embed query for ChromaDB >= 1.5.
+        ChromaDB 1.5+ passes input as List[str] and expects List[List[float]] back.
+        Older versions pass input as str and expect List[float].
+        """
         text = input or query
         if text is None:
             raise ValueError("Either 'input' or 'query' must be provided")
-        return self([text])[0]
+        # ChromaDB 1.5+ passes List[str], older passes str
+        if isinstance(text, list):
+            return self(text)
+        return self([text])
 
 
 class GeminiEmbeddingFunction:
@@ -196,11 +203,18 @@ class GeminiEmbeddingFunction:
     def embed_documents(self, documents: List[str]) -> List[List[float]]:
         return self(documents)
 
-    def embed_query(self, input: str = None, query: str = None) -> List[float]:
+    def embed_query(self, input=None, query=None):
+        """Embed query for ChromaDB >= 1.5.
+        ChromaDB 1.5+ passes input as List[str] and expects List[List[float]] back.
+        Older versions pass input as str and expect List[float].
+        """
         text = input or query
         if text is None:
             raise ValueError("Either 'input' or 'query' must be provided")
-        return self([text])[0]
+        # ChromaDB 1.5+ passes List[str], older passes str
+        if isinstance(text, list):
+            return self(text)
+        return self([text])
 
 
 def get_embedding_function():
