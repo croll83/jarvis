@@ -73,6 +73,7 @@ DEFAULT_DOMAIN_LEVELS: Dict[str, SecurityLevel] = {
 
 DEFAULT_CHANNEL_PERMISSIONS: Dict[str, SecurityLevel] = {
     "voice": SecurityLevel.L3_PROTECTED,  # Resemblyzer verified — fully trusted
+    "telegram": SecurityLevel.L3_PROTECTED,  # Direct JARVIS bot — trusted (owner only)
     "openclaw_telegram": SecurityLevel.L2_SENSITIVE,  # Telegram via OpenClaw
     "openclaw_whatsapp": SecurityLevel.L2_SENSITIVE,  # Whatsapp via OpenClaw
     "openclaw_app": SecurityLevel.L3_PROTECTED,  # Mac/desktop app — configurable as trusted
