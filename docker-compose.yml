@@ -177,7 +177,7 @@ services:
       - TTS_ENGINE=xtts
       - XTTS_URL=http://localhost:8890
       # Qwen tool calling (Brave Search)
-      - BRAVE_API_KEY=${BRAVE_API_KEY:}
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}
       - ROUTER_MODEL=${ROUTER_MODEL:-qwen2.5:3b}
       # API keys (only needed if AI_BACKEND=api)
       - GROQ_API_KEY=${GROQ_API_KEY:-}
