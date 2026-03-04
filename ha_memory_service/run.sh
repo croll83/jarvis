@@ -34,15 +34,8 @@ export SKIP_ENTITY_SUFFIXES=$(bashio::config 'skip_entity_suffixes')
 
 # ===========================================================================
 # Home Assistant connection — automatica via Supervisor
-# Con host_network=true il DNS "supervisor" potrebbe non risolvere.
-# Fallback: 172.30.32.2 è l'IP fisso del Supervisor in HA OS.
 # ===========================================================================
-if getent hosts supervisor > /dev/null 2>&1; then
-    export HA_URL="http://supervisor/core"
-else
-    bashio::log.info "DNS 'supervisor' non risolve (host_network mode), uso 172.30.32.2"
-    export HA_URL="http://172.30.32.2/core"
-fi
+export HA_URL="http://supervisor/core"
 export HA_TOKEN="${SUPERVISOR_TOKEN:-}"
 
 bashio::log.info "Location: ${LOCATION_ID}"
