@@ -1,3 +1,6 @@
+#TPM
+openclaw/secrets/tpm
+
 # Python - l'equivalente di node_modules
 venv/
 env/
