@@ -6,7 +6,7 @@
 # =============================================================================
 
 name: "JARVIS HA Memory"
-version: "1.0.5"
+version: "1.0.4"
 slug: jarvis_ha_memory
 description: "Location memory service for JARVIS — event ingestion, LLM summarization, and semantic search"
 url: "https://github.com/croll83/jarvis/tree/main/ha_memory_service"
@@ -24,11 +24,10 @@ init: false
 startup: services
 boot: auto
 
-# Porta API esposta per l'orchestrator
-ports:
-  8100/tcp: 8100
-ports_description:
-  8100/tcp: "Memory API (REST)"
+# Host network: necessario per raggiungere Tailscale (100.x.x.x).
+# Richiede Tailscale add-on con "Userspace networking mode" DISABILITATO
+# (crea tailscale0 sull'host). Sicuro con init: false + ENTRYPOINT [].
+host_network: true
 
 # Ingress per UI futura (health dashboard)
 ingress: false
