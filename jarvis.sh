@@ -64,17 +64,35 @@ wait_for() {
 
 # ── Helper: verifica GPU layers dal log Ollama ────────────────────────────────
 check_gpu_layers() {
-    # Cerca l'ultimo log "model weights" per CPU — se assente, tutto è su GPU
-    local cpu_line
-    cpu_line=$(docker logs jarvis_ollama --tail 30 2>&1 | grep 'msg="model weights"' | grep 'device=CPU' | tail -1 || true)
-    if [ -z "$cpu_line" ]; then
-        ok "Modello caricato: 33/33 layers su GPU"
+    # Cerca la riga "offloaded X/Y layers to GPU" nei log recenti
+    local offload_line
+    offload_line=$(docker logs jarvis_ollama --tail 50 2>&1 | grep 'offloaded.*layers to GPU' | tail -1 || true)
+
+    if [ -z "$offload_line" ]; then
+        warn "Non trovo info layer offload nei log"
+        return 1
+    fi
+
+    # Estrai X e Y da "offloaded X/Y layers to GPU"
+    local gpu_layers total_layers
+    gpu_layers=$(echo "$offload_line" | grep -oP 'offloaded \K\d+')
+    total_layers=$(echo "$offload_line" | grep -oP 'offloaded \d+/\K\d+')
+
+    if [ "$gpu_layers" = "$total_layers" ]; then
+        ok "Modello caricato: ${gpu_layers}/${total_layers} layers su GPU"
+
+        # Mostra VRAM usata dal modello
+        local vram_line
+        vram_line=$(docker logs jarvis_ollama --tail 50 2>&1 | grep 'msg="total memory"' | tail -1 || true)
+        if [ -n "$vram_line" ]; then
+            local total_size
+            total_size=$(echo "$vram_line" | grep -oP 'size="[^"]*"')
+            log "  Memoria modello totale: ${total_size}"
+        fi
         return 0
     else
-        local cpu_size
-        cpu_size=$(echo "$cpu_line" | grep -oP 'size="[^"]*"' | head -1)
-        warn "Modello parzialmente su CPU (${cpu_size}) — VRAM insufficiente"
-        warn "Possibili cause: altro processo GPU attivo, o XTTS/Whisper partiti troppo presto"
+        warn "Solo ${gpu_layers}/${total_layers} layers su GPU"
+        warn "Possibili cause: altro processo GPU attivo, o VRAM insufficiente"
         return 1
     fi
 }
@@ -102,9 +120,9 @@ preload_model() {
         }" 2>/dev/null) || true
 
     if [ "$http_code" = "200" ]; then
-        # Verifica layers
-        sleep 1
-        check_gpu_layers
+        # Verifica layers (non-fatal se parziale — continua comunque)
+        sleep 2
+        check_gpu_layers || true
     else
         err "Pre-load fallito (HTTP ${http_code:-timeout})"
         err "Controlla: docker logs jarvis_ollama --tail 30"
