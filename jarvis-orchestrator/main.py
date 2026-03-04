@@ -386,6 +386,28 @@ async def _tg_bot_api(method: str, payload: dict = None) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+async def _process_telegram_text(text: str, context: dict):
+    """Processa un messaggio di testo Telegram attraverso la pipeline JARVIS."""
+    try:
+        pre_result = await pre_route(text)
+        classification = pre_result.get("classification", "ALTRO")
+        logger.info(f"Telegram pre-route: {classification} "
+                    f"(conf={pre_result.get('confidence', 0):.2f})")
+
+        if classification == "DOMOTICA_CERTA":
+            await process_jarvis_logic(text, context)
+        elif classification == "DOMOTICA_INCERTA":
+            await _handle_openclaw_voice(text, context, hint="domotics")
+        else:
+            await _handle_openclaw_voice(text, context, hint="")
+    except Exception as e:
+        logger.error(f"Error processing Telegram text: {e}", exc_info=True)
+        await _tg_bot_api("sendMessage", {
+            "chat_id": context.get("chat_id"),
+            "text": "❌ Errore durante l'elaborazione del messaggio."
+        })
+
+
 async def _handle_approval_update(update: dict):
     """Process a single Telegram update (message or callback_query).
 
@@ -427,6 +449,30 @@ async def _handle_approval_update(update: dict):
                 "reply_markup": {"inline_keyboard": [buttons]}
             })
 
+        # ── Messaggi di testo generici → pipeline JARVIS ──
+        elif text_msg and not cmd.startswith("/") and msg_chat_id:
+            user_msg = get_user_by_telegram_id(tg_id_msg) if tg_id_msg else None
+            if not user_msg:
+                await _tg_bot_api("sendMessage", {
+                    "chat_id": msg_chat_id,
+                    "text": "⚠️ Il tuo account Telegram non è collegato a nessun utente JARVIS."
+                })
+                return
+
+            user_loc = get_user_location(user_msg.id)
+            location = user_loc.location_id if user_loc else get_default_location_id()
+
+            context = {
+                "source": "Telegram",
+                "chat_id": msg_chat_id,
+                "location": location,
+                "speaker_id": user_msg.id,
+                "speaker_name": user_msg.name,
+                "is_admin": user_msg.is_admin,
+                "telegram_id": tg_id_msg,
+            }
+
+            asyncio.create_task(_process_telegram_text(text_msg, context))
 
         return
 
