@@ -1875,8 +1875,26 @@ async def list_voice_devices(
 
     stats = get_voice_device_stats()
 
+    # Enrich with real-time WebSocket connection status
+    try:
+        from ws_audio_handler import get_connected_devices
+        ws_connected = set(await get_connected_devices())
+    except Exception:
+        ws_connected = set()
+
+    device_dicts = []
+    for d in devices:
+        dd = d.to_dict()
+        # Device is online if heartbeat is recent OR WebSocket is connected
+        if dd["device_id"] in ws_connected:
+            dd["is_online"] = True
+            dd["ws_connected"] = True
+        else:
+            dd["ws_connected"] = False
+        device_dicts.append(dd)
+
     return {
-        "devices": [d.to_dict() for d in devices],
+        "devices": device_dicts,
         "stats": stats
     }
 

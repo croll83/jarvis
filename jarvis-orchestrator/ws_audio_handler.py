@@ -634,9 +634,9 @@ async def ws_audio_endpoint(
                             conn.device_type = "AtomS3R"
                         logger.info(f"Device {device_id}: persistent mode (fw={conn.firmware_version}, type={conn.device_type})")
 
-                        # Auto-register device if not already in database
+                        # Auto-register device if not already in database + update heartbeat
                         try:
-                            from database import get_voice_device, register_unknown_voice_device
+                            from database import get_voice_device, register_unknown_voice_device, update_voice_device_heartbeat
                             dev = get_voice_device(device_id)
                             if not dev:
                                 dev = register_unknown_voice_device(
@@ -645,6 +645,12 @@ async def ws_audio_endpoint(
                                 )
                                 logger.info(f"Device {device_id}: auto-registered in database "
                                             f"(type={conn.device_type}, fw={conn.firmware_version})")
+                            else:
+                                # Update last_seen_at on WS connect (keeps device online)
+                                update_voice_device_heartbeat(
+                                    device_id=device_id,
+                                    firmware_version=conn.firmware_version,
+                                )
                         except Exception as e:
                             logger.error(f"Device {device_id}: auto-registration failed: {e}")
                             dev = None
@@ -687,6 +693,13 @@ async def ws_audio_endpoint(
                             logger.warning(f"Device {device_id}: audio_start while session active — ending previous")
                             # Don't send tts_done here — device is already starting a new session
                             conn.end_audio_session()
+
+                        # Update last_seen_at on every voice interaction
+                        try:
+                            from database import update_voice_device_heartbeat
+                            update_voice_device_heartbeat(device_id=device_id)
+                        except Exception:
+                            pass
 
                         # Parse codec: "pcm" (NabuVoice) or "opus" (AtomS3R, default)
                         codec = ctrl.get("codec", "opus")
