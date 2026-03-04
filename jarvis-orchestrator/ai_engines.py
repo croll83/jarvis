@@ -298,7 +298,9 @@ async def _normalize_ollama(text: str, llm_params: dict) -> Optional[str]:
         ],
         "options": {
             "temperature": 0.1,
-            "num_predict": 150
+            "num_predict": 150,
+            "num_ctx": 3072,
+            "think": False
         },
         "stream": False
     }
@@ -444,7 +446,9 @@ async def _pre_route_ollama(text: str, llm_params: dict) -> Optional[dict]:
         "format": "json",
         "options": {
             "temperature": llm_params["temperature"],
-            "num_predict": 120
+            "num_predict": 120,
+            "num_ctx": 3072,
+            "think": False
         },
         "stream": False
     }
@@ -643,7 +647,9 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
         "format": "json",
         "options": {
             "temperature": _rp["temperature"],
-            "num_predict": _rp["max_tokens"]
+            "num_predict": _rp["max_tokens"],
+            "num_ctx": 3072,
+            "think": False
         },
         "stream": False
     }
@@ -762,7 +768,9 @@ async def get_quick_response(text: str, context: dict) -> str:
         "stream": False,
         "options": {
             "temperature": _rp["temperature"],
-            "num_predict": _rp["max_tokens"]
+            "num_predict": _rp["max_tokens"],
+            "num_ctx": 3072,
+            "think": False
         }
     }
 
@@ -945,7 +953,9 @@ async def call_qwen_summary(prompt: str, max_tokens: int = 150) -> str:
             "stream": False,
             "options": {
                 "temperature": _rp["temperature"],
-                "num_predict": max_tokens or _rp["max_tokens"]
+                "num_predict": max_tokens or _rp["max_tokens"],
+                "num_ctx": 3072,
+                "think": False
             }
         }
 
