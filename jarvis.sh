@@ -182,7 +182,7 @@ cmd_start() {
 
     # ── Fase 3: Servizi non-GPU ───────────────────────────────────────────
     log "═══ Fase 3: Orchestrator + DB + Ontology ═══"
-    dc up -d
+    dc up -d orchestrator postgres mongo adminer
     wait_for "http://localhost:5000/health" "Orchestrator" 60
     echo ""
 
