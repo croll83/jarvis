@@ -146,13 +146,13 @@ services:
   orchestrator:
     build: ./jarvis-orchestrator
     container_name: jarvis_core
-    depends_on:
-      ollama:
-        condition: service_healthy
-      whisper:
-        condition: service_started
-      xtts:
-        condition: service_started
+      #depends_on:
+      #ollama:
+      #  condition: service_healthy
+      #whisper:
+      #  condition: service_started
+      #xtts:
+      #  condition: service_started
     network_mode: host
     volumes:
       - ./data:/app/data                    # SQLite + voice models
