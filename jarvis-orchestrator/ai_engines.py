@@ -12,9 +12,9 @@ logger = logging.getLogger("JARVIS_AI")
 
 
 # ===========================================================================
-# GEMINI INTENTS (per validazione)
+# OPENCLAW INTENTS (per validazione)
 # ===========================================================================
-GEMINI_INTENTS = ["GEMINI", "VERIFY_WITH_GEMINI"]
+OPENCLAW_INTENTS = ["OPENCLAW", "VERIFY_WITH_OPENCLAW"]
 
 # ===========================================================================
 # IMAGE GENERATION INTENTS
@@ -524,8 +524,8 @@ async def get_routing(text: str, context: dict) -> dict:
         HOME_CONTROL, SET_PREFERENCE, SET_LOCATION,
         AUDIT_REPORT, SIMPLE_CHAT, RETRY, IMAGE_GENERATION
     """
-    # Add Gemini availability flag
-    context["gemini_available"] = config.GEMINI_ENABLED
+    # Add OpenClaw availability flag
+    context["openclaw_available"] = config.GEMINI_ENABLED
 
     # LLM decides (local or API)
     if config.AI_BACKEND == "api":
@@ -602,10 +602,10 @@ def _build_routing_prompt(text: str, context: dict) -> str:
     service_status = context.pop("service_status", "")
     service_status_section = f"\n\n[STATO SERVIZI]:\n{service_status}" if service_status and service_status != "tutti i servizi online" else ""
 
-    # Gemini availability section
-    gemini_section = ""
-    if context.pop("gemini_available", False):
-        gemini_section = "\n\n[GEMINI DISPONIBILE]: Puoi usare intent GEMINI o VERIFY_WITH_GEMINI se appropriato."
+    # OpenClaw availability section
+    openclaw_section = ""
+    if context.pop("openclaw_available", False):
+        openclaw_section = "\n\n[OPENCLAW DISPONIBILE]: Puoi usare intent OPENCLAW o VERIFY_WITH_OPENCLAW se appropriato."
 
     # Carica entity map dal DB (per-location, con fallback a user location)
     location_id = context.get("location")
@@ -616,7 +616,7 @@ def _build_routing_prompt(text: str, context: dict) -> str:
 {entity_map_str}
 
 [CONTESTO]:
-{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{gemini_section}
+{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{openclaw_section}
 
 [COMANDO UTENTE]:
 {text}"""
@@ -682,20 +682,20 @@ def _validate_routing(result: dict) -> dict:
     VALID_INTENTS = [
         "HOME_CONTROL", "SET_PREFERENCE", "SET_LOCATION",
         "AUDIT_REPORT", "SIMPLE_CHAT", "RETRY", "IMAGE_GENERATION",
-    ] + GEMINI_INTENTS
+    ] + OPENCLAW_INTENTS
 
     intent = result.get("intent", "SIMPLE_CHAT")
     if intent not in VALID_INTENTS:
         intent = "SIMPLE_CHAT"
 
-    # Se Gemini intent ma non abilitato, fallback a SIMPLE_CHAT
-    if intent in GEMINI_INTENTS and not config.GEMINI_ENABLED:
-        logger.warning(f"Gemini intent {intent} requested but GEMINI not enabled, falling back to SIMPLE_CHAT")
+    # Se OpenClaw intent ma non abilitato, fallback a SIMPLE_CHAT
+    if intent in OPENCLAW_INTENTS and not config.GEMINI_ENABLED:
+        logger.warning(f"OpenClaw intent {intent} requested but OpenClaw not enabled, falling back to SIMPLE_CHAT")
         intent = "SIMPLE_CHAT"
 
     # Se IMAGE_GENERATION ma Gemini non abilitato, fallback
     if intent == "IMAGE_GENERATION" and not config.GEMINI_ENABLED:
-        logger.warning("IMAGE_GENERATION requested but GEMINI not enabled, falling back to SIMPLE_CHAT")
+        logger.warning("IMAGE_GENERATION requested but GEMINI_API_KEY not set, falling back to SIMPLE_CHAT")
         intent = "SIMPLE_CHAT"
 
     return {
@@ -752,15 +752,6 @@ async def get_quick_response(
                     return result
             except Exception as e:
                 logger.warning(f"Quick response OpenRouter failed: {e}")
-
-        # Tentativo 2: Gemini API (solo testo semplice)
-        if config.GEMINI_API_KEY:
-            try:
-                result = await get_gemini_response(f"[Rispondi brevemente in italiano] {text}")
-                if result and not result.startswith("Errore"):
-                    return result
-            except Exception as e:
-                logger.warning(f"Quick response Gemini failed: {e}")
 
         return "Mi dispiace, c'è stato un problema. Puoi ripetere?"
 
@@ -847,89 +838,9 @@ async def _quick_response_openrouter(text: str, system_prompt: str, llm_params: 
                 return None
 
 
-# ===========================================================================
-# GEMINI API INTEGRATION
-# ===========================================================================
-
-async def get_gemini_response(text: str, history: list = None) -> str:
-    """
-    Ottiene risposta da Gemini API.
-    Usato per intent GEMINI diretto.
-    """
-    if not config.GEMINI_API_KEY:
-        return "Mi dispiace, Gemini non è configurato."
-
-    # Gemini usa un formato leggermente diverso
-    contents = []
-
-    if history:
-        for msg in history:
-            role = "user" if msg["role"] == "user" else "model"
-            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-
-    contents.append({"role": "user", "parts": [{"text": text}]})
-
-    _rp = get_llm_params("gemini")
-    payload = {
-        "contents": contents,
-        "generationConfig": {
-            "temperature": _rp["temperature"],
-            "maxOutputTokens": _rp["max_tokens"]
-        }
-    }
-
-    url = f"{config.GEMINI_API_URL}/models/{config.GEMINI_REASONING_MODEL}:generateContent"
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{url}?key={config.GEMINI_API_KEY}",
-                json=payload,
-                timeout=config.API_TIMEOUT_REASONING
-            ) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    # Gemini response structure
-                    candidates = result.get("candidates", [])
-                    if candidates:
-                        content = candidates[0].get("content", {})
-                        parts = content.get("parts", [])
-                        if parts:
-                            return parts[0].get("text", "Nessuna risposta da Gemini")
-                    return "Nessuna risposta da Gemini"
-                else:
-                    error = await resp.text()
-                    logger.error(f"Gemini error: {resp.status} - {error}")
-                    return f"Errore Gemini: {resp.status}"
-
-    except asyncio.TimeoutError:
-        logger.error(f"Gemini timeout after {config.API_TIMEOUT_REASONING}s")
-        return "Mi dispiace, Gemini non ha risposto in tempo."
-    except Exception as e:
-        logger.error(f"Gemini exception: {e}")
-        return f"Errore: {e}"
-
-
-async def verify_with_gemini(original_question: str, previous_response: str) -> str:
-    """
-    Chiede a Gemini di verificare/integrare una risposta precedente.
-    Usato per intent VERIFY_WITH_GEMINI.
-    """
-    if not config.GEMINI_API_KEY:
-        return "Mi dispiace, Gemini non è configurato per la verifica."
-
-    _tpl = load_prompt("gemini_verification")
-    verification_prompt = _tpl.format(
-        original_question=original_question,
-        previous_response=previous_response
-    )
-
-    return await get_gemini_response(verification_prompt)
-
-
-def is_gemini_intent(intent: str) -> bool:
-    """Verifica se l'intent richiede Gemini."""
-    return intent in GEMINI_INTENTS
+def is_openclaw_intent(intent: str) -> bool:
+    """Verifica se l'intent richiede OpenClaw."""
+    return intent in OPENCLAW_INTENTS
 
 
 # ===========================================================================

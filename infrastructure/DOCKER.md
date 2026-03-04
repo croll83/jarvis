@@ -86,8 +86,10 @@ Ollama e Whisper espongono le porte sull'host, l'orchestrator li raggiunge su `l
 ```
 Host (LXC-JARVIS)
 +-- Tailscale (host-level)          — VPN mesh
++-- nginx              (:80, :443)  — Host (reverse proxy, TLS)
 +-- jarvis_ollama       (:11434)    — Docker
-+-- jarvis_whisper      (:9000)     — Docker
++-- jarvis_whisper      (:9000)     — Docker (build: infrastructure/whisper-custom/)
++-- jarvis_xtts         (:8890)     — Docker (build: infrastructure/xtts/)
 +-- jarvis_core         (:5000)     — Docker (network_mode: host)
 +-- jarvis_ontology     (:8100)     — Docker (127.0.0.1)
 +-- jarvis_postgres     (:5432)     — Docker
@@ -97,10 +99,14 @@ Host (LXC-JARVIS)
 L'orchestrator raggiunge i servizi su `localhost`:
 - `http://localhost:11434` per Ollama
 - `http://localhost:9000` per Whisper
-- `http://jarvis-openclaw:18789` per OpenClaw (LXC separato, via Tailscale MagicDNS)
+- `https://openclaw.mintwork.it:18789` per OpenClaw (LXC separato, TLS, via Tailscale MagicDNS)
 
 > **Nota**: OpenClaw gira bare-metal su un **LXC separato** (non in Docker).
 > Tailscale gira **host-level** (non in Docker) — l'orchestrator vede l'interfaccia Tailscale direttamente.
+
+> **Build custom**: `jarvis_whisper` e `jarvis_xtts` usano immagini custom con Dockerfile
+> in sottodirectory di `infrastructure/` (`infrastructure/whisper-custom/` e `infrastructure/xtts/`).
+> I build context sono specificati nel `docker-compose.yml` alla voce `build.context`.
 
 ---
 
