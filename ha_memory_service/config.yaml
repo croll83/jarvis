@@ -6,7 +6,7 @@
 # =============================================================================
 
 name: "JARVIS HA Memory"
-version: "1.0.0"
+version: "1.0.1"
 slug: jarvis_ha_memory
 description: "Location memory service for JARVIS — event ingestion, LLM summarization, and semantic search"
 url: "https://github.com/your-repo/jarvis"
@@ -22,10 +22,11 @@ init: true
 startup: services
 boot: auto
 
-# Host network: necessario per raggiungere Tailscale (100.x.x.x) da dentro il container.
-# Senza host_network il container è sulla bridge 172.30.32.x e non vede la rete Tailscale.
-# La porta 8100 è esposta direttamente sull'host (non serve port mapping).
-host_network: true
+# Porta API esposta per l'orchestrator
+ports:
+  8100/tcp: 8100
+ports_description:
+  8100/tcp: "Memory API (REST)"
 
 # Ingress per UI futura (health dashboard)
 ingress: false
