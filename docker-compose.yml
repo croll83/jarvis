@@ -55,7 +55,10 @@ services:
       - OLLAMA_MAX_LOADED_MODELS=2
       - OLLAMA_CONTEXT_LENGTH=3072     # Copre 2 location (~2280 tok) con margine
       - OLLAMA_NUM_CTX=3072            # Fallback per vecchie versioni Ollama
-      - OLLAMA_FLASH_ATTENTION=1       # Flash attention per KV cache piu efficiente
+      # NOTA: OLLAMA_FLASH_ATTENTION=1 DISABILITATO — pre-alloca KV cache pieno
+      # (da 270 MiB a 1.3 GiB!) rendendo impossibile far stare XTTS + Whisper.
+      # Senza FA: ~3.7 GiB Ollama + 2.0 XTTS + 1.3 Whisper = 7.0/8.15 GiB OK
+      # - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_KEEP_ALIVE=-1           # Mantiene i modelli in VRAM permanentemente
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
