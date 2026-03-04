@@ -589,8 +589,12 @@ async def transcribe_audio(audio_bytes: bytes) -> Optional[str]:
 
 
 async def _transcribe_local(audio_bytes: bytes) -> Optional[str]:
-    """Trascrizione via faster-whisper locale."""
+    """Trascrizione via faster-whisper locale (speaches)."""
     try:
+        # Wrap raw PCM in WAV header se non ha già un RIFF header
+        if not audio_bytes[:4] == b'RIFF':
+            audio_bytes = _wrap_pcm_as_wav(audio_bytes)
+
         async with aiohttp.ClientSession() as session:
             data = aiohttp.FormData()
             data.add_field('file', audio_bytes,

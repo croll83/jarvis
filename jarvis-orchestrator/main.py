@@ -44,8 +44,7 @@ from integrations import (
 from ai_engines import (
     is_safe, get_routing, get_quick_response, pre_route,
     normalize_stt_text,
-    # Gemini
-    get_gemini_response, verify_with_gemini, is_gemini_intent,
+    is_openclaw_intent,
     # Image generation
     is_image_generation_intent
 )
@@ -870,7 +869,7 @@ async def warmup_models():
     try:
         await asyncio.sleep(5)
         logger.info("Warming up models...")
-        await get_routing("test", {"source": "warmup"})
+        await get_routing("accendi la luce del soggiorno", {"source": "warmup"})
         logger.info("✅ Router model ready")
     except Exception as e:
         logger.warning(f"Model warmup failed: {e}")
@@ -3953,97 +3952,36 @@ async def process_jarvis_logic(text: str, context: dict):
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
         await deliver_final_response(response, context, sound_type="positive")
 
-    # --- GEMINI (reasoning via Gemini API) ---
-    elif intent == "GEMINI":
-        if not config.GEMINI_ENABLED:
-            # Gemini non configurato, forward a OpenClaw
-            logger.warning("GEMINI intent but Gemini not enabled, forwarding to OpenClaw")
-            response, _ = await forward_to_openclaw(text, context, hint="gemini_fallback")
-            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-            await deliver_final_response(response, context, sound_type="neutral")
-            return
-
-        await deliver_final_response(interim_text, context)
-
-        # Estrai la domanda dal payload o dal testo
-        payload = router_data.get("payload", {})
-        question = payload.get("question", text)
-
-        # Rimuovi i trigger "chiedi a gemini" dalla domanda
-        for trigger in ["chiedi a gemini", "chiedi a google", "consulta gemini", "domanda per gemini"]:
-            question = question.lower().replace(trigger, "").strip()
-
-        # Per REASONING (Gemini) usiamo limiti leggermente più alti del router
-        reasoning_memory_prompt = format_weighted_context_for_llm(
-            weighted_memory,
-            speaker_name,
-            high_limit=config.ROUTER_MEMORY_HIGH_PRIORITY + 10,    # 25
-            medium_limit=config.ROUTER_MEMORY_MEDIUM_PRIORITY + 3, # 8
-            global_limit=config.ROUTER_MEMORY_GLOBAL + 2           # 5
-        )
-
-        # Contesto stratificato per Gemini
-        try:
-            gemini_stratified = await build_full_context(
-                user_id=speaker_id,
-                user_name=speaker_name,
-                query=text,
-                target_location_id=location,
-                context_type="reasoning"
-            )
-        except Exception as e:
-            logger.warning(f"Gemini stratified context failed: {e}")
-            gemini_stratified = ""
-
-        # Costruisci history per Gemini
-        gemini_system = reasoning_memory_prompt
-        if gemini_stratified:
-            gemini_system = f"{gemini_system}\n{gemini_stratified}"
-
-        history = [{"role": "system", "content": gemini_system}]
-        for msg in weighted_memory.get("high_priority", [])[-20:]:
-            history.append({"role": msg["role"], "content": msg["content"]})
-
-        response = await get_gemini_response(question, history)
-
-        log_event("GEMINI", f"Domanda: {question[:50]}...", speaker_id, speaker_name)
+    # --- OPENCLAW (reasoning via OpenClaw gateway) ---
+    elif intent == "OPENCLAW":
+        logger.info("OPENCLAW intent, forwarding to OpenClaw")
+        response, _ = await forward_to_openclaw(text, context)
+        log_event("OPENCLAW", f"Domanda: {text[:50]}...", speaker_id, speaker_name)
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
         await deliver_final_response(response, context, sound_type="neutral")
         return
 
-    # --- VERIFY_WITH_GEMINI (confronto risposta precedente) ---
-    elif intent == "VERIFY_WITH_GEMINI":
-        if not config.GEMINI_ENABLED:
-            response = "Mi dispiace, Gemini non è configurato per la verifica."
-            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-            await deliver_final_response(response, context, sound_type="negative")
-            return
-
-        # Recupera l'ultima domanda e risposta dalla memoria
+    # --- VERIFY_WITH_OPENCLAW (confronto risposta precedente) ---
+    elif intent == "VERIFY_WITH_OPENCLAW":
         last_exchange = _get_last_qa_from_memory(weighted_memory)
-
         if not last_exchange:
             response = "Non ricordo cosa ti ho detto. Puoi ripetere la domanda?"
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context, sound_type="neutral")
             return
 
-        await deliver_final_response("Chiedo conferma a Gemini...", context)
-
-        response = await verify_with_gemini(
-            original_question=last_exchange["question"],
-            previous_response=last_exchange["answer"]
-        )
-
-        log_event("VERIFY_GEMINI", f"Verifica risposta precedente", speaker_id, speaker_name)
+        await deliver_final_response("Chiedo conferma...", context)
+        verify_text = f"Verifica questa risposta: alla domanda '{last_exchange['question']}' ho risposto '{last_exchange['answer']}'. È corretto?"
+        response, _ = await forward_to_openclaw(verify_text, context)
+        log_event("VERIFY_OPENCLAW", f"Verifica risposta precedente", speaker_id, speaker_name)
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
         await deliver_final_response(response, context, sound_type="neutral")
         return
 
-    # --- IMAGE_GENERATION (genera immagini con Gemini) ---
+    # --- IMAGE_GENERATION (genera immagini con Gemini API) ---
     elif intent == "IMAGE_GENERATION":
         if not config.GEMINI_ENABLED:
-            response = "Mi dispiace, la generazione immagini richiede Gemini che non è configurato."
+            response = "Mi dispiace, la generazione immagini richiede GEMINI_API_KEY."
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context, sound_type="negative")
             return
@@ -4139,11 +4077,7 @@ async def process_jarvis_logic(text: str, context: dict):
             ])
 
             report_prompt = f"Eventi casa:\n{logs_str}\n\nUtente ({speaker_name}) chiede: {text}"
-            # Usa Gemini se disponibile, altrimenti quick response
-            if config.GEMINI_ENABLED:
-                response = await get_gemini_response(report_prompt, [])
-            else:
-                response = await get_quick_response(report_prompt, context)
+            response = await get_quick_response(report_prompt, context)
 
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
         # Report audit con suono neutrale

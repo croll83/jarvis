@@ -17,7 +17,7 @@ const http = require("http");
 const XTTS_URL = process.env.XTTS_URL || "http://100.88.84.81:8890";
 const PORT = parseInt(process.env.PORT || "8891", 10);
 const DEFAULT_LANGUAGE = process.env.DEFAULT_LANGUAGE || "it";
-const DEFAULT_SPEAKER = process.env.XTTS_SPEAKER || "sample-bytedance";
+const DEFAULT_SPEAKER = process.env.XTTS_SPEAKER || "jarvis";
 
 function mapVoice(voice) {
   if (!voice) return DEFAULT_SPEAKER;

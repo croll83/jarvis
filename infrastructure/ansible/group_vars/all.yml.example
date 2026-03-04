@@ -36,7 +36,7 @@ docker_log_max_file: "3"
 # NVIDIA (solo per deploy_type: lxc_gpu)
 # =============================================================================
 # Il driver è installato sull'HOST Proxmox, non nel container.
-# GPU VRAM budget: Qwen3.5 4B (~2.6GB) + Whisper (~0.4GB) + XTTSv2 (~2.1GB) + nomic (~0.3GB)
+# GPU VRAM budget: Qwen 2.5 3B (~2.5GB) + Whisper large-v3-turbo (~1.3GB) + XTTSv2 (~2.0GB) + nomic (~0.3GB) = ~6.1 GB / 8.15 GB
 ollama_gpu_layers: 15           # 6GB->10, 8GB->15, 12GB->25, 16GB+->40
 ollama_num_ctx: 4096
 
@@ -51,6 +51,15 @@ openrouter_api_key: ""
 
 # Gemini — OpenClaw brain — https://aistudio.google.com/app/apikey
 gemini_api_key: ""
+
+# Brave Search — web_search tool — https://brave.com/search/api/
+brave_api_key: ""
+
+# Ontology Server — Knowledge Graph API auth
+ontology_api_token: ""
+
+# Router model — default: qwen2.5:3b
+router_model: "qwen2.5:3b"
 
 # =============================================================================
 # OPENCLAW (Brain - Gemini 3 Pro, bare-metal su VM separata)
@@ -189,9 +198,15 @@ frigate_rtsp_password: ""
 # Connessione:   tailscale up --hostname=jarvis-wagmi
 # Non serve auth key nell'env — si autentica con tailscale up
 
-# Nginx + SSL — per accesso pubblico HTTPS
-install_nginx: false
-nginx_domain: "jarvis.yourdomain.com"
+# =============================================================================
+# NGINX + PUBLIC ACCESS
+# =============================================================================
+# Nginx su LXC-JARVIS per jarvis.mintwork.it (Tailscale-only)
+# Cloudflare Tunnel per jarvis-pub.mintwork.it (Telegram webhook)
+install_nginx: true
+nginx_domain: "jarvis.mintwork.it"
+cloudflare_tunnel_enabled: true
+cloudflare_tunnel_domain: "jarvis-pub.mintwork.it"
 
 # Backup automatico DB — cron giornaliero alle 3:00
 setup_backup_cron: false

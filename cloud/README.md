@@ -1,5 +1,12 @@
 # JARVIS — Deploy Cloud (VPS senza GPU)
 
+> **⚠️ NOTA: Deploy Legacy**
+> Il deploy principale di JARVIS è stato migrato su **LXC locale con GPU** (vedi `infrastructure/README.md`).
+> Questa guida cloud rimane come riferimento per:
+> - Deploy senza GPU su VPS economico
+> - Testing/staging prima di passare al deploy locale
+> - Scenari dove non si dispone di hardware GPU locale
+
 Guida completa per il deploy di JARVIS su un VPS. Nessuna GPU richiesta: AI via API esterne
 (Gemini 3 Pro via OpenClaw, Groq per STT, OpenRouter per routing).
 Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere Home Assistant.
@@ -8,11 +15,6 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
 > **NOTA:** Il wakeword-server (`jarvis/wakeword-server/`) NON va deployato su VPS cloud.
 > Ogni casa ha il proprio wakeword-server su un LXC locale (stessa LAN degli AtomS3R).
 > Il VPS riceve solo il relay audio post-wake tramite Tailscale.
-
-> **TODO:**
-> - Aggiungere conf Nginx per webhook Telegram (jarvis-pub.mintwork.it → IP pubblico VPS)
-> - Aggiungere conf Nginx per AtomS3R (endpoint accessibile da rete locale/Tailscale)
-> - Migrare Approval Bot da long-polling a webhook una volta configurato il DNS pubblico
 
 ---
 
@@ -575,7 +577,6 @@ I prompt di sistema sono in `jarvis-orchestrator/prompts/`. Modificabili senza t
 ```
 prompts/
   quick_response_system.txt     # System prompt per chat semplice
-  gemini_verification.txt       # Prompt per verifica Gemini
   user_hourly_summary.txt       # Prompt per summary orario
   user_daily_summary.txt        # Prompt per summary giornaliero
 ```
@@ -647,7 +648,7 @@ La porta 18789 su loopback NON e esposta su internet. L'accesso esterno avviene 
 |----------|-------|
 | Gemini 3 Pro | ~$0 (free tier generoso) |
 | Groq Whisper | ~$0 (free tier 14k min/mese) |
-| OpenRouter Qwen 7B | ~$0.001/richiesta |
+| OpenRouter Qwen 2.5 3B | ~$0.001/richiesta |
 | VPS Hetzner CX22 | ~€4/mese |
 | Tailscale | Gratis (piano personal, fino a 100 nodi) |
 

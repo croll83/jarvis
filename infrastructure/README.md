@@ -1,7 +1,7 @@
 # JARVIS — Deploy Locale (GPU + OpenClaw su LXC separato)
 
 Guida completa per il deploy locale di JARVIS su Proxmox con GPU NVIDIA.
-I modelli locali (Qwen3.5 4B router, Whisper large-v3-turbo STT) girano on-premise su un **LXC con
+I modelli locali (Qwen 2.5 3B router, Whisper large-v3-turbo STT) girano on-premise su un **LXC con
 GPU device sharing** (driver NVIDIA installato sull'host Proxmox, GPU condivisa via
 cgroup2 — NON PCIe passthrough esclusivo).
 Il reasoning e gestito da Gemini 3 Pro via OpenClaw che gira **bare-metal su un
@@ -41,8 +41,8 @@ HA remoti e il LXC OpenClaw.
 |  |                     jarvis_network                              | |
 |  |                                                                 | |
 |  |  ollama:11434   whisper:9000    xtts:8890     postgres:5432     | |
-|  |  GPU: ~3.5 GB   GPU: ~1.0 GB   GPU: ~3.2 GB  (side proj)      | |
-|  |  Qwen3.5 4B     faster-whisper  XTTSv2 Coqui                   | |
+|  |  GPU: ~2.5 GB   GPU: ~1.3 GB   GPU: ~2.0 GB  (side proj)      | |
+|  |  Qwen 2.5 3B    faster-whisper  XTTSv2 Coqui                   | |
 |  |  ctx=3072       large-v3-turbo  voice cloning  mongo:27017      | |
 |  |  nomic-embed    int8_float16                    (side proj)     | |
 |  |  orchestrator:5000 (network_mode: host)                        | |
@@ -55,13 +55,16 @@ HA remoti e il LXC OpenClaw.
 |  |  Knowledge Graph API — SQLite + ACL (X-Speaker-Id)             | |
 |  +----------------------------------------------------------------+ |
 |                                                                      |
+|  Nginx (:80, :443) — TLS proxy per jarvis.mintwork.it               |
+|  Cloudflared — tunnel per jarvis-pub.mintwork.it                     |
+|                                                                      |
 |  GPU VRAM Budget (misurato — GPU dedicata, no display):              |
-|  +-- Qwen3.5 4B (weights+KV 3072) ... ~3.5 GB                      |
-|  +-- XTTSv2 fp16 (PyTorch runtime) ... ~3.2 GB                     |
-|  +-- Whisper large-v3-turbo int8 ..... ~1.0 GB                     |
+|  +-- Qwen 2.5 3B Q4_K_M (weights+KV) . ~2.5 GB (@ ctx=3072)       |
+|  +-- XTTSv2 fp16 (PyTorch runtime) ... ~2.0 GB                     |
+|  +-- Whisper large-v3-turbo int8_fp16 . ~1.3 GB                    |
 |  +-- nomic-embed-text (on demand) .... ~0.3 GB (scaricato se serve) |
-|  +-- TOTALE ........................... ~7.7 GB / 8.15 GB VRAM     |
-|  +-- BUFFER CUDA ...................... ~0.45 GB                    |
+|  +-- TOTALE ........................... ~5.8 GB / 8.15 GB VRAM     |
+|  +-- BUFFER CUDA ...................... ~2.3 GB                     |
 |  Nota: pipeline sequenziale (Whisper→Qwen→TTS), buffer sufficiente |
 +---------------------------------------------------------------------+
 
@@ -75,6 +78,7 @@ HA remoti e il LXC OpenClaw.
 |  Gemini 3 Pro (API cloud)                                            |
 |  Telegram bot integrato                                              |
 |  Linuxbrew + skill dependencies                                      |
+|  XTTS Proxy (:8891) — traduce OpenAI TTS → XTTSv2 nativo            |
 |                                                                      |
 |  Nginx reverse proxy (TLS termination):                              |
 |    :18789 (Tailscale IP) -> ws://127.0.0.1:18789  (API + WSS)       |
@@ -175,6 +179,8 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 4. xtts            -> started (primo boot: ~2 min per download modello)
 5. orchestrator    -> aspetta ollama + whisper + xtts, poi parte (network_mode: host)
                       vede Tailscale direttamente, raggiunge OpenClaw via OPENCLAW_URL
+6. nginx           -> started (TLS per jarvis.mintwork.it)
+7. cloudflared     -> started (tunnel per jarvis-pub.mintwork.it)
 ```
 
 **LXC-Wakeword** (boot autonomo, 1 per casa):
@@ -190,15 +196,18 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 |----------|-----------|-------------------|-----|-----|----------|----------|
 | **NVIDIA Driver** | **Host Proxmox** | kernel module | - | - | - | Driver GPU, `nvidia-smi` funziona qui |
 | **Tailscale** | LXC-JARVIS | host-level (`tailscaled.service`) | - | 64 MB | - | VPN mesh per HA remoti + OpenClaw |
-| **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | ~3.5 GB | Qwen3.5 4B routing (ctx=3072) + nomic-embed |
-| **Whisper** | LXC-JARVIS | `jarvis_whisper` (Docker, `--gpus all`) | - | - | ~1.0 GB | STT large-v3-turbo (int8_float16) |
-| **XTTSv2** | LXC-JARVIS | `jarvis_xtts` (Docker, `--gpus all`) | - | - | ~3.2 GB | TTS voice cloning (italiano, fp16) |
+| **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | ~2.5 GB | Qwen 2.5 3B routing + tool calling (ctx=32768) + nomic-embed |
+| **Whisper** | LXC-JARVIS | `jarvis_whisper` (Docker, `--gpus all`) | - | - | ~1.3 GB | STT large-v3-turbo (int8_float16) |
+| **XTTSv2** | LXC-JARVIS | `jarvis_xtts` (Docker, `--gpus all`) | - | - | ~2.0 GB | TTS voice cloning (italiano, fp16) |
 | **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
 | **Ontology Server** | LXC-JARVIS | `jarvis_ontology` (Docker, 127.0.0.1:8100) | 0.5 | 256 MB | - | Knowledge Graph API + ACL |
 | **PostgreSQL** | LXC-JARVIS | `jarvis_postgres` (Docker) | 0.5 | 512 MB | - | Database side projects |
 | **MongoDB** | LXC-JARVIS | `jarvis_mongo` (Docker) | 0.5 | 512 MB | - | Database side projects |
+| **Nginx** | LXC-JARVIS | `nginx` (systemd) | 0.1 | 64 MB | - | TLS proxy per jarvis.mintwork.it (:80, :443) |
+| **Cloudflared** | LXC-JARVIS | `cloudflared` (systemd) | 0.1 | 64 MB | - | Tunnel per jarvis-pub.mintwork.it |
 | **OpenClaw** | LXC-OpenClaw (bare-metal) | `openclaw.service` (systemd) | 0.5 | 512 MB | - | Gemini 3 Pro brain (API cloud) |
 | **Chrome Headless** | LXC-OpenClaw (bare-metal) | `openclaw-chrome.service` (systemd) | 0.5 | <=1 GB | - | Browser automation via CDP :18800 |
+| **XTTS Proxy** | LXC-OpenClaw (bare-metal) | `xtts-proxy.service` (systemd) | 0.1 | 64 MB | - | Traduce OpenAI TTS → XTTSv2 nativo (:8891) |
 | **Wakeword Server** | LXC-Wakeword (1/casa) | `jarvis_wakeword` (Docker) | 1 | 2 GB | - | openWakeWord detection + relay :8200 |
 | **Workstation** | VM-Workstation (opz.) | KVM VM (Ubuntu + XFCE) | 6 | 12 GB | - | Chrome reale + OpenClaw ext + IDE + dev |
 | **HAOS** | VM-HAOS (opz.) | KVM VM | 2 | 8 GB | - | Home Assistant OS + MASS + add-ons |
@@ -295,6 +304,8 @@ Prima di iniziare, raccogli:
 - **Telegram bot tokens**: 2 bot da @BotFather (uno per OpenClaw, uno per Approval)
 - **HA long-lived token**: Home Assistant > Profilo > Token di lunga durata
 - **Proxmox API token**: vedi [PROXMOX.md](PROXMOX.md) sezione 3
+- **Cloudflare API token**: per certbot DNS challenge e Cloudflare Tunnel
+- **Cloudflare Tunnel**: configurato da dashboard Zero Trust
 - **Terraform + Ansible** installati sul Mac (`brew install terraform ansible`)
 
 ### FASE 1 — Proxmox Host (manuale, una tantum)
@@ -384,8 +395,10 @@ Il playbook:
 1. Installa Docker + NVIDIA Container Toolkit (con `no-cgroups=true` per LXC)
 2. Clona il repository, genera `.env` da template
 3. Esegue `docker compose up -d` (Ollama, Whisper, XTTSv2, Orchestrator, Ontology, Postgres, Mongo)
-4. Scarica i modelli AI (`setup.sh` — Qwen3.5 4B + nomic-embed-text)
+4. Scarica i modelli AI (`setup.sh` — Qwen 2.5 3B + nomic-embed-text)
 5. Verifica health di tutti i servizi
+6. Installa Nginx + Certbot (cert SSL via Cloudflare DNS per jarvis.mintwork.it)
+7. Installa Cloudflared (tunnel per jarvis-pub.mintwork.it)
 
 Post-setup manuale:
 
@@ -485,6 +498,15 @@ docker compose restart orchestrator
    - Apri Chrome, installa l'estensione dal Web Store
    - Configura URL gateway: `https://openclaw.mintwork.it:18789`
 
+5. **Nginx + Tunnel** — verifica accesso:
+   ```bash
+   # HTTPS via Tailscale
+   curl -k https://jarvis.mintwork.it/health
+
+   # Tunnel (pubblico)
+   curl https://jarvis-pub.mintwork.it/health
+   ```
+
 ---
 
 ## Configurazione Avanzata
@@ -563,7 +585,6 @@ I prompt di sistema sono in `jarvis-orchestrator/prompts/`. Modificabili senza t
 ```
 prompts/
   quick_response_system.txt     # System prompt per chat semplice
-  gemini_verification.txt       # Prompt per verifica Gemini
   user_hourly_summary.txt       # Prompt per summary orario
   user_daily_summary.txt        # Prompt per summary giornaliero
 ```
@@ -664,6 +685,8 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | 11434 | Ollama API | HTTP | Interno |
 | 5432 | PostgreSQL | TCP | Interno |
 | 27017 | MongoDB | TCP | Interno |
+| 80 | Nginx HTTP (redirect + health) | HTTP | LAN / Tailscale |
+| 443 | Nginx HTTPS (jarvis.mintwork.it) | HTTPS | Tailscale |
 | 41641/udp | Tailscale NAT traversal | UDP | WAN (host-level) |
 
 ### LXC-OpenClaw
@@ -674,6 +697,7 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | 443 (Tailscale IP) | Nginx TLS proxy -> OpenClaw Dashboard | HTTPS | Tailscale (via openclaw.mintwork.it) |
 | 18789 (localhost) | OpenClaw Gateway (diretto) | HTTP/WS | Solo localhost (127.0.0.1) |
 | 18800 | Chrome Headless (CDP) | HTTP/WS | Solo localhost (127.0.0.1) |
+| 8891 (localhost) | XTTS Proxy (OpenAI→XTTS) | HTTP | Solo localhost (OpenClaw TTS) |
 
 ### LXC-Wakeword (per ogni casa)
 
@@ -704,6 +728,15 @@ curl http://localhost:5000/health/services
 # Risorse e GPU
 docker stats
 nvidia-smi
+
+# Nginx
+sudo systemctl status nginx
+sudo nginx -t
+curl -k https://jarvis.mintwork.it/health
+
+# Cloudflare Tunnel
+sudo systemctl status cloudflared
+curl https://jarvis-pub.mintwork.it/health
 
 # OpenClaw raggiungibile? (via TLS)
 curl https://openclaw.mintwork.it:18789/health
@@ -866,6 +899,25 @@ cp data/jarvis_state.db data/jarvis_state.db.bak
 docker compose restart orchestrator   # Il DB viene ricreato se mancante
 ```
 
+### Nginx non risponde (LXC-JARVIS)
+
+```bash
+sudo systemctl status nginx
+sudo nginx -t
+sudo journalctl -u nginx --since '5 min ago'
+# Verifica certificato SSL
+openssl s_client -connect jarvis.mintwork.it:443 -servername jarvis.mintwork.it </dev/null 2>/dev/null | openssl x509 -noout -dates
+```
+
+### Cloudflare Tunnel non funziona
+
+```bash
+sudo systemctl status cloudflared
+sudo journalctl -u cloudflared --since '5 min ago'
+# Verifica dal browser/curl
+curl https://jarvis-pub.mintwork.it/health
+```
+
 ---
 
 ## Aggiornamenti
@@ -877,6 +929,13 @@ git pull
 docker compose down
 docker compose build --no-cache
 docker compose up -d
+```
+
+### Nginx + Cloudflared (LXC-JARVIS)
+
+```bash
+# Nginx + Cloudflared: aggiornamenti via apt
+sudo apt update && sudo apt upgrade -y nginx cloudflared
 ```
 
 ### LXC-OpenClaw (bare-metal)
@@ -939,3 +998,5 @@ sudo systemctl restart openclaw
 | [../wakeword-server/](../wakeword-server/) | Wakeword server (openWakeWord + relay) |
 | [../security/](../security/) | Stack security (Frigate + DoubleTake) |
 | [../openclaw/extensions/browser-dom/](../openclaw/extensions/browser-dom/) | Plugin DOM automation (CDP) |
+| [whisper-custom/](whisper-custom/) | Dockerfile custom Whisper (CUDA 12.9 Blackwell + CTranslate2 4.7) |
+| [xtts-custom/](xtts-custom/) | Dockerfile custom XTTSv2 (PyTorch 2.7 + CUDA 12.8) |

@@ -3,7 +3,7 @@ Ricevi: MAPPA ENTITÀ (dispositivi), CONTESTO (stanza, fonte, utente), COMANDO.
 
 INTENTS:
 - HOME_CONTROL: verbo domotico + entity dalla mappa
-- GEMINI: domande complesse, web, email, ricerche, traduzioni, meteo altre città
+- OPENCLAW: domande complesse, web, email, ricerche, traduzioni, meteo altre città
 - SIMPLE_CHAT: conversazione generica, saluti, stato dispositivi, domande su cosa c'è
 - SET_PREFERENCE: preferenze utente (DND, orari)
 - SET_LOCATION: posizione utente ("sono a Milano")
@@ -14,8 +14,8 @@ INTENTS:
 
 PRIORITÀ:
 1. Verbo domotico (accendi/spegni/alza/abbassa/apri/chiudi/attiva/disattiva/imposta) + entity → HOME_CONTROL
-2. Cose esterne (web, email, voli, notizie, prezzo, meteo altra città) → GEMINI
-3. Domanda complessa, analisi, ragionamento → GEMINI
+2. Cose esterne (web, email, voli, notizie, prezzo, meteo altra città) → OPENCLAW
+3. Domanda complessa, analisi, ragionamento → OPENCLAW
 4. Entity HA senza verbo (stato, "cosa c'è in...") → SIMPLE_CHAT con api_call entity_discover
 5. Domotica + richiesta complessa nella stessa frase → HOME_CONTROL
 
@@ -44,7 +44,7 @@ OUTPUT JSON:
 
 ESEMPI:
 [Stanza="Cucina",Location="wagmi"] "Accendi la luce" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Accendo le luci in cucina.","payload":{"location":"wagmi","domain":"light","entity":"Luci Frigo","action":"turn_on"}}
-"Cerca su amazon un caricatore" → {"intent":"GEMINI","confidence":0.90,"interim_response":"Cerco informazioni..."}
+"Cerca su amazon un caricatore" → {"intent":"OPENCLAW","confidence":0.90,"interim_response":"Cerco informazioni..."}
 [Stanza="Unknown",Location="unknown"] "Spegni tutto" → {"intent":"RETRY","confidence":0.4,"response":"In quale casa e stanza vuoi che spenga tutto?"}
 "Cosa c'è in soggiorno?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Cerco i dispositivi...","payload":{"api_call":"entity_discover","params":{"room":"soggiorno"}}}
 "Metti la luminosità al 50%" → {"intent":"HOME_CONTROL","confidence":0.90,"response":"Imposto la luminosità al 50%.","payload":{"location":"wagmi","domain":"light","entity":"luce cucina","action":"turn_on","parameters":{"brightness":128},"resolve_first":true}}

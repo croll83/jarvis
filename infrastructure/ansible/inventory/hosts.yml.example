@@ -28,6 +28,14 @@ openclaw:
       ansible_user: jarvis
       ansible_become: true
 
+# Gruppo per i LXC Wakeword (opzionale — uno per casa/LAN)
+wakeword:
+  hosts:
+    jarvis-wakeword:
+      ansible_host: 192.168.1.45     # <-- IP LXC-Wakeword
+      ansible_user: root
+      ansible_become: false
+
 # Gruppo per la VM Workstation (opzionale)
 # Ubuntu Desktop + Chrome reale + OpenClaw browser extension + IDE
 workstation:

@@ -327,7 +327,7 @@ INTERVALS = {
 }
 
 # Whisper locale
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "deepdml/faster-whisper-large-v3-turbo-ct2")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "it")
 
 # Whisper initial_prompt — context per migliorare trascrizione (max ~224 token / ~900 chars)

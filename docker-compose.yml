@@ -77,7 +77,7 @@ services:
   # Modello nella request API: model=deepdml/faster-whisper-large-v3-turbo-ct2
   # ===========================================================================
   whisper:
-    build: ./whisper-custom
+    build: ./infrastructure/whisper-custom
     image: jarvis/whisper-blackwell:latest
     container_name: jarvis_whisper
     ports:
@@ -107,7 +107,7 @@ services:
   # Per voice cloning: metti un WAV di riferimento (6-15s, mono, 22050Hz+) in ./speakers/
   # API docs: http://localhost:8890/docs
   xtts:
-    build: ./xtts-custom
+    build: ./infrastructure/xtts-custom
     image: jarvis/xtts-blackwell:latest
     container_name: jarvis_xtts
     ports:

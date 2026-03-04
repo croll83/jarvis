@@ -63,8 +63,8 @@ lxc_swap      = 2048                    # MB
 lxc_disk_size = 400                     # GB
 
 # Template LXC Ubuntu — scaricalo da Proxmox UI:
-#   Storage > local > CT Templates > Templates > ubuntu-22.04-standard
-lxc_template_file_id = "local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+#   Storage > local > CT Templates > Templates > ubuntu-24.04-standard
+lxc_template_file_id = "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
 
 # -----------------------------------------------------------------------------
 # Rete
@@ -88,6 +88,7 @@ datastore_id = "local-lvm"
 # Trova i device con: ls -la /dev/nvidia*
 gpu_devices = [
   "/dev/nvidia0",
+  "/dev/nvidia-modeset",
   "/dev/nvidiactl",
   "/dev/nvidia-uvm",
   "/dev/nvidia-uvm-tools"
@@ -95,8 +96,9 @@ gpu_devices = [
 
 # Major number per cgroup — trova con:
 #   stat -c '%t' /dev/nvidia0 | xargs printf '%d\n'    (→ 195)
-#   stat -c '%t' /dev/nvidia-uvm | xargs printf '%d\n' (→ 234)
-# I default (195, 234, 509) funzionano nella maggior parte dei casi
+#   stat -c '%t' /dev/nvidia-uvm | xargs printf '%d\n' (→ varia: 234, 507, etc.)
+#   stat -c '%t' /dev/nvidia-caps/nvidia-cap1 | xargs printf '%d\n' (→ varia: 509, 510, etc.)
+# I valori dipendono dalla versione del driver NVIDIA. Verifica SEMPRE sull'host.
 gpu_cgroup_device_majors = [195, 234, 509]
 
 # -----------------------------------------------------------------------------
@@ -107,9 +109,10 @@ gpu_cgroup_device_majors = [195, 234, 509]
 openclaw_hostname    = "jarvis-openclaw"
 openclaw_ct_id       = 101                   # 0 per auto-assign
 openclaw_cores       = 2
-openclaw_memory      = 4096                  # 4 GB
-openclaw_disk_size   = 30                    # GB
+openclaw_memory      = 8192                  # 8 GB
+openclaw_disk_size   = 200                   # GB
 openclaw_ip_address  = "192.168.1.51/24"     # oppure "dhcp"
+# Template: usa lo stesso di lxc_template_file_id se non specificato
 
 # -----------------------------------------------------------------------------
 # VM Workstation (opzionale — Ubuntu Desktop + XFCE)

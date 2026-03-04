@@ -1,11 +1,12 @@
-# Whisper (faster-whisper) — Riferimento e Troubleshooting
+# Whisper (faster-whisper-large-v3-turbo) — Riferimento e Troubleshooting
 
 > **NOTA:** L'installazione di Whisper e' gestita automaticamente da Ansible
 > (`jarvis.yml` — docker compose up). Questo file serve come riferimento per
 > la configurazione e il troubleshooting.
 
-Server Speech-to-Text locale per JARVIS. Converte audio vocale in testo usando
-faster-whisper con accelerazione GPU CUDA.
+Server Speech-to-Text locale per JARVIS. Usa una build custom di
+[speaches](https://github.com/speaches-ai/speaches) con CTranslate2 >=4.7.0
+per supporto INT8 su GPU Blackwell (sm_120).
 
 ---
 
@@ -18,21 +19,48 @@ faster-whisper con accelerazione GPU CUDA.
 | NVIDIA Container Toolkit | Installato | Vedi [DOCKER.md](DOCKER.md) |
 | Docker | 24.0+ | latest |
 
-> **Nota:** Whisper condivide la GPU con Ollama. Assicurati di avere VRAM sufficiente
-> per entrambi. Il modello `base` usa circa 400 MB di VRAM.
+> **Nota:** Whisper condivide la GPU con Ollama e XTTSv2. Il modello
+> `faster-whisper-large-v3-turbo` in `int8_float16` usa circa **1.3 GB** di VRAM.
 
-### Requisiti VRAM per modello Whisper
+### Requisiti VRAM per modello/compute type
 
-| Modello | Dimensione | VRAM | Precisione | Velocita |
-|---------|-----------|------|-----------|---------|
-| `tiny` | 75 MB | ~200 MB | Bassa | Velocissimo |
-| `base` | 142 MB | ~400 MB | Buona | Veloce |
-| `small` | 466 MB | ~1 GB | Molto buona | Medio |
-| `medium` | 1.5 GB | ~3 GB | Eccellente | Lento |
-| `large-v3` | 3 GB | ~6 GB | Massima | Molto lento |
+| Modello | Compute Type | VRAM misurata | Note |
+|---------|-------------|---------------|------|
+| `faster-whisper-large-v3-turbo` | `int8_float16` | ~1.3 GB | **Deploy attuale** |
+| `faster-whisper-large-v3-turbo` | `float16` | ~1.6 GB | Maggiore precisione, piu VRAM |
+| `faster-whisper-large-v3` | `int8_float16` | ~2.0 GB | Full large-v3, molto piu lento |
 
-**Consigliato per JARVIS:** `base` — buon compromesso tra precisione e velocita,
-soprattutto per comandi domotici in italiano.
+---
+
+## Immagine Custom: jarvis/whisper-blackwell
+
+L'immagine standard `speaches` non supporta INT8 su Blackwell (sm_120) perche'
+CTranslate2 < 4.7.0 disabilita INT8 su architetture sconosciute.
+
+La build custom risolve questo:
+- **Base**: `ghcr.io/speaches-ai/speaches:latest-cuda` (CUDA 12.9)
+- **Upgrade**: CTranslate2 >=4.7.0 (PR #1982 — abilita INT8 su Blackwell)
+- **Dockerfile**: `infrastructure/whisper-custom/Dockerfile`
+- **Build**: `docker build -t jarvis/whisper-blackwell:latest infrastructure/whisper-custom/`
+
+### Modello pre-montato (no download a runtime)
+
+Il modello NON viene scaricato al primo avvio. E' montato come volume dal host
+tramite una struttura di symlink che simula la cache HuggingFace:
+
+```
+models/whisper-large-v3-turbo-ct2/
+  ├── model.bin
+  ├── config.json
+  ├── tokenizer.json
+  ├── vocabulary.json
+  └── ...
+```
+
+Il volume monta questa directory nella posizione attesa dalla fake HF cache,
+cosi' `speaches` la trova senza accesso a internet.
+
+- **Nome modello API**: `deepdml/faster-whisper-large-v3-turbo-ct2`
 
 ---
 
@@ -40,14 +68,20 @@ soprattutto per comandi domotici in italiano.
 
 ```yaml
 whisper:
-  image: fedirz/faster-whisper-server:latest-cuda
+  image: jarvis/whisper-blackwell:latest
+  build:
+    context: ./infrastructure/whisper-custom
   container_name: jarvis_whisper
   ports:
     - "9000:8000"
+  volumes:
+    - ./models/whisper-large-v3-turbo-ct2:/models/whisper-large-v3-turbo-ct2:ro
+    # Fake HF cache: symlink structure montata nel container
   environment:
-    - WHISPER__MODEL=base
+    - WHISPER__MODEL=deepdml/faster-whisper-large-v3-turbo-ct2
     - WHISPER__DEVICE=cuda
-    - WHISPER__COMPUTE_TYPE=float16
+    - WHISPER__COMPUTE_TYPE=int8_float16
+    - WHISPER__TTL=-1
   deploy:
     resources:
       reservations:
@@ -62,9 +96,16 @@ whisper:
 
 | Variabile | Valore | Descrizione |
 |-----------|--------|-------------|
-| `WHISPER__MODEL` | `base` | Modello Whisper da usare |
+| `WHISPER__MODEL` | `deepdml/faster-whisper-large-v3-turbo-ct2` | Modello CTranslate2 pre-convertito |
 | `WHISPER__DEVICE` | `cuda` | Device per inferenza (cuda = GPU NVIDIA) |
-| `WHISPER__COMPUTE_TYPE` | `float16` | Precisione numerica (float16 per GPU) |
+| `WHISPER__COMPUTE_TYPE` | `int8_float16` | INT8 weights + float16 activations (Blackwell) |
+| `WHISPER__TTL` | `-1` | Mai scaricare il modello dalla VRAM |
+
+### Comportamento lazy loading
+
+Il modello viene caricato in GPU **alla prima richiesta**, non all'avvio del
+container. Il primo `POST /v1/audio/transcriptions` sara' lento (~5-10s), le
+successive saranno immediate grazie a `TTL=-1` (il modello resta in VRAM).
 
 ---
 
@@ -77,6 +118,7 @@ curl http://localhost:9000/health
 # Test trascrizione con un file audio
 curl -X POST http://localhost:9000/v1/audio/transcriptions \
   -F "file=@test_audio.wav" \
+  -F "model=deepdml/faster-whisper-large-v3-turbo-ct2" \
   -F "language=it"
 
 # Verifica GPU durante trascrizione
@@ -90,14 +132,16 @@ docker logs jarvis_whisper --tail 30
 
 ## Configurazione
 
-### Cambiare modello
+### Compute type
 
-```yaml
-environment:
-  - WHISPER__MODEL=small    # Piu preciso ma piu lento e usa piu VRAM
-```
+| Compute Type | Uso | VRAM | Precisione |
+|-------------|-----|------|-----------|
+| `int8_float16` | GPU Blackwell (sm_120) | ~1.3 GB | Ottima (quasi pari a float16) |
+| `float16` | GPU NVIDIA (qualsiasi) | ~1.6 GB | Alta |
+| `int8` | CPU o GPU con poca VRAM | Bassa | Media |
 
-Poi riavvia: `docker compose up -d whisper`. Il nuovo modello verra' scaricato automaticamente.
+Per il deploy su Blackwell, `int8_float16` e' la scelta ottimale: minore VRAM
+con precisione quasi identica a float16.
 
 ### Configurazione lingua
 
@@ -107,16 +151,6 @@ La lingua di default e' configurabile nel `.env` dell'orchestrator:
 ```env
 WHISPER_LANGUAGE=it
 ```
-
-### Compute type
-
-| Compute Type | Uso | Precisione | Velocita |
-|-------------|-----|-----------|---------|
-| `float16` | GPU NVIDIA | Alta | Veloce |
-| `int8` | CPU o GPU con poca VRAM | Media | Medio |
-| `float32` | CPU (massima precisione) | Massima | Lento |
-
-Per il deploy locale con GPU, `float16` e' la scelta migliore.
 
 ---
 
@@ -132,7 +166,6 @@ Variabili di timeout configurabili nel `.env`:
 
 ```env
 TIMEOUT_WHISPER=30        # Timeout trascrizione (secondi)
-WHISPER_MODEL=base        # Modello usato (per logging)
 WHISPER_LANGUAGE=it       # Lingua default
 ```
 
@@ -142,7 +175,7 @@ WHISPER_LANGUAGE=it       # Lingua default
 Microfono (AtomS3R) --> Wakeword Server --> Orchestrator --> Whisper (STT)
                                                 |
                                                 v
-                                           Testo --> Routing (Qwen 7B Q4) --> Reasoning (Gemini 3 Pro)
+                                           Testo --> Routing (Qwen 2.5 3B) --> OpenClaw
 ```
 
 ---
@@ -164,37 +197,51 @@ docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
 # Se fallisce, vedi DOCKER.md per reinstallare il toolkit
 ```
 
-### Modello non si scarica
+### Prima richiesta lenta
+
+Comportamento normale: il modello viene caricato in GPU al primo utilizzo
+(lazy loading). Le richieste successive saranno immediate.
 
 ```bash
-docker exec jarvis_whisper curl -s https://huggingface.co
-df -h
-docker compose restart whisper
+# Verifica che il modello sia stato caricato (dopo la prima richiesta)
+nvidia-smi  # Deve mostrare ~1.3 GB usati dal processo whisper
+```
+
+### Modello non trovato
+
+Il modello e' montato via volume, non scaricato da HuggingFace.
+Verifica che la struttura di symlink sia corretta:
+
+```bash
+# Verifica che il volume sia montato
+docker exec jarvis_whisper ls -la /models/whisper-large-v3-turbo-ct2/
+
+# Verifica che il model.bin esista
+docker exec jarvis_whisper ls -la /models/whisper-large-v3-turbo-ct2/model.bin
 ```
 
 ### Trascrizione imprecisa
 
-- Prova un modello piu grande (`small` o `medium`)
-- Verifica che la lingua sia configurata correttamente (`WHISPER_LANGUAGE=it`)
+- `faster-whisper-large-v3-turbo` e' il miglior compromesso velocita/precisione
+- Verifica che la lingua sia configurata (`WHISPER_LANGUAGE=it` o param nella richiesta)
 - Assicurati che l'audio sia di qualita sufficiente (sample rate 16kHz+)
 
 ### Alta latenza
 
-- Il modello `base` dovrebbe trascrivere in meno di 1 secondo su GPU
+- La prima richiesta e' lenta per lazy loading (normale)
+- Le richieste successive devono completare in <1s su GPU
 - Verifica che stia usando la GPU: `nvidia-smi` durante una richiesta
-- Se la GPU e' piena (Ollama), Whisper potrebbe attendere VRAM libera
-- Considera di ridurre `OLLAMA_MAX_LOADED_MODELS` a 1 per liberare VRAM
+- Con `TTL=-1` il modello non viene mai scaricato dalla VRAM
 
-### Conflitto VRAM con Ollama
+### Conflitto VRAM con Ollama/XTTS
 
 ```bash
 # Verifica utilizzo VRAM
 nvidia-smi
 
-# Opzione 1: Riduci i modelli Ollama caricati
-# Nel docker-compose.yml, servizio ollama:
-# OLLAMA_MAX_LOADED_MODELS=1
-
-# Opzione 2: Usa un modello Whisper piu piccolo
-# WHISPER__MODEL=tiny
+# Budget VRAM totale:
+# Qwen 2.5 3B:               ~2.5 GB
+# XTTSv2:                    ~2.0 GB
+# Whisper large-v3-turbo:    ~1.3 GB
+# Totale:                    ~5.8 / 8.15 GB
 ```
