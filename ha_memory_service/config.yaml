@@ -6,7 +6,7 @@
 # =============================================================================
 
 name: "JARVIS HA Memory"
-version: "1.0.3"
+version: "1.0.5"
 slug: jarvis_ha_memory
 description: "Location memory service for JARVIS — event ingestion, LLM summarization, and semantic search"
 url: "https://github.com/croll83/jarvis/tree/main/ha_memory_service"
@@ -24,10 +24,11 @@ init: false
 startup: services
 boot: auto
 
-# Host network: necessario per raggiungere Tailscale (100.x.x.x).
-# Docker bridge (172.30.32.x) non rotta verso Tailscale.
-# Sicuro con init: false + ENTRYPOINT [] (niente s6-overlay).
-host_network: true
+# Porta API esposta per l'orchestrator
+ports:
+  8100/tcp: 8100
+ports_description:
+  8100/tcp: "Memory API (REST)"
 
 # Ingress per UI futura (health dashboard)
 ingress: false
