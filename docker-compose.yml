@@ -59,6 +59,7 @@ services:
       # (da 270 MiB a 1.3 GiB!) rendendo impossibile far stare XTTS + Whisper.
       # Senza FA: ~3.7 GiB Ollama + 2.0 XTTS + 1.3 Whisper = 7.0/8.15 GiB OK
       # - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_KV_CACHE_TYPE=q8_0       # KV cache quantizzato: da 1.3 GiB (fp16) a ~650 MiB
       - OLLAMA_KEEP_ALIVE=-1           # Mantiene i modelli in VRAM permanentemente
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
