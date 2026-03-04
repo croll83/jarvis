@@ -22,11 +22,10 @@ init: true
 startup: services
 boot: auto
 
-# Porta API esposta per l'orchestrator
-ports:
-  8100/tcp: 8100
-ports_description:
-  8100/tcp: "Memory API (REST)"
+# Host network: necessario per raggiungere Tailscale (100.x.x.x) da dentro il container.
+# Senza host_network il container è sulla bridge 172.30.32.x e non vede la rete Tailscale.
+# La porta 8100 è esposta direttamente sull'host (non serve port mapping).
+host_network: true
 
 # Ingress per UI futura (health dashboard)
 ingress: false

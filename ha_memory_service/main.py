@@ -371,11 +371,13 @@ def _get_ws_url() -> str:
     """
     Costruisce WebSocket URL in base al contesto:
     - HAOS addon: ws://supervisor/core/websocket (via Supervisor proxy)
+    - HAOS addon host_network: ws://172.30.32.2/core/websocket (IP fisso Supervisor)
     - Standalone: ws://<HA_URL>/api/websocket
     """
-    if "supervisor" in HA_URL:
-        # HAOS addon mode — Supervisor proxy
-        return "ws://supervisor/core/websocket"
+    if "supervisor" in HA_URL or "172.30.32.2" in HA_URL:
+        # HAOS addon mode — Supervisor proxy (hostname o IP diretto)
+        base = HA_URL.replace("http", "ws")
+        return f"{base}/websocket"
     else:
         # Standalone Docker — connessione diretta
         return HA_URL.replace("http", "ws") + "/api/websocket"
