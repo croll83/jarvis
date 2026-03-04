@@ -56,6 +56,7 @@ ENV SERVICE_PORT=8100
 VOLUME /data
 EXPOSE 8100
 
-# HAOS addon: /run.sh (reads config via bashio, then launches main.py)
-# Standalone: override with CMD ["python", "main.py"]
+# Override ENTRYPOINT della base image (rimuove /init di s6-overlay)
+# Con init: false nel config.yaml, tini (PID 1) lancia direttamente /run.sh
+ENTRYPOINT []
 CMD ["/run.sh"]
