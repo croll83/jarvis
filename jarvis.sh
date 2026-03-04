@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 
 # Modello da pre-caricare in VRAM (deve matchare quello usato in ai_engines.py)
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.5:4b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:3b}"
 OLLAMA_URL="http://localhost:11434"
 
 # ── Colori ────────────────────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ preload_model() {
         -d "{
             \"model\": \"${OLLAMA_MODEL}\",
             \"prompt\": \"ok\",
-            \"options\": {\"num_predict\": 1, \"num_ctx\": 3072, \"think\": false},
+            \"options\": {\"num_predict\": 1, \"num_ctx\": 3072},
             \"stream\": false
         }" 2>/dev/null) || true
 

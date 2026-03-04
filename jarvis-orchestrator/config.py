@@ -95,7 +95,16 @@ TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 # ===========================================================================
 # MODEL NAMES (richiedono che i modelli siano caricati in Ollama)
 # ===========================================================================
-ROUTER_MODEL = os.getenv("ROUTER_MODEL", "qwen2.5:7b-instruct-q4_K_M")
+ROUTER_MODEL = os.getenv("ROUTER_MODEL", "qwen2.5:3b")
+
+# ===========================================================================
+# WEB TOOLS (Brave Search API per tool calling Qwen)
+# ===========================================================================
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "BSA8KS4JcRxAtVndf_sF8bn_ZRddL6a")
+BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+
+# Context window per tool calling (più ampio del routing)
+QWEN_TOOLS_NUM_CTX = int(os.getenv("QWEN_TOOLS_NUM_CTX", "16384"))
 
 # ===========================================================================
 # MEMORY CONTEXT LIMITS (potenzialmente modificabili a runtime ma meno critici)
