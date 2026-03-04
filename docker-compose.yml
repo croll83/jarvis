@@ -55,12 +55,9 @@ services:
     environment:
       - OLLAMA_NUM_PARALLEL=2
       - OLLAMA_MAX_LOADED_MODELS=2
-      - OLLAMA_CONTEXT_LENGTH=32768    # Max context Qwen 2.5 3B (KV dinamico, no FA)
-      - OLLAMA_NUM_CTX=32768           # Fallback per vecchie versioni Ollama
-      # NOTA: Qwen 2.5 NON attiva Flash Attention automaticamente (a differenza di 3.5).
-      # KV cache cresce dinamicamente: ~0.035 MiB/token (GQA 8:1, 36 layers).
-      # A 3072 ctx: ~2.5 GiB | A 16384 ctx: ~3.0 GiB | A 32768 ctx: ~3.6 GiB
-      # I singoli request possono usare num_ctx piu' basso (es. routing=3072).
+      # Context default: 3072 allineato al routing (il 99% delle chiamate).
+      # Chiamate con num_ctx diverso (es. web_tools=16384) forzano reload temporaneo.
+      - OLLAMA_NUM_CTX=3072
       - OLLAMA_KEEP_ALIVE=-1           # Mantiene i modelli in VRAM permanentemente
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
