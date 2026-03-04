@@ -100,7 +100,7 @@ ROUTER_MODEL = os.getenv("ROUTER_MODEL", "qwen2.5:3b")
 # ===========================================================================
 # WEB TOOLS (Brave Search API per tool calling Qwen)
 # ===========================================================================
-BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "BSA8KS4JcRxAtVndf_sF8bn_ZRddL6a")
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 # Context window per tool calling (più ampio del routing)
@@ -450,7 +450,7 @@ TTS_ENGINE = os.getenv("TTS_ENGINE", "xtts" if AI_BACKEND == "local" else "kokor
 
 # --- XTTSv2 (deploy locale, GPU ~2.1 GB VRAM fp16) ---
 XTTS_URL = os.getenv("XTTS_URL", "http://localhost:8890")
-XTTS_SPEAKER = os.getenv("XTTS_SPEAKER", "default")   # nome file WAV in speakers/ (senza .wav)
+XTTS_SPEAKER = os.getenv("XTTS_SPEAKER", "jarvis")   # nome file WAV in speakers/ (senza .wav)
 XTTS_LANGUAGE = os.getenv("XTTS_LANGUAGE", "it")
 
 # --- Kokoro (deploy cloud, CPU) ---
