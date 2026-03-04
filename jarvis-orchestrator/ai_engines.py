@@ -300,7 +300,7 @@ async def _normalize_ollama(text: str, llm_params: dict) -> Optional[str]:
             "temperature": 0.1,
             "num_predict": 150,
             "num_ctx": 3072,
-            "think": False
+            # think: non necessario per Qwen 2.5 (no thinking mode)
         },
         "stream": False
     }
@@ -448,7 +448,7 @@ async def _pre_route_ollama(text: str, llm_params: dict) -> Optional[dict]:
             "temperature": llm_params["temperature"],
             "num_predict": 120,
             "num_ctx": 3072,
-            "think": False
+            # think: non necessario per Qwen 2.5 (no thinking mode)
         },
         "stream": False
     }
@@ -649,7 +649,7 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
             "temperature": _rp["temperature"],
             "num_predict": _rp["max_tokens"],
             "num_ctx": 3072,
-            "think": False
+            # think: non necessario per Qwen 2.5 (no thinking mode)
         },
         "stream": False
     }
@@ -722,11 +722,18 @@ def _fallback_routing() -> dict:
 # QUICK RESPONSE (per intent semplici)
 # ===========================================================================
 
-async def get_quick_response(text: str, context: dict) -> str:
+async def get_quick_response(
+    text: str,
+    context: dict,
+    user_id: int = None,
+    location_id: str = None,
+    enable_tools: bool = True
+) -> str:
     """
-    Risposta rapida per SIMPLE_CHAT.
-    - AI_BACKEND=api: OpenRouter (Qwen API) → Gemini fallback
-    - AI_BACKEND=local: Ollama (Qwen locale)
+    Risposta rapida per SIMPLE_CHAT con tool calling.
+    - AI_BACKEND=api: OpenRouter (Qwen API) → Gemini fallback (no tools)
+    - AI_BACKEND=local: Ollama (Qwen locale) con 4 tool:
+        web_search, web_fetch, memory_search, home_status
     Questo è il fallback quando OpenClaw è down, quindi NON usa OpenClaw.
     """
     system_prompt = load_prompt(
@@ -735,7 +742,7 @@ async def get_quick_response(text: str, context: dict) -> str:
     )
     _rp = get_llm_params("quick_response")
 
-    # ── CLOUD MODE: OpenRouter → Gemini fallback ──
+    # ── CLOUD MODE: OpenRouter → Gemini fallback (senza tools) ──
     if config.AI_BACKEND == "api":
         # Tentativo 1: OpenRouter (Qwen via API)
         if config.OPENROUTER_API_KEY:
@@ -757,20 +764,40 @@ async def get_quick_response(text: str, context: dict) -> str:
 
         return "Mi dispiace, c'è stato un problema. Puoi ripetere?"
 
-    # ── LOCAL MODE: Ollama ──
+    # ── LOCAL MODE: Ollama con Tool Calling ──
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": text}
     ]
+
+    if enable_tools:
+        # Tool calling mode: usa call_qwen_with_tools per gestire il loop
+        try:
+            from web_tools import call_qwen_with_tools, ALL_TOOLS
+            result = await call_qwen_with_tools(
+                messages=messages,
+                tools=ALL_TOOLS,
+                max_iterations=3,
+                user_id=user_id,
+                location_id=location_id,
+                temperature=_rp["temperature"],
+                max_tokens=_rp.get("max_tokens", 500),
+            )
+            return result if result else "Non ho capito, puoi ripetere?"
+        except Exception as e:
+            logger.error(f"Quick response with tools error: {e}")
+            # Fallback: prova senza tools
+            logger.info("Falling back to quick response without tools")
+
+    # Fallback senza tools (o se enable_tools=False)
     payload = {
         "model": config.ROUTER_MODEL,
         "messages": messages,
         "stream": False,
         "options": {
             "temperature": _rp["temperature"],
-            "num_predict": _rp["max_tokens"],
+            "num_predict": _rp.get("max_tokens", 200),
             "num_ctx": 3072,
-            "think": False
         }
     }
 
@@ -955,7 +982,7 @@ async def call_qwen_summary(prompt: str, max_tokens: int = 150) -> str:
                 "temperature": _rp["temperature"],
                 "num_predict": max_tokens or _rp["max_tokens"],
                 "num_ctx": 3072,
-                "think": False
+                # think: non necessario per Qwen 2.5 (no thinking mode)
             }
         }
 

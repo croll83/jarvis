@@ -6,15 +6,17 @@
 # - OpenClaw (Gemini 3 Pro): Brain — gira su VM separata (bare-metal)
 # - JARVIS Orchestrator: Skill — domotics, memory, speaker ID, security, TTS
 # - XTTSv2 (Coqui): TTS engine (voice cloning italiana, GPU accelerated)
-# - Qwen3.5 4B: Local pre-routing for domotics fast path + offline fallback
+# - Qwen 2.5 3B (Q4_K_M): Pre-routing + tool calling (web_search, web_fetch,
+#     memory_search, home_status) + offline fallback
 # - Whisper large-v3-turbo: Speech-to-text (GPU, int8_float16, ~1.0 GB VRAM)
-# - Ollama: Hosts Qwen3.5 4B (num_ctx=3072) + nomic-embed-text
+# - Ollama: Hosts Qwen 2.5 3B (num_ctx max 32768) + nomic-embed-text
 #
 # VRAM BUDGET (RTX 5070 Laptop 8 GB, GPU dedicata — no display):
-#   Ollama Qwen3.5 4B (weights + KV 3072):  ~3.9 GB  (misurato)
-#   XTTSv2 (PyTorch fp16):                  ~2.0 GB  (misurato)
-#   Whisper large-v3-turbo (int8_float16):   ~1.3 GB  (misurato, CTranslate2 4.7.1 + CUDA 12.9)
-#   Totale:                                  ~7.2 / 8.15 GB (~0.9 GB buffer CUDA)
+#   Ollama Qwen 2.5 3B Q4_K_M (weights+KV): ~2.5 GB  (misurato @ ctx=3072)
+#   XTTSv2 (PyTorch fp16):                   ~2.0 GB  (misurato)
+#   Whisper large-v3-turbo (int8_float16):    ~1.3 GB  (misurato)
+#   Totale:                                   ~5.8 / 8.15 GB (~2.3 GB buffer)
+#   NOTA: KV cresce con context usato. No FA su Qwen 2.5 = KV dinamico.
 #
 # NOTA SU OPENCLAW:
 # OpenClaw NON e in questo compose — gira bare-metal su una VM dedicata
@@ -40,7 +42,7 @@
 
 services:
   # ===========================================================================
-  # AI CORE - Ollama (Qwen3.5 4B + nomic-embed-text)
+  # AI CORE - Ollama (Qwen 2.5 3B + nomic-embed-text)
   # ===========================================================================
   ollama:
     image: ollama/ollama:latest
@@ -53,13 +55,12 @@ services:
     environment:
       - OLLAMA_NUM_PARALLEL=2
       - OLLAMA_MAX_LOADED_MODELS=2
-      - OLLAMA_CONTEXT_LENGTH=3072     # Copre 2 location (~2280 tok) con margine
-      - OLLAMA_NUM_CTX=3072            # Fallback per vecchie versioni Ollama
-      # NOTA: OLLAMA_FLASH_ATTENTION=1 DISABILITATO — pre-alloca KV cache pieno
-      # (da 270 MiB a 1.3 GiB!) rendendo impossibile far stare XTTS + Whisper.
-      # Senza FA: ~3.7 GiB Ollama + 2.0 XTTS + 1.3 Whisper = 7.0/8.15 GiB OK
-      # - OLLAMA_FLASH_ATTENTION=1
-      - OLLAMA_KV_CACHE_TYPE=q8_0       # KV cache quantizzato: da 1.3 GiB (fp16) a ~650 MiB
+      - OLLAMA_CONTEXT_LENGTH=32768    # Max context Qwen 2.5 3B (KV dinamico, no FA)
+      - OLLAMA_NUM_CTX=32768           # Fallback per vecchie versioni Ollama
+      # NOTA: Qwen 2.5 NON attiva Flash Attention automaticamente (a differenza di 3.5).
+      # KV cache cresce dinamicamente: ~0.035 MiB/token (GQA 8:1, 36 layers).
+      # A 3072 ctx: ~2.5 GiB | A 16384 ctx: ~3.0 GiB | A 32768 ctx: ~3.6 GiB
+      # I singoli request possono usare num_ctx piu' basso (es. routing=3072).
       - OLLAMA_KEEP_ALIVE=-1           # Mantiene i modelli in VRAM permanentemente
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -134,7 +135,8 @@ services:
 
   # ===========================================================================
   # JARVIS ORCHESTRATOR - OpenClaw Skill (FastAPI)
-  # Include: Qwen pre-routing, HA control, Memory, Speaker ID, Security L1-L4
+  # Include: Qwen pre-routing + tool calling (web_search, web_fetch, memory, home),
+  # HA control, Memory, Speaker ID, Security L1-L4
   # Admin UI (/admin), Backup/Restore, SSE event bus
   #
   # network_mode: host permette all'orchestrator di:
@@ -174,6 +176,9 @@ services:
       # TTS (XTTSv2 — porta esposta su host via xtts service)
       - TTS_ENGINE=xtts
       - XTTS_URL=http://localhost:8890
+      # Qwen tool calling (Brave Search)
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-BSA8KS4JcRxAtVndf_sF8bn_ZRddL6a}
+      - ROUTER_MODEL=${ROUTER_MODEL:-qwen2.5:3b}
       # API keys (only needed if AI_BACKEND=api)
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
