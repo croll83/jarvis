@@ -24,11 +24,10 @@ init: false
 startup: services
 boot: auto
 
-# Porta API esposta per l'orchestrator
-ports:
-  8100/tcp: 8100
-ports_description:
-  8100/tcp: "Memory API (REST)"
+# Host network: necessario per raggiungere Tailscale (100.x.x.x).
+# Docker bridge (172.30.32.x) non rotta verso Tailscale.
+# Sicuro con init: false + ENTRYPOINT [] (niente s6-overlay).
+host_network: true
 
 # Ingress per UI futura (health dashboard)
 ingress: false
