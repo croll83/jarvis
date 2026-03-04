@@ -1,36 +1,37 @@
-#!/usr/bin/with-contenv bashio
+#!/bin/sh
 # =============================================================================
 # JARVIS HA Memory Service — Add-on Entrypoint
-# Legge la config dall'API Supervisor (bashio) e lancia main.py
+# Legge la config da /data/options.json (scritto dal Supervisor)
 # =============================================================================
-# NOTA: #!/usr/bin/with-contenv bashio carica le env var di S6 (incluso
-# SUPERVISOR_TOKEN) prima di eseguire lo script.
+# NON usa bashio/s6-overlay — compatibile con init: false (Docker tini)
+# SUPERVISOR_TOKEN è iniettato come env var dal Supervisor
 # =============================================================================
 
-bashio::log.info "Starting JARVIS HA Memory Service..."
+set -e
+
+log() { echo "[$(date '+%H:%M:%S')] $1: $2"; }
+
+log "INFO" "Starting JARVIS HA Memory Service..."
 
 # ===========================================================================
-# Read addon options via bashio
+# Read addon options from /data/options.json (written by HA Supervisor)
 # ===========================================================================
-export LOCATION_ID=$(bashio::config 'location_id')
-export AI_BACKEND=$(bashio::config 'ai_backend')
+OPTIONS_FILE="/data/options.json"
+if [ ! -f "$OPTIONS_FILE" ]; then
+    log "ERROR" "Options file not found: $OPTIONS_FILE"
+    exit 1
+fi
 
-# --- Local mode (Ollama) ---
-export OLLAMA_URL=$(bashio::config 'ollama_url')
-export EMBEDDING_MODEL=$(bashio::config 'embedding_model')
-export SUMMARY_MODEL=$(bashio::config 'summary_model')
-
-# --- API mode (OpenRouter + Gemini) ---
-export OPENROUTER_API_KEY=$(bashio::config 'openrouter_api_key')
-export GEMINI_API_KEY=$(bashio::config 'gemini_api_key')
-export OPENROUTER_SUMMARY_MODEL=$(bashio::config 'openrouter_summary_model')
-
-# --- Tuning ---
-export SUMMARY_TEMPERATURE=$(bashio::config 'summary_temperature')
-export SUMMARY_TIMEOUT=$(bashio::config 'summary_timeout')
-export EMBEDDING_TIMEOUT=$(bashio::config 'embedding_timeout')
-export SKIP_ENTITY_PREFIXES=$(bashio::config 'skip_entity_prefixes')
-export SKIP_ENTITY_SUFFIXES=$(bashio::config 'skip_entity_suffixes')
+# Parse JSON with python (always available in the base image)
+eval "$(python3 -c "
+import json, sys
+with open('$OPTIONS_FILE') as f:
+    opts = json.load(f)
+for key, val in opts.items():
+    # Convert key to uppercase for env var
+    env_key = key.upper()
+    print(f'export {env_key}=\"{val}\"')
+")"
 
 # ===========================================================================
 # Home Assistant connection — automatica via Supervisor
@@ -38,24 +39,18 @@ export SKIP_ENTITY_SUFFIXES=$(bashio::config 'skip_entity_suffixes')
 export HA_URL="http://supervisor/core"
 export HA_TOKEN="${SUPERVISOR_TOKEN:-}"
 
-bashio::log.info "Location: ${LOCATION_ID}"
-bashio::log.info "AI Backend: ${AI_BACKEND}"
-bashio::log.info "HA URL: ${HA_URL}"
+log "INFO" "Location: ${LOCATION_ID}"
+log "INFO" "AI Backend: ${AI_BACKEND}"
+log "INFO" "HA URL: ${HA_URL}"
 
 if [ -z "${HA_TOKEN}" ]; then
-    bashio::log.warning "SUPERVISOR_TOKEN not set — HA WebSocket auth may fail"
+    log "WARNING" "SUPERVISOR_TOKEN not set — HA WebSocket auth may fail"
 fi
 
 if [ "${AI_BACKEND}" = "api" ]; then
-    bashio::log.info "Mode: Cloud (OpenRouter + Gemini embeddings)"
-    if [ -z "${OPENROUTER_API_KEY}" ]; then
-        bashio::log.warning "OPENROUTER_API_KEY is empty — summarization will fail"
-    fi
-    if [ -z "${GEMINI_API_KEY}" ]; then
-        bashio::log.warning "GEMINI_API_KEY is empty — embeddings will fail"
-    fi
+    log "INFO" "Mode: Cloud (OpenRouter + Gemini embeddings)"
 else
-    bashio::log.info "Mode: Local (Ollama at ${OLLAMA_URL})"
+    log "INFO" "Mode: Local (Ollama at ${OLLAMA_URL})"
 fi
 
 # ===========================================================================
@@ -68,12 +63,12 @@ export SERVICE_PORT=8100
 
 mkdir -p "${DATA_DIR}"
 
-bashio::log.info "DB: ${DB_PATH}"
-bashio::log.info "ChromaDB: ${CHROMA_PATH}"
-bashio::log.info "Port: ${SERVICE_PORT}"
+log "INFO" "DB: ${DB_PATH}"
+log "INFO" "ChromaDB: ${CHROMA_PATH}"
+log "INFO" "Port: ${SERVICE_PORT}"
 
 # ===========================================================================
 # Launch
 # ===========================================================================
-bashio::log.info "Launching main.py..."
+log "INFO" "Launching main.py..."
 exec python3 /app/main.py

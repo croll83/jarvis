@@ -6,17 +6,19 @@
 # =============================================================================
 
 name: "JARVIS HA Memory"
-version: "1.0.1"
+version: "1.0.3"
 slug: jarvis_ha_memory
 description: "Location memory service for JARVIS — event ingestion, LLM summarization, and semantic search"
-url: "https://github.com/your-repo/jarvis"
+url: "https://github.com/croll83/jarvis/tree/main/ha_memory_service"
 
 arch:
   - aarch64
   - amd64
 
-# S6 overlay gestisce il lifecycle e inietta SUPERVISOR_TOKEN
-init: true
+# init: false = usa tini (Docker --init) invece di s6-overlay.
+# Evita il bug "s6-overlay-suexec: fatal: can only run as pid 1"
+# con le versioni recenti della base image HA.
+init: false
 
 # Start after HA Core is ready (needs WebSocket API)
 startup: services
