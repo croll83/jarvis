@@ -103,8 +103,9 @@ ROUTER_MODEL = os.getenv("ROUTER_MODEL", "qwen2.5:3b")
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
-# Context window per tool calling (più ampio del routing)
-QWEN_TOOLS_NUM_CTX = int(os.getenv("QWEN_TOOLS_NUM_CTX", "16384"))
+# Context window per tool calling — 6K max per restare 100% GPU
+# (routing usa 3K, tools serve più spazio per risultati web/memory)
+QWEN_TOOLS_NUM_CTX = int(os.getenv("QWEN_TOOLS_NUM_CTX", "6144"))
 
 # ===========================================================================
 # MEMORY CONTEXT LIMITS (potenzialmente modificabili a runtime ma meno critici)
