@@ -648,6 +648,7 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
             "temperature": _rp["temperature"],
             "num_predict": _rp["max_tokens"],
             "num_ctx": config.OLLAMA_NUM_CTX,  # Valore unico ovunque per evitare reload
+            "stop": ["<|im_start|>"],  # Previene hallucination loop (model genera oltre il JSON)
         },
         "stream": False
     }
