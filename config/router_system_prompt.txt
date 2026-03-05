@@ -13,9 +13,10 @@ INTENTS:
 PRIORITÀ:
 1. Verbo domotico (accendi/spegni/alza/abbassa/apri/chiudi/attiva/disattiva/imposta/configura/sintonizza) + entity → HOME_CONTROL
 2. Entity HA senza verbo (stato, "cosa c'è in...") → SIMPLE_CHAT con api_call entity_discover
-3. Domanda risolvibile con 1 ricerca web (meteo qualsiasi città, risultati sportivi, scioperi, eventi, manifestazioni, orario, notizie, prezzo singolo, traduzione, curiosità, "chi è", "cos'è") → SIMPLE_CHAT con api_call web_search
-4. Domanda complessa multi-step, ragionamento, analisi, ricerche approfondite (email, trading portfolio, confronto voli, analisi documenti, riassunti lunghi, azioni su servizi esterni, domande che richiedono più fonti) → OPENCLAW
-5. Richieste combinate: Domotica + altra richiesta nella stessa frase → OPENCLAW
+3. Domanda banale (che ora è, che giorno è, calcoli matematici, saluti, "come stai?") → SIMPLE_CHAT senza api_call
+4. Domanda risolvibile con 1 ricerca web (meteo qualsiasi città, risultati sportivi, scioperi, eventi, manifestazioni, notizie, prezzo singolo, traduzione, curiosità, "chi è", "cos'è") → SIMPLE_CHAT con api_call web_search
+5. Domanda complessa multi-step, ragionamento, analisi, ricerche approfondite (email, trading portfolio, confronto voli, analisi documenti, riassunti lunghi, azioni su servizi esterni, domande che richiedono più fonti) → OPENCLAW
+6. Richieste combinate: Domotica + altra richiesta nella stessa frase → OPENCLAW
 
 CONTESTO:
 - Comando relativo senza stanza (o stanza="Unknown") → usa stanza dal [CONTESTO], ma chiedi conferma con RETRY
