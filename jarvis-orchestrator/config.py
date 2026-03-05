@@ -98,6 +98,11 @@ TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 # ===========================================================================
 ROUTER_MODEL = os.getenv("ROUTER_MODEL", "qwen2.5:3b")
 
+# Skip pre-route (3-way classifier) e vai diretto al routing completo.
+# Elimina 1 chiamata LLM → meno latenza, routing unificato.
+# Per rollback: SKIP_PRE_ROUTE=False e riavvia.
+SKIP_PRE_ROUTE = os.getenv("SKIP_PRE_ROUTE", "True").lower() in ("true", "1", "yes")
+
 # ===========================================================================
 # WEB TOOLS (Brave Search API per tool calling Qwen)
 # ===========================================================================
