@@ -204,19 +204,19 @@ async def is_safe(text: str, source: str = "unknown") -> tuple[bool, str]:
     Restituisce (is_safe, reason).
     """
     text_lower = text.lower()
-    
+
     # Check 1: Pattern sospetti (prompt injection)
     for pattern in SUSPICIOUS_PATTERNS:
         if pattern in text_lower:
             logger.warning(f"Suspicious pattern detected: '{pattern}' from {source}")
             return False, f"Pattern sospetto rilevato: {pattern}"
-    
+
     # Check 2: Keyword pericolose
     for keyword in DANGEROUS_KEYWORDS:
         if keyword in text_lower:
             logger.warning(f"Dangerous keyword detected: '{keyword}' from {source}")
             return False, f"Keyword pericolosa rilevata: {keyword}"
-    
+
     # Check 3: Per comandi da fonti esterne, verifica extra
     if source != "voice" and source != "telegram":
         # Qualsiasi comando "meta" da fonti esterne è sospetto
@@ -249,7 +249,7 @@ _STT_NORMALIZE_SYSTEM = (
     "Device: TV, Cam, Lampada, Lampada Giorgio, Luce, Luci, Porta, Soundbar, Echo\n"
     "Luci: Centro Block, Strip Led, Divano, Faretto, Tavola, Braava, Roomba, Letto, Specchio\n"
     "Persone: Marco, Ada, Giorgio, Sofia, Loredana, Mario, Melina\n"
-    "Azioni: accendi, spegni, apri, chiudi, alza, abbassa, muta, stop, silenzio"
+    "Azioni: accendi, spegni, apri, chiudi, cambia, imposta, alza, abbassa, muta, stop, silenzio"
 )
 
 
