@@ -299,7 +299,7 @@ async def _normalize_ollama(text: str, llm_params: dict) -> Optional[str]:
         "options": {
             "temperature": 0.1,
             "num_predict": 150,
-            # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (16384) per evitare reload
+            # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (32768) per evitare reload
         },
         "stream": False
     }
@@ -446,7 +446,7 @@ async def _pre_route_ollama(text: str, llm_params: dict) -> Optional[dict]:
         "options": {
             "temperature": llm_params["temperature"],
             "num_predict": 120,
-            # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (16384) per evitare reload
+            # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (32768) per evitare reload
         },
         "stream": False
     }
@@ -646,7 +646,7 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
         "options": {
             "temperature": _rp["temperature"],
             "num_predict": _rp["max_tokens"],
-            # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (16384) per evitare reload
+            # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (32768) per evitare reload
         },
         "stream": False
     }
@@ -785,7 +785,7 @@ async def get_quick_response(
         "options": {
             "temperature": _rp["temperature"],
             "num_predict": _rp.get("max_tokens", 200),
-            # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (16384) per evitare reload
+            # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (32768) per evitare reload
         }
     }
 
@@ -889,7 +889,7 @@ async def call_qwen_summary(prompt: str, max_tokens: int = 150) -> str:
             "options": {
                 "temperature": _rp["temperature"],
                 "num_predict": max_tokens or _rp["max_tokens"],
-                # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (16384) per evitare reload
+                # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (32768) per evitare reload
             }
         }
 
