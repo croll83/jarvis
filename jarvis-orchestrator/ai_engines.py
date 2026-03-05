@@ -24,9 +24,10 @@ IMAGE_GENERATION_KEYWORDS = [
     "crea un'immagine", "crea immagine", "crea un immagine",
     "genera un disegno", "crea un disegno",
     "genera una foto", "crea una foto",
-    "disegnami", "disegna",
-    "mostrami un", "mostrami una",
-    "fai vedere", "fammi vedere",
+    "disegnami", "disegna un", "disegna una",
+    "mostrami un'immagine", "mostrami una foto", "mostrami un disegno",
+    "fai vedere un'immagine", "fai vedere una foto",
+    "fammi vedere un'immagine", "fammi vedere una foto",
     "genera l'immagine", "crea l'immagine",
 ]
 
