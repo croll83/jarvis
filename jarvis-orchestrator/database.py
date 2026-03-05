@@ -1704,21 +1704,70 @@ class SmartCache:
     """Sistema di caching auto-apprendente."""
     
     def __init__(self):
+        # Ordine: pattern specifici prima di quelli generici
         self.static_patterns = {
-            r"che ore sono": lambda: f"Sono le {time.strftime('%H:%M')}",
-            r"che giorno.*(è|oggi)": lambda: f"Oggi è {time.strftime('%A %d %B')}",
+            r"(che ora è|che ore sono|ora attuale|dimmi l.or)": lambda: f"Sono le {time.strftime('%H:%M')}.",
+            r"(che giorno|che data).*(domani|sarà domani)": lambda: self._tomorrow(),
+            r"(che giorno|che data).*(ieri|era ieri)": lambda: self._yesterday(),
+            r"(che giorno|che data|giorno oggi|data di oggi|data odierna)": lambda: self._today(),
             r"^(ciao|hey|buongiorno|buonasera|salve)[\s\!\.]*$": lambda: "Ciao! Come posso aiutarti?",
             r"^grazie[\s\!\.]*$": lambda: "Di nulla!",
             r"^ok[\s\!\.]*$": lambda: "Perfetto!",
         }
+        # Pattern matematici (valutati separatamente per sicurezza)
+        self._math_patterns = [
+            r"(?:quanto fa|calcola|risultato di|qual è)\s+(.+)",
+            r"(?:radice quadrata|radice) di (\d+)",
+            r"^[\d\s\+\-\*\/\.\(\)\^²³√,]+$",  # espressione pura: "2+2", "81/9"
+        ]
+
+    @staticmethod
+    def _today():
+        import locale
+        try:
+            locale.setlocale(locale.LC_TIME, "it_IT.UTF-8")
+        except locale.Error:
+            pass
+        from datetime import datetime as _dt
+        return f"Oggi è {_dt.now().strftime('%A %d %B %Y')}."
+
+    @staticmethod
+    def _tomorrow():
+        import locale
+        from datetime import datetime as _dt, timedelta
+        try:
+            locale.setlocale(locale.LC_TIME, "it_IT.UTF-8")
+        except locale.Error:
+            pass
+        d = _dt.now() + timedelta(days=1)
+        return f"Domani sarà {d.strftime('%A %d %B %Y')}."
+
+    @staticmethod
+    def _yesterday():
+        import locale
+        from datetime import datetime as _dt, timedelta
+        try:
+            locale.setlocale(locale.LC_TIME, "it_IT.UTF-8")
+        except locale.Error:
+            pass
+        d = _dt.now() - timedelta(days=1)
+        return f"Ieri era {d.strftime('%A %d %B %Y')}."
     
     def check(self, query: str) -> Optional[str]:
         query_lower = query.lower().strip()
-        
+
         for pattern, response_fn in self.static_patterns.items():
             if re.search(pattern, query_lower):
-                return response_fn()
-        
+                result = response_fn()
+                logger.info(f"SmartCache static hit: '{query_lower}' → pattern match")
+                return result
+
+        # Math evaluation
+        math_result = self._try_math(query_lower)
+        if math_result is not None:
+            logger.info(f"SmartCache math hit: '{query_lower}' → {math_result}")
+            return math_result
+
         query_hash = self._hash(query_lower)
         conn = _get_conn()
         c = conn.cursor()
@@ -1769,6 +1818,45 @@ class SmartCache:
         conn.commit()
         conn.close()
     
+    def _try_math(self, text: str) -> Optional[str]:
+        """Valuta espressioni matematiche semplici in modo sicuro."""
+        import math as _math
+
+        expr = None
+
+        # "radice quadrata di 81" → sqrt(81)
+        m = re.search(r"(?:radice quadrata|radice)\s+(?:di\s+)?(\d+[\d\.]*)", text)
+        if m:
+            val = float(m.group(1))
+            result = _math.sqrt(val)
+            result = int(result) if result == int(result) else round(result, 4)
+            return f"La radice quadrata di {m.group(1)} è {result}."
+
+        # "quanto fa 2+2", "calcola 10*5", "risultato di 100/3"
+        m = re.search(r"(?:quanto fa|calcola|risultato di|qual è)\s+(.+)", text)
+        if m:
+            expr = m.group(1).strip().rstrip("?.")
+
+        # Espressione pura: "2+2", "81/9", "3.14*2"
+        if not expr and re.match(r"^[\d\s\+\-\*\/\.\(\)\^²³%x×÷,]+[?\s]*$", text):
+            expr = text.strip().rstrip("?.")
+
+        if expr:
+            # Normalizza operatori
+            expr = expr.replace("×", "*").replace("x", "*").replace("÷", "/")
+            expr = expr.replace("^", "**").replace(",", ".")
+            expr = expr.replace("²", "**2").replace("³", "**3")
+            # Security: solo cifre e operatori
+            if re.match(r"^[\d\s\+\-\*\/\.\(\)]+$", expr):
+                try:
+                    result = eval(expr)  # safe: solo numeri e operatori
+                    if isinstance(result, float):
+                        result = int(result) if result == int(result) else round(result, 6)
+                    return f"{result}"
+                except Exception:
+                    pass
+        return None
+
     def _hash(self, text: str) -> str:
         return hashlib.md5(text.encode()).hexdigest()
     
