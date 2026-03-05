@@ -241,12 +241,23 @@ async function fetchAccountState(hl) {
       };
     });
 
+    // HL Unified Account balance formula (same as trading dashboard):
+    // - spotTotal already includes perp collateral (don't add perpEquity to avoid double-counting)
+    // - totalBalance = overview (= spotTotal + vault + staked)
+    // - availableForTrading = totalBalance - marginUsed
+    // - spotFree = spotTotal - perpEquity (what's not locked in perps)
+    const totalBalance = parseFloat(balance.overview || 0);
+    const marginUsed = parseFloat(balance.perps.marginUsed || 0);
+    const availableForTrading = Math.max(0, totalBalance - marginUsed);
+
     return {
       account: {
-        equity: balance.perps.equity,
-        available: balance.perps.available,
+        equity: totalBalance.toFixed(2),
+        available: availableForTrading.toFixed(2),
         marginUsed: balance.perps.marginUsed,
-        marginRatio: balance.perps.marginRatio,
+        marginRatio: totalBalance > 0
+          ? ((marginUsed / totalBalance) * 100).toFixed(1) + '%'
+          : '0%',
         unrealizedPnl: balance.perps.unrealizedPnl,
         overview: balance.overview,
         spot: balance.spot,
