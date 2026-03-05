@@ -233,12 +233,24 @@ export class HLClient {
   }
 
   async getLeaderboard() {
-    const resp = await fetch('https://api.hyperliquid.xyz/info', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'leaderboard', timeWindow: 'allTime' }),
+    const resp = await fetch('https://stats-data.hyperliquid.xyz/Mainnet/leaderboard', {
+      headers: { 'User-Agent': 'JARVIS/1.0' },
     });
-    return await resp.json();
+    if (!resp.ok) throw new Error(`Leaderboard fetch failed: HTTP ${resp.status}`);
+    const data = await resp.json();
+    // Normalize to flat format for whale-monitor compatibility
+    return (data.leaderboardRows || []).map(r => {
+      const allTime = r.windowPerformances?.find(w => w[0] === 'allTime')?.[1] || {};
+      const week = r.windowPerformances?.find(w => w[0] === 'week')?.[1] || {};
+      return {
+        ethAddress: r.ethAddress,
+        displayName: r.displayName || null,
+        accountValue: r.accountValue,
+        allTimePnl: allTime.pnl || '0',
+        allTimeRoi: allTime.roi || '0',
+        windowPnl: week.pnl || allTime.pnl || '0',
+      };
+    });
   }
 
   async getUserState(address) {
