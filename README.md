@@ -48,9 +48,9 @@
 
      +--------------------------------------------+
      |           AI / MEDIA SERVICES               |
-     |  XTTSv2       | nomic-embed-text            |
-     |  (TTS voice   | (embeddings, 768-dim)       |
-     |  cloning)     |                              |
+     |  XTTSv2       | fastembed :11435             |
+     |  (TTS voice   | (nomic-embed-text-v1.5      |
+     |  cloning)     |  CPU ONNX, 768-dim)         |
      |  :8890        | Brave Search (web tool)      |
      +--------------------------------------------+
 
@@ -80,7 +80,7 @@
 | **XTTSv2** | Text-to-Speech | GPU-accelerated voice cloning (custom Blackwell image, Italian voice) |
 | **Resemblyzer** | Speaker ID | Voice biometric identification (embedded in orchestrator) |
 | **Ontology Server** | Knowledge Graph | Entity/relation graph with speaker-based ACL, SQLite + FastAPI |
-| **nomic-embed-text** | Embeddings | 768-dim embeddings for orchestrator, ha-memory-service, and OpenClaw |
+| **fastembed (nomic-embed-text-v1.5)** | Embeddings | 768-dim CPU-only ONNX embeddings (Ollama-compatible API :11435) for orchestrator, ha-memory-service, and OpenClaw |
 | **Brave Search** | Web Search Tool | Web search API used by Qwen tool calling |
 | **Chroma (embedded)** | Vector store | Long-term memory, semantic search, hybrid retrieval (embedded in orchestrator via chroma/ dir) |
 | **PostgreSQL** | Database | Side projects (relational store) |
@@ -94,7 +94,8 @@
 
 | Service | Image / Build | Port | GPU | Purpose |
 |---------|---------------|------|-----|---------|
-| `ollama` | ollama/ollama | 11434 | Yes | Qwen 2.5 3B + nomic-embed-text |
+| `ollama` | ollama/ollama | 11434 | Yes | Qwen 2.5 3B (LLM only) |
+| `fastembed` | ./infrastructure/fastembed | 11435 | No | nomic-embed-text-v1.5 embeddings (CPU ONNX) |
 | `whisper` | jarvis/whisper-blackwell | 9000 | Yes | Local STT (large-v3-turbo, int8_float16) |
 | `xtts` | jarvis/xtts-blackwell | 8890 | Yes | TTS voice cloning (XTTSv2, Italian) |
 | `orchestrator` | ./jarvis-orchestrator | 5000 | No | Core FastAPI app + Resemblyzer + Chroma + Admin UI (host network) |
@@ -236,7 +237,7 @@ jarvis/
 - **OpenClaw + Gemini 3 Pro as Brain**: All reasoning, web search, and conversational intelligence is handled by OpenClaw backed by Gemini 3 Pro. The OPENCLAW intent routes complex queries, uncertain domotics, and general conversation to the brain.
 - **Qwen 2.5 3B with tool calling**: Fast local pre-routing for domotics commands plus tool calling capabilities (web_search via Brave API, web_fetch, memory_search, home_status). Falls back to offline responses when cloud is unreachable.
 - **Brave Search API**: Web search tool available to both Qwen (via tool calling) and OpenClaw (via skill), providing real-time web information.
-- **nomic-embed-text for all embeddings**: Single 768-dim embedding model (via Ollama) used across orchestrator, ha-memory-service, and OpenClaw for consistent semantic search.
+- **fastembed for all embeddings**: Single 768-dim embedding model (nomic-embed-text-v1.5 via ONNX, CPU-only) served by a dedicated container on port 11435 with Ollama-compatible API. Runs on CPU to avoid CUDA context switching with Qwen on the GPU, reducing routing latency from ~3.5s to ~0.5s.
 - **Chroma embedded in orchestrator**: Vector store runs in-process (no separate container), simplifying deployment and reducing resource overhead.
 - **XTTSv2 for TTS**: GPU-accelerated voice cloning with custom Blackwell image. Italian voice via WAV reference files. Cloud fallback to Kokoro-82M (CPU).
 - **Custom Dockerfiles for GPU services**: Whisper and XTTS use custom images (`jarvis/whisper-blackwell`, `jarvis/xtts-blackwell`) built for CUDA 12.9 / Blackwell sm_120 support.

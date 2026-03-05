@@ -40,7 +40,7 @@ MAX_RESULTS_DEFAULT = config.MAX_VECTOR_RESULTS_DEFAULT
 # ===========================================================================
 # EMBEDDING FUNCTIONS
 # ===========================================================================
-# AI_BACKEND=local → OllamaEmbeddingFunction (nomic-embed-text, GPU locale)
+# AI_BACKEND=local → OllamaEmbeddingFunction (nomic-embed-text, fastembed CPU)
 # AI_BACKEND=api   → GeminiEmbeddingFunction (gemini-embedding-001, cloud)
 # ===========================================================================
 
@@ -48,11 +48,11 @@ EMBEDDING_DIM = 768  # Dimensione comune a entrambi i provider
 
 
 class OllamaEmbeddingFunction:
-    """Embedding via Ollama locale (nomic-embed-text).
-    Usato quando AI_BACKEND=local.
+    """Embedding via fastembed server (Ollama-compatible API, CPU-only ONNX).
+    Usato quando AI_BACKEND=local. Endpoint configurabile via EMBEDDING_URL.
     """
 
-    def __init__(self, model: str = EMBEDDING_MODEL, url: str = OLLAMA_URL):
+    def __init__(self, model: str = EMBEDDING_MODEL, url: str = config.EMBEDDING_URL):
         self.model = model
         self.url = f"{url}/api/embeddings"
 

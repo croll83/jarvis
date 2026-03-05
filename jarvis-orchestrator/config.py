@@ -35,6 +35,7 @@ SYSTEM_RULES_PATH = BASE_DIR / "config/router_system_prompt.txt"
 # NETWORK & API ENDPOINTS (richiedono riavvio)
 # ===========================================================================
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+EMBEDDING_URL = os.getenv("EMBEDDING_URL", OLLAMA_URL)  # fastembed CPU (default: fallback a Ollama)
 WHISPER_URL = os.getenv("WHISPER_URL", "http://localhost:9000")
 
 # Endpoint derivati

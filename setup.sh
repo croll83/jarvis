@@ -22,11 +22,8 @@ echo "Downloading Qwen3.5 4B (Router + Pre-routing model)..."
 docker exec jarvis_ollama ollama pull qwen3.5:4b
 
 echo ""
-echo "Downloading nomic-embed-text (Embedding model for memory)..."
-docker exec jarvis_ollama ollama pull nomic-embed-text
-
-echo ""
 echo "Models downloaded"
+echo "(Embeddings handled by fastembed container — no nomic-embed-text on Ollama)"
 
 # Warmup models
 echo ""

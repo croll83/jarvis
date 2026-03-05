@@ -4,8 +4,9 @@
 > automaticamente da Ansible (`jarvis.yml` + `setup.sh`). Questo file serve come
 > riferimento per la configurazione avanzata e il troubleshooting.
 
-Server LLM locale per JARVIS. Esegue **Qwen 2.5 3B** (routing e pre-routing) e
-nomic-embed-text (embeddings) su GPU NVIDIA.
+Server LLM locale per JARVIS. Esegue **Qwen 2.5 3B** (routing e pre-routing)
+su GPU NVIDIA. Gli embeddings sono gestiti da **fastembed** (container separato,
+CPU-only, porta 11435) — vedi `infrastructure/fastembed/` e `docker-compose.yml`.
 
 > **Modello attuale:** `qwen2.5:3b` — `qwen3.5:4b` e' disponibile come upgrade
 > futuro se il budget VRAM lo consente.
@@ -29,7 +30,6 @@ nomic-embed-text (embeddings) su GPU NVIDIA.
 |---------|-----------------|---------------|---------------|
 | `qwen2.5:3b` (ctx=3072) | ~2.0 GB | ~2.5 GB (weights + KV cache) | **Deploy attuale** — Routing + pre-routing |
 | `qwen3.5:4b` (ctx=3072) | ~3.4 GB | ~3.5 GB (weights + KV cache) | Upgrade futuro (migliore reasoning) |
-| `nomic-embed-text` | ~270 MB | ~270 MB | Embedding (vector store, on demand) |
 
 **VRAM Budget totale** (GPU dedicata, no display):
 - Qwen 2.5 3B (ctx=3072): ~2.5 GB
@@ -38,7 +38,9 @@ nomic-embed-text (embeddings) su GPU NVIDIA.
 - **Totale: ~5.8 GB / 8.15 GB** (~2.35 GB buffer CUDA)
 
 > La pipeline voce e' sequenziale (Whisper->Qwen->TTS): i modelli non fanno inference
-> contemporaneamente, quindi il buffer e' ampio per tensor temp e nomic-embed-text on demand.
+> contemporaneamente, quindi il buffer e' ampio per tensor temp.
+> **Nota:** nomic-embed-text e' stato spostato su fastembed (CPU, ONNX, porta 11435)
+> per eliminare il context switch CUDA che rallentava Qwen di ~1.3s per ogni embedding call.
 > **Nota:** Qwen 2.5 NON attiva Flash Attention — il KV cache cresce dinamicamente con
 > la lunghezza del contesto. Con `OLLAMA_NUM_CTX=3072`, il KV cache usa ~0.6 GB.
 > Il routing prompt tipico e' ~1655 token (1 location), ~2280 token (2 location).
@@ -58,7 +60,7 @@ ollama:
     - "11434:11434"
   environment:
     - OLLAMA_NUM_PARALLEL=2
-    - OLLAMA_MAX_LOADED_MODELS=2
+    - OLLAMA_MAX_LOADED_MODELS=1      # Solo Qwen — embeddings su fastembed :11435
     - OLLAMA_CONTEXT_LENGTH=32768
     - OLLAMA_KEEP_ALIVE=-1
     - NVIDIA_VISIBLE_DEVICES=all
@@ -82,7 +84,7 @@ ollama:
 | Variabile | Valore | Descrizione |
 |-----------|--------|-------------|
 | `OLLAMA_NUM_PARALLEL` | `2` | Richieste parallele per modello |
-| `OLLAMA_MAX_LOADED_MODELS` | `2` | Modelli in VRAM contemporaneamente |
+| `OLLAMA_MAX_LOADED_MODELS` | `1` | Solo Qwen — embeddings su fastembed CPU |
 | `OLLAMA_CONTEXT_LENGTH` | `32768` | Context window massima (default Ollama) |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Mai scaricare il modello dalla VRAM |
 | `NVIDIA_VISIBLE_DEVICES` | `all` | GPU visibili al container |
@@ -100,8 +102,8 @@ docker exec jarvis_ollama ollama pull qwen2.5:3b
 # Scarica Qwen3.5 4B (upgrade futuro, opzionale)
 # docker exec jarvis_ollama ollama pull qwen3.5:4b
 
-# Scarica nomic-embed-text (embedding per vector store)
-docker exec jarvis_ollama ollama pull nomic-embed-text
+# NOTA: nomic-embed-text rimosso da Ollama — gestito da fastembed (CPU, :11435)
+# Per test embedding: curl http://localhost:11435/api/embeddings -d '{"model":"nomic-embed-text","prompt":"test"}'
 
 # Warmup Qwen (carica in VRAM)
 curl -s http://localhost:11434/api/generate -d '{
@@ -129,8 +131,8 @@ curl http://localhost:11434/api/generate -d '{
   "stream": false
 }'
 
-# Test embedding con nomic-embed-text
-curl http://localhost:11434/api/embeddings -d '{
+# Test embedding (via fastembed, porta 11435)
+curl http://localhost:11435/api/embeddings -d '{
   "model": "nomic-embed-text",
   "prompt": "Test embedding per vector store"
 }'
