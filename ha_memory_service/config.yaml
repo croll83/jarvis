@@ -51,8 +51,9 @@ options:
   location_id: "wagmi"
   ai_backend: "api"
 
-  # --- Local mode (Ollama) ---
+  # --- Local mode (Ollama + fastembed) ---
   ollama_url: "http://100.x.x.x:11434"
+  embedding_url: "http://100.x.x.x:11435"
   embedding_model: "nomic-embed-text"
   summary_model: "qwen2.5:3b"
 
@@ -77,6 +78,7 @@ schema:
 
   # Local mode
   ollama_url: str
+  embedding_url: str
   embedding_model: str
   summary_model: str
 
