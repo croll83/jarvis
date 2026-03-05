@@ -35,8 +35,9 @@ HA_TOKEN = os.getenv("HA_TOKEN", "")
 # AI Backend: "local" (Ollama) or "api" (OpenRouter + Gemini embeddings)
 AI_BACKEND = os.getenv("AI_BACKEND", "local")
 
-# --- Local mode (Ollama) ---
+# --- Local mode (Ollama for LLM, fastembed for embeddings) ---
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+EMBEDDING_URL = os.getenv("EMBEDDING_URL", OLLAMA_URL)  # fastembed CPU (default: fallback a Ollama)
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen2.5:3b")
 
@@ -142,14 +143,14 @@ def init_db():
 # ===========================================================================
 # EMBEDDING FUNCTIONS
 # ===========================================================================
-# AI_BACKEND=local → OllamaEmbeddingFunction (nomic-embed-text)
+# AI_BACKEND=local → OllamaEmbeddingFunction (nomic-embed-text, fastembed CPU)
 # AI_BACKEND=api   → GeminiEmbeddingFunction (gemini-embedding-001)
 # ===========================================================================
 
 class OllamaEmbeddingFunction:
-    """Embedding via Ollama locale (nomic-embed-text)."""
+    """Embedding via fastembed server (Ollama-compatible API, CPU-only ONNX)."""
 
-    def __init__(self, model: str = EMBEDDING_MODEL, url: str = OLLAMA_URL):
+    def __init__(self, model: str = EMBEDDING_MODEL, url: str = EMBEDDING_URL):
         self.model = model
         self.url = f"{url.rstrip('/')}/api/embeddings"
 

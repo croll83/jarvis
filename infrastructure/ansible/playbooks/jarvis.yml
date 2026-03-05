@@ -134,13 +134,8 @@
         msg: "{{ setup_result.stdout_lines[-10:] | default([]) }}"
       when: setup_result is defined and setup_result.stdout_lines is defined
 
-    - name: "Download nomic-embed-text (per HA Memory)"
-      ansible.builtin.command: >
-        docker exec jarvis_ollama ollama pull nomic-embed-text
-      register: embed_download
-      retries: 3
-      delay: 30
-      when: deploy_type == "lxc_gpu" and ai_backend == "local"
+    # NOTA: nomic-embed-text rimosso da Ollama — embeddings gestiti da
+    # fastembed container (CPU-only ONNX, porta 11435, avviato da docker-compose)
 
     # -----------------------------------------------------------------
     # ATTESA ORCHESTRATOR

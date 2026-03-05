@@ -43,8 +43,11 @@ HA remoti e il LXC OpenClaw.
 |  |  ollama:11434   whisper:9000    xtts:8890     postgres:5432     | |
 |  |  GPU: ~2.5 GB   GPU: ~1.3 GB   GPU: ~2.0 GB  (side proj)      | |
 |  |  Qwen 2.5 3B    faster-whisper  XTTSv2 Coqui                   | |
-|  |  ctx=3072       large-v3-turbo  voice cloning  mongo:27017      | |
-|  |  nomic-embed    int8_float16                    (side proj)     | |
+|  |  (LLM only)     large-v3-turbo  voice cloning  mongo:27017     | |
+|  |  ctx=3072       int8_float16                    (side proj)     | |
+|  |                                                                 | |
+|  |  fastembed:11435 (CPU, no GPU)                                  | |
+|  |  nomic-embed-text-v1.5 ONNX — Ollama-compat API                | |
 |  |  orchestrator:5000 (network_mode: host)                        | |
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
@@ -62,9 +65,9 @@ HA remoti e il LXC OpenClaw.
 |  +-- Qwen 2.5 3B Q4_K_M (weights+KV) . ~2.5 GB (@ ctx=3072)       |
 |  +-- XTTSv2 fp16 (PyTorch runtime) ... ~2.0 GB                     |
 |  +-- Whisper large-v3-turbo int8_fp16 . ~1.3 GB                    |
-|  +-- nomic-embed-text (on demand) .... ~0.3 GB (scaricato se serve) |
 |  +-- TOTALE ........................... ~5.8 GB / 8.15 GB VRAM     |
 |  +-- BUFFER CUDA ...................... ~2.3 GB                     |
+|  Nota: Embeddings su fastembed CPU (:11435) — zero VRAM             |
 |  Nota: pipeline sequenziale (Whisper→Qwen→TTS), buffer sufficiente |
 +---------------------------------------------------------------------+
 
@@ -196,7 +199,8 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 |----------|-----------|-------------------|-----|-----|----------|----------|
 | **NVIDIA Driver** | **Host Proxmox** | kernel module | - | - | - | Driver GPU, `nvidia-smi` funziona qui |
 | **Tailscale** | LXC-JARVIS | host-level (`tailscaled.service`) | - | 64 MB | - | VPN mesh per HA remoti + OpenClaw |
-| **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | ~2.5 GB | Qwen 2.5 3B routing + tool calling (ctx=32768) + nomic-embed |
+| **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | ~2.5 GB | Qwen 2.5 3B routing + tool calling (ctx=32768) — solo LLM |
+| **fastembed** | LXC-JARVIS | `jarvis_fastembed` (Docker, CPU) | 0.5 | 300 MB | - | nomic-embed-text-v1.5 ONNX embeddings (Ollama-compat :11435) |
 | **Whisper** | LXC-JARVIS | `jarvis_whisper` (Docker, `--gpus all`) | - | - | ~1.3 GB | STT large-v3-turbo (int8_float16) |
 | **XTTSv2** | LXC-JARVIS | `jarvis_xtts` (Docker, `--gpus all`) | - | - | ~2.0 GB | TTS voice cloning (italiano, fp16) |
 | **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
@@ -395,7 +399,7 @@ Il playbook:
 1. Installa Docker + NVIDIA Container Toolkit (con `no-cgroups=true` per LXC)
 2. Clona il repository, genera `.env` da template
 3. Esegue `docker compose up -d` (Ollama, Whisper, XTTSv2, Orchestrator, Ontology, Postgres, Mongo)
-4. Scarica i modelli AI (`setup.sh` — Qwen 2.5 3B + nomic-embed-text)
+4. Scarica i modelli AI (`setup.sh` — Qwen 2.5 3B) + avvia fastembed (embeddings CPU)
 5. Verifica health di tutti i servizi
 6. Installa Nginx + Certbot (cert SSL via Cloudflare DNS per jarvis.mintwork.it)
 7. Installa Cloudflared (tunnel per jarvis-pub.mintwork.it)
@@ -682,7 +686,8 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | 5000 | Orchestrator + Admin UI | HTTP | LAN / Tailscale |
 | 8890 | XTTSv2 TTS API | HTTP | Interno / Tailscale (per OpenClaw) |
 | 9000 | Whisper STT | HTTP | Interno |
-| 11434 | Ollama API | HTTP | Interno |
+| 11434 | Ollama API (LLM) | HTTP | Interno |
+| 11435 | fastembed API (embeddings) | HTTP | Interno / Tailscale |
 | 5432 | PostgreSQL | TCP | Interno |
 | 27017 | MongoDB | TCP | Interno |
 | 80 | Nginx HTTP (redirect + health) | HTTP | LAN / Tailscale |
