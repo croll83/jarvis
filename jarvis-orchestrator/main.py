@@ -4049,6 +4049,36 @@ async def process_jarvis_logic(text: str, context: dict):
         entity_raw = payload.get("entity", "unknown")
         ha_params = payload.get("parameters", {}) or {}
 
+        # Qwen a volte rotta domande informative come HOME_CONTROL
+        # Detect: azione non-HA, o testo è una domanda di stato → redirect a SIMPLE_CHAT entity_discover
+        _valid_ha_actions = {
+            "turn_on", "turn_off", "toggle",
+            "open_cover", "close_cover", "stop_cover", "set_cover_position",
+            "set_temperature", "set_hvac_mode",
+            "volume_set", "volume_up", "volume_down", "media_play", "media_pause",
+            "media_stop", "select_source",
+            "set_percentage",
+            "lock", "unlock",
+        }
+        _query_patterns = {"quali ", "quante ", "quanti ", "che stato ", "sono acces",
+                           "è acces", "sono spen", "è spen", "cosa c'è ", "cosa ce ",
+                           "elenco ", "elenca ", "mostrami ", "dimmi "}
+        _text_lower = text.lower()
+        _is_query = any(p in _text_lower for p in _query_patterns)
+        if action not in _valid_ha_actions or _is_query:
+            logger.info(f"HOME_CONTROL redirected to entity_discover: action='{action}' is_query={_is_query}")
+            _disc_params = {"domain": domain_raw} if domain_raw else {}
+            if entity_raw and entity_raw != "unknown":
+                # entity potrebbe essere room/zona/piano
+                _disc_params["room"] = entity_raw
+            _disc_payload = {"api_call": "entity_discover", "params": _disc_params}
+            query_response = await _execute_entity_query(_disc_payload, location, context)
+            response = query_response or "Non ho trovato dispositivi."
+            smart_cache.learn(text, response, "SIMPLE_CHAT")
+            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+            await deliver_final_response(response, context, sound_type="neutral")
+            return
+
         # Detect multi-entity/multi-command → redirect to OpenClaw (Qwen 3B can't split)
         _entity_str = str(entity_raw) if entity_raw else ""
         _has_multi_entity = "," in _entity_str or (isinstance(entity_raw, list) and len(entity_raw) > 1)
