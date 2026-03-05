@@ -471,6 +471,7 @@ async def _handle_approval_update(update: dict):
                 "source": "Telegram",
                 "chat_id": msg_chat_id,
                 "location": location,
+                "room": "Unknown",
                 "speaker_id": user_msg.id,
                 "speaker_name": user_msg.name,
                 "is_admin": user_msg.is_admin,
@@ -3703,12 +3704,14 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
             q_params.append(params["domain"])
 
         if params.get("room"):
-            query += " AND LOWER(room) LIKE LOWER(?)"
-            q_params.append(f"%{params['room']}%")
+            # Qwen spesso mette zone/piani nel campo room — cerca in room, area e zone
+            _room_val = params["room"]
+            query += " AND (LOWER(room) LIKE LOWER(?) OR LOWER(area) LIKE LOWER(?) OR LOWER(zone) LIKE LOWER(?))"
+            q_params.extend([f"%{_room_val}%", f"%{_room_val}%", f"%{_room_val}%"])
 
         if params.get("zone"):
-            query += " AND LOWER(area) LIKE LOWER(?)"
-            q_params.append(f"%{params['zone']}%")
+            query += " AND (LOWER(area) LIKE LOWER(?) OR LOWER(zone) LIKE LOWER(?))"
+            q_params.extend([f"%{params['zone']}%", f"%{params['zone']}%"])
 
         if params.get("floor"):
             query += " AND LOWER(zone) LIKE LOWER(?)"
