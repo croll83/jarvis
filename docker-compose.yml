@@ -86,7 +86,7 @@ services:
     volumes:
       - fastembed_cache:/root/.cache    # Cache modello ONNX (~260 MB)
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11435/api/tags"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:11435/api/tags')"]
       interval: 30s
       timeout: 10s
       retries: 3
