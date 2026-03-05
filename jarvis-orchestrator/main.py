@@ -3403,7 +3403,53 @@ def _resolve_home_control_target(
         if extracted:
             discovered = discover_entities_for_voice(location_id, extracted, domain=domain)
             if discovered:
-                return _make_bulk_result(discovered, f"user_text:'{extracted}'")
+                # Se c'è un solo entity nel risultato, restituisci direttamente
+                if len(discovered) == 1:
+                    return _make_bulk_result(discovered, f"user_text:'{extracted}'")
+
+                # Multiple entities: prova a restringere con entity_name di Qwen
+                # prima di restituire bulk (evita "accendi luce specchio" → tutte le luci)
+                if entity_name:
+                    entity_lower = entity_name.lower().strip()
+                    # Match esatto tra entity_name Qwen e discovered entities
+                    exact = [e for e in discovered if e["entity_name"].lower().strip() == entity_lower]
+                    if len(exact) == 1:
+                        logger.info(
+                            f"Entity resolution [user_text+qwen_exact]: "
+                            f"'{entity_name}' in room '{extracted}' → {exact[0]['entity_id']}"
+                        )
+                        return {
+                            "mode": "single",
+                            "entity_ids": [exact[0]["entity_id"]],
+                            "description": exact[0]["entity_name"],
+                            "match_type": "exact_in_room",
+                        }
+                    # Match parziale (entity_name contenuto in discovered o viceversa)
+                    partial = [
+                        e for e in discovered
+                        if entity_lower in e["entity_name"].lower().strip()
+                        or e["entity_name"].lower().strip() in entity_lower
+                    ]
+                    if len(partial) == 1:
+                        logger.info(
+                            f"Entity resolution [user_text+qwen_partial]: "
+                            f"'{entity_name}' in room '{extracted}' → {partial[0]['entity_id']}"
+                        )
+                        return {
+                            "mode": "single",
+                            "entity_ids": [partial[0]["entity_id"]],
+                            "description": partial[0]["entity_name"],
+                            "match_type": "partial_in_room",
+                        }
+
+                # Nessun match specifico: bulk solo se plurale esplicito
+                plural_tokens = {"tutti", "tutte", "tutto", "le luci", "le tapparelle", "i climatizzatori"}
+                text_lower = user_text.lower()
+                if any(tok in text_lower for tok in plural_tokens):
+                    return _make_bulk_result(discovered, f"user_text:'{extracted}'")
+
+                # Singolare senza match → chiedi chiarimento
+                return _make_clarify_result(discovered, f"user_text:'{extracted}'")
 
     # ── B. ENTITY QWEN: prova quello che Qwen ha restituito ──
     # B1. Match esatto friendly name → entity singola
