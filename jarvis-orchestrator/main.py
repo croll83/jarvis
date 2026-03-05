@@ -80,7 +80,7 @@ logger = logging.getLogger("JARVIS_MAIN")
 # Filtro per nascondere le richieste frequenti dall'access log di uvicorn
 # (device_status polling ogni 2s, heartbeat ogni 5min — inquinano il log)
 class _QuietDevicePollingFilter(logging.Filter):
-    _QUIET_PATHS = ("/device_status", "/heartbeat", "/room_temperature/", "/ws/audio")
+    _QUIET_PATHS = ("/device_status", "/heartbeat", "/room_temperature/", "/ws/audio", "/speaker/volume_change")
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
         return not any(p in msg for p in self._QUIET_PATHS)
@@ -2468,7 +2468,7 @@ async def speaker_suppressed_status():
 async def speaker_volume_change_endpoint(request: Request):
     """
     Endpoint per volume change da voice device (rotary encoder).
-    Proxied dal wakeword-server via Tailscale.
+    Proxied dal wakeword-server via Tailscale.  Debounced server-side.
     Body: {"device_id": "AABBCCDDEEFF", "direction": "up|down"}
     """
     from ws_audio_handler import _handle_volume_change
