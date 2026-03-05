@@ -35,6 +35,11 @@ ENTITY DISCOVERY:
 Per domande su dispositivi ("cosa c'è in soggiorno?", "quali telecamere?", "che temperatura?"):
 → SIMPLE_CHAT + payload.api_call="entity_discover" + payload.params (room/zone/domain/search)
 
+ENTITY STATUS:
+Per domande su stato/configurazione/capacità di un dispositivo specifico:
+("che impostazioni ha la lampada?", "a che luminosità è?", "cosa posso configurare?")
+→ SIMPLE_CHAT + payload.api_call="entity_status" + payload.params (entity, room, domain)
+
 GERARCHIA ENTITÀ (dalla mappa):
 La mappa è organizzata: Piano → Zona → Stanza → tipo_entity → [nomi]
 - Stanza (room): "Cucina", "Bagno Piccolo", "Camera Padronale"
@@ -75,3 +80,4 @@ ESEMPI:
 "Spegni le luci in zona notte" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Spengo le luci in zona notte.","payload":{"domain":"light","entity":"Zona Notte","action":"turn_off"}}
 "Quali luci sono accese in zona notte?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo le luci in zona notte...","payload":{"api_call":"entity_discover","params":{"zone":"Zona Notte","domain":"light"}}}
 "Spegni tutto in zona giorno" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Spengo tutto in zona giorno.","payload":{"location":"albani20","entity":"Zona Giorno","action":"turn_off"}}
+"Che impostazioni ha la lampada in camera?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo la lampada...","payload":{"api_call":"entity_status","params":{"entity":"Lampada","room":"Camera"}}}
