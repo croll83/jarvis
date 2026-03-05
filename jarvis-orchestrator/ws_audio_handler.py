@@ -1010,9 +1010,38 @@ async def push_config_to_device(device_id: str, config: dict) -> bool:
 # ---------------------------------------------------------------------------
 # Volume change handler (NabuVoice rotary encoder)
 # ---------------------------------------------------------------------------
+# Debounced: accumulates rapid clicks and sends a single volume_set after
+# 400ms of quiet.  This avoids the "read stale state" problem where HA hasn't
+# applied the previous volume_set yet when the next request arrives.
+# ---------------------------------------------------------------------------
+
+_volume_pending: dict[str, int] = {}          # device_id → accumulated steps (+/-)
+_volume_tasks: dict[str, asyncio.Task] = {}   # device_id → pending flush task
+_VOLUME_DEBOUNCE_S = 0.4
+_VOLUME_STEP = 0.05
+
 
 async def _handle_volume_change(device_id: str, direction: str):
-    """Handle volume_change from NabuVoice rotary encoder → adjust Echo speaker."""
+    """Accumulate a volume click.  Actual HA call is debounced."""
+    delta = +1 if direction == "up" else -1
+    _volume_pending[device_id] = _volume_pending.get(device_id, 0) + delta
+
+    # Cancel previous timer for this device, start a new one
+    old = _volume_tasks.pop(device_id, None)
+    if old and not old.done():
+        old.cancel()
+    _volume_tasks[device_id] = asyncio.create_task(_flush_volume(device_id))
+
+
+async def _flush_volume(device_id: str):
+    """Wait for debounce period, then apply accumulated volume delta."""
+    await asyncio.sleep(_VOLUME_DEBOUNCE_S)
+
+    steps = _volume_pending.pop(device_id, 0)
+    _volume_tasks.pop(device_id, None)
+    if steps == 0:
+        return
+
     from device_api import get_device_speaker_config
     from multi_ha import multi_ha
 
@@ -1027,21 +1056,22 @@ async def _handle_volume_change(device_id: str, direction: str):
         logger.warning(f"volume_change: no speaker configured for {device_id}")
         return
 
-    # Fetch current volume
+    # Fetch current volume (now stale-safe: we waited for HA to settle)
     states = await multi_ha.get_states_bulk(location_id, [output_speaker])
     speaker_state = states.get(output_speaker, {})
     current_vol = speaker_state.get("attributes", {}).get("volume_level", 0.3)
 
-    # Step 5%
-    step = 0.05
-    new_vol = current_vol + step if direction == "up" else current_vol - step
-    new_vol = max(0.0, min(1.0, new_vol))
+    new_vol = current_vol + steps * _VOLUME_STEP
+    new_vol = max(0.0, min(1.0, round(new_vol, 2)))
+
+    if new_vol == current_vol:
+        return
 
     await multi_ha.call_service(
         location_id, "media_player", "volume_set",
         {"entity_id": output_speaker, "volume_level": new_vol}
     )
-    logger.info(f"volume_change: {output_speaker} {current_vol:.2f} → {new_vol:.2f}")
+    logger.info(f"volume_change: {output_speaker} {current_vol:.2f} → {new_vol:.2f} ({steps:+d} steps)")
 
 
 # ---------------------------------------------------------------------------
