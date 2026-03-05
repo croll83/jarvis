@@ -118,10 +118,11 @@ OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "16384"))
 # ===========================================================================
 # MEMORY CONTEXT LIMITS (potenzialmente modificabili a runtime ma meno critici)
 # ===========================================================================
-# Limiti per il ROUTER (Qwen) - deve essere veloce, meno contesto
-ROUTER_MEMORY_HIGH_PRIORITY = 10      # Messaggi speaker corrente
-ROUTER_MEMORY_MEDIUM_PRIORITY = 5     # Messaggi altri familiari
-ROUTER_MEMORY_GLOBAL = 3              # Eventi sistema
+# Limiti per il ROUTER (Qwen 3B) - meno contesto = meno allucinazioni
+# Con 10+5+3 il prompt superava ~3500 tok e Qwen allucinava in loop.
+ROUTER_MEMORY_HIGH_PRIORITY = 5       # Messaggi speaker corrente (era 10)
+ROUTER_MEMORY_MEDIUM_PRIORITY = 2     # Messaggi altri familiari (era 5)
+ROUTER_MEMORY_GLOBAL = 1              # Eventi sistema (era 3)
 
 # Sliding window temporale (secondi)
 MEMORY_WINDOW_SECONDS = 3600          # 1 ora di default
@@ -289,7 +290,7 @@ HINT_CONFIDENCE = {
 LLM_PARAMS = {
     "routing": {
         "temperature": 0.1,
-        "max_tokens": 500,
+        "max_tokens": 200,   # Routing JSON e ~80 tok; 500 permetteva loop allucinatori
         "timeout": 15,
     },
     "quick_response": {
