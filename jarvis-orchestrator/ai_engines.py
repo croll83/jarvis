@@ -670,7 +670,7 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
                     return _fallback_routing()
 
     except Exception as e:
-        logger.error(f"Routing exception: {e}")
+        logger.error(f"Routing exception: {e}", exc_info=True)
         return _fallback_routing()
 
 
