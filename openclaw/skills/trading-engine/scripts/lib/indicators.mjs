@@ -225,3 +225,65 @@ export function analyzeCandles(candles, opts = {}) {
     vwapDelta: currentVWAP && currentPrice ? parseFloat(((currentPrice - currentVWAP) / currentVWAP * 100).toFixed(2)) : null,
   };
 }
+
+/**
+ * Compute a composite signal score from indicator analysis.
+ * Returns score (-100..100), direction (LONG/SHORT/NEUTRAL), confidence, and signal descriptions.
+ */
+export function computeSignalScore(analysis) {
+  let score = 0;
+  const signals = [];
+
+  // RSI (weight: 25)
+  if (analysis.rsi !== null) {
+    if (analysis.rsi < 25) { score += 25; signals.push(`RSI ${analysis.rsi} (oversold, bullish)`); }
+    else if (analysis.rsi < 35) { score += 12; signals.push(`RSI ${analysis.rsi} (approaching oversold)`); }
+    else if (analysis.rsi > 75) { score -= 25; signals.push(`RSI ${analysis.rsi} (overbought, bearish)`); }
+    else if (analysis.rsi > 65) { score -= 12; signals.push(`RSI ${analysis.rsi} (approaching overbought)`); }
+    else { signals.push(`RSI ${analysis.rsi} (neutral)`); }
+  }
+
+  // EMA cross (weight: 20)
+  if (analysis.ema.cross === 'bullish') { score += 20; signals.push('EMA bullish cross'); }
+  else if (analysis.ema.cross === 'bearish') { score -= 20; signals.push('EMA bearish cross'); }
+  else if (analysis.ema.trend === 'bullish') { score += 8; signals.push('EMA trend bullish'); }
+  else { score -= 8; signals.push('EMA trend bearish'); }
+
+  // MACD (weight: 20)
+  if (analysis.macd.histogram !== null) {
+    if (analysis.macd.histogram > 0 && analysis.macd.trend === 'bullish') {
+      score += 15; signals.push('MACD bullish momentum');
+    } else if (analysis.macd.histogram < 0 && analysis.macd.trend === 'bearish') {
+      score -= 15; signals.push('MACD bearish momentum');
+    }
+  }
+
+  // Bollinger Bands (weight: 15)
+  if (analysis.bb.position === 'lower') {
+    score += 15; signals.push('Price at BB lower band (potential bounce)');
+  } else if (analysis.bb.position === 'upper') {
+    score -= 15; signals.push('Price at BB upper band (potential reversal)');
+  }
+  if (analysis.bb.squeeze) {
+    signals.push('BB squeeze detected (breakout imminent)');
+  }
+
+  // VWAP (weight: 10)
+  if (analysis.vwapDelta !== null) {
+    if (analysis.vwapDelta < -1) { score += 10; signals.push(`Price ${analysis.vwapDelta}% below VWAP (undervalued)`); }
+    else if (analysis.vwapDelta > 1) { score -= 10; signals.push(`Price ${analysis.vwapDelta}% above VWAP (overvalued)`); }
+  }
+
+  // ATR context
+  if (analysis.atr !== null && analysis.price > 0) {
+    const atrPct = (analysis.atr / analysis.price * 100).toFixed(2);
+    signals.push(`ATR: ${atrPct}% (${parseFloat(atrPct) > 2 ? 'high' : 'normal'} volatility)`);
+  }
+
+  return {
+    score: Math.max(-100, Math.min(100, score)),
+    direction: score > 15 ? 'LONG' : score < -15 ? 'SHORT' : 'NEUTRAL',
+    confidence: Math.min(100, Math.abs(score)),
+    signals,
+  };
+}
