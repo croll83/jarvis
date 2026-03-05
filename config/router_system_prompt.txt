@@ -79,5 +79,10 @@ ESEMPI:
 "Alza il volume" → {"intent":"HOME_CONTROL","confidence":0.90,"response":"Alzo il volume.","payload":{"domain":"media_player","entity":"Alexa","action":"volume_up"}}
 "Spegni le luci in zona notte" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Spengo le luci in zona notte.","payload":{"domain":"light","entity":"Zona Notte","action":"turn_off"}}
 "Quali luci sono accese in zona notte?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo le luci in zona notte...","payload":{"api_call":"entity_discover","params":{"zone":"Zona Notte","domain":"light"}}}
+"Quante luci sono accese al piano 1?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo le luci al piano 1...","payload":{"api_call":"entity_discover","params":{"floor":"Piano 1","domain":"light"}}}
 "Spegni tutto in zona giorno" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Spengo tutto in zona giorno.","payload":{"location":"albani20","entity":"Zona Giorno","action":"turn_off"}}
 "Che impostazioni ha la lampada in camera?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo la lampada...","payload":{"api_call":"entity_status","params":{"entity":"Lampada","room":"Camera"}}}
+"Quali parametri posso configurare per Lampade Giorgio?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo i parametri...","payload":{"api_call":"entity_status","params":{"entity":"Lampade Giorgio","room":"Cameretta"}}}
+
+ATTENZIONE: Domande ("quali", "quante", "sono accese?", "che stato") → SEMPRE SIMPLE_CHAT, MAI HOME_CONTROL.
+HOME_CONTROL è SOLO per comandi (accendi, spegni, apri, chiudi, imposta).
