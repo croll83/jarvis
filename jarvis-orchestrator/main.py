@@ -67,7 +67,7 @@ from proactive import proactive_check_loop
 from vector_store import init_vector_store
 from ws_audio_handler import (
     init_vad, get_active_session_count, get_persistent_connection_count,
-    trigger_device_listen, get_connected_devices, handle_volume_change,
+    trigger_device_listen, get_connected_devices,
 )
 
 # Logging setup
@@ -2467,10 +2467,12 @@ async def speaker_suppressed_status():
 @app.post("/speaker/volume_change")
 async def speaker_volume_change_endpoint(request: Request):
     """
-    Endpoint per volume change da NabuVoice rotary encoder.
-    Alternativa HTTP all'invio via WebSocket (più affidabile quando relay WS è chiuso).
+    Endpoint per volume change da voice device (rotary encoder).
+    Proxied dal wakeword-server via Tailscale.
     Body: {"device_id": "AABBCCDDEEFF", "direction": "up|down"}
     """
+    from ws_audio_handler import _handle_volume_change
+
     data = await request.json()
     device_id = data.get("device_id", "").upper().strip()
     direction = data.get("direction", "up").lower().strip()
@@ -2482,7 +2484,7 @@ async def speaker_volume_change_endpoint(request: Request):
         return JSONResponse(status_code=400, content={"status": "error", "message": "direction must be 'up' or 'down'"})
 
     try:
-        await handle_volume_change(device_id, direction)
+        await _handle_volume_change(device_id, direction)
         return {"status": "ok", "device_id": device_id, "direction": direction}
     except Exception as e:
         logger.error(f"volume_change endpoint failed for {device_id}: {e}")
