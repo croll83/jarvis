@@ -2119,6 +2119,16 @@
                             <option value="">Nessuno</option>
                         </select>
                     </div>
+
+                    <div class="form-group">
+                        <label>Speaker Volume Control</label>
+                        <select id="vdVolumeSpeaker">
+                            <option value="">Stesso dello speaker principale</option>
+                        </select>
+                        <small style="color: var(--text-secondary);">
+                            Entity separato per il controllo volume (es. Bose nativo vs Echo integrato)
+                        </small>
+                    </div>
                 </div>
 
                 <div class="form-group">
@@ -3615,6 +3625,7 @@
                         await loadMediaPlayersForLocation();
                         document.getElementById('vdOutputSpeaker').value = device.output_speaker || '';
                         document.getElementById('vdFallbackSpeaker').value = device.fallback_speaker || '';
+                        document.getElementById('vdVolumeSpeaker').value = device.volume_speaker || '';
                     }
 
                     document.getElementById('voiceDeviceModalTitle').textContent = 'Modifica Voice Device';
@@ -3646,10 +3657,12 @@
             const locationId = document.getElementById('vdLocationId').value;
             const outputSelect = document.getElementById('vdOutputSpeaker');
             const fallbackSelect = document.getElementById('vdFallbackSpeaker');
+            const volumeSelect = document.getElementById('vdVolumeSpeaker');
 
             if (!locationId) {
                 outputSelect.innerHTML = '<option value="">Seleziona prima la location...</option>';
                 fallbackSelect.innerHTML = '<option value="">Nessuno</option>';
+                volumeSelect.innerHTML = '<option value="">Stesso dello speaker principale</option>';
                 return;
             }
 
@@ -3668,6 +3681,7 @@
 
                 outputSelect.innerHTML = '<option value="">Seleziona speaker...</option>' + options;
                 fallbackSelect.innerHTML = '<option value="">Nessuno</option>' + options;
+                volumeSelect.innerHTML = '<option value="">Stesso dello speaker principale</option>' + options;
 
             } catch (e) {
                 console.error('Failed to load media players:', e);
@@ -3686,6 +3700,7 @@
                 location_id: document.getElementById('vdLocationId').value,
                 output_speaker: useInternalSpeaker ? null : document.getElementById('vdOutputSpeaker').value,
                 fallback_speaker: useInternalSpeaker ? null : (document.getElementById('vdFallbackSpeaker').value || null),
+                volume_speaker: useInternalSpeaker ? null : (document.getElementById('vdVolumeSpeaker').value || null),
                 fallback_telegram: document.getElementById('vdFallbackTelegram').checked,
                 fallback_local_speaker: document.getElementById('vdFallbackLocalSpeaker').checked,
                 use_internal_speaker: useInternalSpeaker,
