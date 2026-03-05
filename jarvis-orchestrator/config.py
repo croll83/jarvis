@@ -104,9 +104,9 @@ ROUTER_MODEL = os.getenv("ROUTER_MODEL", "qwen2.5:3b")
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
-# Context window per tool calling — 6K max per restare 100% GPU
-# (routing usa 3K, tools serve più spazio per risultati web/memory)
-QWEN_TOOLS_NUM_CTX = int(os.getenv("QWEN_TOOLS_NUM_CTX", "6144"))
+# QWEN_TOOLS_NUM_CTX rimosso — ora si usa OLLAMA_NUM_CTX globale (32768)
+# per evitare model reload. Ogni num_ctx diverso forza Ollama a ricaricare
+# il modello (~0.8-1.5s penalty).
 
 # ===========================================================================
 # MEMORY CONTEXT LIMITS (potenzialmente modificabili a runtime ma meno critici)

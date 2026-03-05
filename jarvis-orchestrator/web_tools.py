@@ -426,7 +426,7 @@ async def call_qwen_with_tools(
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
-                "num_ctx": config.QWEN_TOOLS_NUM_CTX,
+                # num_ctx rimosso: usa OLLAMA_NUM_CTX globale (32768) per evitare reload
             },
             "stream": False,
         }
