@@ -524,7 +524,7 @@ async def get_routing(text: str, context: dict) -> dict:
         AUDIT_REPORT, SIMPLE_CHAT, RETRY, IMAGE_GENERATION
     """
     # Add OpenClaw availability flag
-    context["openclaw_available"] = config.GEMINI_ENABLED
+    context["openclaw_available"] = config.OPENCLAW_ENABLED
 
     # LLM decides (local or API)
     if config.AI_BACKEND == "api":
@@ -688,8 +688,8 @@ def _validate_routing(result: dict) -> dict:
         intent = "SIMPLE_CHAT"
 
     # Se OpenClaw intent ma non abilitato, fallback a SIMPLE_CHAT
-    if intent in OPENCLAW_INTENTS and not config.GEMINI_ENABLED:
-        logger.warning(f"OpenClaw intent {intent} requested but OpenClaw not enabled, falling back to SIMPLE_CHAT")
+    if intent in OPENCLAW_INTENTS and not config.OPENCLAW_ENABLED:
+        logger.warning(f"OpenClaw intent {intent} requested but OpenClaw not configured, falling back to SIMPLE_CHAT")
         intent = "SIMPLE_CHAT"
 
     # Se IMAGE_GENERATION ma Gemini non abilitato, fallback
