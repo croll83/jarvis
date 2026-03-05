@@ -42,6 +42,7 @@ La mappa è organizzata: Piano → Zona → Stanza → tipo_entity → [nomi]
 - Piano (floor): "Piano 1", "Piano Terra" — raggruppa più zone
 Usa il livello giusto nel payload: room per stanze, zone per zone, floor per piani.
 HOME_CONTROL con zona/piano → entity=nome_zona_o_piano (es. "Zona Notte")
+"Spegni tutto in X" → domain omesso (tutti i domini), entity=X
 
 AZIONI E PARAMETRI PER DOMINIO:
 - light: turn_on, turn_off, toggle. Params turn_on: brightness(0-255), color_temp_kelvin(2000-6500), rgb_color([R,G,B])
@@ -73,3 +74,4 @@ ESEMPI:
 "Alza il volume" → {"intent":"HOME_CONTROL","confidence":0.90,"response":"Alzo il volume.","payload":{"domain":"media_player","entity":"Alexa","action":"volume_up"}}
 "Spegni le luci in zona notte" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Spengo le luci in zona notte.","payload":{"domain":"light","entity":"Zona Notte","action":"turn_off"}}
 "Quali luci sono accese in zona notte?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo le luci in zona notte...","payload":{"api_call":"entity_discover","params":{"zone":"Zona Notte","domain":"light"}}}
+"Spegni tutto in zona giorno" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Spengo tutto in zona giorno.","payload":{"location":"albani20","entity":"Zona Giorno","action":"turn_off"}}
