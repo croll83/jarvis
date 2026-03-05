@@ -3775,21 +3775,32 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
         total = len(discovered)
         on_count = len(on_items)
 
-        # Lista nomi entità
-        all_names = [e["friendly_name"] for e in discovered]
+        # Livello stanza (poche entità): elenca nomi. Zona/piano: solo conteggi + accese.
+        _is_room_level = bool(params.get("room")) and not params.get("zone") and not params.get("floor")
 
-        if on_count == 0:
-            return (f"In {scope} ci sono {total} {domain_label}: "
-                    f"{', '.join(all_names[:15])}. Sono tutte spente.")
-        elif on_count == total:
-            return (f"In {scope} ci sono {total} {domain_label}: "
-                    f"{', '.join(all_names[:15])}. Sono tutte accese.")
+        if _is_room_level:
+            all_names = [e["friendly_name"] for e in discovered]
+            if on_count == 0:
+                return (f"In {scope} ci sono {total} {domain_label}: "
+                        f"{', '.join(all_names[:15])}. Sono tutte spente.")
+            elif on_count == total:
+                return (f"In {scope} ci sono {total} {domain_label}: "
+                        f"{', '.join(all_names[:15])}. Sono tutte accese.")
+            else:
+                off_items = [n for n in all_names if n not in on_items]
+                return (f"In {scope} ci sono {total} {domain_label}: "
+                        f"{', '.join(all_names[:15])}. "
+                        f"Accese: {', '.join(on_items[:10])}. "
+                        f"Spente: {', '.join(off_items[:10])}.")
         else:
-            off_items = [n for n in all_names if n not in on_items]
-            return (f"In {scope} ci sono {total} {domain_label}: "
-                    f"{', '.join(all_names[:15])}. "
-                    f"Accese: {', '.join(on_items[:10])}. "
-                    f"Spente: {', '.join(off_items[:10])}.")
+            # Zona/piano/tutto: risposta sintetica
+            if on_count == 0:
+                return f"Tutte le {total} {domain_label} in {scope} sono spente."
+            elif on_count == total:
+                return f"Tutte le {total} {domain_label} in {scope} sono accese."
+            else:
+                return (f"{on_count} {domain_label} accese su {total} in {scope}: "
+                        f"{', '.join(on_items[:15])}.")
 
     except Exception as e:
         logger.error(f"Entity query from SIMPLE_CHAT failed: {e}")
