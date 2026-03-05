@@ -45,7 +45,7 @@ from ai_engines import (
     is_safe, get_routing, get_quick_response, pre_route,
     normalize_stt_text,
     is_openclaw_intent,
-    # Image generation
+    is_dirty_audio,
     is_image_generation_intent
 )
 from security import SecurityManager, should_require_approval, get_approval_priority
@@ -389,17 +389,22 @@ async def _tg_bot_api(method: str, payload: dict = None) -> dict:
 async def _process_telegram_text(text: str, context: dict):
     """Processa un messaggio di testo Telegram attraverso la pipeline JARVIS."""
     try:
-        pre_result = await pre_route(text)
-        classification = pre_result.get("classification", "ALTRO")
-        logger.info(f"Telegram pre-route: {classification} "
-                    f"(conf={pre_result.get('confidence', 0):.2f})")
-
-        if classification == "DOMOTICA_CERTA":
+        if config.SKIP_PRE_ROUTE:
+            # Routing unificato: salta pre-route, vai diretto al routing completo
             await process_jarvis_logic(text, context)
-        elif classification == "DOMOTICA_INCERTA":
-            await _handle_openclaw_voice(text, context, hint="domotics")
         else:
-            await _handle_openclaw_voice(text, context, hint="")
+            # Legacy: pre-route 3-way → dispatch
+            pre_result = await pre_route(text)
+            classification = pre_result.get("classification", "ALTRO")
+            logger.info(f"Telegram pre-route: {classification} "
+                        f"(conf={pre_result.get('confidence', 0):.2f})")
+
+            if classification == "DOMOTICA_CERTA":
+                await process_jarvis_logic(text, context)
+            elif classification == "DOMOTICA_INCERTA":
+                await _handle_openclaw_voice(text, context, hint="domotics")
+            else:
+                await _handle_openclaw_voice(text, context, hint="")
     except Exception as e:
         logger.error(f"Error processing Telegram text: {e}", exc_info=True)
         await _tg_bot_api("sendMessage", {
@@ -2844,22 +2849,23 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
             await _activate_live_session(device_id, device_config, speaker_ctx, location, room_value)
             return
 
-        # Pre-routing via Qwen 7B
-        pre_route_start = time.time()
-        pre_result = await pre_route(text)
-        pre_route_ms = (time.time() - pre_route_start) * 1000
-        classification = pre_result.get("classification", "ALTRO")
-        logger.info(f"WS pre-route: {classification} (conf={pre_result.get('confidence', 0):.2f}, {pre_route_ms:.0f}ms)")
-
-        # SESSIONE_LIVE è gestita solo dal keyword matching Python (sopra).
-        # Qwen non la emette più (rimossa dal prompt); se la emettesse,
-        # ai_engines.py la downgreda a ALTRO nel validation.
-        if classification == "DOMOTICA_CERTA":
+        if config.SKIP_PRE_ROUTE:
+            # Routing unificato: salta pre-route, vai diretto al routing completo
             await process_jarvis_logic(text, context)
-        elif classification == "DOMOTICA_INCERTA":
-            await _handle_openclaw_voice(text, context, hint="domotics")
         else:
-            await _handle_openclaw_voice(text, context, hint="")
+            # Legacy: pre-route 3-way → dispatch
+            pre_route_start = time.time()
+            pre_result = await pre_route(text)
+            pre_route_ms = (time.time() - pre_route_start) * 1000
+            classification = pre_result.get("classification", "ALTRO")
+            logger.info(f"WS pre-route: {classification} (conf={pre_result.get('confidence', 0):.2f}, {pre_route_ms:.0f}ms)")
+
+            if classification == "DOMOTICA_CERTA":
+                await process_jarvis_logic(text, context)
+            elif classification == "DOMOTICA_INCERTA":
+                await _handle_openclaw_voice(text, context, hint="domotics")
+            else:
+                await _handle_openclaw_voice(text, context, hint="")
 
     except Exception as e:
         logger.error(f"Error processing WS audio from {device_id}: {e}")
@@ -3008,22 +3014,24 @@ async def voice_stream(
         if speaker_ctx.get("speaker_id"):
             set_user_location(speaker_ctx["speaker_id"], location, "voice")
 
-        # 3-way pre-routing via Qwen 7B (~100ms)
-        pre_route_start = time.time()
-        pre_result = await pre_route(text)
-        pre_route_ms = (time.time() - pre_route_start) * 1000
-        classification = pre_result.get("classification", "ALTRO")
-        logger.info(f"Pre-route: {classification} (conf={pre_result.get('confidence', 0):.2f}, {pre_route_ms:.0f}ms)")
-
-        if classification == "DOMOTICA_CERTA":
-            # Fast path: local Qwen routing → HA direct (offline capable, <200ms)
+        if config.SKIP_PRE_ROUTE:
+            # Routing unificato: salta pre-route, vai diretto al routing completo
             asyncio.create_task(process_jarvis_logic(text, context))
-        elif classification == "DOMOTICA_INCERTA":
-            # Ambiguous domotics: forward to OpenClaw with hint
-            asyncio.create_task(_handle_openclaw_voice(text, context, hint="domotics"))
+            classification = "unified"
         else:
-            # ALTRO: non-domotics, forward to OpenClaw
-            asyncio.create_task(_handle_openclaw_voice(text, context, hint=""))
+            # Legacy: pre-route 3-way → dispatch
+            pre_route_start = time.time()
+            pre_result = await pre_route(text)
+            pre_route_ms = (time.time() - pre_route_start) * 1000
+            classification = pre_result.get("classification", "ALTRO")
+            logger.info(f"Pre-route: {classification} (conf={pre_result.get('confidence', 0):.2f}, {pre_route_ms:.0f}ms)")
+
+            if classification == "DOMOTICA_CERTA":
+                asyncio.create_task(process_jarvis_logic(text, context))
+            elif classification == "DOMOTICA_INCERTA":
+                asyncio.create_task(_handle_openclaw_voice(text, context, hint="domotics"))
+            else:
+                asyncio.create_task(_handle_openclaw_voice(text, context, hint=""))
 
         return {
             "status": "processing",
@@ -3593,7 +3601,19 @@ async def process_jarvis_logic(text: str, context: dict):
 
     logger.info(f"Processing: '{text[:50]}...' from {source} (speaker: {speaker_name}, location: {location})")
 
-    # 0. CHECK CRITICAL SERVICES
+    # 0a. DIRTY AUDIO CHECK (era nel pre-route, ora qui — puro Python, no LLM)
+    if is_dirty_audio(text):
+        logger.debug(f"Dirty audio detected, ignoring: {text!r}")
+        return
+
+    # 0b. IMAGE GENERATION KEYWORD CHECK (puro Python)
+    # Se è un comando di generazione immagini, forwarda a OpenClaw che ha Gemini
+    if is_image_generation_intent(text):
+        logger.info(f"Image generation keyword detected: '{text[:50]}'")
+        await _handle_openclaw_voice(text, context, hint="image_generation")
+        return
+
+    # 0c. CHECK CRITICAL SERVICES
     if not service_status.is_critical_online():
         logger.error("Router model offline - cannot process request")
         await deliver_final_response(
@@ -4043,10 +4063,15 @@ async def process_jarvis_logic(text: str, context: dict):
     # --- OPENCLAW (reasoning via OpenClaw gateway) ---
     elif intent == "OPENCLAW":
         logger.info("OPENCLAW intent, forwarding to OpenClaw")
-        response, _ = await forward_to_openclaw(text, context)
-        log_event("OPENCLAW", f"Domanda: {text[:50]}...", speaker_id, speaker_name)
-        save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-        await deliver_final_response(response, context, sound_type="neutral")
+        if source in config.VOICE_SOURCES:
+            # Voice: usa streaming TTS (sentence-by-sentence) per latenza percepita minima
+            await _handle_openclaw_voice(text, context, hint="")
+        else:
+            # Telegram/altro: non-streaming
+            response, _ = await forward_to_openclaw(text, context)
+            log_event("OPENCLAW", f"Domanda: {text[:50]}...", speaker_id, speaker_name)
+            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+            await deliver_final_response(response, context, sound_type="neutral")
         return
 
     # --- VERIFY_WITH_OPENCLAW (confronto risposta precedente) ---
@@ -4058,118 +4083,29 @@ async def process_jarvis_logic(text: str, context: dict):
             await deliver_final_response(response, context, sound_type="neutral")
             return
 
-        await deliver_final_response("Chiedo conferma...", context)
-        verify_text = f"Verifica questa risposta: alla domanda '{last_exchange['question']}' ho risposto '{last_exchange['answer']}'. È corretto?"
-        response, _ = await forward_to_openclaw(verify_text, context)
-        log_event("VERIFY_OPENCLAW", f"Verifica risposta precedente", speaker_id, speaker_name)
-        save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-        await deliver_final_response(response, context, sound_type="neutral")
+        if source in config.VOICE_SOURCES:
+            verify_text = f"Verifica questa risposta: alla domanda '{last_exchange['question']}' ho risposto '{last_exchange['answer']}'. È corretto?"
+            await _handle_openclaw_voice(verify_text, context, hint="verify")
+        else:
+            await deliver_final_response("Chiedo conferma...", context)
+            verify_text = f"Verifica questa risposta: alla domanda '{last_exchange['question']}' ho risposto '{last_exchange['answer']}'. È corretto?"
+            response, _ = await forward_to_openclaw(verify_text, context)
+            log_event("VERIFY_OPENCLAW", f"Verifica risposta precedente", speaker_id, speaker_name)
+            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+            await deliver_final_response(response, context, sound_type="neutral")
         return
 
-    # --- IMAGE_GENERATION (genera immagini con Gemini API) ---
+    # --- IMAGE_GENERATION → forwarda a OpenClaw (ha Gemini nativo) ---
     elif intent == "IMAGE_GENERATION":
-        if not config.GEMINI_ENABLED:
-            response = "Mi dispiace, la generazione immagini richiede GEMINI_API_KEY."
-            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-            await deliver_final_response(response, context, sound_type="negative")
-            return
-
-        await deliver_final_response("Sto generando l'immagine...", context)
-
-        # Import image generation module
-        from image_generation import generate_and_show, parse_image_request, extract_tv_from_room
-
-        # Parsa la richiesta
-        payload = router_data.get("payload", {})
-        parsed = parse_image_request(text)
-
-        prompt = payload.get("prompt") or parsed.get("prompt") or text
-        room = payload.get("room") or parsed.get("room")
-        send_tg = payload.get("send_telegram", False) or parsed.get("send_telegram", False)
-
-        # Risolvi location
-        target_location = payload.get("location") or location or get_default_location_id()
-
-        # Trova TV dalla stanza (se specificata)
-        tv_entity = payload.get("tv_entity")
-        if not tv_entity and room:
-            tv_entity = extract_tv_from_room(room, target_location)
-
-        # Se nessuna TV specificata ma non deve mandare su Telegram, prova TV default
-        if not tv_entity and not send_tg:
-            # Default: prova TV soggiorno
-            tv_entity = extract_tv_from_room("soggiorno", target_location)
-            if not tv_entity:
-                # Fallback: manda su Telegram
-                send_tg = True
-
-        # Telegram chat_id
-        telegram_chat_id = context.get("telegram_id") or context.get("chat_id")
-
-        # Genera e mostra
-        success, message, image_url = await generate_and_show(
-            prompt=prompt,
-            tv_entity=tv_entity,
-            location_id=target_location,
-            send_telegram=send_tg,
-            telegram_chat_id=telegram_chat_id
-        )
-
-        if success:
-            response = message
-            log_event("IMAGE_GEN", f"Generata immagine: {prompt[:50]}...", speaker_id, speaker_name)
-            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-            await deliver_final_response(response, context, sound_type="positive")
+        logger.info("IMAGE_GENERATION intent, forwarding to OpenClaw")
+        if source in config.VOICE_SOURCES:
+            await _handle_openclaw_voice(text, context, hint="image_generation")
         else:
-            response = f"Non sono riuscito a generare l'immagine: {message}"
-            log_event("IMAGE_GEN_ERROR", f"Errore: {message}", speaker_id, speaker_name)
+            response, _ = await forward_to_openclaw(text, context, hint="image_generation")
+            log_event("IMAGE_GEN", f"Richiesta: {text[:50]}...", speaker_id, speaker_name)
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-            await deliver_final_response(response, context, sound_type="negative")
+            await deliver_final_response(response, context, sound_type="neutral")
         return
-
-    # --- SET PREFERENCE ---
-    elif intent == "SET_PREFERENCE":
-        payload = router_data.get("payload", {})
-        raw_key = payload.get("key", "")
-        raw_val = payload.get("value", "")
-
-        pref_key, pref_val = normalize_preference(raw_key, raw_val)
-
-        if pref_key in ["dnd_mode", "silent_hour_start", "silent_hour_end"]:
-            # Preferenze globali
-            set_global_preference(pref_key, pref_val)
-            log_event("CONFIG", f"{pref_key} → {pref_val}", speaker_id, speaker_name)
-            response = f"Impostato {pref_key.replace('_', ' ')} a {pref_val}."
-        else:
-            response = "Non ho capito quale preferenza vuoi cambiare."
-
-        save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-        # Conferma preferenza con suono positivo
-        await deliver_final_response(response, context, sound_type="positive")
-
-    # --- AUDIT REPORT ---
-    elif intent == "AUDIT_REPORT":
-        # Admin vede tutto, altri vedono solo i propri
-        logs = get_audit_summary(
-            limit=config.MAX_AUDIT_LOGS,
-            speaker_id=speaker_id,
-            is_admin=is_admin
-        )
-
-        if not logs:
-            response = "Non ci sono eventi recenti nel registro."
-        else:
-            logs_str = "\n".join([
-                f"[{time.ctime(l['timestamp'])}] {l['category']}: {l['message']}"
-                for l in logs[:config.MAX_AUDIT_LOGS_IN_REPORT]
-            ])
-
-            report_prompt = f"Eventi casa:\n{logs_str}\n\nUtente ({speaker_name}) chiede: {text}"
-            response = await get_quick_response(report_prompt, context)
-
-        save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-        # Report audit con suono neutrale
-        await deliver_final_response(response, context, sound_type="neutral")
 
     # --- RETRY ---
     elif intent == "RETRY":
@@ -4181,9 +4117,12 @@ async def process_jarvis_logic(text: str, context: dict):
     # --- LOW CONFIDENCE: forward to OpenClaw ---
     elif conf < conf_low:
         logger.info(f"Low confidence ({conf:.2f} < {conf_low}), forwarding to OpenClaw")
-        response, _ = await forward_to_openclaw(text, context, hint=f"low_confidence_{intent}")
-        save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
-        await deliver_final_response(response, context, sound_type="neutral")
+        if source in config.VOICE_SOURCES:
+            await _handle_openclaw_voice(text, context, hint=f"low_confidence_{intent}")
+        else:
+            response, _ = await forward_to_openclaw(text, context, hint=f"low_confidence_{intent}")
+            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+            await deliver_final_response(response, context, sound_type="neutral")
 
     # --- SIMPLE CHAT / UNKNOWN ---
     else:

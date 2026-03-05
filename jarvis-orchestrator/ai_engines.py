@@ -43,7 +43,7 @@ def is_image_generation_intent(text: str) -> bool:
 _MIN_MEANINGFUL_LENGTH = 3  # minimum chars for a meaningful command
 
 
-def _is_dirty_audio(text: str) -> bool:
+def is_dirty_audio(text: str) -> bool:
     """
     Detect garbled / too-short voice transcriptions.
     Returns True if the text is likely not a real command.
@@ -385,7 +385,7 @@ async def pre_route(text: str) -> dict:
         payload:        {} (reserved for future use)
     """
     # Fast-path: dirty / garbled audio
-    if _is_dirty_audio(text):
+    if is_dirty_audio(text):
         logger.debug(f"pre_route: dirty audio detected ({text!r})")
         return {
             "classification": "ALTRO",
@@ -677,8 +677,8 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
 def _validate_routing(result: dict) -> dict:
     """Valida e normalizza la risposta del router."""
     VALID_INTENTS = [
-        "HOME_CONTROL", "SET_PREFERENCE", "SET_LOCATION",
-        "AUDIT_REPORT", "SIMPLE_CHAT", "RETRY", "IMAGE_GENERATION",
+        "HOME_CONTROL", "SET_LOCATION",
+        "SIMPLE_CHAT", "RETRY", "IMAGE_GENERATION",
     ] + OPENCLAW_INTENTS
 
     intent = result.get("intent", "SIMPLE_CHAT")
