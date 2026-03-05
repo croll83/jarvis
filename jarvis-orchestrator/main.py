@@ -3728,6 +3728,112 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
         return None
 
 
+async def _execute_entity_status(payload: dict, location: str, context: dict) -> str | None:
+    """
+    Restituisce stato dettagliato + attributi + capacità di un'entità specifica.
+    Usato da SIMPLE_CHAT con api_call="entity_status".
+    """
+    try:
+        from database import resolve_entity_id, resolve_entity_id_fuzzy
+
+        params = payload.get("params", {})
+        entity_name = params.get("entity", "")
+        target_location = params.get("location_id") or location or get_default_location_id()
+        domain_hint = params.get("domain")
+        room_hint = params.get("room")
+
+        if not entity_name:
+            return "Non ho capito quale dispositivo vuoi controllare."
+
+        # Risolvi entity_id
+        entity_id = resolve_entity_id(target_location, entity_name, domain_hint, room_hint)
+        if not entity_id:
+            # Fuzzy match
+            fuzzy = resolve_entity_id_fuzzy(target_location, entity_name, domain_hint)
+            if fuzzy:
+                entity_id = fuzzy[0]["entity_id"]
+                entity_name = fuzzy[0].get("entity_name", entity_name)
+            else:
+                return f"Non ho trovato il dispositivo '{entity_name}'."
+
+        # Fetch live state da HA
+        states = await multi_ha.get_states_bulk(target_location, [entity_id])
+        live = states.get(entity_id, {})
+        if not live:
+            return f"Non riesco a leggere lo stato di '{entity_name}'."
+
+        state = live.get("state", "sconosciuto")
+        attrs = live.get("attributes", {})
+        eid_domain = entity_id.split(".")[0]
+
+        # Build risposta dettagliata per dominio
+        parts = [f"**{entity_name}** ({eid_domain}) — stato: {state}"]
+
+        if eid_domain == "light":
+            if "brightness" in attrs:
+                bri_pct = round(attrs["brightness"] / 255 * 100)
+                parts.append(f"Luminosità: {bri_pct}%")
+            if "color_temp_kelvin" in attrs:
+                parts.append(f"Temperatura colore: {attrs['color_temp_kelvin']}K")
+            if "rgb_color" in attrs:
+                r, g, b = attrs["rgb_color"]
+                parts.append(f"Colore RGB: ({r}, {g}, {b})")
+            if "color_mode" in attrs:
+                parts.append(f"Modalità colore: {attrs['color_mode']}")
+            modes = attrs.get("supported_color_modes", [])
+            if modes:
+                caps = []
+                if "brightness" in modes or "color_temp" in modes or "hs" in modes or "rgb" in modes or "xy" in modes:
+                    caps.append("luminosità")
+                if "color_temp" in modes:
+                    caps.append("temperatura colore (caldo/freddo)")
+                if any(m in modes for m in ("hs", "rgb", "xy", "rgbw", "rgbww")):
+                    caps.append("colore RGB")
+                if caps:
+                    parts.append(f"Puoi configurare: {', '.join(caps)}")
+                else:
+                    parts.append("Solo accensione/spegnimento")
+
+        elif eid_domain == "climate":
+            if "temperature" in attrs:
+                parts.append(f"Temperatura target: {attrs['temperature']}°C")
+            if "current_temperature" in attrs:
+                parts.append(f"Temperatura attuale: {attrs['current_temperature']}°C")
+            if "hvac_modes" in attrs:
+                parts.append(f"Modalità: {', '.join(attrs['hvac_modes'])}")
+
+        elif eid_domain == "cover":
+            if "current_position" in attrs:
+                parts.append(f"Posizione: {attrs['current_position']}%")
+            parts.append("Puoi configurare: posizione (0-100%)")
+
+        elif eid_domain == "media_player":
+            if "volume_level" in attrs:
+                parts.append(f"Volume: {round(attrs['volume_level'] * 100)}%")
+            if "source" in attrs:
+                parts.append(f"Sorgente: {attrs['source']}")
+            if "source_list" in attrs:
+                parts.append(f"Sorgenti disponibili: {', '.join(attrs['source_list'][:8])}")
+
+        elif eid_domain == "fan":
+            if "percentage" in attrs:
+                parts.append(f"Velocità: {attrs['percentage']}%")
+
+        else:
+            # Generic: mostra attributi non-system
+            skip = {"friendly_name", "icon", "entity_picture", "supported_features",
+                    "device_class", "attribution"}
+            for k, v in list(attrs.items())[:10]:
+                if k not in skip and not k.startswith("_"):
+                    parts.append(f"{k}: {v}")
+
+        return "\n".join(parts)
+
+    except Exception as e:
+        logger.error(f"Entity status query failed: {e}", exc_info=True)
+        return None
+
+
 # ===========================================================================
 # CORE LOGIC
 # ===========================================================================
@@ -4142,10 +4248,16 @@ async def process_jarvis_logic(text: str, context: dict):
                 mapped_action = _map_action_for_domain(action, eid_domain)
                 service_data = {"entity_id": entity_id}
                 # Aggiungi parametri extra da Qwen (brightness, temperature, position, etc.)
-                clean_params = _sanitize_ha_params(_normalize_ha_params(ha_params), eid_domain)
+                normalized = _normalize_ha_params(ha_params)
+                clean_params = _sanitize_ha_params(normalized, eid_domain)
+                if ha_params:
+                    logger.info(
+                        f"HOME_CONTROL param pipeline: raw={ha_params} → "
+                        f"normalized={normalized} → sanitized={clean_params} (domain={eid_domain})"
+                    )
                 if clean_params:
                     service_data.update(clean_params)
-                    logger.info(f"HOME_CONTROL params: {clean_params} for {eid_domain}.{mapped_action}")
+                logger.info(f"HOME_CONTROL call: {eid_domain}.{mapped_action} service_data={service_data}")
                 success, err = await call_hass_service(target_location, eid_domain, mapped_action, service_data)
                 entity_desc = target["description"]
                 log_detail = f"[{target_location}] {mapped_action} su {entity_desc} ({entity_id})" + (f" params={clean_params}" if clean_params else "")
@@ -4340,9 +4452,15 @@ async def process_jarvis_logic(text: str, context: dict):
         payload = router_data.get("payload", {})
         api_call = payload.get("api_call") if isinstance(payload, dict) else None
 
-        # Multi-turn: if router indicated an api_call (entity_discover/entity_bulk),
-        # execute it to get live data from Home Assistant
-        if api_call in ("entity_discover", "entity_bulk"):
+        # Multi-turn: if router indicated an api_call, execute it for live HA data
+        if api_call == "entity_status":
+            logger.info(f"SIMPLE_CHAT: executing entity_status with params={payload.get('params', {})}")
+            status_response = await _execute_entity_status(payload, location, context)
+            if status_response:
+                response = status_response
+            else:
+                response = router_data.get("response") or await get_quick_response(text, context)
+        elif api_call in ("entity_discover", "entity_bulk"):
             logger.info(f"SIMPLE_CHAT multi-turn: executing {api_call} with params={payload.get('params', {})}")
             query_response = await _execute_entity_query(payload, location, context)
             if query_response:
