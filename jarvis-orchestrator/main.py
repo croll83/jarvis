@@ -4625,9 +4625,21 @@ async def process_jarvis_logic(text: str, context: dict):
                 if not response:
                     response = await get_quick_response(text, context)
         elif api_call in ("web_search", "web_fetch"):
-            # Qwen ha indicato che serve una ricerca web → usa quick_response con tool calling
-            logger.info(f"SIMPLE_CHAT: {api_call} requested, delegating to quick_response with tools")
-            response = await get_quick_response(text, context, user_id=speaker_id, location_id=location)
+            # Il router ha già estratto la query → esegui ricerca, poi formula risposta
+            logger.info(f"SIMPLE_CHAT: {api_call} requested, executing search directly")
+            try:
+                from web_tools import execute_web_search
+                _query = payload.get("params", {}).get("query", text)
+                search_results = await execute_web_search(_query)
+                # Passa risultati a Qwen per formulare risposta naturale (senza tools)
+                response = await get_quick_response(
+                    f"L'utente ha chiesto: {text}\n\nRisultati ricerca web:\n{search_results}\n\n"
+                    f"Rispondi in modo conciso basandoti sui risultati.",
+                    context, user_id=speaker_id, location_id=location, enable_tools=False
+                )
+            except Exception as e:
+                logger.error(f"Web search failed: {e}", exc_info=True)
+                response = "Mi dispiace, non sono riuscito a cercare sul web."
         else:
             response = router_data.get("response")
             if not response:
