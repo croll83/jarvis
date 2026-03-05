@@ -367,7 +367,16 @@ async def send_telegram(text: str, parse_mode: str = "Markdown") -> Optional[dic
             async with session.post(url, json=payload, timeout=config.TIMEOUTS["telegram"]) as resp:
                 if resp.status == 200:
                     return await resp.json()
-                logger.error(f"Send Telegram Error: {resp.status}")
+                body = await resp.text()
+                logger.error(f"Send Telegram Error: {resp.status} — {body}")
+                # Retry senza parse_mode se Markdown ha causato errore 400
+                if resp.status == 400 and parse_mode:
+                    logger.info("Retrying Telegram send without parse_mode")
+                    payload.pop("parse_mode", None)
+                    async with session.post(url, json=payload, timeout=config.TIMEOUTS["telegram"]) as resp2:
+                        if resp2.status == 200:
+                            return await resp2.json()
+                        logger.error(f"Send Telegram retry failed: {resp2.status}")
                 return None
     except Exception as e:
         logger.error(f"Send Telegram Exception: {e}")
