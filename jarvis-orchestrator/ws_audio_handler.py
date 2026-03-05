@@ -1017,12 +1017,15 @@ async def push_config_to_device(device_id: str, config: dict) -> bool:
 
 _volume_pending: dict[str, int] = {}          # device_id → accumulated steps (+/-)
 _volume_tasks: dict[str, asyncio.Task] = {}   # device_id → pending flush task
+_volume_last_set: dict[str, tuple[float, float]] = {}  # device_id → (volume, timestamp)
 _VOLUME_DEBOUNCE_S = 0.15                     # short debounce — just enough to batch rapid clicks
 _VOLUME_MAX_STEPS = 5                         # flush immediately after N accumulated steps
+_VOLUME_STEP = 0.02                           # volume delta per encoder click
+_VOLUME_CACHE_TTL = 5.0                       # trust our own set value for 5s (HA state lag)
 
 
 async def _handle_volume_change(device_id: str, direction: str):
-    """Accumulate a volume click.  Actual HA call is debounced via volume_up/down."""
+    """Accumulate a volume click.  Actual HA call is debounced."""
     delta = +1 if direction == "up" else -1
     _volume_pending[device_id] = _volume_pending.get(device_id, 0) + delta
 
@@ -1042,7 +1045,7 @@ async def _handle_volume_change(device_id: str, direction: str):
 
 
 async def _flush_volume(device_id: str, immediate: bool = False):
-    """Wait for debounce period, then send volume_up/down calls to HA."""
+    """Wait for debounce period, then apply accumulated volume delta via volume_set."""
     if not immediate:
         await asyncio.sleep(_VOLUME_DEBOUNCE_S)
 
@@ -1053,6 +1056,7 @@ async def _flush_volume(device_id: str, immediate: bool = False):
 
     from device_api import get_device_speaker_config
     from multi_ha import multi_ha
+    import time as _time
 
     device_config = get_device_speaker_config(device_id)
     if not device_config:
@@ -1066,17 +1070,28 @@ async def _flush_volume(device_id: str, immediate: bool = False):
         logger.warning(f"volume_change: no speaker configured for {device_id}")
         return
 
-    # Use relative volume_up/volume_down — no need to read current volume from HA
-    service = "volume_up" if steps > 0 else "volume_down"
-    count = abs(steps)
+    # Use cached volume if recent (avoids HA state lag), otherwise read from HA
+    now = _time.time()
+    cached = _volume_last_set.get(device_id)
+    if cached and (now - cached[1]) < _VOLUME_CACHE_TTL:
+        current_vol = cached[0]
+    else:
+        states = await multi_ha.get_states_bulk(location_id, [target_speaker])
+        speaker_state = states.get(target_speaker, {})
+        current_vol = speaker_state.get("attributes", {}).get("volume_level", 0.3)
 
-    for i in range(count):
-        await multi_ha.call_service(
-            location_id, "media_player", service,
-            {"entity_id": target_speaker}
-        )
+    new_vol = current_vol + steps * _VOLUME_STEP
+    new_vol = max(0.0, min(1.0, round(new_vol, 2)))
 
-    logger.info(f"volume_change: {target_speaker} {service} ×{count}")
+    if new_vol == current_vol:
+        return
+
+    await multi_ha.call_service(
+        location_id, "media_player", "volume_set",
+        {"entity_id": target_speaker, "volume_level": new_vol}
+    )
+    _volume_last_set[device_id] = (new_vol, now)
+    logger.info(f"volume_change: {target_speaker} {current_vol:.2f} → {new_vol:.2f} ({steps:+d} steps)")
 
 
 # ---------------------------------------------------------------------------
