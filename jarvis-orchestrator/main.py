@@ -3424,7 +3424,7 @@ def _resolve_home_control_target(
                             "description": exact[0]["entity_name"],
                             "match_type": "exact_in_room",
                         }
-                    # Match parziale (entity_name contenuto in discovered o viceversa)
+                    # Match parziale (substring)
                     partial = [
                         e for e in discovered
                         if entity_lower in e["entity_name"].lower().strip()
@@ -3441,6 +3441,54 @@ def _resolve_home_control_target(
                             "description": partial[0]["entity_name"],
                             "match_type": "partial_in_room",
                         }
+
+                    # Match per parole chiave (es. Qwen="Luce Specchio" → "specchio" matcha "Specchio Bagno Piccolo")
+                    _generic = {
+                        "luce", "luci", "lampada", "lampade", "led", "la", "le", "il", "i",
+                        "lo", "gli", "un", "una", "del", "della", "dei", "delle", "dello",
+                        "di", "in", "nel", "nella", "al", "alla",
+                        "tapparella", "tapparelle", "tenda", "tende",
+                        "sensore", "sensori", "interruttore", "interruttori",
+                        "presa", "prese", "switch", "clima", "condizionatore",
+                    }
+                    keywords = [
+                        w for w in re.sub(r'[,.\!\?\;\:\-]', ' ', entity_lower).split()
+                        if w not in _generic and len(w) >= 3
+                    ]
+                    if keywords:
+                        scored = []
+                        for e in discovered:
+                            e_lower = e["entity_name"].lower()
+                            hits = sum(1 for kw in keywords if kw in e_lower)
+                            if hits:
+                                scored.append((hits, e))
+                        if len(scored) == 1:
+                            best = scored[0][1]
+                            logger.info(
+                                f"Entity resolution [user_text+qwen_keyword]: "
+                                f"keywords={keywords} in room '{extracted}' → {best['entity_id']}"
+                            )
+                            return {
+                                "mode": "single",
+                                "entity_ids": [best["entity_id"]],
+                                "description": best["entity_name"],
+                                "match_type": "keyword_in_room",
+                            }
+                        elif len(scored) > 1:
+                            # Più match: prendi quello con più keyword hits
+                            scored.sort(key=lambda x: x[0], reverse=True)
+                            if scored[0][0] > scored[1][0]:
+                                best = scored[0][1]
+                                logger.info(
+                                    f"Entity resolution [user_text+qwen_keyword_best]: "
+                                    f"keywords={keywords} in room '{extracted}' → {best['entity_id']} (score {scored[0][0]} vs {scored[1][0]})"
+                                )
+                                return {
+                                    "mode": "single",
+                                    "entity_ids": [best["entity_id"]],
+                                    "description": best["entity_name"],
+                                    "match_type": "keyword_in_room",
+                                }
 
                 # Nessun match specifico: bulk solo se plurale esplicito
                 plural_tokens = {"tutti", "tutte", "tutto", "le luci", "le tapparelle", "i climatizzatori"}
