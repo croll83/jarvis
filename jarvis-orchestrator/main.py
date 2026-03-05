@@ -4624,6 +4624,10 @@ async def process_jarvis_logic(text: str, context: dict):
                 response = router_data.get("response")
                 if not response:
                     response = await get_quick_response(text, context)
+        elif api_call in ("web_search", "web_fetch"):
+            # Qwen ha indicato che serve una ricerca web → usa quick_response con tool calling
+            logger.info(f"SIMPLE_CHAT: {api_call} requested, delegating to quick_response with tools")
+            response = await get_quick_response(text, context, user_id=speaker_id, location_id=location)
         else:
             response = router_data.get("response")
             if not response:
