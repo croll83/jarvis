@@ -561,3 +561,15 @@ async def proxy_device_status_post(request: Request):
 async def proxy_speaker_suppress(request: Request):
     """Proxy speaker suppress to orchestrator."""
     return await _proxy_request(request, "/speaker/suppress")
+
+
+@app.post("/speaker/restore")
+async def proxy_speaker_restore(request: Request):
+    """Proxy speaker restore to orchestrator."""
+    return await _proxy_request(request, "/speaker/restore")
+
+
+@app.post("/speaker/volume_change")
+async def proxy_speaker_volume_change(request: Request):
+    """Proxy volume change to orchestrator (NabuVoice rotary encoder)."""
+    return await _proxy_request(request, "/speaker/volume_change")
