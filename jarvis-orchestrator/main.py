@@ -3298,6 +3298,63 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
         await deliver_final_response(response, context, sound_type="neutral")
 
 # ===========================================================================
+# PARAMETER EXTRACTION FROM USER TEXT (fallback when Qwen drops params)
+# ===========================================================================
+
+_TEXT_COLOR_MAP = {
+    "rosso": [255, 0, 0], "rossa": [255, 0, 0], "red": [255, 0, 0],
+    "verde": [0, 255, 0], "green": [0, 255, 0],
+    "blu": [0, 0, 255], "blue": [0, 0, 255],
+    "giallo": [255, 255, 0], "gialla": [255, 255, 0], "yellow": [255, 255, 0],
+    "arancione": [255, 165, 0], "arancio": [255, 165, 0], "orange": [255, 165, 0],
+    "viola": [128, 0, 128], "purple": [128, 0, 128],
+    "rosa": [255, 105, 180], "pink": [255, 105, 180],
+    "bianco": [255, 255, 255], "bianca": [255, 255, 255], "white": [255, 255, 255],
+    "ciano": [0, 255, 255], "cyan": [0, 255, 255],
+    "magenta": [255, 0, 255],
+}
+
+def _extract_params_from_text(user_text: str) -> dict:
+    """
+    Estrae parametri HA (colore, brightness, temperatura) dal testo utente.
+    Usato come fallback quando Qwen non include i parametri nel payload.
+    """
+    params = {}
+    text_l = user_text.lower()
+
+    # Colore
+    for color_name, rgb in _TEXT_COLOR_MAP.items():
+        if color_name in text_l:
+            params["rgb_color"] = rgb
+            break
+
+    # Luce calda/fredda
+    if not params:
+        if "luce calda" in text_l or "caldo" in text_l or "warm" in text_l:
+            params["color_temp_kelvin"] = 2700
+        elif "luce fredda" in text_l or "freddo" in text_l or "cool" in text_l:
+            params["color_temp_kelvin"] = 6500
+
+    # Brightness: "al X%", "luminosità X", "X percento"
+    bri_match = re.search(r'(?:al\s+|luminosit[àa]\s+(?:al\s+)?|brightness\s+)(\d{1,3})\s*%?', text_l)
+    if not bri_match:
+        bri_match = re.search(r'(\d{1,3})\s*(?:percento|per\s*cento|%)', text_l)
+    if bri_match:
+        pct = int(bri_match.group(1))
+        if 0 <= pct <= 100:
+            params["brightness"] = round(pct * 255 / 100)
+
+    # Temperatura: "a X gradi", "X gradi"
+    temp_match = re.search(r'(?:a\s+)?(\d{1,2}(?:\.\d)?)\s*(?:gradi|°|degrees)', text_l)
+    if temp_match:
+        temp = float(temp_match.group(1))
+        if 5 <= temp <= 40:
+            params["temperature"] = temp
+
+    return params
+
+
+# ===========================================================================
 # ENTITY RESOLUTION FOR VOICE (single entity, room, zone, floor, all)
 # ===========================================================================
 
@@ -3770,12 +3827,12 @@ async def _execute_entity_status(payload: dict, location: str, context: dict) ->
         parts = [f"**{entity_name}** ({eid_domain}) — stato: {state}"]
 
         if eid_domain == "light":
-            if "brightness" in attrs:
+            if attrs.get("brightness") is not None:
                 bri_pct = round(attrs["brightness"] / 255 * 100)
                 parts.append(f"Luminosità: {bri_pct}%")
-            if "color_temp_kelvin" in attrs:
+            if attrs.get("color_temp_kelvin") is not None:
                 parts.append(f"Temperatura colore: {attrs['color_temp_kelvin']}K")
-            if "rgb_color" in attrs:
+            if attrs.get("rgb_color") is not None:
                 r, g, b = attrs["rgb_color"]
                 parts.append(f"Colore RGB: ({r}, {g}, {b})")
             if "color_mode" in attrs:
@@ -3795,9 +3852,9 @@ async def _execute_entity_status(payload: dict, location: str, context: dict) ->
                     parts.append("Solo accensione/spegnimento")
 
         elif eid_domain == "climate":
-            if "temperature" in attrs:
+            if attrs.get("temperature") is not None:
                 parts.append(f"Temperatura target: {attrs['temperature']}°C")
-            if "current_temperature" in attrs:
+            if attrs.get("current_temperature") is not None:
                 parts.append(f"Temperatura attuale: {attrs['current_temperature']}°C")
             if "hvac_modes" in attrs:
                 parts.append(f"Modalità: {', '.join(attrs['hvac_modes'])}")
@@ -3980,6 +4037,12 @@ async def process_jarvis_logic(text: str, context: dict):
         action = payload.get("action", "toggle")
         entity_raw = payload.get("entity", "unknown")
         ha_params = payload.get("parameters", {}) or {}  # parametri extra (brightness, temperature, etc.)
+
+        # Fallback: se Qwen non ha estratto parametri, prova a estrarli dal testo utente
+        if not ha_params:
+            ha_params = _extract_params_from_text(text)
+            if ha_params:
+                logger.info(f"Params extracted from user text: {ha_params}")
 
         # Fix Qwen: se parametri contengono colore/brightness → forza light + turn_on
         _light_hint_keys = {"color", "colour", "colore", "rgb_color", "brightness", "brightness_pct", "color_temp_kelvin"}
