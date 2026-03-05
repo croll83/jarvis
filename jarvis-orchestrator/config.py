@@ -108,7 +108,7 @@ BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 # per evitare model reload (~0.8-1.5s penalty per ogni cambio num_ctx).
 # NOTA: OLLAMA_NUM_CTX env var NON funziona come default in Ollama — va mandato
 # esplicitamente in ogni request.
-OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "20480"))
 
 # ===========================================================================
 # MEMORY CONTEXT LIMITS (potenzialmente modificabili a runtime ma meno critici)

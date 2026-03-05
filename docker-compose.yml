@@ -9,14 +9,14 @@
 # - Qwen 2.5 3B (Q4_K_M): Pre-routing + tool calling (web_search, web_fetch,
 #     memory_search, home_status) + offline fallback
 # - Whisper large-v3-turbo: Speech-to-text (GPU, int8_float16, ~1.0 GB VRAM)
-# - Ollama: Hosts Qwen 2.5 3B (num_ctx max 32768) — solo LLM, no embeddings
+# - Ollama: Hosts Qwen 2.5 3B (num_ctx 20480, max 100% GPU) — solo LLM, no embeddings
 # - fastembed: Embedding server CPU-only (nomic-embed-text-v1.5, ONNX, :11435)
 #
 # VRAM BUDGET (RTX 5070 Laptop 8 GB, GPU dedicata — no display):
-#   Ollama Qwen 2.5 3B Q4_K_M (weights+KV): ~2.9 GB  (stima @ ctx=32768, parallel=1)
+#   Ollama Qwen 2.5 3B Q4_K_M (weights+KV): ~2.6 GB  (misurato @ ctx=20480, 37/37 GPU)
 #   XTTSv2 (PyTorch fp16):                   ~2.3 GB  (misurato)
 #   Whisper large-v3-turbo (int8_float16):    ~1.3 GB  (misurato)
-#   Totale:                                   ~6.5 / 8.15 GB (~1.6 GB buffer)
+#   Totale:                                   ~6.2 / 8.15 GB (~1.9 GB buffer)
 #   NOTA: Embeddings (nomic-embed-text) su fastembed CPU — zero VRAM.
 #   NOTA: KV cresce con context usato. No FA su Qwen 2.5 = KV dinamico.
 #
@@ -57,10 +57,10 @@ services:
     environment:
       - OLLAMA_NUM_PARALLEL=1             # Pipeline sequenziale (pre_route→embed→route)
       - OLLAMA_MAX_LOADED_MODELS=1      # Solo Qwen — embeddings su fastembed :11435
-      # Context 32768: max per Qwen 2.5 3B. KV cache ~1040 MiB con parallel=1.
-      # Budget: ~2940 MiB Ollama + 2336 XTTS + 1316 Whisper = ~6.6 GB / 8.15 GB.
-      # Routing prompt tipico: ~2200 token. Tool calling con web_search fino a ~16k.
-      - OLLAMA_NUM_CTX=32768
+      # Context 20480: max con tutti i 37 layer su GPU (146 tok/s).
+      # A 22k+ Ollama offloada layer su CPU (33 tok/s = 4.4x piu lento).
+      # Routing prompt tipico: ~2200 token. Tool calling fino a ~12-16k.
+      - OLLAMA_NUM_CTX=20480
       - OLLAMA_KEEP_ALIVE=-1           # Mantiene i modelli in VRAM permanentemente
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
