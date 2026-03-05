@@ -1060,8 +1060,9 @@ async def _flush_volume(device_id: str, immediate: bool = False):
         return
 
     location_id = device_config.get("location_id")
-    output_speaker = device_config.get("output_speaker")
-    if not output_speaker or not location_id:
+    # Use volume_speaker if configured (e.g. Bose native entity), else fall back to output_speaker
+    target_speaker = device_config.get("volume_speaker") or device_config.get("output_speaker")
+    if not target_speaker or not location_id:
         logger.warning(f"volume_change: no speaker configured for {device_id}")
         return
 
@@ -1072,10 +1073,10 @@ async def _flush_volume(device_id: str, immediate: bool = False):
     for i in range(count):
         await multi_ha.call_service(
             location_id, "media_player", service,
-            {"entity_id": output_speaker}
+            {"entity_id": target_speaker}
         )
 
-    logger.info(f"volume_change: {output_speaker} {service} ×{count}")
+    logger.info(f"volume_change: {target_speaker} {service} ×{count}")
 
 
 # ---------------------------------------------------------------------------

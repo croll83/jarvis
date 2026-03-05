@@ -102,6 +102,7 @@ class VoiceDeviceCreate(BaseModel):
     notes: Optional[str] = None
     wake_word_sensitivity: Optional[float] = 0.82
     speaker_volume: Optional[int] = 80
+    volume_speaker: Optional[str] = None  # separate entity for volume control
 
 
 class VoiceDeviceUpdate(BaseModel):
@@ -116,6 +117,7 @@ class VoiceDeviceUpdate(BaseModel):
     notes: Optional[str] = None
     wake_word_sensitivity: Optional[float] = None
     speaker_volume: Optional[int] = None
+    volume_speaker: Optional[str] = None  # separate entity for volume control
 
 
 # ===========================================================================
@@ -1987,7 +1989,8 @@ async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, An
         enabled=data.enabled,
         notes=data.notes,
         wake_word_sensitivity=data.wake_word_sensitivity,
-        speaker_volume=data.speaker_volume
+        speaker_volume=data.speaker_volume,
+        volume_speaker=data.volume_speaker
     )
 
     # Push config update to device via WebSocket
@@ -2058,6 +2061,8 @@ async def update_voice_device_endpoint(
         update_params['wake_word_sensitivity'] = data.wake_word_sensitivity
     if data.speaker_volume is not None:
         update_params['speaker_volume'] = data.speaker_volume
+    if data.volume_speaker is not None:
+        update_params['volume_speaker'] = data.volume_speaker
 
     if update_params:
         upsert_voice_device(device_id=device_id, **update_params)

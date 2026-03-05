@@ -353,7 +353,8 @@ def init_db():
         notes TEXT,
         wake_word_sensitivity REAL DEFAULT 0.85,
         speaker_volume INTEGER DEFAULT 80,
-        device_type TEXT DEFAULT 'AtomS3R'
+        device_type TEXT DEFAULT 'AtomS3R',
+        volume_speaker TEXT
     )''')
 
     # Migration: add wake_word_sensitivity column for existing DBs
@@ -377,6 +378,12 @@ def init_db():
     # Migration: add device_type column for existing DBs (NabuVoice support)
     try:
         c.execute("ALTER TABLE voice_devices ADD COLUMN device_type TEXT DEFAULT 'AtomS3R'")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Migration: add volume_speaker column (separate entity for volume control, e.g. Bose soundbar)
+    try:
+        c.execute("ALTER TABLE voice_devices ADD COLUMN volume_speaker TEXT")
     except sqlite3.OperationalError:
         pass  # Column already exists
 
@@ -3119,6 +3126,7 @@ class VoiceDevice:
     use_internal_speaker: bool = False
     speaker_volume: int = 80
     device_type: str = "AtomS3R"
+    volume_speaker: Optional[str] = None  # separate entity for volume control (e.g. Bose native vs Echo)
 
     @property
     def is_configured(self) -> bool:
@@ -3150,6 +3158,7 @@ class VoiceDevice:
             "notes": self.notes,
             "wake_word_sensitivity": self.wake_word_sensitivity,
             "speaker_volume": self.speaker_volume,
+            "volume_speaker": self.volume_speaker,
             "is_configured": self.is_configured,
             "is_online": self.is_online
         }
@@ -3174,7 +3183,8 @@ def _row_to_voice_device(row) -> VoiceDevice:
         wake_word_sensitivity=row['wake_word_sensitivity'] if 'wake_word_sensitivity' in row.keys() else 0.85,
         use_internal_speaker=bool(row['use_internal_speaker']) if 'use_internal_speaker' in row.keys() else False,
         speaker_volume=row['speaker_volume'] if 'speaker_volume' in row.keys() else 80,
-        device_type=row['device_type'] if 'device_type' in row.keys() else "AtomS3R"
+        device_type=row['device_type'] if 'device_type' in row.keys() else "AtomS3R",
+        volume_speaker=row['volume_speaker'] if 'volume_speaker' in row.keys() else None
     )
 
 
@@ -3249,7 +3259,8 @@ def upsert_voice_device(
     notes: Optional[str] = None,
     wake_word_sensitivity: Optional[float] = None,
     use_internal_speaker: bool = False,
-    speaker_volume: Optional[int] = None
+    speaker_volume: Optional[int] = None,
+    volume_speaker: Optional[str] = None
 ) -> bool:
     """
     Crea o aggiorna un voice device.
@@ -3303,6 +3314,10 @@ def upsert_voice_device(
             updates.append("speaker_volume = ?")
             params.append(speaker_volume)
 
+        if volume_speaker is not None:
+            updates.append("volume_speaker = ?")
+            params.append(volume_speaker if volume_speaker else None)
+
         params.append(device_id)
         c.execute(
             f"UPDATE voice_devices SET {', '.join(updates)} WHERE device_id = ?",
@@ -3320,13 +3335,15 @@ def upsert_voice_device(
             INSERT INTO voice_devices (
                 device_id, friendly_name, location_id, output_speaker,
                 fallback_speaker, fallback_telegram, fallback_local_speaker,
-                use_internal_speaker, enabled, notes, last_seen_at, speaker_volume
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                use_internal_speaker, enabled, notes, last_seen_at, speaker_volume,
+                volume_speaker
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             device_id, friendly_name, location_id, output_speaker or None,
             fallback_speaker, fallback_telegram, fallback_local_speaker,
             use_internal_speaker, enabled, notes, time.time(),
-            speaker_volume if speaker_volume is not None else 80
+            speaker_volume if speaker_volume is not None else 80,
+            volume_speaker
         ))
 
     conn.commit()
