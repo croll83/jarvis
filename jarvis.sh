@@ -174,7 +174,7 @@ cmd_start() {
 
     # ── Fase 2: Servizi GPU (XTTS + Whisper) ──────────────────────────────
     log "═══ Fase 2: XTTS + Whisper ═══"
-    dc up -d xtts whisper
+    dc up -d xtts whisper fastembed
     # XTTS ha start_period 120s al primo avvio (download modello)
     wait_for "http://localhost:8890/docs" "XTTS" 240
     wait_for "http://localhost:9000/docs" "Whisper" 120
