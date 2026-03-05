@@ -3963,6 +3963,24 @@ async def process_jarvis_logic(text: str, context: dict):
 
     admin_metrics.record_cache_miss()
 
+    # 1b. QUICK CONTEXTUAL ANSWERS (richiedono contesto, non cache statica)
+    _text_lower = text.lower().strip().rstrip("?!.")
+    _quick = None
+    if _text_lower in ("chi sono", "chi sono io", "come mi chiamo", "mi riconosci", "sai chi sono"):
+        _quick = f"Sei {speaker_name}!" if speaker_name and speaker_name != "Sconosciuto" else "Non ti ho riconosciuto, chi sei?"
+    elif _text_lower in ("dove sono", "in che stanza sono", "dove mi trovo"):
+        _room = context.get("room", "Unknown")
+        _loc = location or "sconosciuta"
+        if _room and _room != "Unknown":
+            _quick = f"Sei in {_room}, location {_loc}."
+        else:
+            _quick = f"Sei nella location {_loc}, ma non so in quale stanza."
+    if _quick:
+        logger.info(f"Quick contextual answer: '{_text_lower}'")
+        save_chat_message("assistant", _quick, "JARVIS", None, "Jarvis")
+        await deliver_final_response(_quick, context, sound_type="neutral")
+        return
+
     # 2. SAFETY CHECK
     is_safe_result, reason = await is_safe(text, source)
     if not is_safe_result:
