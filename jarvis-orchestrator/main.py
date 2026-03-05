@@ -3772,13 +3772,21 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
         total = len(discovered)
         on_count = len(on_items)
 
+        # Lista nomi entità
+        all_names = [e["friendly_name"] for e in discovered]
+
         if on_count == 0:
-            return f"Tutte le {total} {domain_label} in {scope} sono spente."
+            return (f"In {scope} ci sono {total} {domain_label}: "
+                    f"{', '.join(all_names[:15])}. Sono tutte spente.")
         elif on_count == total:
-            return f"Tutte le {total} {domain_label} in {scope} sono accese: {', '.join(on_items[:15])}."
+            return (f"In {scope} ci sono {total} {domain_label}: "
+                    f"{', '.join(all_names[:15])}. Sono tutte accese.")
         else:
-            return (f"{on_count} {domain_label} accese su {total} in {scope}: "
-                    f"{', '.join(on_items[:15])}.")
+            off_items = [n for n in all_names if n not in on_items]
+            return (f"In {scope} ci sono {total} {domain_label}: "
+                    f"{', '.join(all_names[:15])}. "
+                    f"Accese: {', '.join(on_items[:10])}. "
+                    f"Spente: {', '.join(off_items[:10])}.")
 
     except Exception as e:
         logger.error(f"Entity query from SIMPLE_CHAT failed: {e}")
@@ -4537,6 +4545,22 @@ async def process_jarvis_logic(text: str, context: dict):
     else:
         payload = router_data.get("payload", {})
         api_call = payload.get("api_call") if isinstance(payload, dict) else None
+
+        # Auto-upgrade: se Qwen manda entity_discover ma il testo chiede parametri/configurazione
+        # di un'entità specifica, promuovi a entity_status
+        if api_call == "entity_discover":
+            _params = payload.get("params", {})
+            _has_entity = bool(_params.get("entity") or _params.get("search"))
+            _status_keywords = {"parametr", "impostazion", "configurar", "configurazion",
+                                "capacità", "luminosità", "che può fare", "cosa può fare"}
+            _text_lower = text.lower()
+            if _has_entity or any(kw in _text_lower for kw in _status_keywords):
+                # Cerca di risolvere il nome entità dal testo se non c'è nei params
+                if not _params.get("entity"):
+                    _params["entity"] = _params.pop("search", "") or ""
+                api_call = "entity_status"
+                payload["api_call"] = "entity_status"
+                logger.info(f"SIMPLE_CHAT: auto-upgraded entity_discover → entity_status (params={_params})")
 
         # Multi-turn: if router indicated an api_call, execute it for live HA data
         if api_call == "entity_status":
