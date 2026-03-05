@@ -147,7 +147,8 @@ class ServiceStatus:
                     "model": config.ROUTER_MODEL,
                     "messages": [{"role": "user", "content": "ping"}],
                     "stream": False,
-                    "options": {"num_predict": 1, "num_ctx": 3072}
+                    "options": {"num_predict": 1}
+                    # num_ctx rimosso: usa OLLAMA_NUM_CTX globale per evitare reload
                 }
                 async with session.post(
                     config.OLLAMA_CHAT_URL,
