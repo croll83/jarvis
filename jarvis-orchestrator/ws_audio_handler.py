@@ -769,7 +769,7 @@ async def ws_audio_endpoint(
                         direction = ctrl.get("direction", "up")
                         logger.info(f"Device {device_id}: volume_change {direction}")
                         try:
-                            await _handle_volume_change(device_id, direction)
+                            await handle_volume_change(device_id, direction)
                         except Exception as e:
                             logger.error(f"volume_change failed for {device_id}: {e}")
 
@@ -1011,7 +1011,7 @@ async def push_config_to_device(device_id: str, config: dict) -> bool:
 # Volume change handler (NabuVoice rotary encoder)
 # ---------------------------------------------------------------------------
 
-async def _handle_volume_change(device_id: str, direction: str):
+async def handle_volume_change(device_id: str, direction: str):
     """Handle volume_change from NabuVoice rotary encoder → adjust Echo speaker."""
     from device_api import get_device_speaker_config
     from multi_ha import multi_ha

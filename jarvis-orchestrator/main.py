@@ -67,7 +67,7 @@ from proactive import proactive_check_loop
 from vector_store import init_vector_store
 from ws_audio_handler import (
     init_vad, get_active_session_count, get_persistent_connection_count,
-    trigger_device_listen, get_connected_devices,
+    trigger_device_listen, get_connected_devices, handle_volume_change,
 )
 
 # Logging setup
@@ -790,6 +790,7 @@ DEVICE_AUTH_PATHS = {
     "/voice_command", "/voice_stream", "/device_config", "/device_status", "/heartbeat",
     "/device/config", "/device/heartbeat",
     "/room_temperature", "/speaker/suppress", "/speaker/restore", "/speaker/suppressed",
+    "/speaker/volume_change",
     # Note: /ws/audio WebSocket auth is handled inside the endpoint (query params)
     # because FastAPI HTTP middleware does not intercept WebSocket connections.
 }
@@ -2461,6 +2462,31 @@ async def speaker_restore_endpoint(request: Request):
 async def speaker_suppressed_status():
     """Debug endpoint: mostra tutti gli speaker attualmente soppressi."""
     return get_suppressed_speakers()
+
+
+@app.post("/speaker/volume_change")
+async def speaker_volume_change_endpoint(request: Request):
+    """
+    Endpoint per volume change da NabuVoice rotary encoder.
+    Alternativa HTTP all'invio via WebSocket (più affidabile quando relay WS è chiuso).
+    Body: {"device_id": "AABBCCDDEEFF", "direction": "up|down"}
+    """
+    data = await request.json()
+    device_id = data.get("device_id", "").upper().strip()
+    direction = data.get("direction", "up").lower().strip()
+
+    if not device_id:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "device_id required"})
+
+    if direction not in ("up", "down"):
+        return JSONResponse(status_code=400, content={"status": "error", "message": "direction must be 'up' or 'down'"})
+
+    try:
+        await handle_volume_change(device_id, direction)
+        return {"status": "ok", "device_id": device_id, "direction": direction}
+    except Exception as e:
+        logger.error(f"volume_change endpoint failed for {device_id}: {e}")
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
 
 # Temperature caching strategy:
