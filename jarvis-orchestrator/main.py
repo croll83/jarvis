@@ -4038,11 +4038,17 @@ async def process_jarvis_logic(text: str, context: dict):
         entity_raw = payload.get("entity", "unknown")
         ha_params = payload.get("parameters", {}) or {}
 
-        # Detect multi-entity command → redirect to OpenClaw (Qwen 3B can't split)
+        # Detect multi-entity/multi-command → redirect to OpenClaw (Qwen 3B can't split)
         _entity_str = str(entity_raw) if entity_raw else ""
         _has_multi_entity = "," in _entity_str or (isinstance(entity_raw, list) and len(entity_raw) > 1)
         _has_array_params = any(isinstance(v, list) for v in ha_params.values()) if ha_params else False
-        if _has_multi_entity or _has_array_params:
+        # Detect "verbo + e + verbo" pattern (comandi combinati)
+        _domotica_verbs = {"accendi", "spegni", "apri", "chiudi", "alza", "abbassa",
+                           "imposta", "metti", "cambia", "attiva", "disattiva"}
+        _text_words = text.lower().split()
+        _verb_positions = [i for i, w in enumerate(_text_words) if w in _domotica_verbs]
+        _has_multi_command = len(_verb_positions) >= 2
+        if _has_multi_entity or _has_array_params or _has_multi_command:
             logger.info(f"HOME_CONTROL multi-entity detected, redirecting to OpenClaw: entity={entity_raw}")
             if source in config.VOICE_SOURCES:
                 await _handle_openclaw_voice(text, context, hint="")
@@ -4054,7 +4060,9 @@ async def process_jarvis_logic(text: str, context: dict):
             return
 
         # Fallback: se Qwen non ha estratto parametri, prova a estrarli dal testo utente
-        if not ha_params:
+        # Solo per azioni che accettano parametri (non turn_off, close, lock, etc.)
+        _no_param_actions = {"turn_off", "close_cover", "lock", "media_stop", "media_pause"}
+        if not ha_params and action not in _no_param_actions:
             ha_params = _extract_params_from_text(text)
             if ha_params:
                 logger.info(f"Params extracted from user text: {ha_params}")
