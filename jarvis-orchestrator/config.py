@@ -249,7 +249,9 @@ API_TIMEOUT_STT = int(os.getenv("API_TIMEOUT_STT", "30"))
 API_TIMEOUT_ROUTING = int(os.getenv("API_TIMEOUT_ROUTING", "30"))
 
 # --- Feature Flags ---
-# Gemini is available via OpenClaw as the brain
+# OpenClaw è disponibile se configurato (URL + TOKEN)
+OPENCLAW_ENABLED = bool(OPENCLAW_URL and OPENCLAW_TOKEN)
+# Gemini API diretto (per image generation, indipendente da OpenClaw)
 GEMINI_ENABLED = bool(GEMINI_API_KEY)
 
 # ===========================================================================
