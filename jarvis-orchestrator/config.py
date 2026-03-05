@@ -104,9 +104,11 @@ ROUTER_MODEL = os.getenv("ROUTER_MODEL", "qwen2.5:3b")
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
-# QWEN_TOOLS_NUM_CTX rimosso — ora si usa OLLAMA_NUM_CTX globale (32768)
-# per evitare model reload. Ogni num_ctx diverso forza Ollama a ricaricare
-# il modello (~0.8-1.5s penalty).
+# Context window unico per TUTTE le request Ollama. Valore identico ovunque
+# per evitare model reload (~0.8-1.5s penalty per ogni cambio num_ctx).
+# NOTA: OLLAMA_NUM_CTX env var NON funziona come default in Ollama — va mandato
+# esplicitamente in ogni request.
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
 
 # ===========================================================================
 # MEMORY CONTEXT LIMITS (potenzialmente modificabili a runtime ma meno critici)
