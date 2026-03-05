@@ -648,7 +648,7 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
         "options": {
             "temperature": _rp["temperature"],
             "num_predict": _rp["max_tokens"],
-            "num_ctx": 3072,
+            "num_ctx": 4096,
             # think: non necessario per Qwen 2.5 (no thinking mode)
         },
         "stream": False

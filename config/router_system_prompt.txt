@@ -39,12 +39,31 @@ ENTITY DISCOVERY:
 Per domande su dispositivi ("cosa c'è in soggiorno?", "quali telecamere?", "che temperatura?"):
 → SIMPLE_CHAT + payload.api_call="entity_discover" + payload.params (room/domain/search)
 
+AZIONI E PARAMETRI PER DOMINIO:
+- light: turn_on, turn_off, toggle. Params turn_on: brightness(0-255), color_temp_kelvin(2000-6500), rgb_color([R,G,B])
+- cover: open_cover, close_cover, stop_cover, set_cover_position. Params: position(0=chiuso,100=aperto)
+- climate: set_temperature, set_hvac_mode, turn_on, turn_off. Params: temperature(gradi), hvac_mode(heat|cool|auto|off)
+- media_player: turn_on, turn_off, volume_set, volume_up, volume_down, media_play, media_pause, media_stop, select_source. Params: volume_level(0.0-1.0)
+- fan: turn_on, turn_off, set_percentage. Params: percentage(0-100)
+- switch/scene/automation/input_boolean: turn_on, turn_off, toggle
+- lock: lock, unlock
+
+REGOLE PARAMETRI:
+- Se il comando include un valore (%, gradi, colore) → metti in payload.parameters
+- "al 50%" per luce → brightness:128 (50% di 255)
+- "a 22 gradi" per clima → temperature:22
+- "volume al 30%" → volume_level:0.3
+- Se non servono parametri → ometti parameters
+
 OUTPUT JSON:
-{"intent":"...","confidence":0.0-1.0,"response":"testo","interim_response":"attesa","payload":{"location":"wagmi|albani","domain":"light|cover|climate|switch|...","entity":"nome dalla mappa","action":"turn_on|turn_off|open_cover|close_cover|...","api_call":"entity_discover","params":{}}}
+{"intent":"...","confidence":0.0-1.0,"response":"testo","interim_response":"attesa","payload":{"location":"wagmi|albani","domain":"light|cover|climate|switch|...","entity":"nome dalla mappa","action":"turn_on|turn_off|open_cover|close_cover|set_temperature|...","parameters":{},"api_call":"entity_discover","params":{}}}
 
 ESEMPI:
 [Stanza="Cucina",Location="wagmi"] "Accendi la luce" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Accendo le luci in cucina.","payload":{"location":"wagmi","domain":"light","entity":"Luci Frigo","action":"turn_on"}}
 "Cerca su amazon un caricatore" → {"intent":"OPENCLAW","confidence":0.90,"interim_response":"Cerco informazioni..."}
 [Stanza="Unknown",Location="unknown"] "Spegni tutto" → {"intent":"RETRY","confidence":0.4,"response":"In quale casa e stanza vuoi che spenga tutto?"}
 "Cosa c'è in soggiorno?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Cerco i dispositivi...","payload":{"api_call":"entity_discover","params":{"room":"soggiorno"}}}
-"Metti la luminosità al 50%" → {"intent":"HOME_CONTROL","confidence":0.90,"response":"Imposto la luminosità al 50%.","payload":{"location":"wagmi","domain":"light","entity":"luce cucina","action":"turn_on","parameters":{"brightness":128},"resolve_first":true}}
+"Metti la luminosità al 50%" → {"intent":"HOME_CONTROL","confidence":0.90,"response":"Imposto la luminosità al 50%.","payload":{"domain":"light","entity":"luce cucina","action":"turn_on","parameters":{"brightness":128}}}
+"Metti il clima a 22 gradi" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Imposto 22 gradi.","payload":{"domain":"climate","entity":"clima soggiorno","action":"set_temperature","parameters":{"temperature":22}}}
+"Apri le tapparelle al 50%" → {"intent":"HOME_CONTROL","confidence":0.90,"response":"Apro le tapparelle al 50%.","payload":{"domain":"cover","entity":"tapparella camera","action":"set_cover_position","parameters":{"position":50}}}
+"Alza il volume" → {"intent":"HOME_CONTROL","confidence":0.90,"response":"Alzo il volume.","payload":{"domain":"media_player","entity":"Alexa","action":"volume_up"}}

@@ -3709,6 +3709,7 @@ async def process_jarvis_logic(text: str, context: dict):
         domain_raw = payload.get("domain", "light")
         action = payload.get("action", "toggle")
         entity_raw = payload.get("entity", "unknown")
+        ha_params = payload.get("parameters", {}) or {}  # parametri extra (brightness, temperature, etc.)
 
         # Normalizza domain — Qwen può restituire "light|switch|media_player" o lista
         VALID_DOMAINS = {"light", "switch", "cover", "climate", "lock", "fan",
@@ -3848,6 +3849,27 @@ async def process_jarvis_logic(text: str, context: dict):
                 # light, switch, media_player, fan, etc. → turn_on/turn_off/toggle funzionano
                 return base_action
 
+            # Sanitizza parametri HA da Qwen (rimuove valori nulli/vuoti)
+            def _sanitize_ha_params(params: dict, entity_domain: str) -> dict:
+                """Filtra e valida parametri per il dominio."""
+                if not params:
+                    return {}
+                # Whitelist parametri validi per dominio
+                VALID_PARAMS = {
+                    "light": {"brightness", "color_temp_kelvin", "rgb_color", "transition"},
+                    "climate": {"temperature", "hvac_mode"},
+                    "cover": {"position"},
+                    "media_player": {"volume_level", "is_volume_muted", "media_content_id",
+                                     "media_content_type", "source"},
+                    "fan": {"percentage", "preset_mode"},
+                    "input_number": {"value"},
+                    "input_select": {"option"},
+                }
+                allowed = VALID_PARAMS.get(entity_domain)
+                if not allowed:
+                    return {}
+                return {k: v for k, v in params.items() if k in allowed and v is not None}
+
             if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
                 # Raggruppa entity per dominio (dal prefisso entity_id)
                 from collections import defaultdict
@@ -3862,8 +3884,10 @@ async def process_jarvis_logic(text: str, context: dict):
                 errors = []
                 for grp_domain, grp_ids in domain_groups.items():
                     grp_action = _map_action_for_domain(action, grp_domain)
+                    # Passa parametri anche per bulk (es: brightness per tutte le luci)
+                    grp_params = _sanitize_ha_params(ha_params, grp_domain) or None
                     grp_success, grp_err = await call_hass_service_bulk(
-                        target_location, grp_domain, grp_action, grp_ids
+                        target_location, grp_domain, grp_action, grp_ids, grp_params
                     )
                     if grp_success:
                         total_ok += len(grp_ids)
@@ -3886,9 +3910,14 @@ async def process_jarvis_logic(text: str, context: dict):
                 eid_domain = entity_id.split(".")[0] if "." in entity_id else (domain or "light")
                 mapped_action = _map_action_for_domain(action, eid_domain)
                 service_data = {"entity_id": entity_id}
+                # Aggiungi parametri extra da Qwen (brightness, temperature, position, etc.)
+                clean_params = _sanitize_ha_params(ha_params, eid_domain)
+                if clean_params:
+                    service_data.update(clean_params)
+                    logger.info(f"HOME_CONTROL params: {clean_params} for {eid_domain}.{mapped_action}")
                 success, err = await call_hass_service(target_location, eid_domain, mapped_action, service_data)
                 entity_desc = target["description"]
-                log_detail = f"[{target_location}] {mapped_action} su {entity_desc} ({entity_id})"
+                log_detail = f"[{target_location}] {mapped_action} su {entity_desc} ({entity_id})" + (f" params={clean_params}" if clean_params else "")
 
             admin_metrics.record_hass((time.time() - hass_start) * 1000)
 
@@ -3896,8 +3925,21 @@ async def process_jarvis_logic(text: str, context: dict):
                 action_verb = {
                     "turn_on": "acceso", "turn_off": "spento", "toggle": "cambiato",
                     "open_cover": "aperto", "close_cover": "chiuso", "stop_cover": "fermato",
+                    "set_temperature": "impostato", "set_hvac_mode": "impostato",
+                    "set_cover_position": "posizionato", "volume_set": "impostato",
+                    "volume_up": "alzato volume", "volume_down": "abbassato volume",
+                    "media_play": "avviato", "media_pause": "messo in pausa",
+                    "media_stop": "fermato", "media_next_track": "avanti",
+                    "media_previous_track": "indietro", "select_source": "selezionato",
+                    "set_percentage": "impostato", "set_value": "impostato",
+                    "lock": "bloccato", "unlock": "sbloccato",
+                    "trigger": "eseguito",
                 }.get(action, action)
-                if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
+                # Usa response del router se disponibile (più naturale)
+                router_response = router_data.get("response", "")
+                if router_response and ha_params:
+                    response = router_response
+                elif target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
                     response = f"Fatto! Ho {action_verb} {target['description']}."
                 else:
                     response = f"Fatto! {action_verb}: {entity_desc}."
