@@ -3824,7 +3824,7 @@ async def _execute_entity_status(payload: dict, location: str, context: dict) ->
         eid_domain = entity_id.split(".")[0]
 
         # Build risposta dettagliata per dominio
-        parts = [f"**{entity_name}** ({eid_domain}) — stato: {state}"]
+        parts = [f"{entity_name} ({eid_domain}) — stato: {state}"]
 
         if eid_domain == "light":
             if attrs.get("brightness") is not None:
