@@ -3409,6 +3409,23 @@ def _resolve_home_control_target(
 
                 # Multiple entities: prova a restringere con entity_name di Qwen
                 # prima di restituire bulk (evita "accendi luce specchio" → tutte le luci)
+                disc_names = [e["entity_name"] for e in discovered]
+                logger.info(
+                    f"Entity resolution [step_A]: room='{extracted}', "
+                    f"qwen_entity='{entity_name}', discovered={disc_names}"
+                )
+
+                # Parole generiche da escludere dal keyword matching
+                _generic = {
+                    "luce", "luci", "lampada", "lampade", "led", "la", "le", "il", "i",
+                    "lo", "gli", "un", "una", "del", "della", "dei", "delle", "dello",
+                    "di", "in", "nel", "nella", "al", "alla", "accendi", "spegni",
+                    "apri", "chiudi", "alza", "abbassa", "imposta", "attiva", "disattiva",
+                    "tapparella", "tapparelle", "tenda", "tende",
+                    "sensore", "sensori", "interruttore", "interruttori",
+                    "presa", "prese", "switch", "clima", "condizionatore",
+                }
+
                 if entity_name:
                     entity_lower = entity_name.lower().strip()
                     # Match esatto tra entity_name Qwen e discovered entities
@@ -3442,15 +3459,7 @@ def _resolve_home_control_target(
                             "match_type": "partial_in_room",
                         }
 
-                    # Match per parole chiave (es. Qwen="Luce Specchio" → "specchio" matcha "Specchio Bagno Piccolo")
-                    _generic = {
-                        "luce", "luci", "lampada", "lampade", "led", "la", "le", "il", "i",
-                        "lo", "gli", "un", "una", "del", "della", "dei", "delle", "dello",
-                        "di", "in", "nel", "nella", "al", "alla",
-                        "tapparella", "tapparelle", "tenda", "tende",
-                        "sensore", "sensori", "interruttore", "interruttori",
-                        "presa", "prese", "switch", "clima", "condizionatore",
-                    }
+                    # Match per parole chiave da entity_name Qwen
                     keywords = [
                         w for w in re.sub(r'[,.\!\?\;\:\-]', ' ', entity_lower).split()
                         if w not in _generic and len(w) >= 3
@@ -3488,6 +3497,49 @@ def _resolve_home_control_target(
                                     "entity_ids": [best["entity_id"]],
                                     "description": best["entity_name"],
                                     "match_type": "keyword_in_room",
+                                }
+
+                # Fallback: estrai keywords dal testo utente originale
+                # (utile quando Qwen ritorna la room come entity o non ritorna entity)
+                if user_text:
+                    ut_lower = re.sub(r'[,.\!\?\;\:\-\']', ' ', user_text.lower())
+                    ut_keywords = [
+                        w for w in ut_lower.split()
+                        if w not in _generic and len(w) >= 3
+                        and w not in extracted.lower().split()  # escludi parole della room
+                    ]
+                    if ut_keywords:
+                        scored = []
+                        for e in discovered:
+                            e_lower = e["entity_name"].lower()
+                            hits = sum(1 for kw in ut_keywords if kw in e_lower)
+                            if hits:
+                                scored.append((hits, e))
+                        if len(scored) == 1:
+                            best = scored[0][1]
+                            logger.info(
+                                f"Entity resolution [user_text_keyword]: "
+                                f"keywords={ut_keywords} in room '{extracted}' → {best['entity_id']}"
+                            )
+                            return {
+                                "mode": "single",
+                                "entity_ids": [best["entity_id"]],
+                                "description": best["entity_name"],
+                                "match_type": "user_text_keyword",
+                            }
+                        elif len(scored) > 1:
+                            scored.sort(key=lambda x: x[0], reverse=True)
+                            if scored[0][0] > scored[1][0]:
+                                best = scored[0][1]
+                                logger.info(
+                                    f"Entity resolution [user_text_keyword_best]: "
+                                    f"keywords={ut_keywords} in room '{extracted}' → {best['entity_id']} (score {scored[0][0]} vs {scored[1][0]})"
+                                )
+                                return {
+                                    "mode": "single",
+                                    "entity_ids": [best["entity_id"]],
+                                    "description": best["entity_name"],
+                                    "match_type": "user_text_keyword",
                                 }
 
                 # Nessun match specifico: bulk solo se plurale esplicito
@@ -3799,7 +3851,7 @@ async def process_jarvis_logic(text: str, context: dict):
     # Recupera soglie confidenza da DB
     conf_high, conf_low = get_confidence_thresholds()
 
-    logger.info(f"Routed: intent={intent}, confidence={conf:.2f}, speaker={speaker_name}")
+    logger.info(f"Routed: intent={intent}, confidence={conf:.2f}, speaker={speaker_name}, payload={router_data.get('payload', {})}")
     context["_intent"] = intent  # Per VirtualMic response tracking
 
     # Pubblica evento SSE per dashboard real-time
