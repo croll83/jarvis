@@ -4036,7 +4036,22 @@ async def process_jarvis_logic(text: str, context: dict):
         domain_raw = payload.get("domain") or None
         action = payload.get("action", "toggle")
         entity_raw = payload.get("entity", "unknown")
-        ha_params = payload.get("parameters", {}) or {}  # parametri extra (brightness, temperature, etc.)
+        ha_params = payload.get("parameters", {}) or {}
+
+        # Detect multi-entity command → redirect to OpenClaw (Qwen 3B can't split)
+        _entity_str = str(entity_raw) if entity_raw else ""
+        _has_multi_entity = "," in _entity_str or (isinstance(entity_raw, list) and len(entity_raw) > 1)
+        _has_array_params = any(isinstance(v, list) for v in ha_params.values()) if ha_params else False
+        if _has_multi_entity or _has_array_params:
+            logger.info(f"HOME_CONTROL multi-entity detected, redirecting to OpenClaw: entity={entity_raw}")
+            if source in config.VOICE_SOURCES:
+                await _handle_openclaw_voice(text, context, hint="")
+            else:
+                response, _ = await forward_to_openclaw(text, context)
+                if response:
+                    save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+                    await deliver_final_response(response, context)
+            return
 
         # Fallback: se Qwen non ha estratto parametri, prova a estrarli dal testo utente
         if not ha_params:
