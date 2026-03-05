@@ -3875,6 +3875,16 @@ async def process_jarvis_logic(text: str, context: dict):
         entity_raw = payload.get("entity", "unknown")
         ha_params = payload.get("parameters", {}) or {}  # parametri extra (brightness, temperature, etc.)
 
+        # Fix Qwen: se parametri contengono colore/brightness → forza light + turn_on
+        _light_hint_keys = {"color", "colour", "colore", "rgb_color", "brightness", "brightness_pct", "color_temp_kelvin"}
+        if ha_params and any(k in ha_params for k in _light_hint_keys):
+            if domain_raw != "light":
+                logger.info(f"Domain fix: '{domain_raw}' → 'light' (params contain light attributes)")
+                domain_raw = "light"
+            if action not in ("turn_on",):
+                logger.info(f"Action fix: '{action}' → 'turn_on' (params require turn_on for light)")
+                action = "turn_on"
+
         # Normalizza domain — Qwen può restituire "light|switch|media_player", lista, o None (tutti)
         VALID_DOMAINS = {"light", "switch", "cover", "climate", "lock", "fan",
                          "media_player", "sensor", "binary_sensor", "camera",
@@ -3888,6 +3898,18 @@ async def process_jarvis_logic(text: str, context: dict):
             # Se contiene pipe o non è un dominio valido HA → None (discovery trova tutto)
             if "|" in domain or domain not in VALID_DOMAINS:
                 logger.info(f"Domain '{domain_raw}' non valido o multi-domain, usando discovery senza filtro dominio")
+                domain = None
+
+        # Override domain: se l'utente dice "tutto/tutti/tutte" senza tipo specifico → all domains
+        # Qwen 3B tende a forzare domain="light" anche per "spegni tutto"
+        if domain:
+            _all_tokens = {"tutto", "tutti", "tutte", "dispositivi", "ogni cosa"}
+            _type_tokens = {"luc", "tapparell", "clima", "volume", "ventilator", "serratur", "interruttor"}
+            text_l = text.lower()
+            has_all = any(tok in text_l for tok in _all_tokens)
+            has_type = any(tok in text_l for tok in _type_tokens)
+            if has_all and not has_type:
+                logger.info(f"Domain override: '{domain}' → None (user text has wildcard without type)")
                 domain = None
 
         # Normalizza entity — Qwen può restituire lista o stringa con pipe
@@ -4015,6 +4037,49 @@ async def process_jarvis_logic(text: str, context: dict):
                 # light, switch, media_player, fan, etc. → turn_on/turn_off/toggle funzionano
                 return base_action
 
+            # Normalizza parametri Qwen → formato HA
+            def _normalize_ha_params(params: dict) -> dict:
+                """Converte parametri 'creativi' di Qwen in formato HA standard."""
+                if not params:
+                    return params
+                normalized = dict(params)
+
+                # color/colour name → rgb_color
+                COLOR_MAP = {
+                    "rosso": [255, 0, 0], "red": [255, 0, 0],
+                    "verde": [0, 255, 0], "green": [0, 255, 0],
+                    "blu": [0, 0, 255], "blue": [0, 0, 255],
+                    "giallo": [255, 255, 0], "yellow": [255, 255, 0],
+                    "arancione": [255, 165, 0], "orange": [255, 165, 0],
+                    "viola": [128, 0, 128], "purple": [128, 0, 128],
+                    "rosa": [255, 105, 180], "pink": [255, 105, 180],
+                    "bianco": [255, 255, 255], "white": [255, 255, 255],
+                    "ciano": [0, 255, 255], "cyan": [0, 255, 255],
+                    "magenta": [255, 0, 255],
+                    "caldo": None, "warm": None,  # → color_temp
+                    "freddo": None, "cool": None,  # → color_temp
+                }
+                for key in ("color", "colour", "colore"):
+                    if key in normalized:
+                        color_val = str(normalized.pop(key)).lower().strip()
+                        rgb = COLOR_MAP.get(color_val)
+                        if rgb is not None:
+                            normalized["rgb_color"] = rgb
+                        elif color_val in ("caldo", "warm"):
+                            normalized["color_temp_kelvin"] = 2700
+                        elif color_val in ("freddo", "cool"):
+                            normalized["color_temp_kelvin"] = 6500
+
+                # brightness_pct → brightness (0-255)
+                if "brightness_pct" in normalized and "brightness" not in normalized:
+                    try:
+                        pct = int(normalized.pop("brightness_pct"))
+                        normalized["brightness"] = round(pct * 255 / 100)
+                    except (ValueError, TypeError):
+                        normalized.pop("brightness_pct", None)
+
+                return normalized
+
             # Sanitizza parametri HA da Qwen (rimuove valori nulli/vuoti)
             def _sanitize_ha_params(params: dict, entity_domain: str) -> dict:
                 """Filtra e valida parametri per il dominio."""
@@ -4051,7 +4116,7 @@ async def process_jarvis_logic(text: str, context: dict):
                 for grp_domain, grp_ids in domain_groups.items():
                     grp_action = _map_action_for_domain(action, grp_domain)
                     # Passa parametri anche per bulk (es: brightness per tutte le luci)
-                    grp_params = _sanitize_ha_params(ha_params, grp_domain) or None
+                    grp_params = _sanitize_ha_params(_normalize_ha_params(ha_params), grp_domain) or None
                     grp_success, grp_err = await call_hass_service_bulk(
                         target_location, grp_domain, grp_action, grp_ids, grp_params
                     )
@@ -4077,7 +4142,7 @@ async def process_jarvis_logic(text: str, context: dict):
                 mapped_action = _map_action_for_domain(action, eid_domain)
                 service_data = {"entity_id": entity_id}
                 # Aggiungi parametri extra da Qwen (brightness, temperature, position, etc.)
-                clean_params = _sanitize_ha_params(ha_params, eid_domain)
+                clean_params = _sanitize_ha_params(_normalize_ha_params(ha_params), eid_domain)
                 if clean_params:
                     service_data.update(clean_params)
                     logger.info(f"HOME_CONTROL params: {clean_params} for {eid_domain}.{mapped_action}")
