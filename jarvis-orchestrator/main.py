@@ -3317,24 +3317,22 @@ def _extract_target_from_user_text(user_text: str, location_id: str) -> Optional
     text_lower = re.sub(r'[,\.\!\?\;\:\-]', ' ', user_text.strip().lower())
     text_lower = re.sub(r'\s+', ' ', text_lower).strip()
 
-    # Check wildcard prima ("tutto", "tutte", "tutti", "ovunque")
-    wildcard_tokens = {"tutto", "tutti", "tutte", "tutta la casa", "ovunque", "dappertutto"}
+    # Carica room/zone/area reali dal DB — cerca location specifica PRIMA dei wildcard
+    locations = get_entity_map_locations(location_id)
+    if locations:
+        # Ordina per lunghezza decrescente (match più specifico prima)
+        # es. "Zona Giorno" deve matchare prima di "Giorno"
+        all_names = sorted(locations, key=len, reverse=True)
+
+        for name in all_names:
+            if name.lower() in text_lower:
+                return name
+
+    # Wildcard solo se nessuna location specifica trovata
+    wildcard_tokens = {"tutta la casa", "tutto", "tutti", "tutte", "ovunque", "dappertutto"}
     for wt in wildcard_tokens:
         if wt in text_lower:
             return wt
-
-    # Carica room/zone/area reali dal DB
-    locations = get_entity_map_locations(location_id)
-    if not locations:
-        return None
-
-    # Ordina per lunghezza decrescente (match più specifico prima)
-    # es. "Zona Giorno" deve matchare prima di "Giorno"
-    all_names = sorted(locations, key=len, reverse=True)
-
-    for name in all_names:
-        if name.lower() in text_lower:
-            return name
 
     return None
 
@@ -3872,23 +3870,25 @@ async def process_jarvis_logic(text: str, context: dict):
     # --- HOME CONTROL ---
     if intent == "HOME_CONTROL" and conf >= conf_high:
         payload = router_data.get("payload", {})
-        domain_raw = payload.get("domain", "light")
+        domain_raw = payload.get("domain") or None
         action = payload.get("action", "toggle")
         entity_raw = payload.get("entity", "unknown")
         ha_params = payload.get("parameters", {}) or {}  # parametri extra (brightness, temperature, etc.)
 
-        # Normalizza domain — Qwen può restituire "light|switch|media_player" o lista
+        # Normalizza domain — Qwen può restituire "light|switch|media_player", lista, o None (tutti)
         VALID_DOMAINS = {"light", "switch", "cover", "climate", "lock", "fan",
                          "media_player", "sensor", "binary_sensor", "camera",
                          "automation", "scene", "script", "input_boolean"}
-        if isinstance(domain_raw, list):
-            domain = domain_raw[0] if domain_raw else "light"
+        if domain_raw is None:
+            domain = None
+        elif isinstance(domain_raw, list):
+            domain = domain_raw[0] if domain_raw else None
         else:
             domain = str(domain_raw).strip().lower()
-        # Se contiene pipe o non è un dominio valido HA → None (discovery trova tutto)
-        if "|" in domain or domain not in VALID_DOMAINS:
-            logger.info(f"Domain '{domain_raw}' non valido o multi-domain, usando discovery senza filtro dominio")
-            domain = None
+            # Se contiene pipe o non è un dominio valido HA → None (discovery trova tutto)
+            if "|" in domain or domain not in VALID_DOMAINS:
+                logger.info(f"Domain '{domain_raw}' non valido o multi-domain, usando discovery senza filtro dominio")
+                domain = None
 
         # Normalizza entity — Qwen può restituire lista o stringa con pipe
         if isinstance(entity_raw, list):
