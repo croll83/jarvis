@@ -153,6 +153,7 @@ class EntityResolveRequest(BaseModel):
     friendly_name: str = Field(..., description="Friendly name to resolve (e.g., 'luce soggiorno')")
     location_id: Optional[str] = None
     domain_filter: Optional[str] = Field(default=None, description="Filter by domain (e.g., 'light', 'switch')")
+    include_hidden: bool = Field(default=False, description="Include hidden entities (visible=0). Default: only visible.")
 
 
 class EntityResolveResponse(BaseModel):
@@ -293,6 +294,7 @@ class EntityDiscoveryRequest(BaseModel):
     domain: Optional[str] = Field(default=None, description="Filter by entity domain (e.g., 'camera', 'light', 'media_player')")
     search: Optional[str] = Field(default=None, description="Free text search in entity names (e.g., 'cam', 'temperatura')")
     limit: int = Field(default=50, description="Max results")
+    include_hidden: bool = Field(default=False, description="Include hidden entities (visible=0). Default: only visible.")
 
 
 class EntityDiscoveryItem(BaseModel):
@@ -363,6 +365,7 @@ class EntityBulkRequest(BaseModel):
     action: Optional[str] = Field(default=None, description="Service to call (e.g., 'turn_on', 'turn_off')")
     parameters: Optional[Dict[str, Any]] = Field(default=None, description="Service parameters (e.g., {'brightness': 128})")
     source_channel: str = Field(default="api_tools", description="Source channel for security check")
+    include_hidden: bool = Field(default=False, description="Include hidden entities (visible=0). Default: only visible.")
 
 
 class EntityBulkItem(BaseModel):
@@ -620,7 +623,7 @@ async def tool_entity_resolve(
         from database import get_entity_map
 
         location_id = req.location_id or _get_admin_location()
-        entity_map = get_entity_map(location_id, include_entity_ids=True, only_visible=True)
+        entity_map = get_entity_map(location_id, include_entity_ids=True, only_visible=not req.include_hidden)
 
         if not entity_map:
             return EntityResolveResponse(
@@ -706,11 +709,12 @@ async def tool_entity_discover(
         conn = _get_conn()
         c = conn.cursor()
 
-        # Costruisci query con filtri (solo entity visibili)
-        query = """
+        # Costruisci query con filtri
+        _vis_filter = "" if req.include_hidden else " AND COALESCE(visible, 1) = 1"
+        query = f"""
             SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
             FROM entity_maps
-            WHERE location_id = ? AND COALESCE(visible, 1) = 1
+            WHERE location_id = ?{_vis_filter}
         """
         params: list = [location_id]
 
@@ -816,8 +820,9 @@ async def tool_entity_bulk(
         errors: List[str] = []
 
         # ── 1. DISCOVERY: find matching entities ─────────────────────────
+        _vis_bulk = "" if req.include_hidden else " AND COALESCE(visible, 1) = 1"
         if req.entity_ids:
-            # Explicit entity_ids — fetch their info from DB (solo visibili)
+            # Explicit entity_ids — fetch their info from DB
             conn = _get_conn()
             c = conn.cursor()
             placeholders = ",".join("?" for _ in req.entity_ids)
@@ -825,19 +830,19 @@ async def tool_entity_bulk(
                 SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
                 FROM entity_maps
                 WHERE location_id = ? AND entity_id IN ({placeholders})
-                  AND COALESCE(visible, 1) = 1
+                  {_vis_bulk}
             """, [location_id] + req.entity_ids)
             rows = c.fetchall()
             conn.close()
         else:
-            # Filter-based discovery (reuse entity_discover SQL pattern, solo visibili)
+            # Filter-based discovery
             conn = _get_conn()
             c = conn.cursor()
-            query = """
+            query = f"""
                 SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
                 FROM entity_maps
                 WHERE location_id = ? AND entity_id IS NOT NULL
-                  AND COALESCE(visible, 1) = 1
+                  {_vis_bulk}
             """
             params: list = [location_id]
 

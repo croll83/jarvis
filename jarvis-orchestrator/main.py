@@ -390,6 +390,30 @@ async def _tg_bot_api(method: str, payload: dict = None) -> dict:
 async def _process_telegram_text(text: str, context: dict):
     """Processa un messaggio di testo Telegram attraverso la pipeline JARVIS."""
     try:
+        # ── OPENCLAW FOLLOW-UP BYPASS (Telegram) ──────────────────────
+        _tg_chat_id = context.get("chat_id", "default")
+        _tg_key = f"tg_{_tg_chat_id}"
+        if _tg_key in _openclaw_followup:
+            followup = _openclaw_followup[_tg_key]
+            if time.time() - followup["timestamp"] < 300:  # 5 min per Telegram
+                logger.info(f"🔄 Telegram OpenClaw follow-up active — bypassing routing")
+                _fu_session = followup["session_user"]
+                response, _ = await forward_to_openclaw(text, followup["context"], session_user=_fu_session)
+                if response:
+                    save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+                    await deliver_final_response(response, context, sound_type="neutral")
+                    # Continua follow-up o termina
+                    if _needs_followup(response):
+                        followup["timestamp"] = time.time()
+                        logger.info(f"🔄 Telegram follow-up continues for {_tg_key}")
+                    else:
+                        _openclaw_followup.pop(_tg_key, None)
+                        logger.info(f"🔄 Telegram follow-up ended for {_tg_key}")
+                return
+            else:
+                logger.info(f"🔄 Telegram follow-up expired for {_tg_key}")
+                _openclaw_followup.pop(_tg_key, None)
+
         if config.SKIP_PRE_ROUTE:
             # Routing unificato: salta pre-route, vai diretto al routing completo
             await process_jarvis_logic(text, context)
@@ -1080,6 +1104,14 @@ class PendingLiveSession:
 
 _pending_live_sessions: Dict[str, PendingLiveSession] = {}
 
+# Lightweight multi-turn OpenClaw tracker.
+# Quando OpenClaw chiede chiarimenti (?), il prossimo voice/telegram input bypassa routing.
+# Key: device_id (voice) o "tg_{chat_id}" (Telegram)
+_openclaw_followup: Dict[str, dict] = {}
+# Set di device_id per cui trigger_device_listen è stato chiamato per un follow-up.
+# Distingue "mic riattivato automaticamente" da "utente ha premuto bottone".
+_openclaw_followup_triggered: set = set()
+
 # Keyword sets for pending session confirmation
 _CONFIRM_YES = {"sì", "si", "ok", "vai", "certo", "procedi", "avvia", "yes", "sí"}
 _CONFIRM_NO = {"no", "annulla", "lascia", "niente", "stop", "esci"}
@@ -1682,6 +1714,7 @@ async def _post_tts_handler(
             # Device transitions BUSY → LISTENING without going through IDLE
             success = await trigger_device_listen(device_id, silent=True)
             if success:
+                _openclaw_followup_triggered.add(device_id)
                 logger.info(f"🔄 Multi-turn: triggered listen on {device_id} "
                             f"(after {duration:.1f}s TTS)")
             else:
@@ -2749,6 +2782,105 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         await handle_live_session_turn(device_id, audio_bytes)
         return
 
+    # ── OPENCLAW FOLLOW-UP BYPASS ─────────────────────────────────────
+    # Se OpenClaw ha chiesto chiarimenti, il prossimo input bypassa routing
+    # e va diretto a OpenClaw. Speaker ID: se anonimo al turno 1, rifa
+    # speaker ID; se già riconosciuto, usa identità bloccata.
+    # SOLO se il mic è stato riattivato da trigger_device_listen (non bottone fisico).
+    if device_id in _openclaw_followup:
+        followup = _openclaw_followup[device_id]
+        if device_id not in _openclaw_followup_triggered:
+            # Bottone fisico premuto → reset follow-up, routing normale
+            logger.info(f"🔄 OpenClaw follow-up reset by button press on {device_id}")
+            _openclaw_followup.pop(device_id, None)
+        elif time.time() - followup["timestamp"] >= 120:  # 2 min timeout
+            logger.info(f"🔄 OpenClaw follow-up expired for {device_id}")
+            _openclaw_followup.pop(device_id, None)
+            _openclaw_followup_triggered.discard(device_id)
+        else:
+            _openclaw_followup_triggered.discard(device_id)  # Consumato
+            logger.info(f"🔄 OpenClaw follow-up active for {device_id} — bypassing routing")
+            try:
+                # Audio normalization
+                import numpy as _np_fu
+                _raw_fu = _np_fu.frombuffer(audio_bytes, dtype=_np_fu.int16).astype(_np_fu.float32)
+                _peak_fu = _np_fu.max(_np_fu.abs(_raw_fu))
+                if _peak_fu > 0:
+                    _gain_fu = min(28000.0 / _peak_fu, 20.0)
+                    _raw_fu = (_raw_fu * _gain_fu).clip(-32768, 32767)
+                clean_audio_fu = _raw_fu.astype(_np_fu.int16).tobytes()
+
+                # STT (always needed)
+                import asyncio as _aio_fu
+                loop_fu = _aio_fu.get_running_loop()
+                stt_task_fu = _aio_fu.ensure_future(transcribe_audio(clean_audio_fu))
+
+                # Speaker ID: only if anonymous at turn 1
+                speaker_task_fu = None
+                if followup["speaker_id"] is None:
+                    _ws_dt_fu = followup.get("device_config", {}).get("device_type", "AtomS3R") if followup.get("device_config") else "AtomS3R"
+                    speaker_task_fu = loop_fu.run_in_executor(
+                        None, build_speaker_context, audio_bytes, _ws_dt_fu
+                    )
+
+                text_fu = await stt_task_fu
+                if not text_fu or not text_fu.strip():
+                    if speaker_task_fu:
+                        speaker_task_fu.cancel()
+                    await trigger_device_listen(device_id, silent=True)
+                    return
+                if is_dirty_audio(text_fu):
+                    if speaker_task_fu:
+                        speaker_task_fu.cancel()
+                    await trigger_device_listen(device_id, silent=True)
+                    return
+
+                # STT normalization
+                text_fu = await normalize_stt_text(text_fu)
+                logger.info(f"🔄 Follow-up transcribed: '{text_fu[:80]}' → sending to OpenClaw")
+
+                # Update speaker if re-identified
+                fu_speaker_id = followup["speaker_id"]
+                fu_speaker_name = followup["speaker_name"]
+                fu_speaker_identified = fu_speaker_id is not None
+                if speaker_task_fu:
+                    speaker_ctx_fu = await speaker_task_fu
+                    if speaker_ctx_fu.get("speaker_identified"):
+                        # Riconosciuto! Blocca identità per turni successivi
+                        fu_speaker_id = speaker_ctx_fu["speaker_id"]
+                        fu_speaker_name = speaker_ctx_fu["speaker_name"]
+                        fu_speaker_identified = True
+                        followup["speaker_id"] = fu_speaker_id
+                        followup["speaker_name"] = fu_speaker_name
+                        logger.info(f"🔄 Follow-up: speaker identified as {fu_speaker_name}")
+
+                context_fu = {
+                    "source": followup["source"],
+                    "room": followup["room"],
+                    "mic_id": device_id,
+                    "device_id": device_id,
+                    "location": followup["location"],
+                    "device_config": followup["device_config"],
+                    "speaker_id": fu_speaker_id,
+                    "speaker_name": fu_speaker_name,
+                    "speaker_identified": fu_speaker_identified,
+                    "is_admin": False,
+                }
+                # Check admin status if identified
+                if fu_speaker_id:
+                    from database import get_user_by_id
+                    _fu_user = get_user_by_id(fu_speaker_id)
+                    if _fu_user:
+                        context_fu["is_admin"] = _fu_user.is_admin
+
+                await _handle_openclaw_voice(text_fu, context_fu, hint="followup")
+                return
+            except Exception as e:
+                logger.error(f"🔄 OpenClaw follow-up error: {e}", exc_info=True)
+                _openclaw_followup.pop(device_id, None)
+                _openclaw_followup_triggered.discard(device_id)
+                # Fall through to normal pipeline
+
     # Recupera configurazione device
     device_config = get_device_speaker_config(device_id)
     if device_config:
@@ -3243,6 +3375,24 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
         device_id = context.get("device_id", "unknown")
         is_multi_turn = _needs_followup(response) and source in config.VOICE_SOURCES and source != "VirtualMic"
 
+        # ── OpenClaw follow-up tracking ──
+        # Se OpenClaw chiede chiarimenti (?), il prossimo voice input bypassa routing
+        if is_multi_turn and device_id and device_id != "unknown":
+            _openclaw_followup[device_id] = {
+                "session_user": session_user,
+                "speaker_id": speaker_id,
+                "speaker_name": speaker_name,
+                "location": location,
+                "room": room,
+                "device_config": device_cfg,
+                "source": source,
+                "timestamp": time.time(),
+            }
+            logger.info(f"🔄 OpenClaw follow-up SET for {device_id} (session={session_user})")
+        elif device_id:
+            # Conversazione finita, cleanup
+            _openclaw_followup.pop(device_id, None)
+
         if use_internal_speaker and device_id and device_id != "unknown":
             # Internal speaker: niente polling HA, gestione diretta
             # speak_to_device() invia frame Opus in modo sincrono — il device
@@ -3253,6 +3403,7 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
             if is_multi_turn:
                 success = await trigger_device_listen(device_id, silent=True)
                 if success:
+                    _openclaw_followup_triggered.add(device_id)
                     logger.info(f"🔄 Multi-turn (internal speaker): triggered listen on {device_id} "
                                 f"(after {_internal_tts_total_duration:.1f}s TTS)")
             else:
@@ -3725,6 +3876,7 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
             SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
             FROM entity_maps
             WHERE location_id = ? AND entity_id IS NOT NULL
+              AND COALESCE(visible, 1) = 1
         """
         q_params: list = [target_location]
 
@@ -4572,6 +4724,21 @@ async def process_jarvis_logic(text: str, context: dict):
             log_event("OPENCLAW", f"Domanda: {text[:50]}...", speaker_id, speaker_name)
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context, sound_type="neutral")
+            # Track follow-up per Telegram
+            _tg_key = f"tg_{chat_id}"
+            if _needs_followup(response):
+                _tg_session = speaker_name.lower() if speaker_name and speaker_name != "Sconosciuto" else f"tg_{chat_id}"
+                _openclaw_followup[_tg_key] = {
+                    "session_user": _tg_session,
+                    "speaker_id": speaker_id,
+                    "speaker_name": speaker_name,
+                    "location": location,
+                    "context": context,
+                    "timestamp": time.time(),
+                }
+                logger.info(f"🔄 Telegram OpenClaw follow-up SET for {_tg_key}")
+            else:
+                _openclaw_followup.pop(_tg_key, None)
         return
 
     # --- VERIFY_WITH_OPENCLAW (confronto risposta precedente) ---

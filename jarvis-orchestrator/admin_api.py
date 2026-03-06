@@ -1766,7 +1766,9 @@ async def sync_entities_from_ha(
         )
 
     # Aggiorna entity_map_path per indicare che è importata da HA
-    update_location(location_id, entity_map_path="[database]")
+    # Ma NON sovrascrivere se contiene una gerarchia (hierarchy JSON)
+    if not get_hierarchy_mapping(location_id):
+        update_location(location_id, entity_map_path="[database]")
 
     return {
         "success": len(errors) == 0,
