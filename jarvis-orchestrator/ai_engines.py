@@ -643,12 +643,14 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
             {"role": "system", "content": SYSTEM_RULES},
             {"role": "user", "content": full_prompt}
         ],
-        "format": "json",
+        # format:"json" RIMOSSO — aggiunge 300-800ms di overhead su prompt grandi
+        # (constrained decoding). Il system prompt gia dice di rispondere in JSON,
+        # e stop+max_tokens prevengono allucinazioni.
         "options": {
             "temperature": _rp["temperature"],
             "num_predict": _rp["max_tokens"],
             "num_ctx": config.OLLAMA_NUM_CTX,  # Valore unico ovunque per evitare reload
-            "stop": ["<|im_start|>"],  # Previene hallucination loop (model genera oltre il JSON)
+            "stop": ["<|im_start|>"],  # Previene hallucination loop
         },
         "stream": False
     }
