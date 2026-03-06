@@ -66,13 +66,13 @@ class CUDACleanupMiddleware(BaseHTTPMiddleware):
 PYEOF
 
 # 2. Patcha server.py per registrare il middleware + aggiungere endpoint diagnostico
-RUN python3 -c "\
+RUN python3 << 'PATCH_EOF'
 import pathlib
 p = pathlib.Path('/usr/local/lib/python3.10/dist-packages/xtts_api_server/server.py')
 t = p.read_text()
 
 # Aggiungi import del middleware in testa al file
-import_line = 'import sys; sys.path.insert(0, \"/app\")\nfrom cuda_cleanup import CUDACleanupMiddleware\n'
+import_line = 'import sys; sys.path.insert(0, "/app")\nfrom cuda_cleanup import CUDACleanupMiddleware\n'
 t = import_line + t
 
 # Registra il middleware DOPO il CORSMiddleware esistente
@@ -83,22 +83,22 @@ t = t.replace(
 
 # Aggiungi endpoint /gpu_memory per diagnostica
 gpu_endpoint = '''
-
 # === GPU Memory diagnostic endpoint (injected by Dockerfile) ===
-@app.get(\"/gpu_memory\")
+@app.get("/gpu_memory")
 async def gpu_memory():
     import torch
     if torch.cuda.is_available():
         return {
-            \"allocated_mb\": round(torch.cuda.memory_allocated() / 1024**2, 1),
-            \"reserved_mb\": round(torch.cuda.memory_reserved() / 1024**2, 1),
-            \"max_allocated_mb\": round(torch.cuda.max_memory_allocated() / 1024**2, 1),
+            "allocated_mb": round(torch.cuda.memory_allocated() / 1024**2, 1),
+            "reserved_mb": round(torch.cuda.memory_reserved() / 1024**2, 1),
+            "max_allocated_mb": round(torch.cuda.max_memory_allocated() / 1024**2, 1),
         }
-    return {\"error\": \"CUDA not available\"}
+    return {"error": "CUDA not available"}
+
 '''
 # Inserisci prima del primo endpoint
-t = t.replace('@app.get(\"/speakers_list\")', gpu_endpoint + '@app.get(\"/speakers_list\")')
+t = t.replace('@app.get("/speakers_list")', gpu_endpoint + '@app.get("/speakers_list")')
 
 p.write_text(t)
-print('Patched server.py → CUDA cleanup middleware + /gpu_memory endpoint')
-"
+print('Patched server.py with CUDA cleanup middleware + /gpu_memory endpoint')
+PATCH_EOF
