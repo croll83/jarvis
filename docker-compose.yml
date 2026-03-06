@@ -57,15 +57,15 @@ services:
     environment:
       - OLLAMA_NUM_PARALLEL=1             # Pipeline sequenziale (pre_route→embed→route)
       - OLLAMA_MAX_LOADED_MODELS=1      # Solo Qwen — embeddings su fastembed :11435
-      # Context 20480: max con tutti i 37 layer su GPU (146 tok/s).
-      # A 22k+ Ollama offloada layer su CPU (33 tok/s = 4.4x piu lento).
-      # Routing prompt tipico: ~2200 token. Tool calling fino a ~12-16k.
-      - OLLAMA_NUM_CTX=20480
+      # Context 32768: XTTS cleanup middleware stabilizza la VRAM (~1854 MB),
+      # liberando ~540 MB extra rispetto al leak pre-fix. 32k testato: 37/37 layer
+      # su GPU, 140 tok/s, totale ~3473 MiB (con XTTS+Whisper = ~6800 MiB / 8151).
+      - OLLAMA_NUM_CTX=32768
       # OLLAMA_CONTEXT_LENGTH è il DEFAULT che Ollama usa quando un client
       # NON specifica num_ctx (es. OpenClaw via /v1/messages, tool esterni).
       # Senza questo Ollama usa 4096 e forza un model reload catastrofico.
       # NOTA: OLLAMA_NUM_CTX NON funziona come default — solo CONTEXT_LENGTH lo fa.
-      - OLLAMA_CONTEXT_LENGTH=20480
+      - OLLAMA_CONTEXT_LENGTH=32768
       - OLLAMA_KEEP_ALIVE=-1           # Mantiene i modelli in VRAM permanentemente
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
