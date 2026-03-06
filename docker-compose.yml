@@ -208,6 +208,7 @@ services:
       # Qwen tool calling (Brave Search)
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
       - ROUTER_MODEL=${ROUTER_MODEL:-qwen2.5:3b}
+      - OLLAMA_NUM_CTX=32768
       # API keys (only needed if AI_BACKEND=api)
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
