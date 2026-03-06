@@ -131,8 +131,10 @@ async def build_full_context(
     """
     budget = config.CONTEXT_BUDGETS.get(context_type, config.CONTEXT_BUDGETS["reasoning"])
     parts = []
+    _t0 = time.time()
 
     # ===== 1. USER MEMORY - SQL (structured) =====
+    _t = time.time()
     if user_id:
         user_memory_sql = get_user_memory_context(
             user_id=user_id,
@@ -152,8 +154,10 @@ async def build_full_context(
 
         if sql_context.strip():
             parts.append(sql_context)
+    _sql_user_ms = (time.time() - _t) * 1000
 
     # ===== 2. USER MEMORY - VECTOR (semantic) =====
+    _t = time.time()
     if user_id and query:
         try:
             vector_results = search_user_context(
@@ -183,8 +187,10 @@ async def build_full_context(
 
         except Exception as e:
             logger.warning(f"Vector search failed, using SQL only: {e}")
+    _vector_user_ms = (time.time() - _t) * 1000
 
     # ===== 3. LOCATION MEMORY - SQL (structured) =====
+    _t = time.time()
     if target_location_id:
         location_ids = [target_location_id]
     else:
@@ -205,8 +211,10 @@ async def build_full_context(
                 parts.append(location_context)
     except Exception as e:
         logger.warning(f"Location memory fetch failed: {e}")
+    _loc_sql_ms = (time.time() - _t) * 1000
 
     # ===== 4. LOCATION MEMORY - VECTOR (semantic) =====
+    _t = time.time()
     if query and location_ids:
         try:
             from location_memory import (
@@ -230,6 +238,14 @@ async def build_full_context(
 
         except Exception as e:
             logger.warning(f"Location vector search failed: {e}")
+    _loc_vector_ms = (time.time() - _t) * 1000
+
+    _total_ms = (time.time() - _t0) * 1000
+    logger.info(
+        f"build_full_context timing ({context_type}): total={_total_ms:.0f}ms | "
+        f"sql_user={_sql_user_ms:.0f}ms vector_user={_vector_user_ms:.0f}ms "
+        f"loc_sql={_loc_sql_ms:.0f}ms loc_vector={_loc_vector_ms:.0f}ms"
+    )
 
     return "\n\n".join(parts)
 
