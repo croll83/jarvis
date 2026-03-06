@@ -3956,6 +3956,7 @@ async def process_jarvis_logic(text: str, context: dict):
     location = context.get("location")  # Può essere None per Telegram
     source_id = f"{source}_{chat_id}_{speaker_id or 'anon'}"
 
+    _ctx_t0 = time.time()
     logger.info(f"Processing: '{text[:50]}...' from {source} (speaker: {speaker_name}, location: {location})")
 
     # 0a. DIRTY AUDIO CHECK (era nel pre-route, ora qui — puro Python, no LLM)
@@ -4010,7 +4011,9 @@ async def process_jarvis_logic(text: str, context: dict):
         return
 
     # 2. SAFETY CHECK
+    _t = time.time()
     is_safe_result, reason = await is_safe(text, source)
+    _safety_ms = (time.time() - _t) * 1000
     if not is_safe_result:
         await send_telegram(f"⚠️ Comando bloccato: {reason}")
         log_event("SECURITY", f"Comando bloccato da {source}: {reason}", speaker_id, speaker_name)
@@ -4018,13 +4021,16 @@ async def process_jarvis_logic(text: str, context: dict):
 
     # 3. RECUPERO MEMORIA PESATA
     # Recuperiamo abbastanza messaggi dal DB per coprire tutti i casi
+    _t = time.time()
     weighted_memory = get_weighted_context(
         current_speaker_id=speaker_id,
         seconds=config.MEMORY_WINDOW_SECONDS,
         max_messages=config.MAX_WEIGHTED_CONTEXT_MESSAGES  # Abbastanza per coprire 40+10+5 con margine
     )
+    _weighted_ms = (time.time() - _t) * 1000
 
     # Per il ROUTER (Qwen) usiamo limiti ridotti per velocità
+    _t = time.time()
     router_memory_prompt = format_weighted_context_for_llm(
         weighted_memory,
         speaker_name,
@@ -4032,8 +4038,10 @@ async def process_jarvis_logic(text: str, context: dict):
         medium_limit=config.ROUTER_MEMORY_MEDIUM_PRIORITY,  # 5
         global_limit=config.ROUTER_MEMORY_GLOBAL            # 3
     )
+    _format_ms = (time.time() - _t) * 1000
 
     # 3b. CONTESTO STRATIFICATO (user + location memory)
+    _t = time.time()
     try:
         stratified_context = await build_full_context(
             user_id=speaker_id,
@@ -4045,21 +4053,34 @@ async def process_jarvis_logic(text: str, context: dict):
     except Exception as e:
         logger.warning(f"Stratified context build failed: {e}")
         stratified_context = ""
+    _stratified_ms = (time.time() - _t) * 1000
 
     # Combina memoria conversazionale + contesto stratificato per il router
     if stratified_context:
         router_memory_prompt = f"{router_memory_prompt}\n{stratified_context}"
 
     # 4. SALVA INPUT
+    _t = time.time()
     save_chat_message("user", text, source, speaker_id, speaker_name)
+    _save_ms = (time.time() - _t) * 1000
 
     # 5. ROUTING (con memoria ridotta per velocità)
     # Inietta status servizi nel contesto per routing intelligente
+    _t = time.time()
     service_status_prompt = service_status.get_status_for_prompt(location)
 
     # Recupera location disponibili per il prompt
     available_locations = [{"id": loc.id, "name": loc.name, "city": loc.city}
                           for loc in get_all_locations(enabled_only=True)]
+    _misc_ms = (time.time() - _t) * 1000
+
+    _ctx_total_ms = (time.time() - _ctx_t0) * 1000
+    logger.info(
+        f"Context build timing: total={_ctx_total_ms:.0f}ms | "
+        f"safety={_safety_ms:.0f}ms weighted_mem={_weighted_ms:.0f}ms "
+        f"format={_format_ms:.0f}ms stratified={_stratified_ms:.0f}ms "
+        f"save_msg={_save_ms:.0f}ms misc={_misc_ms:.0f}ms"
+    )
 
     router_context = {
         **context,
