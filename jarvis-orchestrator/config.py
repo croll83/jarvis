@@ -116,15 +116,21 @@ BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "20480"))
 
 # ===========================================================================
-# MEMORY CONTEXT LIMITS (potenzialmente modificabili a runtime ma meno critici)
+# MEMORY CONTEXT LIMITS
 # ===========================================================================
-# Limiti per il ROUTER (Qwen 3B) - meno contesto = meno allucinazioni
-# Con 10+5+3 il prompt superava ~3500 tok e Qwen allucinava in loop.
-ROUTER_MEMORY_HIGH_PRIORITY = 5       # Messaggi speaker corrente (era 10)
-ROUTER_MEMORY_MEDIUM_PRIORITY = 2     # Messaggi altri familiari (era 5)
-ROUTER_MEMORY_GLOBAL = 1              # Eventi sistema (era 3)
+# ROUTING (Qwen 3B) — ultimi N turni entro finestra temporale.
+# Semplice e veloce: pura SQLite, zero embedding, zero HTTP.
+# Qwen 3B non fa coreference complessa, ma 3 turni in 5 min coprono
+# "accendi X" → "spegnila" senza portare rumore da ore prima.
+ROUTER_MEMORY_TURNS = 3              # Ultimi 3 turni (6 messaggi max)
+ROUTER_MEMORY_WINDOW_SECONDS = 300   # Finestra 5 minuti
 
-# Sliding window temporale (secondi)
+# REASONING (OpenClaw) — usa il sistema completo (weighted + vector + stratified)
+REASONING_MEMORY_HIGH_PRIORITY = 15   # Messaggi speaker corrente
+REASONING_MEMORY_MEDIUM_PRIORITY = 5  # Messaggi altri familiari
+REASONING_MEMORY_GLOBAL = 3           # Eventi sistema
+
+# Sliding window temporale per reasoning (secondi)
 MEMORY_WINDOW_SECONDS = 3600          # 1 ora di default
 
 # ===========================================================================

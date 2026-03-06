@@ -1460,6 +1460,58 @@ def format_weighted_context_for_llm(
     return "\n".join(lines)
 
 
+def get_recent_turns(
+    max_turns: int = 3,
+    max_seconds: int = 300,
+) -> List[Dict]:
+    """
+    Recupera gli ultimi N turni conversazionali entro una finestra temporale.
+    Veloce: singola query SQLite, zero embedding, zero HTTP.
+
+    Un "turno" ≈ coppia user+assistant, quindi max_turns=3 → fino a 6 messaggi.
+    Pensato per il routing Qwen: contesto minimo per coreference semplice
+    ("accendi luce lavanderia" → "spegnila" = spegni lavanderia).
+    """
+    conn = _get_conn()
+    c = conn.cursor()
+    cutoff = time.time() - max_seconds
+
+    c.execute('''
+        SELECT role, content, speaker_name, timestamp
+        FROM chat_memory
+        WHERE timestamp > ? AND role IN ('user', 'assistant')
+        ORDER BY timestamp DESC
+        LIMIT ?
+    ''', (cutoff, max_turns * 2))
+
+    rows = c.fetchall()
+    conn.close()
+
+    # Reverse per ordine cronologico (dal più vecchio al più recente)
+    return [
+        {
+            "role": row["role"],
+            "content": row["content"],
+            "speaker": row["speaker_name"],
+        }
+        for row in reversed(rows)
+    ]
+
+
+def format_recent_turns_for_llm(turns: List[Dict]) -> str:
+    """Formatta turni recenti per il prompt del router. Ultra-compatto."""
+    if not turns:
+        return ""
+    lines = []
+    for msg in turns:
+        speaker = msg.get("speaker") or "User"
+        if msg["role"] == "user":
+            lines.append(f"  {speaker}: {msg['content']}")
+        else:
+            lines.append(f"  JARVIS: {msg['content']}")
+    return "[CONVERSAZIONE RECENTE]\n" + "\n".join(lines)
+
+
 def get_recent_context(seconds: int = 3600) -> List[Dict]:
     """
     Versione semplice (backward compatible) - ritorna tutti i messaggi.
