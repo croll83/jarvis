@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 import json
 import logging
+import time
 from typing import Optional
 
 import config
@@ -656,15 +657,36 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
     }
 
     try:
+        t0 = time.time()
         async with aiohttp.ClientSession() as session:
+            t1 = time.time()
             async with session.post(config.OLLAMA_CHAT_URL,
                                    json=payload, timeout=_rp["timeout"]) as resp:
+                t2 = time.time()
                 if resp.status != 200:
                     logger.error(f"Routing error: HTTP {resp.status}")
                     return _fallback_routing()
 
                 data = await resp.json()
-                content = data.get("message", {}).get("content", "{}")
+                t3 = time.time()
+                content = data.get("message", {}).get("content", "{}").strip()
+                # Qwen senza format:"json" a volte wrappa in ```json ... ```
+                if content.startswith("```"):
+                    content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+                # Timing dettagliato da Ollama
+                ollama_load = data.get("load_duration", 0) / 1e6
+                ollama_prompt = data.get("prompt_eval_duration", 0) / 1e6
+                ollama_eval = data.get("eval_duration", 0) / 1e6
+                ollama_total = data.get("total_duration", 0) / 1e6
+                ptok = data.get("prompt_eval_count", 0)
+                etok = data.get("eval_count", 0)
+                logger.info(
+                    f"Routing timing: session={((t1-t0)*1000):.0f}ms "
+                    f"http={((t2-t1)*1000):.0f}ms parse={((t3-t2)*1000):.0f}ms | "
+                    f"Ollama: total={ollama_total:.0f}ms load={ollama_load:.0f}ms "
+                    f"prompt={ollama_prompt:.0f}ms({ptok}t) eval={ollama_eval:.0f}ms({etok}t)"
+                )
 
                 try:
                     result = json.loads(content)
