@@ -23,7 +23,7 @@ import uvicorn
 import config
 from database import (
     init_db, smart_cache, log_event,
-    save_chat_message, get_weighted_context, format_weighted_context_for_llm,
+    save_chat_message, get_recent_turns, format_recent_turns_for_llm,
     save_action, get_action, delete_action, cleanup_old_actions,
     set_user_preference, get_user_preference, set_global_preference, get_global_preference,
     get_audit_summary, save_telegram_stream,
@@ -62,7 +62,8 @@ from service_status import service_status, ServiceState
 from multi_ha import multi_ha
 from memory_jobs import memory_scheduler
 from location_memory import load_memory_services_from_db
-from context_builder import build_full_context, build_routing_context, build_reasoning_context
+# build_full_context/build_reasoning_context restano in context_builder.py
+# per OpenClaw reasoning e tools_api — qui non servono più per routing
 from proactive import proactive_check_loop
 from vector_store import init_vector_store
 from ws_audio_handler import (
@@ -4019,45 +4020,17 @@ async def process_jarvis_logic(text: str, context: dict):
         log_event("SECURITY", f"Comando bloccato da {source}: {reason}", speaker_id, speaker_name)
         return
 
-    # 3. RECUPERO MEMORIA PESATA
-    # Recuperiamo abbastanza messaggi dal DB per coprire tutti i casi
+    # 3. MEMORIA RECENTE per routing (ultimi N turni, pura SQLite — no vector/embedding)
+    # Qwen 3B non fa coreference complessa, ma 3 turni in 5 min coprono
+    # "accendi X" → "spegnila" senza portare rumore da ore prima.
+    # Il contesto completo (weighted + vector + stratified) resta per OpenClaw/reasoning.
     _t = time.time()
-    weighted_memory = get_weighted_context(
-        current_speaker_id=speaker_id,
-        seconds=config.MEMORY_WINDOW_SECONDS,
-        max_messages=config.MAX_WEIGHTED_CONTEXT_MESSAGES  # Abbastanza per coprire 40+10+5 con margine
+    recent_turns = get_recent_turns(
+        max_turns=config.ROUTER_MEMORY_TURNS,
+        max_seconds=config.ROUTER_MEMORY_WINDOW_SECONDS,
     )
-    _weighted_ms = (time.time() - _t) * 1000
-
-    # Per il ROUTER (Qwen) usiamo limiti ridotti per velocità
-    _t = time.time()
-    router_memory_prompt = format_weighted_context_for_llm(
-        weighted_memory,
-        speaker_name,
-        high_limit=config.ROUTER_MEMORY_HIGH_PRIORITY,      # 15
-        medium_limit=config.ROUTER_MEMORY_MEDIUM_PRIORITY,  # 5
-        global_limit=config.ROUTER_MEMORY_GLOBAL            # 3
-    )
-    _format_ms = (time.time() - _t) * 1000
-
-    # 3b. CONTESTO STRATIFICATO (user + location memory)
-    _t = time.time()
-    try:
-        stratified_context = await build_full_context(
-            user_id=speaker_id,
-            user_name=speaker_name,
-            query=text,
-            target_location_id=location,
-            context_type="routing"
-        )
-    except Exception as e:
-        logger.warning(f"Stratified context build failed: {e}")
-        stratified_context = ""
-    _stratified_ms = (time.time() - _t) * 1000
-
-    # Combina memoria conversazionale + contesto stratificato per il router
-    if stratified_context:
-        router_memory_prompt = f"{router_memory_prompt}\n{stratified_context}"
+    router_memory_prompt = format_recent_turns_for_llm(recent_turns)
+    _memory_ms = (time.time() - _t) * 1000
 
     # 4. SALVA INPUT
     _t = time.time()
@@ -4077,15 +4050,14 @@ async def process_jarvis_logic(text: str, context: dict):
     _ctx_total_ms = (time.time() - _ctx_t0) * 1000
     logger.info(
         f"Context build timing: total={_ctx_total_ms:.0f}ms | "
-        f"safety={_safety_ms:.0f}ms weighted_mem={_weighted_ms:.0f}ms "
-        f"format={_format_ms:.0f}ms stratified={_stratified_ms:.0f}ms "
+        f"safety={_safety_ms:.0f}ms memory={_memory_ms:.0f}ms "
         f"save_msg={_save_ms:.0f}ms misc={_misc_ms:.0f}ms"
     )
 
     router_context = {
         **context,
         "memory": router_memory_prompt,
-        "history_length": sum(len(v) for v in weighted_memory.values()),
+        "history_length": len(recent_turns),
         "service_status": service_status_prompt if service_status_prompt else "tutti i servizi online",
         "available_locations": available_locations,
         "location": location or "unknown"

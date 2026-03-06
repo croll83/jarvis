@@ -988,10 +988,9 @@ async def get_config() -> Dict[str, Any]:
             "reasoning_model": "gemini (via OpenClaw)",
             "approval_timeout": config.APPROVAL_TIMEOUT,
             "memory_window_seconds": config.MEMORY_WINDOW_SECONDS,
-            "router_memory_limits": {
-                "high": config.ROUTER_MEMORY_HIGH_PRIORITY,
-                "medium": config.ROUTER_MEMORY_MEDIUM_PRIORITY,
-                "global": config.ROUTER_MEMORY_GLOBAL
+            "router_memory": {
+                "turns": config.ROUTER_MEMORY_TURNS,
+                "window_seconds": config.ROUTER_MEMORY_WINDOW_SECONDS
             },
             "critical_domains": config.CRITICAL_DOMAINS
         },
