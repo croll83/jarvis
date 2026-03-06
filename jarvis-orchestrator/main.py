@@ -3948,40 +3948,53 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
 
         on_states = {"on", "heat", "cool", "auto", "open", "playing"}
         on_items = []
+        off_items = []
         for ent in discovered:
             live = states.get(ent["entity_id"], {})
             if live.get("state", "").lower() in on_states:
                 on_items.append(ent["friendly_name"])
+            else:
+                off_items.append(ent["friendly_name"])
 
         total = len(discovered)
         on_count = len(on_items)
+        off_count = len(off_items)
 
-        # Livello stanza (poche entità): elenca nomi. Zona/piano: solo conteggi + accese.
-        _is_room_level = bool(params.get("room")) and not params.get("zone") and not params.get("floor")
+        # Analizza il testo utente per capire cosa chiede
+        _user_text = (context.get("_user_text") or "").lower()
+        _asks_on = any(k in _user_text for k in ("acces", "attiv", "aperte", "aperti"))
+        _asks_off = any(k in _user_text for k in ("spent", "spegn", "chiuse", "chiusi", "disattiv"))
+        _asks_count = any(k in _user_text for k in ("quant", "numer"))
 
-        if _is_room_level:
-            all_names = [e["friendly_name"] for e in discovered]
+        # Risposta mirata in base alla domanda
+        if _asks_count and _asks_on:
             if on_count == 0:
-                return (f"In {scope} ci sono {total} {domain_label}: "
-                        f"{', '.join(all_names[:15])}. Sono tutte spente.")
-            elif on_count == total:
-                return (f"In {scope} ci sono {total} {domain_label}: "
-                        f"{', '.join(all_names[:15])}. Sono tutte accese.")
-            else:
-                off_items = [n for n in all_names if n not in on_items]
-                return (f"In {scope} ci sono {total} {domain_label}: "
-                        f"{', '.join(all_names[:15])}. "
-                        f"Accese: {', '.join(on_items[:10])}. "
-                        f"Spente: {', '.join(off_items[:10])}.")
+                return f"Nessuna {domain_label} accesa in {scope}."
+            return f"{on_count} {domain_label} accese su {total} in {scope}."
+        elif _asks_count and _asks_off:
+            if off_count == 0:
+                return f"Nessuna {domain_label} spenta in {scope}."
+            return f"{off_count} {domain_label} spente su {total} in {scope}."
+        elif _asks_count:
+            return f"Ci sono {total} {domain_label} in {scope} ({on_count} accese, {off_count} spente)."
+        elif _asks_on:
+            if on_count == 0:
+                return f"Nessuna {domain_label} accesa in {scope}."
+            return f"{on_count} {domain_label} accese in {scope}: {', '.join(on_items[:15])}."
+        elif _asks_off:
+            if off_count == 0:
+                return f"Nessuna {domain_label} spenta in {scope}."
+            return f"{off_count} {domain_label} spente in {scope}: {', '.join(off_items[:15])}."
+
+        # Domanda generica ("cosa c'è in..."): elenca tutto ma conciso
+        if on_count == 0:
+            return f"In {scope}: {total} {domain_label}, tutte spente."
+        elif on_count == total:
+            return f"In {scope}: {total} {domain_label}, tutte accese."
         else:
-            # Zona/piano/tutto: risposta sintetica
-            if on_count == 0:
-                return f"Tutte le {total} {domain_label} in {scope} sono spente."
-            elif on_count == total:
-                return f"Tutte le {total} {domain_label} in {scope} sono accese."
-            else:
-                return (f"{on_count} {domain_label} accese su {total} in {scope}: "
-                        f"{', '.join(on_items[:15])}.")
+            return (f"In {scope}: {total} {domain_label}. "
+                    f"Accese ({on_count}): {', '.join(on_items[:15])}. "
+                    f"Spente ({off_count}): {', '.join(off_items[:15])}.")
 
     except Exception as e:
         logger.error(f"Entity query from SIMPLE_CHAT failed: {e}")
