@@ -664,6 +664,13 @@ async def ws_audio_endpoint(
                                 await end_live_session(device_id, reason="device_reconnect")
                         except Exception as e:
                             logger.debug(f"Device {device_id}: live session cleanup on hello: {e}")
+                        # Clean up stale OpenClaw follow-up
+                        try:
+                            from main import _openclaw_followup, _openclaw_followup_triggered
+                            _openclaw_followup.pop(device_id, None)
+                            _openclaw_followup_triggered.discard(device_id)
+                        except Exception:
+                            pass
 
                         # Push saved config to device (sensitivity, volume, speaker type, etc.)
                         try:
@@ -805,6 +812,14 @@ async def ws_audio_endpoint(
         async with _connections_lock:
             if _persistent_connections.get(device_id) is conn:
                 del _persistent_connections[device_id]
+
+        # Clean up OpenClaw follow-up tracker
+        try:
+            from main import _openclaw_followup, _openclaw_followup_triggered
+            _openclaw_followup.pop(device_id, None)
+            _openclaw_followup_triggered.discard(device_id)
+        except Exception:
+            pass
 
         # Close WebSocket
         try:

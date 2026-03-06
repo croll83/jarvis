@@ -4710,7 +4710,15 @@
                     return;
                 }
 
-                if (!confirm(`Trovate ${total} entity in ${areas.length} aree (${areas.join(', ')}).\n\nVuoi importarle?`)) {
+                // Check gerarchia caricata
+                const hierBanner = document.getElementById('hierarchyBanner');
+                const hasHierarchy = hierBanner && hierBanner.style.display !== 'none';
+                let confirmMsg = `Trovate ${total} entity in ${areas.length} aree (${areas.join(', ')}).\n\n`;
+                if (!hasHierarchy) {
+                    confirmMsg += '⚠️ ATTENZIONE: Nessuna gerarchia caricata!\nLe entity verranno organizzate per dominio invece che per piano/zona/stanza.\nImporta prima la gerarchia per risultati migliori.\n\n';
+                }
+                confirmMsg += 'Vuoi importarle?';
+                if (!confirm(confirmMsg)) {
                     return;
                 }
 

@@ -2877,29 +2877,30 @@ def resolve_entity_id(
 
     friendly_lower = friendly_name.lower().strip()
 
-    # Costruisci query in base ai parametri
+    # Costruisci query in base ai parametri (solo entity visibili)
+    _vis = "AND COALESCE(visible, 1) = 1"
     if entity_type and room:
-        c.execute("""
+        c.execute(f"""
             SELECT entity_id, entity_name FROM entity_maps
             WHERE location_id = ? AND entity_type = ? AND LOWER(room) = LOWER(?)
-            AND entity_id IS NOT NULL
+            AND entity_id IS NOT NULL {_vis}
         """, (location_id, entity_type, room))
     elif entity_type:
-        c.execute("""
+        c.execute(f"""
             SELECT entity_id, entity_name FROM entity_maps
             WHERE location_id = ? AND entity_type = ?
-            AND entity_id IS NOT NULL
+            AND entity_id IS NOT NULL {_vis}
         """, (location_id, entity_type))
     elif room:
-        c.execute("""
+        c.execute(f"""
             SELECT entity_id, entity_name FROM entity_maps
             WHERE location_id = ? AND LOWER(room) = LOWER(?)
-            AND entity_id IS NOT NULL
+            AND entity_id IS NOT NULL {_vis}
         """, (location_id, room))
     else:
-        c.execute("""
+        c.execute(f"""
             SELECT entity_id, entity_name FROM entity_maps
-            WHERE location_id = ? AND entity_id IS NOT NULL
+            WHERE location_id = ? AND entity_id IS NOT NULL {_vis}
         """, (location_id,))
 
     rows = c.fetchall()
@@ -2938,12 +2939,13 @@ def resolve_entity_id_fuzzy(
         c.execute("""
             SELECT entity_id, entity_name, room, entity_type FROM entity_maps
             WHERE location_id = ? AND entity_type = ?
-            AND entity_id IS NOT NULL
+            AND entity_id IS NOT NULL AND COALESCE(visible, 1) = 1
         """, (location_id, entity_type))
     else:
         c.execute("""
             SELECT entity_id, entity_name, room, entity_type FROM entity_maps
             WHERE location_id = ? AND entity_id IS NOT NULL
+            AND COALESCE(visible, 1) = 1
         """, (location_id,))
 
     rows = c.fetchall()
