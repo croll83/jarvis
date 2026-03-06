@@ -61,6 +61,11 @@ services:
       # A 22k+ Ollama offloada layer su CPU (33 tok/s = 4.4x piu lento).
       # Routing prompt tipico: ~2200 token. Tool calling fino a ~12-16k.
       - OLLAMA_NUM_CTX=20480
+      # OLLAMA_CONTEXT_LENGTH è il DEFAULT che Ollama usa quando un client
+      # NON specifica num_ctx (es. OpenClaw via /v1/messages, tool esterni).
+      # Senza questo Ollama usa 4096 e forza un model reload catastrofico.
+      # NOTA: OLLAMA_NUM_CTX NON funziona come default — solo CONTEXT_LENGTH lo fa.
+      - OLLAMA_CONTEXT_LENGTH=20480
       - OLLAMA_KEEP_ALIVE=-1           # Mantiene i modelli in VRAM permanentemente
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -139,9 +144,10 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - EXAMPLE_FOLDER=/app/speakers            # Speaker folder override (CMD uses -sf $EXAMPLE_FOLDER)
       # Limita il caching allocator PyTorch — libera VRAM per Ollama
-      # garbage_collection_threshold:0.5 = rilascia cache quando >50% della reserved e inutilizzata
-      # expandable_segments:True = riduce frammentazione allocando segmenti espandibili
-      - PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.5,expandable_segments:True
+      # gc_threshold:0.5 = rilascia cache quando >50% reserved inutilizzata
+      # expandable_segments = riduce frammentazione con segmenti espandibili
+      # max_split_size_mb:256 = previene splitting eccessivo (XTTS ha tensori grandi)
+      - PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.5,expandable_segments:True,max_split_size_mb:256
       # DeepSpeed per 2-4x speedup (opzionale, richiede piu RAM di sistema)
       # - DEEPSPEED=1
     volumes:
