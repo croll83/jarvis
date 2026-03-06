@@ -115,7 +115,7 @@ preload_model() {
         -d "{
             \"model\": \"${OLLAMA_MODEL}\",
             \"prompt\": \"ok\",
-            \"options\": {\"num_predict\": 1, \"num_ctx\": 3072},
+            \"options\": {\"num_predict\": 1, \"num_ctx\": ${OLLAMA_NUM_CTX:-32768}},
             \"stream\": false
         }" 2>/dev/null) || true
 
