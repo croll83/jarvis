@@ -66,9 +66,13 @@ class CUDACleanupMiddleware(BaseHTTPMiddleware):
 PYEOF
 
 # 2. Patcha server.py per registrare il middleware + aggiungere endpoint diagnostico
+#    NOTA: il base image ha il sorgente in /app/xtts_api_server/ (usato a runtime)
+#    E una copia pip in dist-packages. Python risolve /app/ prima → patchiamo quello.
 RUN python3 << 'PATCH_EOF'
 import pathlib
-p = pathlib.Path('/usr/local/lib/python3.10/dist-packages/xtts_api_server/server.py')
+
+# Il server gira da /app/xtts_api_server/ (non da dist-packages)
+p = pathlib.Path('/app/xtts_api_server/server.py')
 t = p.read_text()
 
 # Aggiungi import del middleware in testa al file
@@ -100,5 +104,5 @@ async def gpu_memory():
 t = t.replace('@app.get("/speakers_list")', gpu_endpoint + '@app.get("/speakers_list")')
 
 p.write_text(t)
-print('Patched server.py with CUDA cleanup middleware + /gpu_memory endpoint')
+print('Patched /app/xtts_api_server/server.py with CUDA cleanup middleware + /gpu_memory endpoint')
 PATCH_EOF
