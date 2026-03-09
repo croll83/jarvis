@@ -1,23 +1,25 @@
 /**
- * Intelligent Routing Plugin for OpenClaw v4.0
+ * Intelligent Routing Plugin for OpenClaw v4.2
  * =============================================
  *
  * Classifies task complexity and routes to the appropriate model.
  *
- * v4.0 changes:
- * - INLINE CLASSIFIER: Full 15-dimension weighted scorer in TypeScript.
- *   Eliminates the subprocess chain (index.ts -> hook.js -> router.py).
- *   Classification latency: <1ms (was ~50ms with subprocess).
- * - BOUNDARY-DISTANCE CONFIDENCE: Sigmoid calibrated on distance from the
- *   nearest tier boundary, not on the raw score. Inspired by ClawRouter.
- *   Result: confidence is a real measure of certainty, not complexity.
- * - NEGATIVE SIMPLE SCORES: Simple indicators push the score DOWN (-1.0),
- *   actively pulling trivial tasks toward SIMPLE tier.
- * - LONG CONTEXT OVERRIDE: Prompts exceeding MAX_TOKENS_FORCE_COMPLEX
- *   bypass classification and go straight to COMPLEX.
- * - Bilingual keywords (Italian + English) ported from router.py v3.2.
- * - Complexity boosters and CRITICAL keyword overrides preserved.
+ * v4.2 changes:
+ * - FIX: stripEnvelope now properly removes "Sender (untrusted metadata):"
+ *   blocks. Previously only checked for message_id/sender_name/chat_id fields
+ *   but actual Sender blocks use label/id/name/username — so the JSON was
+ *   never stripped, leaking {}/() punctuation into the classifier and inflating
+ *   code_presence to 1.0 on EVERY message. This caused all trivial messages
+ *   (greetings, time queries, confirmations) to be classified as MEDIUM instead
+ *   of SIMPLE, wasting Sonnet tokens on Haiku-level tasks.
+ * - FIX: Also strips [media attached:...] instruction lines from WhatsApp.
  *
+ * v4.1 changes (OpenClaw 2026.3.7 API):
+ * - SYSTEM CONTEXT CACHING, ALLOW PROMPT INJECTION POLICY, AGENT END LOGGING,
+ *   USAGE TRACKING.
+ *
+ * v4.0: Inline classifier, boundary-distance confidence, negative simple
+ *   scores, long context override, bilingual keywords.
  * v3.0: Removed thinkingOverride (OpenClaw handles thinking natively).
  * v2.2: [force-model:X], [tier:X] markers.
  * v2.1: Split modelOverride/providerOverride, low-confidence guard, dedup.
@@ -34,6 +36,8 @@ interface PluginConfig {
   routingLogPath?: string;
   enableFastPath?: boolean;
   dryRun?: boolean;
+  /** Agent IDs to skip entirely — no classification, no model override. */
+  skipAgents?: string[];
 }
 
 interface RoutingDecision {
@@ -612,19 +616,19 @@ const TIER_CONFIG: Record<string, TierModelConfig> = {
     provider: "anthropic",
     model: "claude-sonnet-4-6",
     fullId: "anthropic/claude-sonnet-4-6",
-    fallbacks: ["google/gemini-3-flash-preview", "xai/grok-4-1-fast-non-reasoning"],
+    fallbacks: ["google/gemini-3.1-flash-lite-preview", "xai/grok-4-1-fast-non-reasoning"],
   },
   COMPLEX: {
     provider: "anthropic",
     model: "claude-sonnet-4-6",
     fullId: "anthropic/claude-sonnet-4-6",
-    fallbacks: ["google/gemini-3-pro-preview", "anthropic/claude-opus-4-6"],
+    fallbacks: ["google/gemini-3-1-pro-preview", "anthropic/claude-opus-4-6"],
   },
   REASONING: {
     provider: "anthropic",
     model: "claude-opus-4-6",
     fullId: "anthropic/claude-opus-4-6",
-    fallbacks: ["anthropic/claude-sonnet-4-6", "google/gemini-3-pro-preview"],
+    fallbacks: ["anthropic/claude-sonnet-4-6", "google/gemini-3.1-pro-preview"],
   },
   CRITICAL: {
     provider: "anthropic",
@@ -643,17 +647,43 @@ function splitModelId(fullId: string): { provider: string; model: string } {
 }
 
 /**
- * Strip Telegram/platform envelope from the prompt.
+ * Strip Telegram/WhatsApp/platform envelope from the prompt.
+ *
+ * v4.2 fix: Also strips "Sender (untrusted metadata):" blocks whose JSON
+ * contains `label`, `id`, `name`, `username`, `e164` — the actual field names
+ * used by the Telegram/WhatsApp bridges. Previously only checked for
+ * `message_id`, `sender_name`, `chat_id`, etc., so the Sender block was never
+ * removed, leaking JSON punctuation into the classifier and inflating
+ * code_presence to 1.0 on every message.
  */
 function stripEnvelope(text: string): string {
   let s = text;
+
+  // Remove "Sender (untrusted metadata):" header + following ```json...``` block
+  s = s.replace(/Sender\s+\(untrusted[^)]*\)\s*:\s*```json[\s\S]*?```/gi, "");
+
+  // Remove any remaining ```json...``` blocks that look like platform metadata
+  // (broad match: message_id, sender_name, chat_id, label, username, e164, etc.)
   s = s.replace(/```json[\s\S]*?```/g, (block) =>
-    /message_id|sender_name|chat_id|from_user_id|reply_to_message_id|timestamp/i.test(block) ? "" : block,
+    /message_id|sender_name|chat_id|from_user_id|reply_to_message_id|timestamp|"label"|"username"|"e164"|"sender_id"/i.test(block) ? "" : block,
   );
+
+  // Remove "Conversation info (untrusted metadata)" sections
   s = s.replace(/Conversation info \(untrusted[^)]*\)[\s\S]*?(?=\n\n|\n[A-Z][a-z]|$)/gi, "");
+
+  // Remove "Replied message (untrusted, for context)" sections
   s = s.replace(/Replied message \(untrusted[^)]*\)[\s\S]*?(?=\n\n|\n[A-Z][a-z]|$)/gi, "");
+
+  // Remove bare key:value metadata lines
   s = s.replace(/^\s*(message_id|sender_name|sender_id|chat_id|chat_title|from_user_id|reply_to_message_id|timestamp|platform)\s*:.*$/gim, "");
+
+  // Remove [media attached: ...] instruction lines (WhatsApp image preamble)
+  s = s.replace(/^\[media attached:.*$/gim, "");
+  s = s.replace(/^To send an image back.*$/gim, "");
+
+  // Collapse multiple blank lines
   s = s.replace(/\n{3,}/g, "\n\n");
+
   return s.trim();
 }
 
@@ -728,21 +758,18 @@ function logDecision(logPath: string, entry: RoutingLogEntry): void {
 const plugin: OpenClawPluginDefinition = {
   id: "intelligent-routing",
   name: "Intelligent Routing",
-  version: "4.0.0",
-  description: "Classifies task complexity and routes to the appropriate model (inline classifier, no subprocess)",
+  version: "4.2.0",
+  description: "Classifies task complexity and routes to the appropriate model. v4.2: fix envelope stripping for Sender metadata blocks",
 
   register(api) {
     const pluginConfig = api.pluginConfig as PluginConfig | undefined;
     const routingLogPath = pluginConfig?.routingLogPath || DEFAULT_LOG_PATH;
     const enableFastPath = pluginConfig?.enableFastPath !== false;
     const dryRun = pluginConfig?.dryRun === true;
+    const skipAgents = new Set(pluginConfig?.skipAgents || []);
 
     const routingState = new Map<string, RoutingDecision>();
     const lastRoutedPrompt = new Map<string, string>();
-
-    api.logger.info(
-      `[intelligent-routing] v4.0 registered | inline-classifier | fastPath=${enableFastPath} | dryRun=${dryRun}`,
-    );
 
     // ── Hook 1: before_model_resolve ──────────────────────────────────
     api.on("before_model_resolve", (event, ctx) => {
@@ -751,6 +778,27 @@ const plugin: OpenClawPluginDefinition = {
       const sessionKey = ctx.sessionKey ?? "default";
 
       if (!rawPrompt) return {};
+
+      // ── Skip agents ──
+      const agentId = ctx.agentId || "main";
+      if (skipAgents.has(agentId)) {
+        api.logger.debug(`[intelligent-routing] Skipping agent "${agentId}" (in skipAgents)`);
+        routingState.set(sessionKey, {
+          tier: "SKIPPED", model: "(agent-skipped)", provider: "",
+          confidence: 1.0, method: "skip-agent", skipped: true,
+        });
+        logDecision(routingLogPath, {
+          timestamp: new Date().toISOString(),
+          source: ctx.messageProvider || (ctx as any).source || "unknown",
+          agentId,
+          taskDescription: rawPrompt.slice(0, 80),
+          tier: "SKIPPED", modelSelected: "(default)", providerSelected: "",
+          thinking: "native", fallbacks: [], confidence: 1.0,
+          executionTimeMs: Date.now() - startTime,
+          success: true, classificationMethod: "skip-agent", notes: "",
+        });
+        return {};
+      }
 
       const promptForMarkers = rawPrompt.replace(/^\[cron:[^\]]*\]\s*/, "");
 
@@ -950,19 +998,80 @@ const plugin: OpenClawPluginDefinition = {
       }
 
       const fullModel = routing.provider ? `${routing.provider}/${routing.model}` : routing.model;
-      const prependContext = [
-        `[Routing Info]`,
-        `Tier: ${routing.tier}`,
-        `Model: ${fullModel}`,
-        `Thinking: native`,
-        `Confidence: ${(routing.confidence * 100).toFixed(0)}%`,
-        `Method: ${routing.method}`,
-      ].join(" | ");
 
-      return { prependContext };
+      // Static guidance in system prompt (cacheable by providers)
+      const prependSystemContext =
+        `[Intelligent Router] You were selected by the intelligent routing system. ` +
+        `Tier: ${routing.tier} | Model: ${fullModel} | Thinking: native`;
+
+      // Dynamic per-turn context in user prompt
+      const prependContext =
+        `[Routing] Confidence: ${(routing.confidence * 100).toFixed(0)}% | Method: ${routing.method}`;
+
+      return { prependSystemContext, prependContext };
     });
 
-    api.logger.info(`[intelligent-routing] Hooks registered (before_model_resolve + before_prompt_build).`);
+    // ── Hook 3: agent_end (outcome logging) ────────────────────────────
+    api.on("agent_end", (event, ctx) => {
+      const sessionKey = ctx.sessionKey ?? "default";
+      const routing = routingState.get(sessionKey);
+      if (!routing || routing.skipped) return;
+
+      const outcomeEntry: Partial<RoutingLogEntry> = {
+        timestamp: new Date().toISOString(),
+        agentId: ctx.agentId || "main",
+        tier: routing.tier,
+        modelSelected: routing.provider ? `${routing.provider}/${routing.model}` : routing.model,
+        providerSelected: routing.provider,
+        success: event.success,
+        executionTimeMs: event.durationMs ?? 0,
+        classificationMethod: routing.method,
+        notes: event.error ? `agent-error: ${event.error}` : "agent-end",
+      };
+      logDecision(routingLogPath, outcomeEntry as RoutingLogEntry);
+    });
+
+    // ── Hook 4: llm_output (usage tracking per tier) ─────────────────
+    api.on("llm_output", (event, ctx) => {
+      const sessionKey = ctx.sessionKey ?? "default";
+      const routing = routingState.get(sessionKey);
+      if (!routing || routing.skipped) return;
+
+      const usage = event.usage;
+      if (!usage) return;
+
+      const usageEntry = {
+        timestamp: new Date().toISOString(),
+        type: "usage",
+        agentId: ctx.agentId || "main",
+        tier: routing.tier,
+        model: `${event.provider}/${event.model}`,
+        routedModel: routing.provider ? `${routing.provider}/${routing.model}` : routing.model,
+        inputTokens: usage.input ?? 0,
+        outputTokens: usage.output ?? 0,
+        cacheRead: usage.cacheRead ?? 0,
+        cacheWrite: usage.cacheWrite ?? 0,
+        totalTokens: usage.total ?? 0,
+        confidence: routing.confidence,
+        method: routing.method,
+      };
+      logDecision(routingLogPath, usageEntry as unknown as RoutingLogEntry);
+    });
+
+    // ── Warn about allowPromptInjection policy ───────────────────────
+    const hookPolicy = (api.config as any)?.plugins?.entries?.["intelligent-routing"]?.hooks;
+    if (hookPolicy?.allowPromptInjection === false) {
+      api.logger.warn(
+        `[intelligent-routing] allowPromptInjection is disabled — routing info will NOT be injected into prompts. ` +
+        `Model selection (before_model_resolve) still works.`,
+      );
+    }
+
+    const skipList = skipAgents.size > 0 ? ` | skipAgents=[${[...skipAgents].join(",")}]` : "";
+    api.logger.info(
+      `[intelligent-routing] v4.2 registered | inline-classifier | fastPath=${enableFastPath} | dryRun=${dryRun}${skipList} | ` +
+      `hooks: before_model_resolve, before_prompt_build, agent_end, llm_output`,
+    );
   },
 };
 
