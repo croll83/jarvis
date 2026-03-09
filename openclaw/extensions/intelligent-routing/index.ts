@@ -1,71 +1,45 @@
 /**
- * Intelligent Routing Plugin for OpenClaw v2.1
+ * Intelligent Routing Plugin for OpenClaw v4.0
  * =============================================
  *
- * Intercepts every incoming message via `before_model_resolve` hook,
- * classifies task complexity (SIMPLE / MEDIUM / COMPLEX / REASONING / CRITICAL),
- * and overrides the model for MEDIUM+ tasks.
+ * Classifies task complexity and routes to the appropriate model.
  *
- * v2.2 additions:
- * - [force-model:provider/model] marker: bypass classification, force exact model
- * - [tier:TIER_NAME] marker: bypass classification, use tier's primary model
- * - Both markers are logged and stored in routing state for model awareness
+ * v4.0 changes:
+ * - INLINE CLASSIFIER: Full 15-dimension weighted scorer in TypeScript.
+ *   Eliminates the subprocess chain (index.ts -> hook.js -> router.py).
+ *   Classification latency: <1ms (was ~50ms with subprocess).
+ * - BOUNDARY-DISTANCE CONFIDENCE: Sigmoid calibrated on distance from the
+ *   nearest tier boundary, not on the raw score. Inspired by ClawRouter.
+ *   Result: confidence is a real measure of certainty, not complexity.
+ * - NEGATIVE SIMPLE SCORES: Simple indicators push the score DOWN (-1.0),
+ *   actively pulling trivial tasks toward SIMPLE tier.
+ * - LONG CONTEXT OVERRIDE: Prompts exceeding MAX_TOKENS_FORCE_COMPLEX
+ *   bypass classification and go straight to COMPLEX.
+ * - Bilingual keywords (Italian + English) ported from router.py v3.2.
+ * - Complexity boosters and CRITICAL keyword overrides preserved.
  *
- * v2.1 fixes:
- * - modelOverride uses bare model name (e.g. "claude-sonnet-4-6"), NOT "anthropic/claude-sonnet-4-6"
- *   OpenClaw's resolveModel(provider, modelId) prepends the provider — sending "anthropic/claude-sonnet-4-6"
- *   caused "Unknown model: anthropic/anthropic/claude-sonnet-4-6" FailoverError
- * - providerOverride set alongside modelOverride
- * - Low-confidence guard + error fallback now also update model (was only updating tier → Haiku leak)
- * - Tier-to-model fallback map so upgraded tiers always get the right model
- * - Fast-path runs on cleaned prompt (Telegram envelope stripped)
- * - Dedup: skip re-routing if same prompt+session was already routed in this cycle
- *
- * v2.0 changes:
- * - Uses native OpenClaw plugin API (removed custom interfaces)
- * - Two hooks: before_model_resolve + before_prompt_build (model awareness)
- * - [routed] marker: skip routing for pre-routed subagent spawns
- * - Low-confidence / error fallback: MEDIUM (Sonnet), not SIMPLE (Haiku)
- * - Routing decisions stored in shared state for model awareness injection
- *
- * Classification uses a two-stage approach:
- *   1. Fast-path: keyword/pattern matching for obvious SIMPLE tasks (< 1ms)
- *   2. Full-path: calls intelligent-router-hook.js subprocess for nuanced classification
- *
- * All routing decisions are logged to state/routing-log.jsonl.
+ * v3.0: Removed thinkingOverride (OpenClaw handles thinking natively).
+ * v2.2: [force-model:X], [tier:X] markers.
+ * v2.1: Split modelOverride/providerOverride, low-confidence guard, dedup.
+ * v2.0: Native OpenClaw plugin API, [routed] marker, model awareness.
  */
 
-import { execSync } from "child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
-import { dirname, resolve, join } from "path";
+import { dirname, join } from "path";
 import type { OpenClawPluginDefinition } from "openclaw/plugin-sdk";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 interface PluginConfig {
-  routerScriptPath?: string;
   routingLogPath?: string;
-  classifierTimeoutMs?: number;
   enableFastPath?: boolean;
   dryRun?: boolean;
-}
-
-interface RouterOutput {
-  tier: string;
-  model: string;
-  modelAlias?: string;
-  fallbacks: string[];
-  thinking: string | null;
-  confidence: number;
-  handleDirectly?: boolean;
-  classifierFailed?: boolean;
 }
 
 interface RoutingDecision {
   tier: string;
   model: string;
   provider: string;
-  thinking: string;
   confidence: number;
   method: string;
   skipped: boolean;
@@ -88,70 +62,603 @@ interface RoutingLogEntry {
   notes: string;
 }
 
-/**
- * Extended hook result type — adds thinkingOverride (patched into OpenClaw runtime).
- * The official PluginHookBeforeModelResolveResult only has modelOverride + providerOverride.
- * Our patch to resolveThinkingDefault reads thinkingOverride via globalThis.__openclawHookThinking.
- */
-interface RoutingHookResult {
-  modelOverride?: string;
-  providerOverride?: string;
-  thinkingOverride?: string;
+interface ClassificationResult {
+  tier: string;
+  confidence: number;
+  score: number;
+  method: string;
+  signals: string[];
 }
 
-// ─── Constants ──────────────────────────────────────────────────────────────
+// ─── Inline Classifier: Keywords (Bilingual IT/EN) ──────────────────────────
 
-const DEFAULT_ROUTER_SCRIPT =
-  "/home/jarvis/.openclaw/workspace/skills/intelligent-router/intelligent-router-hook.js";
+const REASONING_KEYWORDS = [
+  // English
+  "prove", "theorem", "proof", "derive", "derivation", "formal",
+  "verify", "verification", "logic", "logical", "induction", "deduction",
+  "lemma", "corollary", "axiom", "postulate", "qed", "step by step",
+  "show that", "demonstrate that", "mathematically", "rigorously",
+  "reason about", "reasoning", "think through", "think step",
+  // Italiano
+  "dimostra", "dimostrazione", "teorema", "prova", "derivare", "derivazione",
+  "formale", "verifica", "verificare", "logica", "logico", "induzione",
+  "deduzione", "assioma", "postulato", "passo dopo passo", "passo passo",
+  "dimostra che", "mostra che", "matematicamente", "rigorosamente",
+  "ragiona", "ragionamento", "ragiona su", "ragionaci", "pensaci",
+  "analisi logica", "ragiona sulla", "ragiona sul",
+];
+
+const CODE_KEYWORDS = [
+  // English
+  "lint", "refactor", "bug fix", "code review", "software", "application",
+  "component", "module", "package", "library", "frontend", "backend",
+  "fullstack", "codebase", "repository", "repo", "commit", "merge",
+  "pull request", "branch", "git", "ci/cd", "pipeline", "unit test",
+  "test suite", "coverage", "linter", "formatter", "transpile",
+  // Italiano
+  "codice", "correggere", "correzione", "errore", "errori", "bug",
+  "refactoring", "revisione codice", "applicazione", "componente",
+  "modulo", "pacchetto", "libreria", "sviluppo", "sviluppare",
+  "programma", "programmazione", "script", "funzione", "classe",
+  "metodo", "variabile", "database", "query", "interfaccia",
+  "implementa", "implementare", "implementazione",
+];
+
+const CODE_PATTERNS = [
+  /`[^`]+`/,              // inline code
+  /```[\s\S]*?```/,       // code blocks
+  /\bdef\b/, /\bclass\b/, /\bimport\b/, /\bfrom\b/,
+  /\breturn\b/, /\bif\b.*:\s*$/, /\.py\b/, /\.js\b/, /\.java\b/,
+  /\.cpp\b/, /\.rs\b/, /\.go\b/, /\.ts\b/, /\.tsx\b/, /\.jsx\b/,
+  /\bAPI\b/, /\bJSON\b/, /\bSQL\b/, /\bHTML\b/, /\bCSS\b/,
+  /\b(python|javascript|java|rust|golang|c\+\+|typescript|ruby|php|bash|shell)\s+\w+/i,
+  /\bwrite\s+.*?(function|code|script|class|method|program)/i,
+  /\bscrivi\s+.*?(funzione|codice|script|classe|metodo|programma)/i,
+  /\bcode\s+(for|to|that)/i,
+  /\bcodice\s+(per|che|di)/i,
+  /\bprogram(ming)?\b/i,
+  /\b(coding|development|implementation)\b/i,
+  /\b(sviluppo|implementazione)\b/i,
+  /[{}\[\]();]/,          // code punctuation clusters
+  /\b\w+\(\)/,            // function calls like foo()
+  /->\s*\w+/,             // arrow notation
+  /\b(npm|pip|cargo|yarn|brew|apt)\b/i,
+];
+
+const AGENTIC_KEYWORDS = [
+  // English
+  "run", "test", "fix", "deploy", "edit", "build", "create", "implement",
+  "execute", "refactor", "migrate", "integrate", "setup", "configure",
+  "install", "compile", "debug", "troubleshoot", "automate", "scaffold",
+  "generate", "provision", "orchestrate", "spawn", "launch",
+  // Italiano
+  "esegui", "testa", "testare", "correggi", "correggere", "deploya",
+  "modifica", "modificare", "costruisci", "costruire", "crea", "creare",
+  "implementa", "implementare", "configura", "configurare", "installa",
+  "installare", "compila", "compilare", "debugga", "debuggare",
+  "automatizza", "automatizzare", "genera", "generare", "lancia",
+  "lanciare", "avvia", "avviare", "fai partire", "metti su",
+  "sistema", "aggiusta", "aggiustare", "ripara", "riparare",
+  "scrivi", "scrivere", "riscrivi", "riscrivere", "rifai", "rifare",
+];
+
+const MULTI_STEP_PATTERNS = [
+  // English
+  /\bfirst\b.*\bthen\b/i, /\bstep\s+\d+/i, /\d+\.\s+\w+/,
+  /\bnext\b/i, /\bafter\s+that\b/i, /\bfinally\b/i, /\bsubsequently\b/i,
+  /\band then\b/i, /\bfollowed by\b/i, /,\s*then\b/i, /\bthen\s+\w+\s+it\b/i,
+  /\bmulti[- ]?step\b/i, /\bmultiple\s+steps?\b/i,
+  // Italiano
+  /\bprima\b.*\bpoi\b/i, /\bpasso\s+\d+/i, /\bfase\s+\d+/i,
+  /\bsuccessivamente\b/i, /\bdopo\s+di\s+che\b/i, /\binfine\b/i,
+  /\be\s+poi\b/i, /\bquindi\b/i, /\bdopodiché\b/i, /\bin\s+seguito\b/i,
+  /\bper\s+prima\s+cosa\b/i, /\bcome\s+primo\b/i, /\bcome\s+secondo\b/i,
+  /\bprima\s+di\s+tutto\b/i, /\balla\s+fine\b/i,
+  /\b\d+\)\s+\w+/,
+];
+
+const SIMPLE_INDICATORS = [
+  // English
+  "check", "get", "fetch", "show", "display", "status",
+  "what is", "how much", "tell me", "find", "search",
+  "hello", "hi", "thanks", "thank you", "ok", "yes", "no",
+  // Italiano
+  "controlla", "prendi", "mostra", "mostrami", "stato",
+  "cos'è", "cosa è", "quanto", "dimmi", "trova", "cerca",
+  "ciao", "grazie", "ok", "sì", "va bene", "perfetto",
+  "che ore sono", "com'è", "come va",
+  // Domotica / Home automation
+  "accendi", "spegni", "alza", "abbassa", "apri", "chiudi",
+  "luce", "luci", "lampada", "tapparella", "tapparelle",
+  "serranda", "serrande", "persiana", "persiane",
+  "condizionatore", "climatizzatore", "riscaldamento",
+  "termostato", "temperatura", "ventilatore",
+  "turn on", "turn off", "switch on", "switch off",
+  "open", "close", "dim", "brighten",
+  "light", "lights", "lamp", "blind", "blinds",
+  "shutter", "shutters", "thermostat", "heater", "fan",
+  "soggiorno", "camera", "cucina", "bagno", "corridoio",
+  "garage", "giardino", "terrazzo", "cantina",
+];
+
+const TECHNICAL_TERMS = [
+  // Universal / English
+  "algorithm", "architecture", "optimization", "performance", "scalability",
+  "database", "security", "authentication", "encryption", "protocol",
+  "framework", "library", "dependency", "middleware", "endpoint",
+  "microservice", "container", "docker", "kubernetes", "pipeline",
+  "concurrency", "parallelism", "distributed", "latency", "throughput",
+  "caching", "load balancer", "reverse proxy", "webhook", "websocket",
+  "machine learning", "neural network", "deep learning", "transformer",
+  "blockchain", "smart contract", "consensus", "defi", "token",
+  // Italiano
+  "algoritmo", "architettura", "ottimizzazione", "prestazioni",
+  "scalabilità", "sicurezza", "autenticazione", "crittografia",
+  "protocollo", "dipendenza", "dipendenze", "infrastruttura",
+  "concorrenza", "parallelismo", "distribuito", "latenza",
+  "apprendimento automatico", "rete neurale", "contratto intelligente",
+];
+
+const CREATIVE_MARKERS = [
+  // English
+  "creative", "imaginative", "story", "poem", "narrative", "write a",
+  "compose", "brainstorm", "innovative", "original", "artistic",
+  "fiction", "character", "plot", "dialogue", "screenplay",
+  // Italiano
+  "creativo", "creativa", "immaginativo", "storia", "poesia", "racconto",
+  "scrivi un", "scrivi una", "componi", "brainstorming", "innovativo",
+  "originale", "artistico", "narrativa", "personaggio", "trama",
+  "dialogo", "sceneggiatura", "inventare", "inventa",
+];
+
+const IMPERATIVE_VERBS = [
+  // English
+  "analyze", "evaluate", "compare", "assess", "investigate", "examine",
+  "review", "validate", "verify", "optimize", "improve", "enhance",
+  "design", "plan", "architect", "strategize", "diagnose",
+  // Italiano
+  "analizza", "analizzare", "analisi", "valuta", "valutare", "valutazione",
+  "confronta", "confrontare", "confronto", "esamina", "esaminare",
+  "rivedi", "rivedere", "revisione", "ottimizza", "ottimizzare",
+  "migliora", "migliorare", "miglioramento", "progetta", "progettare",
+  "pianifica", "pianificare", "strategia", "diagnostica", "diagnosticare",
+  "approfondisci", "approfondire", "studia", "studiare", "indaga",
+  "indagare", "verifica", "verificare",
+  "riassumi", "riassumere", "elenca", "elencare",
+  "summarize", "list", "describe", "explain",
+  "spiega", "spiegare", "descrivi", "descrivere",
+  "riscrivi", "riscrivere", "supporta", "supportare",
+];
+
+const CONSTRAINT_KEYWORDS = [
+  // English
+  "must", "should", "require", "need", "constraint", "limit", "restriction",
+  "only", "exactly", "precisely", "specifically", "without", "except",
+  "mandatory", "forbidden", "prohibited",
+  // Italiano
+  "deve", "dovrebbe", "richiede", "necessario", "vincolo", "limite",
+  "restrizione", "solo", "esattamente", "precisamente", "specificamente",
+  "senza", "eccetto", "tranne", "obbligatorio", "vietato", "proibito",
+  "non deve", "assicurati", "assicurarsi", "fondamentale", "critico",
+  "importante che", "necessariamente",
+];
+
+const CRITICAL_KEYWORDS = [
+  // English
+  "security audit", "security analysis", "vulnerability", "penetration test",
+  "pentest", "exploit", "attack vector", "threat model", "zero day",
+  "production deploy", "production release", "incident response",
+  "data breach", "compliance", "gdpr", "sox", "hipaa",
+  // Italiano
+  "audit sicurezza", "analisi sicurezza", "analizza la sicurezza",
+  "analizzare la sicurezza", "vulnerabilità", "test penetrazione",
+  "vettore attacco", "modello minacce", "risposta incidente",
+  "violazione dati", "conformità", "sicurezza del sistema",
+  "sicurezza di", "rischio sicurezza", "falla di sicurezza",
+];
+
+const COMPLEXITY_BOOSTERS = [
+  // English
+  "step by step", "in detail", "detailed analysis", "deep dive",
+  "comprehensive", "thorough", "end to end", "from scratch",
+  "production ready", "production-ready", "best practices",
+  "trade-offs", "trade offs", "pros and cons", "edge cases",
+  "error handling", "security audit", "code review",
+  "system design", "architecture design", "database design",
+  "full stack", "full-stack", "ci/cd", "devops",
+  "performance tuning", "memory leak", "race condition",
+  "deadlock", "scalability", "high availability",
+  "disaster recovery", "load testing", "stress testing",
+  "distributed system", "distributed caching", "load balancing",
+  // Italiano
+  "passo dopo passo", "passo passo", "nel dettaglio", "in dettaglio",
+  "analisi dettagliata", "analisi approfondita", "approfondimento",
+  "completo", "completa", "esaustivo", "esaustiva",
+  "da zero", "da capo", "da scratch", "produzione",
+  "best practice", "migliori pratiche", "pro e contro",
+  "casi limite", "casi edge", "gestione errori",
+  "audit sicurezza", "analisi sicurezza", "revisione codice",
+  "design sistema", "architettura sistema", "design database",
+  "debug complesso", "debug avanzato", "problema complesso",
+  "ottimizzazione performance", "memory leak", "race condition",
+  "alta disponibilità", "disaster recovery", "test di carico",
+  "ragiona sulla strategia", "analisi strategica",
+  "multi-step", "multi step", "più passaggi", "vari passaggi",
+  "classificatore", "classificazione",
+  "classifica male", "funziona male", "non funziona",
+  "debug il", "debugga il", "debug del", "debug della",
+  "supportare italiano", "supportare inglese", "bilingue",
+  "sistema distribuito", "caching distribuito", "bilanciamento carico",
+  "progettazione sistema",
+];
+
+const OUTPUT_FORMAT_PATTERNS = [
+  /\bjson\b/i, /\btable\b/i, /\btabella\b/i, /\blist\b/i, /\blista\b/i,
+  /\belenco\b/i, /\bmarkdown\b/i, /\bformat\b/i, /\bformato\b/i,
+  /\bcsv\b/i, /\byaml\b/i, /\bxml\b/i, /\bschema\b/i,
+];
+
+const REFERENCE_PATTERNS = [
+  /\bthe\s+\w+\s+(?:above|below|mentioned|previous)\b/i,
+  /\bthis\s+\w+\b/i,
+  /\bquello\s+(?:sopra|sotto|precedente|menzionato)\b/i,
+  /\bquest[oa]\s+\w+\b/i,
+  /\bil\s+\w+\s+(?:sopra|sotto|precedente)\b/i,
+];
+
+const NEGATION_PATTERNS = [
+  /\bnot\b/i, /\bno\b/i, /\bnever\b/i, /\bwithout\b/i, /\bexcept\b/i,
+  /\bnon\b/i, /\bmai\b/i, /\bsenza\b/i, /\beccetto\b/i, /\btranne\b/i,
+  /\bnessun[oa]?\b/i, /\bniente\b/i,
+];
+
+// ─── Inline Classifier: Scoring Config ──────────────────────────────────────
+
+const SCORING_WEIGHTS: Record<string, number> = {
+  reasoning_markers: 0.18,
+  code_presence: 0.15,
+  multi_step_patterns: 0.12,
+  agentic_task: 0.10,
+  technical_terms: 0.10,
+  token_count: 0.08,
+  creative_markers: 0.05,
+  question_complexity: 0.05,
+  constraint_count: 0.04,
+  imperative_verbs: 0.03,
+  output_format: 0.03,
+  simple_indicators: 0.02,
+  domain_specificity: 0.02,
+  reference_complexity: 0.02,
+  negation_complexity: 0.01,
+};
+
+// Tier boundaries on the weighted score axis.
+// Matches Python v3.2 thresholds.
+const TIER_BOUNDARIES = {
+  simpleMedium: 0.05,
+  mediumComplex: 0.30,
+  complexCritical: 0.50,
+};
+
+// Sigmoid steepness for boundary-distance confidence calibration.
+// 12 maps: distance 0.01 -> ~53%, 0.05 -> ~65%, 0.10 -> ~77%, 0.15 -> ~86%
+const CONFIDENCE_STEEPNESS = 12;
+
+// Prompts exceeding this estimated token count bypass classification -> COMPLEX.
+const MAX_TOKENS_FORCE_COMPLEX = 100_000;
+
+// ─── Inline Classifier: Scoring Functions ───────────────────────────────────
+
+function countKeywordMatches(text: string, keywords: string[]): number {
+  const lower = text.toLowerCase();
+  let count = 0;
+  for (const kw of keywords) {
+    if (lower.includes(kw.toLowerCase())) {
+      count++;
+    }
+  }
+  return count;
+}
+
+function countPatternMatches(text: string, patterns: RegExp[]): number {
+  let count = 0;
+  for (const p of patterns) {
+    const matches = text.match(new RegExp(p.source, p.flags + (p.flags.includes("g") ? "" : "g")));
+    if (matches) count += matches.length;
+  }
+  return count;
+}
+
+function scoreDimensions(text: string): Record<string, number> {
+  const scores: Record<string, number> = {};
+
+  // 1. Reasoning markers (0.18)
+  const reasoningCount = countKeywordMatches(text, REASONING_KEYWORDS);
+  scores.reasoning_markers = Math.min(reasoningCount / 2.0, 1.0);
+
+  // 2. Code presence (0.15)
+  const codeCount = countPatternMatches(text, CODE_PATTERNS) + countKeywordMatches(text, CODE_KEYWORDS);
+  scores.code_presence = Math.min(codeCount / 3.0, 1.0);
+
+  // 3. Multi-step patterns (0.12)
+  const multiStepCount = countPatternMatches(text, MULTI_STEP_PATTERNS);
+  scores.multi_step_patterns = Math.min(multiStepCount / 2.0, 1.0);
+
+  // 4. Agentic task (0.10)
+  const agenticCount = countKeywordMatches(text, AGENTIC_KEYWORDS);
+  scores.agentic_task = Math.min(agenticCount / 1.5, 1.0);
+
+  // 5. Technical terms (0.10)
+  const techCount = countKeywordMatches(text, TECHNICAL_TERMS);
+  scores.technical_terms = Math.min(techCount / 2.0, 1.0);
+
+  // 6. Token count (0.08)
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  const tokenEstimate = wordCount * 1.3;
+  scores.token_count = Math.min(tokenEstimate / 200.0, 1.0);
+
+  // 7. Creative markers (0.05)
+  const creativeCount = countKeywordMatches(text, CREATIVE_MARKERS);
+  scores.creative_markers = Math.min(creativeCount / 2.0, 1.0);
+
+  // 8. Question complexity (0.05)
+  const questionMarks = (text.match(/\?/g) || []).length;
+  const questionWords = (text.match(
+    /\b(who|what|when|where|why|how|chi|cosa|quando|dove|perché|come|quale|quali)\b/gi,
+  ) || []).length;
+  scores.question_complexity = Math.min((questionMarks + questionWords) / 3.0, 1.0);
+
+  // 9. Constraint count (0.04)
+  const constraintCount = countKeywordMatches(text, CONSTRAINT_KEYWORDS);
+  scores.constraint_count = Math.min(constraintCount / 3.0, 1.0);
+
+  // 10. Imperative verbs (0.03)
+  const imperativeCount = countKeywordMatches(text, IMPERATIVE_VERBS);
+  scores.imperative_verbs = Math.min(imperativeCount / 1.5, 1.0);
+
+  // 11. Output format (0.03)
+  const formatCount = countPatternMatches(text, OUTPUT_FORMAT_PATTERNS);
+  scores.output_format = Math.min(formatCount / 2.0, 1.0);
+
+  // 12. Simple indicators (0.02) — NEGATIVE SCORE (ClawRouter approach)
+  // Actively pushes trivial tasks toward lower scores.
+  const simpleCount = countKeywordMatches(text, SIMPLE_INDICATORS);
+  scores.simple_indicators = simpleCount >= 2 ? -1.0 : simpleCount >= 1 ? -1.0 : 0;
+
+  // 13. Domain specificity (0.02)
+  const upperAbbrevs = (text.match(/\b[A-Z]{2,}\b/g) || []).length;
+  const dotNotation = (text.match(/\b\w+\.\w+\b/g) || []).length;
+  scores.domain_specificity = Math.min((upperAbbrevs + dotNotation) / 3.0, 1.0);
+
+  // 14. Reference complexity (0.02)
+  const refCount = countPatternMatches(text, REFERENCE_PATTERNS);
+  scores.reference_complexity = Math.min(refCount / 2.0, 1.0);
+
+  // 15. Negation complexity (0.01)
+  const negCount = countPatternMatches(text, NEGATION_PATTERNS);
+  scores.negation_complexity = Math.min(negCount / 3.0, 1.0);
+
+  return scores;
+}
+
+function calculateWeightedScore(dimensions: Record<string, number>): number {
+  let sum = 0;
+  for (const [dim, score] of Object.entries(dimensions)) {
+    sum += score * (SCORING_WEIGHTS[dim] ?? 0);
+  }
+  return sum;
+}
+
+/**
+ * Sigmoid confidence calibrated on distance from the nearest tier boundary.
+ * Close to boundary = uncertain (~50%). Far from boundary = confident (~90%+).
+ */
+function boundaryDistanceConfidence(score: number, tier: string): number {
+  const { simpleMedium, mediumComplex, complexCritical } = TIER_BOUNDARIES;
+  let distance: number;
+
+  switch (tier) {
+    case "SIMPLE":
+      distance = simpleMedium - score;
+      break;
+    case "MEDIUM":
+      distance = Math.min(score - simpleMedium, mediumComplex - score);
+      break;
+    case "COMPLEX":
+      distance = Math.min(score - mediumComplex, complexCritical - score);
+      break;
+    case "CRITICAL":
+      distance = score - complexCritical;
+      break;
+    case "REASONING":
+      // REASONING is override-based, assign high confidence
+      distance = 0.15;
+      break;
+    default:
+      distance = 0;
+  }
+
+  return 1 / (1 + Math.exp(-CONFIDENCE_STEEPNESS * distance));
+}
+
+/**
+ * Main classification function. Replaces the Python subprocess chain.
+ */
+function classifyTask(text: string): ClassificationResult {
+  const signals: string[] = [];
+
+  // ── Long context override ──
+  const estimatedTokens = Math.ceil(text.length / 4);
+  if (estimatedTokens > MAX_TOKENS_FORCE_COMPLEX) {
+    return {
+      tier: "COMPLEX",
+      confidence: 0.95,
+      score: 1.0,
+      method: "long-context-override",
+      signals: [`${estimatedTokens} estimated tokens > ${MAX_TOKENS_FORCE_COMPLEX}`],
+    };
+  }
+
+  // ── Score all 15 dimensions ──
+  const dimensions = scoreDimensions(text);
+  let score = calculateWeightedScore(dimensions);
+
+  // ── Complexity boosters ──
+  const boosterCount = countKeywordMatches(text, COMPLEXITY_BOOSTERS);
+  const boosterBonus = Math.min(boosterCount * 0.08, 0.20);
+  score += boosterBonus;
+  if (boosterBonus > 0) {
+    signals.push(`boosters +${boosterBonus.toFixed(2)}`);
+  }
+
+  // ── CRITICAL keyword override ──
+  const criticalCount = countKeywordMatches(text, CRITICAL_KEYWORDS);
+  if (criticalCount > 0) {
+    const confidence = boundaryDistanceConfidence(score, "CRITICAL");
+    signals.push("critical-keywords");
+    return {
+      tier: "CRITICAL",
+      confidence: Math.max(confidence, 0.85),
+      score,
+      method: "inline-classifier",
+      signals,
+    };
+  }
+
+  // ── REASONING override: reasoning_markers >= 0.5 ──
+  if (dimensions.reasoning_markers >= 0.5 && (score >= 0.10 || dimensions.reasoning_markers >= 0.75)) {
+    const confidence = boundaryDistanceConfidence(score, "REASONING");
+    signals.push("reasoning-override");
+    return {
+      tier: "REASONING",
+      confidence: Math.max(confidence, 0.85),
+      score,
+      method: "inline-classifier",
+      signals,
+    };
+  }
+
+  // ── Agentic task bump ──
+  const isAgentic = dimensions.agentic_task > 0.3 || dimensions.multi_step_patterns > 0.3;
+  if (isAgentic) {
+    const hasCode = dimensions.code_presence > 0;
+    const hasMultiStep = dimensions.multi_step_patterns > 0.3;
+    if (hasMultiStep && hasCode && score < 0.40) {
+      score = 0.40;
+      signals.push("agentic-bump-complex");
+    } else if (score < 0.30) {
+      score = 0.30;
+      signals.push("agentic-bump-medium");
+    }
+  }
+
+  // ── Map score to tier using boundaries ──
+  let tier: string;
+  if (score < TIER_BOUNDARIES.simpleMedium) {
+    tier = "SIMPLE";
+  } else if (score < TIER_BOUNDARIES.mediumComplex) {
+    tier = "MEDIUM";
+  } else if (score < TIER_BOUNDARIES.complexCritical) {
+    tier = "COMPLEX";
+  } else {
+    tier = "CRITICAL";
+  }
+
+  // ── Confidence via boundary distance ──
+  const confidence = boundaryDistanceConfidence(score, tier);
+
+  // Build signals from top dimensions
+  const topDims = Object.entries(dimensions)
+    .map(([name, val]) => ({ name, contribution: val * (SCORING_WEIGHTS[name] ?? 0) }))
+    .filter((d) => d.contribution > 0.005)
+    .sort((a, b) => b.contribution - a.contribution)
+    .slice(0, 3);
+  for (const d of topDims) {
+    signals.push(`${d.name}=${d.contribution.toFixed(3)}`);
+  }
+
+  return { tier, confidence, score, method: "inline-classifier", signals };
+}
+
+// ─── Plugin Constants ───────────────────────────────────────────────────────
+
 const DEFAULT_LOG_PATH =
   "/home/jarvis/.openclaw/workspace/state/routing-log.jsonl";
-const DEFAULT_TIMEOUT_MS = 8000;
 
-// Marker prefix added by spawn-with-routing.js to skip re-routing
 const ROUTED_MARKER = "[routed]";
 
 // Low confidence threshold — below this, fall back to MEDIUM (not SIMPLE)
-const LOW_CONFIDENCE_THRESHOLD = 0.30;
+const LOW_CONFIDENCE_THRESHOLD = 0.55;
 
-/**
- * Tier → primary model mapping.
- * Used when the tier is upgraded (low-confidence guard, error fallback)
- * so the model always matches the final tier.
- *
- * Format: { provider, model } — OpenClaw expects these SEPARATE:
- *   modelOverride = "claude-sonnet-4-6"   (bare model name)
- *   providerOverride = "anthropic"         (provider name)
- *
- * DO NOT use "anthropic/claude-sonnet-4-6" as modelOverride —
- * OpenClaw's resolveModel() prepends the provider again → double prefix error.
- */
-const TIER_PRIMARY: Record<string, { provider: string; model: string; fullId: string; thinking: string }> = {
-  SIMPLE:    { provider: "anthropic", model: "claude-haiku-4-5",   fullId: "anthropic/claude-haiku-4-5",  thinking: "off" },
-  MEDIUM:    { provider: "anthropic", model: "claude-sonnet-4-6",  fullId: "anthropic/claude-sonnet-4-6", thinking: "off" },
-  COMPLEX:   { provider: "anthropic", model: "claude-sonnet-4-6",  fullId: "anthropic/claude-sonnet-4-6", thinking: "low" },
-  REASONING: { provider: "anthropic", model: "claude-opus-4-6",    fullId: "anthropic/claude-opus-4-6",   thinking: "high" },
-  CRITICAL:  { provider: "anthropic", model: "claude-opus-4-6",    fullId: "anthropic/claude-opus-4-6",   thinking: "high" },
-};
-
-/**
- * Split a "provider/model" ID into separate parts.
- * E.g. "anthropic/claude-sonnet-4-6" → { provider: "anthropic", model: "claude-sonnet-4-6" }
- * E.g. "claude-sonnet-4-6" (no slash)  → { provider: "", model: "claude-sonnet-4-6" }
- */
-function splitModelId(fullId: string): { provider: string; model: string } {
-  const slashIdx = fullId.indexOf("/");
-  if (slashIdx < 0) {
-    return { provider: "", model: fullId };
-  }
-  return {
-    provider: fullId.slice(0, slashIdx),
-    model: fullId.slice(slashIdx + 1),
-  };
+interface TierModelConfig {
+  provider: string;
+  model: string;
+  fullId: string;
+  fallbacks: string[];
 }
 
 /**
- * Fast-path patterns for SIMPLE classification.
- * These are checked before spawning the classifier subprocess.
+ * Tier -> primary model mapping + fallback chains.
+ * Matches config.json routing_rules.
+ */
+const TIER_CONFIG: Record<string, TierModelConfig> = {
+  SIMPLE: {
+    provider: "anthropic",
+    model: "claude-haiku-4-5",
+    fullId: "anthropic/claude-haiku-4-5",
+    fallbacks: ["google/gemini-2.5-flash", "qwen/qwen-2.5-7b-instruct"],
+  },
+  MEDIUM: {
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
+    fullId: "anthropic/claude-sonnet-4-6",
+    fallbacks: ["google/gemini-3-flash-preview", "xai/grok-4-1-fast-non-reasoning"],
+  },
+  COMPLEX: {
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
+    fullId: "anthropic/claude-sonnet-4-6",
+    fallbacks: ["google/gemini-3-pro-preview", "anthropic/claude-opus-4-6"],
+  },
+  REASONING: {
+    provider: "anthropic",
+    model: "claude-opus-4-6",
+    fullId: "anthropic/claude-opus-4-6",
+    fallbacks: ["anthropic/claude-sonnet-4-6", "google/gemini-3-pro-preview"],
+  },
+  CRITICAL: {
+    provider: "anthropic",
+    model: "claude-opus-4-6",
+    fullId: "anthropic/claude-opus-4-6",
+    fallbacks: ["google/gemini-3-pro-preview"],
+  },
+};
+
+// ─── Plugin Helpers ─────────────────────────────────────────────────────────
+
+function splitModelId(fullId: string): { provider: string; model: string } {
+  const idx = fullId.indexOf("/");
+  if (idx < 0) return { provider: "", model: fullId };
+  return { provider: fullId.slice(0, idx), model: fullId.slice(idx + 1) };
+}
+
+/**
+ * Strip Telegram/platform envelope from the prompt.
+ */
+function stripEnvelope(text: string): string {
+  let s = text;
+  s = s.replace(/```json[\s\S]*?```/g, (block) =>
+    /message_id|sender_name|chat_id|from_user_id|reply_to_message_id|timestamp/i.test(block) ? "" : block,
+  );
+  s = s.replace(/Conversation info \(untrusted[^)]*\)[\s\S]*?(?=\n\n|\n[A-Z][a-z]|$)/gi, "");
+  s = s.replace(/Replied message \(untrusted[^)]*\)[\s\S]*?(?=\n\n|\n[A-Z][a-z]|$)/gi, "");
+  s = s.replace(/^\s*(message_id|sender_name|sender_id|chat_id|chat_title|from_user_id|reply_to_message_id|timestamp|platform)\s*:.*$/gim, "");
+  s = s.replace(/\n{3,}/g, "\n\n");
+  return s.trim();
+}
+
+/**
+ * Fast-path patterns for obvious SIMPLE classification (<0.1ms).
  */
 const SIMPLE_EXACT = new Set([
   "ciao", "hello", "hi", "hey", "hola", "yo", "ok", "si", "no",
@@ -168,148 +675,31 @@ const SIMPLE_PREFIXES = [
   "dimmi l'ora", "che tempo fa",
 ];
 
-const SIMPLE_PATTERNS = [
-  /^.{0,15}$/,                         // Very short messages (<=15 chars)
+const SIMPLE_FAST_PATTERNS = [
+  /^.{0,15}$/,
   /^(si|no|ok|va bene|perfetto|fatto|capito|esatto|giusto|bene|male)[\s!?.]*$/i,
   /^(yes|no|yep|nope|sure|right|correct|wrong|done|got it)[\s!?.]*$/i,
   /^(lol|lmao|haha|ahah)+[\s!?.]*$/i,
-  // Domotica: "accendi/spegni/alza/abbassa/apri/chiudi + qualcosa"
   /^(accendi|spegni|alza|abbassa|apri|chiudi|accendimi|spegnimi)\s+.+$/i,
   /^(turn on|turn off|switch on|switch off|open|close|dim)\s+.+$/i,
-  // Domotica with "la/le/il/i" articles: "accendi la luce del soggiorno"
   /^(accendi|spegni|alza|abbassa|apri|chiudi)\s+(la|le|il|i|lo|gli|l')\s+.+$/i,
-  // Heartbeat: periodic keep-alive tasks (leggi HEARTBEAT.md, check heartbeat, etc.)
   /HEARTBEAT/i,
 ];
-
-/**
- * Detect explicit thinking level requests in natural language.
- * Matches patterns like "thinking high", "livello di ragionamento alto", etc.
- * Returns the normalized thinking level or null if not found.
- */
-const THINKING_KEYWORDS: Array<{ pattern: RegExp; level: string }> = [
-  // English: "thinking high/low/off"
-  { pattern: /\bthinking\s+(high|alto)\b/i, level: "high" },
-  { pattern: /\bthinking\s+(low|basso)\b/i, level: "low" },
-  { pattern: /\bthinking\s+(off|no|disattiv\w*)\b/i, level: "off" },
-  // Italian: "livello di ragionamento alto/basso/off"
-  { pattern: /\blivello\s+di\s+ragionamento\s+(alto|high)\b/i, level: "high" },
-  { pattern: /\blivello\s+di\s+ragionamento\s+(basso|low)\b/i, level: "low" },
-  { pattern: /\blivello\s+di\s+ragionamento\s+(off|no|disattiv\w*)\b/i, level: "off" },
-  // Italian: "ragionamento alto/basso"
-  { pattern: /\bragionamento\s+(alto|high)\b/i, level: "high" },
-  { pattern: /\bragionamento\s+(basso|low)\b/i, level: "low" },
-  // Italian: "ragiona al massimo / ragiona profondamente"
-  { pattern: /\bragiona\s+(al\s+massimo|profondamente|a\s+fondo)\b/i, level: "high" },
-  // Italian: "senza ragionamento / non ragionare"
-  { pattern: /\bsenza\s+ragionamento\b/i, level: "off" },
-  { pattern: /\bnon\s+ragionare\b/i, level: "off" },
-];
-
-function detectThinkingKeyword(text: string): string | null {
-  for (const { pattern, level } of THINKING_KEYWORDS) {
-    if (pattern.test(text)) return level;
-  }
-  return null;
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function resolveConfig(pluginConfig?: PluginConfig) {
-  return {
-    routerScriptPath: pluginConfig?.routerScriptPath || DEFAULT_ROUTER_SCRIPT,
-    routingLogPath: pluginConfig?.routingLogPath || DEFAULT_LOG_PATH,
-    classifierTimeoutMs: pluginConfig?.classifierTimeoutMs || DEFAULT_TIMEOUT_MS,
-    enableFastPath: pluginConfig?.enableFastPath !== false,
-    dryRun: pluginConfig?.dryRun === true,
-  };
-}
-
-/**
- * Strip Telegram/platform envelope from the prompt.
- * Removes fenced JSON metadata blocks, "Conversation info" sections,
- * and bare key:value Telegram metadata lines.
- * Returns the clean user message.
- */
-function stripEnvelope(text: string): string {
-  let s = text;
-
-  // Remove ```json ... ``` fenced blocks containing Telegram metadata
-  s = s.replace(/```json[\s\S]*?```/g, (block) => {
-    if (/message_id|sender_name|chat_id|from_user_id|reply_to_message_id|timestamp/i.test(block)) {
-      return "";
-    }
-    return block;
-  });
-
-  // Remove "Conversation info (untrusted metadata)" sections
-  s = s.replace(/Conversation info \(untrusted[^)]*\)[\s\S]*?(?=\n\n|\n[A-Z][a-z]|$)/gi, "");
-
-  // Remove "Replied message (untrusted, for context)" sections
-  s = s.replace(/Replied message \(untrusted[^)]*\)[\s\S]*?(?=\n\n|\n[A-Z][a-z]|$)/gi, "");
-
-  // Remove bare Telegram metadata lines
-  s = s.replace(/^\s*(message_id|sender_name|sender_id|chat_id|chat_title|from_user_id|reply_to_message_id|timestamp|platform)\s*:.*$/gim, "");
-
-  // Collapse multiple blank lines
-  s = s.replace(/\n{3,}/g, "\n\n");
-
-  return s.trim();
-}
 
 function isSimpleFastPath(message: string): boolean {
   const trimmed = message.trim();
   const lower = trimmed.toLowerCase();
-
   if (SIMPLE_EXACT.has(lower)) return true;
-
   for (const prefix of SIMPLE_PREFIXES) {
     if (lower.startsWith(prefix)) return true;
   }
-
-  for (const pattern of SIMPLE_PATTERNS) {
+  for (const pattern of SIMPLE_FAST_PATTERNS) {
     if (pattern.test(trimmed)) return true;
   }
-
   return false;
 }
 
-function callClassifier(
-  scriptPath: string,
-  message: string,
-  timeoutMs: number,
-): RouterOutput | null {
-  try {
-    const sanitized = message
-      .replace(/\\/g, "\\\\")
-      .replace(/"/g, '\\"')
-      .replace(/\$/g, "\\$")
-      .replace(/`/g, "\\`");
-
-    const output = execSync(
-      `node "${scriptPath}" "${sanitized}"`,
-      {
-        encoding: "utf-8",
-        timeout: timeoutMs,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env },
-      },
-    );
-
-    return JSON.parse(output.trim()) as RouterOutput;
-  } catch (_err) {
-    return null;
-  }
-}
-
-/**
- * Look up the model assigned to a cron job by reading jobs.json.
- * Returns the full model ID (e.g. "anthropic/claude-sonnet-4-6") or null.
- */
-const CRON_JOBS_PATH = join(
-  process.env.HOME || "/home/jarvis",
-  ".openclaw/cron/jobs.json",
-);
+const CRON_JOBS_PATH = join(process.env.HOME || "/home/jarvis", ".openclaw/cron/jobs.json");
 
 function lookupCronModel(cronId: string): string | null {
   try {
@@ -323,17 +713,12 @@ function lookupCronModel(cronId: string): string | null {
   }
 }
 
-function logDecision(
-  logPath: string,
-  entry: RoutingLogEntry,
-): void {
+function logDecision(logPath: string, entry: RoutingLogEntry): void {
   try {
     const dir = dirname(logPath);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     appendFileSync(logPath, JSON.stringify(entry) + "\n");
-  } catch (_err) {
+  } catch {
     // Logging should never break the pipeline
   }
 }
@@ -343,334 +728,163 @@ function logDecision(
 const plugin: OpenClawPluginDefinition = {
   id: "intelligent-routing",
   name: "Intelligent Routing",
-  version: "2.3.0",
-  description: "Classifies task complexity and routes to the appropriate model",
+  version: "4.0.0",
+  description: "Classifies task complexity and routes to the appropriate model (inline classifier, no subprocess)",
 
   register(api) {
-    const config = resolveConfig(api.pluginConfig as PluginConfig | undefined);
+    const pluginConfig = api.pluginConfig as PluginConfig | undefined;
+    const routingLogPath = pluginConfig?.routingLogPath || DEFAULT_LOG_PATH;
+    const enableFastPath = pluginConfig?.enableFastPath !== false;
+    const dryRun = pluginConfig?.dryRun === true;
 
-    // Shared routing state between hooks (keyed by sessionKey)
     const routingState = new Map<string, RoutingDecision>();
-
-    // Dedup: track last routed prompt per session to avoid duplicate log entries
-    // when OpenClaw retries after failover errors or calls the hook multiple times
     const lastRoutedPrompt = new Map<string, string>();
 
     api.logger.info(
-      `[intelligent-routing] Registering hooks v2.2` +
-      ` | script=${config.routerScriptPath}` +
-      ` | fastPath=${config.enableFastPath}` +
-      ` | dryRun=${config.dryRun}`,
+      `[intelligent-routing] v4.0 registered | inline-classifier | fastPath=${enableFastPath} | dryRun=${dryRun}`,
     );
 
     // ── Hook 1: before_model_resolve ──────────────────────────────────
-    // Classifies the task and overrides the model for MEDIUM+ tasks.
-    // Skips routing for [routed] subagent prompts.
     api.on("before_model_resolve", (event, ctx) => {
       const startTime = Date.now();
       const rawPrompt = (event.prompt || "").trim();
       const sessionKey = ctx.sessionKey ?? "default";
 
-      // Skip empty messages
-      if (!rawPrompt) {
-        return {};
-      }
+      if (!rawPrompt) return {};
 
-      // Strip gateway-injected prefixes (e.g. "[cron:ID Name] ") so markers
-      // like [routed], [force-model:X], [tier:X] are detected correctly.
       const promptForMarkers = rawPrompt.replace(/^\[cron:[^\]]*\]\s*/, "");
 
-      // ── Check [routed] marker ──
-      // spawn-with-routing.js adds this to prevent re-routing subagent spawns.
-      // Supports optional [thinking:X] marker to override thinking level
-      // without changing the model. E.g. "[routed] [thinking:off] ..."
+      // ── [routed] marker ──
       if (promptForMarkers.startsWith(ROUTED_MARKER)) {
-        // Check for [thinking:X] marker after [routed]
-        const afterRouted = promptForMarkers.slice(ROUTED_MARKER.length).trim();
-        const thinkingMarkerMatch = afterRouted.match(/^\[thinking:(high|low|off|on)\]/i);
-        const thinkingLevel = thinkingMarkerMatch
-          ? thinkingMarkerMatch[1].toLowerCase()
-          : null;
-
-        api.logger.debug(
-          `[intelligent-routing] Skipping pre-routed subagent prompt` +
-          (thinkingLevel ? ` (thinking override: ${thinkingLevel})` : ""),
-        );
+        api.logger.debug(`[intelligent-routing] Skipping pre-routed subagent prompt`);
         routingState.set(sessionKey, {
-          tier: "ROUTED",
-          model: "(pre-routed)",
-          provider: "",
-          thinking: thinkingLevel || "",
-          confidence: 1.0,
-          method: "skip-routed-marker",
-          skipped: true,
+          tier: "ROUTED", model: "(pre-routed)", provider: "",
+          confidence: 1.0, method: "skip-routed-marker", skipped: true,
         });
 
-        // Resolve the actual cron model from jobs.json using the cron ID in the prefix
         const cronIdMatch = rawPrompt.match(/^\[cron:([0-9a-f-]+)\s/);
         const cronModel = cronIdMatch ? lookupCronModel(cronIdMatch[1]) : null;
         const resolvedModel = cronModel || "(pre-routed)";
         const resolvedSplit = cronModel ? splitModelId(cronModel) : { provider: "", model: "" };
 
-        const agentId = ctx.agentId || "main";
-        const messageSource = ctx.messageProvider || (ctx as any).source || "unknown";
-        logDecision(config.routingLogPath, {
+        logDecision(routingLogPath, {
           timestamp: new Date().toISOString(),
-          source: messageSource,
-          agentId,
+          source: ctx.messageProvider || (ctx as any).source || "unknown",
+          agentId: ctx.agentId || "main",
           taskDescription: rawPrompt.slice(0, 200),
-          tier: "ROUTED",
-          modelSelected: resolvedModel,
+          tier: "ROUTED", modelSelected: resolvedModel,
           providerSelected: resolvedSplit.provider || "(cron-assigned)",
-          thinking: thinkingLevel || "(default)",
-          fallbacks: [],
-          confidence: 1.0,
+          thinking: "native", fallbacks: [], confidence: 1.0,
           executionTimeMs: Date.now() - startTime,
-          success: true,
-          classificationMethod: "skip-routed-marker",
-          notes: thinkingLevel ? `thinking-override=${thinkingLevel}` : "",
+          success: true, classificationMethod: "skip-routed-marker", notes: "",
         });
-
-        // Return thinking override if [thinking:X] marker was found
-        if (thinkingLevel) {
-          return { thinkingOverride: thinkingLevel } as RoutingHookResult;
-        }
         return {};
       }
 
-      // ── Check [force-model:X] marker ──
-      // Bypasses classification entirely, forces the specified model.
-      // Accepts "provider/model" or bare "model" formats.
+      // ── [force-model:X] marker ──
       const forceModelMatch = promptForMarkers.match(/^\[force-model:([^\]]+)\]/);
       if (forceModelMatch) {
         const requested = forceModelMatch[1].trim();
         const split = splitModelId(requested);
-        const agentId = ctx.agentId || "main";
-        const messageSource = ctx.messageProvider || ctx.source || "unknown";
-
-        api.logger.debug(
-          `[intelligent-routing] Force-model override: ${requested}`,
-        );
+        api.logger.debug(`[intelligent-routing] Force-model override: ${requested}`);
 
         routingState.set(sessionKey, {
-          tier: "FORCED",
-          model: split.model,
-          provider: split.provider,
-          thinking: "",
-          confidence: 1.0,
-          method: "force-model",
-          skipped: false,
+          tier: "FORCED", model: split.model, provider: split.provider,
+          confidence: 1.0, method: "force-model", skipped: false,
         });
         lastRoutedPrompt.set(sessionKey, rawPrompt);
 
-        logDecision(config.routingLogPath, {
+        logDecision(routingLogPath, {
           timestamp: new Date().toISOString(),
-          source: messageSource,
-          agentId,
+          source: ctx.messageProvider || ctx.source || "unknown",
+          agentId: ctx.agentId || "main",
           taskDescription: rawPrompt.slice(0, 200),
-          tier: "FORCED",
-          modelSelected: requested,
-          providerSelected: split.provider,
-          thinking: "(default)",
-          fallbacks: [],
-          confidence: 1.0,
+          tier: "FORCED", modelSelected: requested, providerSelected: split.provider,
+          thinking: "(default)", fallbacks: [], confidence: 1.0,
           executionTimeMs: Date.now() - startTime,
-          success: true,
-          classificationMethod: "force-model",
-          notes: "",
+          success: true, classificationMethod: "force-model", notes: "",
         });
 
         if (!split.model) return {};
-        return {
-          modelOverride: split.model,
-          providerOverride: split.provider || undefined,
-        };
+        return { modelOverride: split.model, providerOverride: split.provider || undefined };
       }
 
-      // ── Check [tier:X] marker ──
-      // Bypasses classification, uses the tier's primary model from TIER_PRIMARY map.
-      // Accepts: SIMPLE, MEDIUM, COMPLEX, REASONING, CRITICAL (case-insensitive).
+      // ── [tier:X] marker ──
       const tierMatch = promptForMarkers.match(/^\[tier:([^\]]+)\]/);
       if (tierMatch) {
         const requestedTier = tierMatch[1].trim().toUpperCase();
-        const agentId = ctx.agentId || "main";
-        const messageSource = ctx.messageProvider || ctx.source || "unknown";
+        const tierModel = TIER_CONFIG[requestedTier];
+        api.logger.debug(`[intelligent-routing] Tier override: ${requestedTier}`);
 
-        api.logger.debug(
-          `[intelligent-routing] Tier override: ${requestedTier}`,
-        );
-
-        if (requestedTier === "SIMPLE") {
-          const sp = TIER_PRIMARY.SIMPLE;
-          routingState.set(sessionKey, {
-            tier: "SIMPLE",
-            model: sp.model,
-            provider: sp.provider,
-            thinking: sp.thinking,
-            confidence: 1.0,
-            method: "tier-override",
-            skipped: false,
-          });
-          lastRoutedPrompt.set(sessionKey, rawPrompt);
-
-          logDecision(config.routingLogPath, {
-            timestamp: new Date().toISOString(),
-            source: messageSource,
-            agentId,
-            taskDescription: rawPrompt.slice(0, 200),
-            tier: "SIMPLE",
-            modelSelected: sp.fullId,
-            providerSelected: sp.provider,
-            thinking: sp.thinking,
-            fallbacks: [],
-            confidence: 1.0,
-            executionTimeMs: Date.now() - startTime,
-            success: true,
-            classificationMethod: "tier-override",
-            notes: "",
-          });
-          return {
-            modelOverride: sp.model,
-            providerOverride: sp.provider,
-            thinkingOverride: sp.thinking,
-          } as RoutingHookResult;
-        }
-
-        const tierModel = TIER_PRIMARY[requestedTier];
         if (tierModel) {
           routingState.set(sessionKey, {
-            tier: requestedTier,
-            model: tierModel.model,
-            provider: tierModel.provider,
-            thinking: tierModel.thinking,
-            confidence: 1.0,
-            method: "tier-override",
-            skipped: false,
+            tier: requestedTier, model: tierModel.model, provider: tierModel.provider,
+            confidence: 1.0, method: "tier-override", skipped: false,
           });
           lastRoutedPrompt.set(sessionKey, rawPrompt);
 
-          logDecision(config.routingLogPath, {
+          logDecision(routingLogPath, {
             timestamp: new Date().toISOString(),
-            source: messageSource,
-            agentId,
+            source: ctx.messageProvider || ctx.source || "unknown",
+            agentId: ctx.agentId || "main",
             taskDescription: rawPrompt.slice(0, 200),
-            tier: requestedTier,
-            modelSelected: tierModel.fullId,
+            tier: requestedTier, modelSelected: tierModel.fullId,
             providerSelected: tierModel.provider,
-            thinking: tierModel.thinking,
-            fallbacks: [],
-            confidence: 1.0,
+            thinking: "native", fallbacks: tierModel.fallbacks, confidence: 1.0,
             executionTimeMs: Date.now() - startTime,
-            success: true,
-            classificationMethod: "tier-override",
-            notes: "",
+            success: true, classificationMethod: "tier-override", notes: "",
           });
 
-          return {
-            modelOverride: tierModel.model,
-            providerOverride: tierModel.provider,
-            thinkingOverride: tierModel.thinking,
-          } as RoutingHookResult;
+          return { modelOverride: tierModel.model, providerOverride: tierModel.provider };
         }
 
-        // Unknown tier — fall through to normal classification
-        api.logger.warn(
-          `[intelligent-routing] Unknown tier override "${requestedTier}", falling through to classifier`,
-        );
+        api.logger.warn(`[intelligent-routing] Unknown tier "${requestedTier}", falling through`);
       }
 
-      // ── Detect explicit thinking level keywords (before classification) ──
-      // E.g. "thinking high", "livello di ragionamento alto", "ragionamento basso"
-      // This overrides the tier's default thinking level but lets the classifier pick the model.
-      const thinkingKeyword = detectThinkingKeyword(promptForMarkers);
-
-      // ── Dedup: if same prompt was already routed in this session, return cached result ──
+      // ── Dedup ──
       const prevPrompt = lastRoutedPrompt.get(sessionKey);
       const prevDecision = routingState.get(sessionKey);
       if (prevPrompt === rawPrompt && prevDecision && !prevDecision.skipped) {
         api.logger.debug(
-          `[intelligent-routing] Dedup: same prompt already routed → ${prevDecision.tier} (${prevDecision.model})`,
+          `[intelligent-routing] Dedup: ${prevDecision.tier} (${prevDecision.model})`,
         );
         if (prevDecision.model) {
           return {
             modelOverride: prevDecision.model,
             providerOverride: prevDecision.provider || undefined,
-            thinkingOverride: prevDecision.thinking || undefined,
-          } as RoutingHookResult;
+          };
         }
         return {};
       }
 
-      // ── Strip Telegram/platform envelope for classification ──
+      // ── Strip envelope for classification ──
       const cleanPrompt = stripEnvelope(rawPrompt);
 
-      let tier = "SIMPLE";
-      let modelPart = "";    // bare model name (e.g. "claude-sonnet-4-6")
-      let providerPart = ""; // provider (e.g. "anthropic")
-      let fullModelId = "";  // full ID for logging (e.g. "anthropic/claude-sonnet-4-6")
-      let thinkingPart = "off"; // thinking level for the tier
-      let fallbacks: string[] = [];
-      let confidence = 1.0;
-      let classificationMethod = "fast-path";
-      let classifierFailed = false;
+      // ── Classification ──
+      let tier: string;
+      let confidence: number;
+      let classificationMethod: string;
+      let classificationSignals: string[] = [];
 
-      // ── Stage 1: Fast-path keyword check (on cleaned prompt) ──
-      const isSimple = config.enableFastPath && isSimpleFastPath(cleanPrompt);
+      // Stage 1: Fast-path
+      const isSimple = enableFastPath && isSimpleFastPath(cleanPrompt);
 
       if (isSimple) {
         tier = "SIMPLE";
         confidence = 1.0;
         classificationMethod = "fast-path";
-        const sp = TIER_PRIMARY.SIMPLE;
-        modelPart = sp.model;
-        providerPart = sp.provider;
-        fullModelId = sp.fullId;
-        thinkingPart = sp.thinking;
       } else {
-        // ── Stage 2: Full classifier ──
-        // Pass cleanPrompt (envelope stripped) — the raw prompt contains Telegram
-        // metadata with JSON/backticks that inflate code_presence + output_format scores
-        classificationMethod = "full-classifier";
-        const result = callClassifier(
-          config.routerScriptPath,
-          cleanPrompt,
-          config.classifierTimeoutMs,
-        );
+        // Stage 2: Inline 15-dimension classifier (was subprocess, now <1ms)
+        const result = classifyTask(cleanPrompt);
+        tier = result.tier;
+        confidence = result.confidence;
+        classificationMethod = result.method;
+        classificationSignals = result.signals;
 
-        if (result) {
-          tier = result.tier;
-          fullModelId = result.model;
-          const split = splitModelId(result.model);
-          modelPart = split.model;
-          providerPart = split.provider;
-          thinkingPart = TIER_PRIMARY[tier]?.thinking || "off";
-          fallbacks = result.fallbacks || [];
-          confidence = result.confidence;
-          classifierFailed = result.classifierFailed === true;
-        } else {
-          // Classifier failed — fall back to MEDIUM (Sonnet), NOT SIMPLE (Haiku)
-          tier = "MEDIUM";
-          confidence = 0;
-          classificationMethod = "fallback-on-error";
-          classifierFailed = true;
-          // Set model to MEDIUM primary
-          const mp = TIER_PRIMARY.MEDIUM;
-          modelPart = mp.model;
-          providerPart = mp.provider;
-          fullModelId = mp.fullId;
-          thinkingPart = mp.thinking;
-          api.logger.warn(
-            `[intelligent-routing] Classifier failed/timeout, defaulting to MEDIUM (${mp.fullId})`,
-          );
-        }
-
-        // ── Low-confidence guard ──
-        // If classifier is uncertain about a MEDIUM/COMPLEX task, upgrade to MEDIUM (Sonnet).
-        // SIMPLE is exempt — low score always produces low confidence via sigmoid,
-        // but that means "certainly simple", not "uncertain classification".
-        // CRITICAL and REASONING are exempt — false negatives there are costly.
+        // Low-confidence guard: uncertain non-SIMPLE → MEDIUM
+        // With boundary-distance confidence, this triggers when the score
+        // is close to a tier boundary (genuinely ambiguous classification).
         if (
-          confidence > 0 &&
           confidence < LOW_CONFIDENCE_THRESHOLD &&
           tier !== "SIMPLE" &&
           tier !== "CRITICAL" &&
@@ -678,109 +892,69 @@ const plugin: OpenClawPluginDefinition = {
         ) {
           const oldTier = tier;
           tier = "MEDIUM";
-          // Also upgrade the model to match the new tier
-          const mp = TIER_PRIMARY.MEDIUM;
-          modelPart = mp.model;
-          providerPart = mp.provider;
-          fullModelId = mp.fullId;
-          thinkingPart = mp.thinking;
           api.logger.debug(
-            `[intelligent-routing] Low confidence (${confidence.toFixed(2)}) for tier ${oldTier}, upgrading to MEDIUM (${mp.fullId})`,
+            `[intelligent-routing] Low confidence (${confidence.toFixed(2)}) for ${oldTier}, upgrading to MEDIUM`,
           );
         }
       }
 
-      // ── Apply thinking keyword override (if detected) ──
-      if (thinkingKeyword) {
-        thinkingPart = thinkingKeyword;
-        api.logger.info(
-          `[intelligent-routing] Thinking keyword override: "${thinkingKeyword}" (from user prompt)`,
-        );
-      }
+      // ── Resolve model from tier ──
+      const tierModel = TIER_CONFIG[tier] || TIER_CONFIG.MEDIUM;
+      const modelPart = tierModel.model;
+      const providerPart = tierModel.provider;
+      const fullModelId = tierModel.fullId;
+      const fallbacks = tierModel.fallbacks;
 
       const executionTimeMs = Date.now() - startTime;
-      const agentId = ctx.agentId || "main";
 
-      // ── Save routing decision for model awareness (Hook 2) + dedup ──
+      // ── Save state for dedup + model awareness ──
       routingState.set(sessionKey, {
-        tier,
-        model: modelPart,
-        provider: providerPart,
-        thinking: thinkingPart,
-        confidence,
-        method: classificationMethod,
-        skipped: false,
+        tier, model: modelPart, provider: providerPart,
+        confidence, method: classificationMethod, skipped: false,
       });
       lastRoutedPrompt.set(sessionKey, rawPrompt);
 
-      // ── Determine message source (telegram, whatsapp, webchat, etc.) ──
-      const messageSource = ctx.messageProvider || ctx.source || "unknown";
+      // ── Log ──
+      const notes = [
+        ...(dryRun ? ["dry-run"] : []),
+        ...classificationSignals,
+      ].join("; ");
 
-      // ── Log the decision ──
-      logDecision(config.routingLogPath, {
+      logDecision(routingLogPath, {
         timestamp: new Date().toISOString(),
-        source: messageSource,
-        agentId,
+        source: ctx.messageProvider || ctx.source || "unknown",
+        agentId: ctx.agentId || "main",
         taskDescription: cleanPrompt.slice(0, 200),
-        tier,
-        modelSelected: fullModelId,
-        providerSelected: providerPart,
-        thinking: thinkingPart,
-        fallbacks,
-        confidence,
-        executionTimeMs,
-        success: !classifierFailed,
-        classificationMethod,
-        notes: config.dryRun ? "dry-run" : "",
+        tier, modelSelected: fullModelId, providerSelected: providerPart,
+        thinking: "native", fallbacks, confidence,
+        executionTimeMs, success: true,
+        classificationMethod, notes,
       });
 
       api.logger.info(
         `[intelligent-routing] ${tier} (${classificationMethod}, ${confidence.toFixed(2)}) -> ` +
-        `${providerPart}/${modelPart} thinking=${thinkingPart} [${executionTimeMs}ms]`,
+        `${providerPart}/${modelPart} [${executionTimeMs}ms]`,
       );
 
-      // ── Build result ──
-      // All tiers get explicit model override + thinking level
-      if (config.dryRun) {
-        return {};
-      }
-
-      if (modelPart) {
-        return {
-          modelOverride: modelPart,
-          providerOverride: providerPart || undefined,
-          thinkingOverride: thinkingPart,
-        } as RoutingHookResult;
-      }
-
-      return {};
+      if (dryRun) return {};
+      return { modelOverride: modelPart, providerOverride: providerPart || undefined };
     });
 
-    // ── Hook 2: before_prompt_build ──────────────────────────────────
-    // Injects model awareness into the prompt so the agent knows
-    // which model it's actually running on after the classifier override.
+    // ── Hook 2: before_prompt_build (model awareness) ─────────────────
     api.on("before_prompt_build", (event, ctx) => {
       const sessionKey = ctx.sessionKey ?? "default";
       const routing = routingState.get(sessionKey);
 
-      if (!routing || routing.skipped) {
+      if (!routing || routing.skipped || routing.tier === "SIMPLE") {
         return {};
       }
 
-      // Don't inject for SIMPLE tier (no override, agent uses default)
-      if (routing.tier === "SIMPLE") {
-        return {};
-      }
-
-      const fullModel = routing.provider
-        ? `${routing.provider}/${routing.model}`
-        : routing.model;
-
+      const fullModel = routing.provider ? `${routing.provider}/${routing.model}` : routing.model;
       const prependContext = [
         `[Routing Info]`,
         `Tier: ${routing.tier}`,
         `Model: ${fullModel}`,
-        `Thinking: ${routing.thinking || "default"}`,
+        `Thinking: native`,
         `Confidence: ${(routing.confidence * 100).toFixed(0)}%`,
         `Method: ${routing.method}`,
       ].join(" | ");
@@ -788,7 +962,7 @@ const plugin: OpenClawPluginDefinition = {
       return { prependContext };
     });
 
-    api.logger.info(`[intelligent-routing] Hooks registered successfully (before_model_resolve + before_prompt_build).`);
+    api.logger.info(`[intelligent-routing] Hooks registered (before_model_resolve + before_prompt_build).`);
   },
 };
 
