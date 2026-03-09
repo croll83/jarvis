@@ -1,9 +1,9 @@
 {
   "id": "intelligent-routing",
   "name": "Intelligent Routing",
-  "version": "4.0.0",
-  "description": "Automatic model routing based on task complexity. Classifies incoming messages and routes MEDIUM+ tasks to stronger models, while SIMPLE tasks stay on the default (Haiku). Includes model awareness injection via before_prompt_build.",
-  "hooks": ["before_model_resolve", "before_prompt_build"],
+  "version": "4.1.0",
+  "description": "Automatic model routing based on task complexity. Classifies incoming messages and routes MEDIUM+ tasks to stronger models, while SIMPLE tasks stay on the default (Haiku). Includes system-context caching, usage tracking, and outcome logging.",
+  "hooks": ["before_model_resolve", "before_prompt_build", "agent_end", "llm_output"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -19,6 +19,11 @@
       "dryRun": {
         "type": "boolean",
         "description": "Log routing decisions but don't override the model (default: false)"
+      },
+      "skipAgents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Agent IDs to exclude from routing entirely — no classification, no model override. The agent uses its own default model."
       }
     }
   },
@@ -26,6 +31,10 @@
     "routingLogPath": {
       "label": "Routing Log Path",
       "placeholder": "/home/jarvis/.openclaw/workspace/state/routing-log.jsonl"
+    },
+    "skipAgents": {
+      "label": "Skip Agents",
+      "placeholder": "[\"personal-relay\"]"
     }
   }
 }
