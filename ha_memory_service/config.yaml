@@ -66,6 +66,11 @@ options:
   summary_temperature: 0.3
   summary_timeout: 30
   embedding_timeout: 30
+
+  # --- ChromaDB server ---
+  chroma_host: "100.88.84.81"
+  chroma_port: 8000
+
   skip_entity_prefixes: "update."
   skip_entity_suffixes: "_battery,_linkquality,_signal"
 
@@ -91,6 +96,8 @@ schema:
   summary_temperature: float
   summary_timeout: int
   embedding_timeout: int
+  chroma_host: str
+  chroma_port: int
   skip_entity_prefixes: str
   skip_entity_suffixes: str
 
@@ -104,3 +111,4 @@ backup_exclude:
 
 # Stage
 stage: experimental
+
