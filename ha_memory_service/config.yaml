@@ -6,7 +6,7 @@
 # =============================================================================
 
 name: "JARVIS HA Memory"
-version: "1.0.4"
+version: "1.0.5"
 slug: jarvis_ha_memory
 description: "Location memory service for JARVIS — event ingestion, LLM summarization, and semantic search"
 url: "https://github.com/croll83/jarvis/tree/main/ha_memory_service"
@@ -55,7 +55,7 @@ options:
   ollama_url: "http://100.x.x.x:11434"
   embedding_url: "http://100.x.x.x:11435"
   embedding_model: "nomic-embed-text"
-  summary_model: "qwen2.5:3b"
+  summary_model: "qwen2.5:3b-32k"
 
   # --- API mode (OpenRouter + Gemini) ---
   openrouter_api_key: ""
