@@ -185,7 +185,7 @@ services:
     network_mode: host
     volumes:
       - ./data:/app/data                    # SQLite + voice models
-      - ./jarvis/config:/app/config:ro             # Entity map, system prompt (sotto git)
+      - ./config:/app/config:ro             # Entity map, system prompt (sotto git)
     env_file: .env
     environment:
       - AI_BACKEND=${AI_BACKEND:-local}
@@ -263,7 +263,7 @@ services:
   # Sostituisce i 3 PersistentClient embedded separati.
   # API: http://localhost:8000 (standard ChromaDB port)
   chromadb:
-    image: chromadb/chroma:0.6.3
+    image: chromadb/chroma:1.5.2
     container_name: jarvis_chromadb
     volumes:
       - chroma_data:/chroma/chroma
