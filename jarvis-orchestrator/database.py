@@ -1512,6 +1512,33 @@ def format_recent_turns_for_llm(turns: List[Dict]) -> str:
     return "[CONVERSAZIONE RECENTE]\n" + "\n".join(lines)
 
 
+# ===========================================================================
+# PREVIOUS INTENT TRACKING (in-memory, per routing continuity)
+# ===========================================================================
+# Traccia l'ultimo intent per utente per aiutare Qwen nel multi-turn.
+# In-memory: si resetta al restart, non serve persistenza.
+_previous_intents: Dict[int, Dict] = {}
+
+
+def save_last_intent(user_id: int, intent: str, confidence: float):
+    """Salva l'ultimo intent routato per un utente."""
+    _previous_intents[user_id] = {
+        "intent": intent,
+        "confidence": confidence,
+        "timestamp": time.time(),
+    }
+
+
+def get_last_intent(user_id: int, max_age_seconds: int = 900) -> Optional[Dict]:
+    """Recupera l'ultimo intent se entro la finestra temporale."""
+    entry = _previous_intents.get(user_id)
+    if not entry:
+        return None
+    if time.time() - entry["timestamp"] > max_age_seconds:
+        return None
+    return entry
+
+
 def get_recent_context(seconds: int = 3600) -> List[Dict]:
     """
     Versione semplice (backward compatible) - ritorna tutti i messaggi.

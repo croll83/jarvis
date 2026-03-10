@@ -607,6 +607,13 @@ def _build_routing_prompt(text: str, context: dict) -> str:
     if context.pop("openclaw_available", False):
         openclaw_section = "\n\n[OPENCLAW DISPONIBILE]: Puoi usare intent OPENCLAW o VERIFY_WITH_OPENCLAW se appropriato."
 
+    # Previous intent per continuità multi-turn
+    previous_intent_section = ""
+    prev_intent = context.pop("previous_intent", None)
+    prev_conf = context.pop("previous_confidence", None)
+    if prev_intent:
+        previous_intent_section = f"\n\n[INTENT PRECEDENTE]: {prev_intent} (confidence={prev_conf:.2f})"
+
     # Carica entity map dal DB (per-location, con fallback a user location)
     location_id = context.get("location")
     user_id = context.get("speaker_id")
@@ -616,7 +623,7 @@ def _build_routing_prompt(text: str, context: dict) -> str:
 {entity_map_str}
 
 [CONTESTO]:
-{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{openclaw_section}
+{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{openclaw_section}{previous_intent_section}
 
 [COMANDO UTENTE]:
 {text}"""

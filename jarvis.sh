@@ -181,8 +181,9 @@ cmd_start() {
     echo ""
 
     # ── Fase 3: Servizi non-GPU ───────────────────────────────────────────
-    log "═══ Fase 3: Orchestrator + DB + Ontology ═══"
-    dc up -d orchestrator postgres mongo adminer
+    log "═══ Fase 3: ChromaDB + Orchestrator + DB + Ontology ═══"
+    dc up -d chromadb orchestrator postgres mongo adminer
+    wait_for "http://localhost:8000/api/v1/heartbeat" "ChromaDB" 60
     wait_for "http://localhost:5000/health" "Orchestrator" 60
     echo ""
 

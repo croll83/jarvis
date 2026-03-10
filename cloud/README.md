@@ -51,6 +51,11 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
               |  |  :5000 (FastAPI) — AI_BACKEND=api              | |
               |  +-----------------------------------------------+ |
               |  +-----------------------------------------------+ |
+              |  |  chromadb (Docker)                             | |
+              |  |  127.0.0.1:8000 — Shared vector store          | |
+              |  |  chromadb/chroma:0.6.3                          | |
+              |  +-----------------------------------------------+ |
+              |  +-----------------------------------------------+ |
               |  |  ontology-server (Docker)                      | |
               |  |  127.0.0.1:8100 (FastAPI) — Knowledge Graph   | |
               |  |  SQLite + ACL (X-Speaker-Id)                   | |
@@ -86,8 +91,9 @@ Connessioni TLS esterne:
 1. tailscale (systemd)     → servizio host-level, parte al boot del VPS, si connette alla tailnet
 2. openclaw (systemd)      → servizio bare-metal, bind: "auto" (loopback), parte al boot del VPS
 3. nginx (systemd)         → TLS proxy, termina TLS e proxya a localhost:18789
-4. ontology-server (Docker) → Knowledge Graph API, 127.0.0.1:8100
-5. orchestrator (Docker)    → network_mode: host, vede Tailscale direttamente
+4. chromadb (Docker)        → Shared vector store, 127.0.0.1:8000
+5. ontology-server (Docker) → Knowledge Graph API, 127.0.0.1:8100
+6. orchestrator (Docker)    → network_mode: host, vede Tailscale direttamente
                               raggiunge OpenClaw via wss://openclaw.mintwork.it:18789
                               raggiunge ontology via localhost:8100
 ```
@@ -659,6 +665,7 @@ La porta 18789 su loopback NON e esposta su internet. L'accesso esterno avviene 
 | Porta | Servizio | Accesso |
 |-------|----------|---------|
 | 5000 | Orchestrator + Admin UI | Pubblico (dietro nginx) |
+| 8000 | ChromaDB (shared vector store) | Solo localhost (Docker, 127.0.0.1 bind) |
 | 8100 | Ontology Server (Knowledge Graph) | Solo localhost (Docker, 127.0.0.1 bind) |
 | 18789 | OpenClaw (bare-metal) | Solo localhost + Tailscale (NO Docker, NO internet) |
 | 18800 | Chrome CDP (headless) | Solo localhost (browser-dom plugin) |

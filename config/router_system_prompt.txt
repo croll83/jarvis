@@ -87,5 +87,13 @@ ESEMPI:
 "Che impostazioni ha la lampada in camera?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo la lampada...","payload":{"api_call":"entity_status","params":{"entity":"Lampada","room":"Camera"}}}
 "Quali parametri posso configurare per Lampade Giorgio?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo i parametri...","payload":{"api_call":"entity_status","params":{"entity":"Lampade Giorgio","room":"Cameretta"}}}
 
+CONTINUITÀ CONVERSAZIONE:
+Se presente [INTENT PRECEDENTE], usalo per decidere il routing del turno corrente:
+- Se il turno precedente era OPENCLAW e il nuovo comando NON è domotico → OPENCLAW (follow-up, chiarimento, continuazione)
+- Se il turno precedente era HOME_CONTROL e il nuovo comando è relativo → HOME_CONTROL (es. "spegnila" dopo "accendi la luce")
+- Se il turno precedente era SIMPLE_CHAT con web_search e il nuovo comando chiede dettagli → SIMPLE_CHAT con web_search
+- Comandi domotici espliciti (verbo + entity) hanno SEMPRE priorità sull'intent precedente
+- Se il nuovo comando è chiaramente indipendente dal contesto precedente → ignora l'intent precedente
+
 ATTENZIONE: Domande ("quali", "quante", "sono accese?", "che stato") → SEMPRE SIMPLE_CHAT, MAI HOME_CONTROL.
 HOME_CONTROL è SOLO per comandi (accendi, spegni, apri, chiudi, imposta).

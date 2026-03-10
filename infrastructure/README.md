@@ -48,11 +48,13 @@ HA remoti e il LXC OpenClaw.
 |  |                                                                 | |
 |  |  fastembed:11435 (CPU, no GPU)                                  | |
 |  |  nomic-embed-text-v1.5 ONNX — Ollama-compat API                | |
+|  |  chromadb:8000 (127.0.0.1 only)                                | |
+|  |  Shared vector store — chromadb/chroma:0.6.3                    | |
 |  |  orchestrator:5000 (network_mode: host)                        | |
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
 |  |  Internal TTS (XTTSv2 + Opus streaming per AtomS3R mobile)     | |
-|  |  SQLite + ChromaDB                                              | |
+|  |  SQLite + ChromaDB (HttpClient → :8000)                        | |
 |  |                                                                 | |
 |  |  ontology-server:8100 (127.0.0.1 only)                         | |
 |  |  Knowledge Graph API — SQLite + ACL (X-Speaker-Id)             | |
@@ -179,8 +181,9 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 1. tailscaled      -> host-level service, si connette alla tailnet
 2. ollama          -> diventa healthy (modelli caricati)
 3. whisper         -> started
+   chromadb        -> started (shared vector store :8000)
 4. xtts            -> started (primo boot: ~2 min per download modello)
-5. orchestrator    -> aspetta ollama + whisper + xtts, poi parte (network_mode: host)
+5. orchestrator    -> aspetta ollama + whisper + xtts + chromadb, poi parte (network_mode: host)
                       vede Tailscale direttamente, raggiunge OpenClaw via OPENCLAW_URL
 6. nginx           -> started (TLS per jarvis.mintwork.it)
 7. cloudflared     -> started (tunnel per jarvis-pub.mintwork.it)
@@ -204,6 +207,7 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | **Whisper** | LXC-JARVIS | `jarvis_whisper` (Docker, `--gpus all`) | - | - | ~1.3 GB | STT large-v3-turbo (int8_float16) |
 | **XTTSv2** | LXC-JARVIS | `jarvis_xtts` (Docker, `--gpus all`) | - | - | ~2.0 GB | TTS voice cloning (italiano, fp16) |
 | **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
+| **ChromaDB** | LXC-JARVIS | `jarvis_chromadb` (Docker, 127.0.0.1:8000) | 0.5 | 512 MB | - | Shared vector store (HttpClient) |
 | **Ontology Server** | LXC-JARVIS | `jarvis_ontology` (Docker, 127.0.0.1:8100) | 0.5 | 256 MB | - | Knowledge Graph API + ACL |
 | **PostgreSQL** | LXC-JARVIS | `jarvis_postgres` (Docker) | 0.5 | 512 MB | - | Database side projects |
 | **MongoDB** | LXC-JARVIS | `jarvis_mongo` (Docker) | 0.5 | 512 MB | - | Database side projects |
@@ -688,6 +692,7 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | 9000 | Whisper STT | HTTP | Interno |
 | 11434 | Ollama API (LLM) | HTTP | Interno |
 | 11435 | fastembed API (embeddings) | HTTP | Interno / Tailscale |
+| 8000 | ChromaDB (shared vector store) | HTTP | Interno (127.0.0.1) |
 | 5432 | PostgreSQL | TCP | Interno |
 | 27017 | MongoDB | TCP | Interno |
 | 80 | Nginx HTTP (redirect + health) | HTTP | LAN / Tailscale |

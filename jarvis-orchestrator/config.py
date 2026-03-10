@@ -120,10 +120,10 @@ OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
 # ===========================================================================
 # ROUTING (Qwen 3B) — ultimi N turni entro finestra temporale.
 # Semplice e veloce: pura SQLite, zero embedding, zero HTTP.
-# Qwen 3B non fa coreference complessa, ma 3 turni in 5 min coprono
-# "accendi X" → "spegnila" senza portare rumore da ore prima.
+# 3 turni in 15 min coprono coreference e continuità multi-turn
+# (es. "accendi X" → "spegnila", follow-up OpenClaw).
 ROUTER_MEMORY_TURNS = 3              # Ultimi 3 turni (6 messaggi max)
-ROUTER_MEMORY_WINDOW_SECONDS = 300   # Finestra 5 minuti
+ROUTER_MEMORY_WINDOW_SECONDS = 900   # Finestra 15 minuti
 
 # REASONING (OpenClaw) — usa il sistema completo (weighted + vector + stratified)
 REASONING_MEMORY_HIGH_PRIORITY = 15   # Messaggi speaker corrente
@@ -384,7 +384,9 @@ MAX_VECTOR_RESULTS_DEFAULT = int(os.getenv("MAX_VECTOR_RESULTS_DEFAULT", "30"))
 VECTOR_METADATA_TRUNCATE = int(os.getenv("VECTOR_METADATA_TRUNCATE", "500"))
 VECTOR_RECENCY_DECAY = float(os.getenv("VECTOR_RECENCY_DECAY", "0.05"))
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
-CHROMA_PATH = os.getenv("CHROMA_PATH", "./data/chroma")
+CHROMA_PATH = os.getenv("CHROMA_PATH", "./data/chroma")  # Legacy fallback (PersistentClient)
+CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
+CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 
 # Context builder search limits
 CONTEXT_SEARCH_LIMITS = {

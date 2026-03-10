@@ -1,0 +1,72 @@
+{
+  "id": "ontology-bridge",
+  "name": "Ontology Bridge",
+  "version": "2.0.0",
+  "description": "Unified memory bridge: ontology keyword match + shared ChromaDB semantic search + orchestrator recent messages. Injects relevant context into agent prompts and extracts facts back to ontology.",
+  "hooks": ["before_prompt_build", "agent_end", "after_tool_call"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ontologyUrl": {
+        "type": "string",
+        "description": "Ontology server URL (default: http://127.0.0.1:8100)"
+      },
+      "chromaUrl": {
+        "type": "string",
+        "description": "ChromaDB server URL (default: http://127.0.0.1:8000)"
+      },
+      "orchestratorUrl": {
+        "type": "string",
+        "description": "Orchestrator API URL for recent messages (default: http://127.0.0.1:5000)"
+      },
+      "embeddingUrl": {
+        "type": "string",
+        "description": "Embedding server URL (default: http://127.0.0.1:11435)"
+      },
+      "defaultSpeakerId": {
+        "type": "string",
+        "description": "Default X-Speaker-Id for ontology API calls (default: jarvis-agent)"
+      },
+      "cacheRefreshIntervalMs": {
+        "type": "number",
+        "description": "How often to refresh the entity cache in ms (default: 300000 = 5 min)"
+      },
+      "maxContextTokens": {
+        "type": "number",
+        "description": "Max approximate tokens for total injected context (default: 600)"
+      },
+      "recentMessagesCount": {
+        "type": "number",
+        "description": "Number of recent orchestrator messages to fetch (default: 6)"
+      },
+      "extractionEnabled": {
+        "type": "boolean",
+        "description": "Enable automatic fact extraction from conversations (default: true)"
+      },
+      "skipAgents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Agent IDs to skip entirely"
+      },
+      "logPath": {
+        "type": "string",
+        "description": "Path to bridge log file"
+      }
+    }
+  },
+  "uiHints": {
+    "ontologyUrl": {
+      "label": "Ontology URL",
+      "placeholder": "http://127.0.0.1:8100"
+    },
+    "chromaUrl": {
+      "label": "ChromaDB URL",
+      "placeholder": "http://127.0.0.1:8000"
+    },
+    "skipAgents": {
+      "label": "Skip Agents",
+      "placeholder": "[\"personal-relay\"]"
+    }
+  }
+}
