@@ -332,7 +332,7 @@ class ChromaClient {
     try {
       // Get collection ID
       const colResp = await fetch(
-        `${this.baseUrl}/api/v1/collections/${collectionName}`,
+        `${this.baseUrl}/api/v2/tenants/default_tenant/databases/default_database/collections/${collectionName}`,
         { signal: AbortSignal.timeout(3000) },
       );
       if (!colResp.ok) return [];
@@ -351,7 +351,7 @@ class ChromaClient {
       if (whereFilter) queryBody.where = whereFilter;
 
       const resp = await fetch(
-        `${this.baseUrl}/api/v1/collections/${col.id}/query`,
+        `${this.baseUrl}/api/v2/tenants/default_tenant/databases/default_database/collections/${col.id}/query`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -385,7 +385,7 @@ class ChromaClient {
 
   async healthCheck(): Promise<boolean> {
     try {
-      const resp = await fetch(`${this.baseUrl}/api/v1/heartbeat`, {
+      const resp = await fetch(`${this.baseUrl}/api/v2/heartbeat`, {
         signal: AbortSignal.timeout(2000),
       });
       return resp.ok;
@@ -646,10 +646,21 @@ const plugin: OpenClawPluginDefinition = {
       }
     });
 
-    chromaClient.healthCheck().then((ok) => {
-      chromaAvailable = ok;
-      api.logger.info(`[ontology-bridge] ChromaDB ${ok ? "reachable" : "unreachable"} at ${chromaUrl}`);
-    });
+    // Delay first check — cold cross-network connection may timeout
+    setTimeout(() => {
+      chromaClient.healthCheck().then((ok) => {
+        chromaAvailable = ok;
+        api.logger.info(`[ontology-bridge] ChromaDB ${ok ? "reachable" : "unreachable"} at ${chromaUrl}`);
+        if (!ok) {
+          setTimeout(() => {
+            chromaClient.healthCheck().then((r) => {
+              chromaAvailable = r;
+              api.logger.info(`[ontology-bridge] ChromaDB ${r ? "reachable" : "unreachable"} at ${chromaUrl} (retry)`);
+            });
+          }, 3000);
+        }
+      });
+    }, 2000);
 
     // Periodic health re-check for ChromaDB (every 5 min)
     setInterval(() => {
