@@ -273,19 +273,21 @@ class UserVectorStore:
                 )
             )
 
-        embedding_fn = get_embedding_function()
+        self.embedding_fn = get_embedding_function()
+
+        # Collections WITHOUT embedding_function — ChromaDB 0.6.x HttpClient
+        # can't serialize custom embedding functions (KeyError '_type').
+        # We compute embeddings manually in add/query methods instead.
 
         # Collection per messaggi utente (conversazioni)
         self.collections[COLLECTION_USER_MESSAGES] = self.client.get_or_create_collection(
             name=COLLECTION_USER_MESSAGES,
-            embedding_function=embedding_fn,
             metadata={"hnsw:space": "cosine"}
         )
 
         # Collection per fatti long-term utente
         self.collections[COLLECTION_USER_FACTS] = self.client.get_or_create_collection(
             name=COLLECTION_USER_FACTS,
-            embedding_function=embedding_fn,
             metadata={"hnsw:space": "cosine"}
         )
 
@@ -318,8 +320,10 @@ class UserVectorStore:
         embed_text = f"{speaker_name}: {content}"
 
         try:
+            embeddings = self.embedding_fn([embed_text])
             self.collections[COLLECTION_USER_MESSAGES].add(
                 documents=[embed_text],
+                embeddings=embeddings,
                 metadatas=[{
                     "user_id": user_id,
                     "role": role,
@@ -355,8 +359,10 @@ class UserVectorStore:
 
         try:
             # Upsert: se esiste aggiorna, altrimenti crea
+            embeddings = self.embedding_fn([fact])
             self.collections[COLLECTION_USER_FACTS].upsert(
                 documents=[fact],
+                embeddings=embeddings,
                 metadatas=[{
                     "user_id": user_id,
                     "category": category,
@@ -408,8 +414,9 @@ class UserVectorStore:
             }
 
         try:
+            query_embeddings = self.embedding_fn([query])
             results = self.collections[COLLECTION_USER_MESSAGES].query(
-                query_texts=[query],
+                query_embeddings=query_embeddings,
                 n_results=n_results,
                 where=where_filter,
                 include=["documents", "metadatas", "distances"]
@@ -443,8 +450,9 @@ class UserVectorStore:
             }
 
         try:
+            query_embeddings = self.embedding_fn([query])
             results = self.collections[COLLECTION_USER_FACTS].query(
-                query_texts=[query],
+                query_embeddings=query_embeddings,
                 n_results=n_results,
                 where=where_filter,
                 include=["documents", "metadatas", "distances"]

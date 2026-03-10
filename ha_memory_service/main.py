@@ -264,9 +264,13 @@ class LocationVectorStore:
                 settings=Settings(anonymized_telemetry=False)
             )
 
+        self.embedding_fn = get_embedding_function()
+
+        # Collection WITHOUT embedding_function — ChromaDB 0.6.x HttpClient
+        # can't serialize custom embedding functions (KeyError '_type').
+        # We compute embeddings manually in add/query methods instead.
         self.collection = self.client.get_or_create_collection(
             name=f"{COLLECTION_LOCATION_EVENTS}_{LOCATION_ID}",
-            embedding_function=get_embedding_function(),
             metadata={"hnsw:space": "cosine"}
         )
 
@@ -290,8 +294,10 @@ class LocationVectorStore:
         text = f"{entity_id} changed from {old_state} to {new_state}"
 
         try:
+            embeddings = self.embedding_fn([text])
             self.collection.add(
                 documents=[text],
+                embeddings=embeddings,
                 metadatas=[{
                     "entity_id": entity_id,
                     "old_state": old_state or "",
@@ -319,8 +325,9 @@ class LocationVectorStore:
             min_timestamp = time.time() - (7 * 86400)  # 7 giorni
 
         try:
+            query_embeddings = self.embedding_fn([query])
             results = self.collection.query(
-                query_texts=[query],
+                query_embeddings=query_embeddings,
                 n_results=n_results,
                 where={"timestamp": {"$gte": min_timestamp}},
                 include=["documents", "metadatas", "distances"]
