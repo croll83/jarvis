@@ -36,6 +36,12 @@ Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 
 │  │ Qwen 7B  │    │ faster-whis  │   │ (N locations) │        │
 │  └──────────┘    └──────────────┘   └──────────────┘        │
 │                                                               │
+│  ┌──────────────┐                                            │
+│  │ ChromaDB     │  Shared vector store (:8000)               │
+│  │ :8000        │  Used by orchestrator + ha-memory-service  │
+│  │ HttpClient   │  + ontology-bridge plugin                  │
+│  └──────────────┘                                            │
+│                                                               │
 │  JARVIS Approval Bot — Telegram bot separato per conferme L3 │
 │  (locks, alarm, cameras) — canale isolato da OpenClaw        │
 │                                                               │
@@ -149,6 +155,7 @@ OpenClaw ──▶ jarvis_home_control (L3 action)
 | 9 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker o speaker interno AtomS3R (XTTSv2/Kokoro) |
 | 10 | `/api/tools/locations` | GET | Lista location con stato health HA |
 | 11 | `/api/tools/audit_log` | POST | Registra evento nel trail di audit |
+| 12 | `/api/recent_turns` | GET | Ultimi N turni conversazione (`?max_turns=N`) — usato dal plugin ontology-bridge |
 
 La definizione completa della skill e dei parametri e in `skill/SKILL.md` e `skill/skill.json`.
 
@@ -170,7 +177,7 @@ Filtri combinabili: `domain`, `room`, `zone`, `floor`, `search`, `entity_ids`. S
 
 ## Memoria Stratificata
 
-Il sistema usa una memoria ibrida a 4 livelli con PostgreSQL (strutturato) + ChromaDB (semantico).
+Il sistema usa una memoria ibrida a 4 livelli con PostgreSQL (strutturato) + ChromaDB shared server :8000 (semantico, `HttpClient` con fallback a `PersistentClient` embedded).
 
 | Strato | Retention | Contenuto | Creazione |
 |--------|-----------|-----------|-----------|
@@ -187,6 +194,15 @@ recency_factor = 1 / (1 + age_hours * 0.05)
 ```
 
 Embedding model: `nomic-embed-text` via Ollama. Threshold: >= 0.3 per messaggi, >= 0.4 per fatti.
+
+### Previous Intent Tracking
+
+Il router Qwen mantiene continuita conversazionale tramite tracking dell'intent precedente:
+
+- `save_last_intent(speaker_id, intent)` — salva l'intent dopo ogni routing (in-memory)
+- `get_last_intent(speaker_id)` — recupera l'ultimo intent (finestra di 15 min, `ROUTER_MEMORY_WINDOW_SECONDS=900`)
+- Il prompt di routing include una sezione `[INTENT PRECEDENTE]` per dare al router contesto sulla conversazione in corso
+- Previene oscillazioni di routing (es. domanda follow-up su domotica che verrebbe classificata come ALTRO)
 
 ### HA Memory Sidecar
 
@@ -320,6 +336,12 @@ JARVIS_SMTP_USER=your_email@gmail.com
 JARVIS_SMTP_PASSWORD=your_app_password
 
 # ============================
+# CHROMADB (shared vector store)
+# ============================
+CHROMA_HOST=localhost                # ChromaDB server host (default: localhost)
+CHROMA_PORT=8000                     # ChromaDB server port (default: 8000)
+
+# ============================
 # POSTGRESQL
 # ============================
 POSTGRES_USER=jarvis
@@ -346,6 +368,7 @@ Definiti in `docker-compose.yml` nella root del progetto:
 | `whisper` | faster-whisper-server | 9000 | Speech-to-text (GPU) |
 | `xtts` | xtts-api-server (locale) | 8890 | XTTSv2 Coqui TTS — voice cloning italiana (GPU) |
 | `orchestrator` | build locale | 5000 | JARVIS Skill (questo progetto) |
+| `chromadb` | chromadb/chroma:0.6.3 | 8000 | Shared vector store (HttpClient, fallback embedded) |
 | `tailscale` | tailscale/tailscale | - | VPN mesh per HA remoti |
 | `postgres` | postgres:16-alpine | 5432 | Database principale |
 | `mongo` | mongo:7 | 27017 | Database side-projects |

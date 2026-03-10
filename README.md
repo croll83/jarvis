@@ -56,8 +56,8 @@
 
      +--------------------------------------------+
      |         DATA LAYER                          |
-     |  Chroma         | PostgreSQL | MongoDB      |
-     |  (embedded,     | (side      | (side        |
+     |  ChromaDB :8000 | PostgreSQL | MongoDB      |
+     |  (shared server | (side      | (side        |
      |   vector store) | projects)  | projects)    |
      +--------------------------------------------+
 
@@ -82,7 +82,7 @@
 | **Ontology Server** | Knowledge Graph | Entity/relation graph with speaker-based ACL, SQLite + FastAPI |
 | **fastembed (nomic-embed-text-v1.5)** | Embeddings | 768-dim CPU-only ONNX embeddings (Ollama-compatible API :11435) for orchestrator, ha-memory-service, and OpenClaw |
 | **Brave Search** | Web Search Tool | Web search API used by Qwen tool calling |
-| **Chroma (embedded)** | Vector store | Long-term memory, semantic search, hybrid retrieval (embedded in orchestrator via chroma/ dir) |
+| **ChromaDB (shared server)** | Vector store | Long-term memory, semantic search, hybrid retrieval. Shared server on :8000, used by orchestrator, ha-memory-service, and ontology-bridge plugin (fallback to embedded PersistentClient if unreachable) |
 | **PostgreSQL** | Database | Side projects (relational store) |
 | **MongoDB** | Database | Side projects (document store) |
 | **Home Assistant** | Domotics core | One instance per location, connected via WebSocket |
@@ -98,12 +98,13 @@
 | `fastembed` | ./infrastructure/fastembed | 11435 | No | nomic-embed-text-v1.5 embeddings (CPU ONNX) |
 | `whisper` | jarvis/whisper-blackwell | 9000 | Yes | Local STT (large-v3-turbo, int8_float16) |
 | `xtts` | jarvis/xtts-blackwell | 8890 | Yes | TTS voice cloning (XTTSv2, Italian) |
-| `orchestrator` | ./jarvis-orchestrator | 5000 | No | Core FastAPI app + Resemblyzer + Chroma + Admin UI (host network) |
+| `orchestrator` | ./jarvis-orchestrator | 5000 | No | Core FastAPI app + Resemblyzer + Admin UI (host network) |
+| `chromadb` | chromadb/chroma:0.6.3 | 127.0.0.1:8000 | No | Shared vector store (used by orchestrator, ha-memory-service, ontology-bridge) |
 | `ontology-server` | ./ontology-server | 127.0.0.1:8100 | No | Knowledge Graph API (SQLite + ACL) |
 | `postgres` | postgres:16-alpine | 5432 | No | Relational database (side projects) |
 | `mongo` | mongo:7 | 27017 | No | Document database (side projects) |
 
-> **Note**: OpenClaw runs bare-metal on a dedicated LXC (`100.116.99.9`), not in this Docker stack. Chroma is embedded in the orchestrator process (no separate container).
+> **Note**: OpenClaw runs bare-metal on a dedicated LXC (`100.116.99.9`), not in this Docker stack.
 
 ---
 
@@ -201,12 +202,11 @@ jarvis/
 |   +-- voice_recognition.py   # Resemblyzer speaker ID
 |   +-- security_levels.py     # L1-L4 enforcement, domain/channel security
 |   +-- context_builder.py     # Hybrid context (PostgreSQL + Chroma)
-|   +-- vector_store.py        # Chroma vector store + nomic-embed-text embeddings
+|   +-- vector_store.py        # ChromaDB HttpClient (shared :8000) with embedded fallback
 |   +-- memory_jobs.py         # Scheduled summarization + fact extraction
 |   +-- multi_ha.py            # Multi-location HA manager (single + bulk ops)
 |   +-- internal_tts.py        # Dual TTS backend (XTTSv2 local / Kokoro cloud)
 |   +-- admin_api.py           # Admin dashboard API
-|   +-- chroma/                # Embedded Chroma data directory
 |   +-- templates/             # Admin UI (HTML/JS)
 +-- ontology-server/           # Knowledge Graph API (SQLite + FastAPI + ACL)
 |   +-- api.py                 # FastAPI endpoints (12 routes)
@@ -238,7 +238,7 @@ jarvis/
 - **Qwen 2.5 3B with tool calling**: Fast local pre-routing for domotics commands plus tool calling capabilities (web_search via Brave API, web_fetch, memory_search, home_status). Falls back to offline responses when cloud is unreachable.
 - **Brave Search API**: Web search tool available to both Qwen (via tool calling) and OpenClaw (via skill), providing real-time web information.
 - **fastembed for all embeddings**: Single 768-dim embedding model (nomic-embed-text-v1.5 via ONNX, CPU-only) served by a dedicated container on port 11435 with Ollama-compatible API. Runs on CPU to avoid CUDA context switching with Qwen on the GPU, reducing routing latency from ~3.5s to ~0.5s.
-- **Chroma embedded in orchestrator**: Vector store runs in-process (no separate container), simplifying deployment and reducing resource overhead.
+- **ChromaDB shared server**: Vector store runs as a dedicated container on :8000 (`chromadb/chroma:0.6.3`), shared by orchestrator, ha-memory-service, and the ontology-bridge plugin. Clients use `HttpClient` with automatic fallback to embedded `PersistentClient` if the server is unreachable.
 - **XTTSv2 for TTS**: GPU-accelerated voice cloning with custom Blackwell image. Italian voice via WAV reference files. Cloud fallback to Kokoro-82M (CPU).
 - **Custom Dockerfiles for GPU services**: Whisper and XTTS use custom images (`jarvis/whisper-blackwell`, `jarvis/xtts-blackwell`) built for CUDA 12.9 / Blackwell sm_120 support.
 - **Nginx + Cloudflare Tunnel**: Public endpoints (Telegram webhook, health) served via Cloudflare Tunnel with no port forwarding. Internal services accessible only through Tailscale mesh.

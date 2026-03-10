@@ -1,8 +1,8 @@
 {
   "id": "intelligent-routing",
   "name": "Intelligent Routing",
-  "version": "4.1.0",
-  "description": "Automatic model routing based on task complexity. Classifies incoming messages and routes MEDIUM+ tasks to stronger models, while SIMPLE tasks stay on the default (Haiku). Includes system-context caching, usage tracking, and outcome logging.",
+  "version": "4.2.0",
+  "description": "Automatic model routing based on task complexity. Classifies incoming messages and routes MEDIUM+ tasks to stronger models, while SIMPLE tasks stay on the default (Haiku). Includes system-context caching, usage tracking, outcome logging, and fixed envelope stripping for Sender metadata blocks.",
   "hooks": ["before_model_resolve", "before_prompt_build", "agent_end", "llm_output"],
   "configSchema": {
     "type": "object",

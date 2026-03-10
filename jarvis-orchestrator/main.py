@@ -34,7 +34,9 @@ from database import (
     # Telegram auth
     get_user_by_telegram_id, is_telegram_authorized,
     # Default location (runtime from DB)
-    get_default_location_id
+    get_default_location_id,
+    # Routing continuity
+    save_last_intent, get_last_intent,
 )
 from integrations import (
     call_hass_service, call_hass_service_bulk, speak, send_telegram, edit_telegram,
@@ -849,6 +851,20 @@ app.include_router(auth_router)
 app.include_router(device_router)
 app.include_router(image_router)
 app.include_router(tools_router)
+
+
+# ===========================================================================
+# RECENT TURNS API — Used by ontology-bridge plugin for context injection
+# ===========================================================================
+
+@app.get("/api/recent_turns")
+async def api_recent_turns(
+    max_turns: int = Query(default=3, ge=1, le=10),
+    max_seconds: int = Query(default=900, ge=60, le=3600),
+):
+    """Returns recent conversation turns (for ontology-bridge plugin)."""
+    turns = get_recent_turns(max_turns=max_turns, max_seconds=max_seconds)
+    return turns
 
 
 # ===========================================================================
@@ -4219,6 +4235,9 @@ async def process_jarvis_logic(text: str, context: dict):
         f"save_msg={_save_ms:.0f}ms misc={_misc_ms:.0f}ms"
     )
 
+    # Previous intent per continuità multi-turn
+    prev_intent = get_last_intent(speaker_id, max_age_seconds=config.ROUTER_MEMORY_WINDOW_SECONDS) if speaker_id else None
+
     router_context = {
         **context,
         "memory": router_memory_prompt,
@@ -4227,6 +4246,10 @@ async def process_jarvis_logic(text: str, context: dict):
         "available_locations": available_locations,
         "location": location or "unknown"
     }
+    if prev_intent:
+        router_context["previous_intent"] = prev_intent["intent"]
+        router_context["previous_confidence"] = prev_intent["confidence"]
+
     routing_start = time.time()
     router_data = await get_routing(text, router_context)
     admin_metrics.record_routing((time.time() - routing_start) * 1000)
@@ -4234,6 +4257,10 @@ async def process_jarvis_logic(text: str, context: dict):
     intent = router_data.get("intent")
     conf = router_data.get("confidence", 0)
     interim_text = router_data.get("interim_response", "Hmm... ci penso...")
+
+    # Salva intent per continuità multi-turn
+    if speaker_id and intent:
+        save_last_intent(speaker_id, intent, conf)
 
     # Recupera soglie confidenza da DB
     conf_high, conf_low = get_confidence_thresholds()

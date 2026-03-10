@@ -24,7 +24,9 @@ logger = logging.getLogger("JARVIS_VECTOR")
 # CONFIG
 # ===========================================================================
 
-CHROMA_PATH = os.getenv("JARVIS_CHROMA_PATH", config.CHROMA_PATH)
+CHROMA_PATH = os.getenv("JARVIS_CHROMA_PATH", config.CHROMA_PATH)  # Legacy fallback
+CHROMA_HOST = config.CHROMA_HOST
+CHROMA_PORT = config.CHROMA_PORT
 EMBEDDING_MODEL = config.EMBEDDING_MODEL
 OLLAMA_URL = config.OLLAMA_URL
 
@@ -243,17 +245,33 @@ class UserVectorStore:
         self._initialized = False
 
     def initialize(self):
-        """Inizializza ChromaDB e collections."""
+        """Inizializza ChromaDB e collections.
+        Usa HttpClient (shared server) con fallback a PersistentClient (legacy).
+        """
         if self._initialized:
             return
 
-        self.client = chromadb.PersistentClient(
-            path=CHROMA_PATH,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True
+        try:
+            self.client = chromadb.HttpClient(
+                host=CHROMA_HOST,
+                port=CHROMA_PORT,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                )
             )
-        )
+            # Verify connection
+            self.client.heartbeat()
+            logger.info(f"Vector store connected to ChromaDB server at {CHROMA_HOST}:{CHROMA_PORT}")
+        except Exception as e:
+            logger.warning(f"ChromaDB server unreachable ({CHROMA_HOST}:{CHROMA_PORT}): {e}")
+            logger.warning(f"Falling back to PersistentClient at {CHROMA_PATH}")
+            self.client = chromadb.PersistentClient(
+                path=CHROMA_PATH,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True
+                )
+            )
 
         embedding_fn = get_embedding_function()
 
@@ -272,7 +290,6 @@ class UserVectorStore:
         )
 
         self._initialized = True
-        logger.info(f"Vector store initialized at {CHROMA_PATH}")
 
     def ensure_initialized(self):
         if not self._initialized:

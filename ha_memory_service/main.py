@@ -55,7 +55,9 @@ SUMMARY_TEMPERATURE = float(os.getenv("SUMMARY_TEMPERATURE", "0.3"))
 SUMMARY_TIMEOUT = int(os.getenv("SUMMARY_TIMEOUT", "30"))
 EMBEDDING_TIMEOUT = int(os.getenv("EMBEDDING_TIMEOUT", "30"))
 DB_PATH = os.getenv("DB_PATH", "/data/ha_memory.db")
-CHROMA_PATH = os.getenv("CHROMA_PATH", "/data/chroma")
+CHROMA_PATH = os.getenv("CHROMA_PATH", "/data/chroma")  # Legacy fallback
+CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
+CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8100"))
 WS_RETRY_DELAY = int(os.getenv("WS_RETRY_DELAY", "30"))
 WS_RECONNECT_DELAY = int(os.getenv("WS_RECONNECT_DELAY", "10"))
@@ -246,10 +248,21 @@ class LocationVectorStore:
         if self._initialized:
             return
 
-        self.client = chromadb.PersistentClient(
-            path=CHROMA_PATH,
-            settings=Settings(anonymized_telemetry=False)
-        )
+        try:
+            self.client = chromadb.HttpClient(
+                host=CHROMA_HOST,
+                port=CHROMA_PORT,
+                settings=Settings(anonymized_telemetry=False)
+            )
+            self.client.heartbeat()
+            logger.info(f"Connected to ChromaDB server at {CHROMA_HOST}:{CHROMA_PORT}")
+        except Exception as e:
+            logger.warning(f"ChromaDB server unreachable ({CHROMA_HOST}:{CHROMA_PORT}): {e}")
+            logger.warning(f"Falling back to PersistentClient at {CHROMA_PATH}")
+            self.client = chromadb.PersistentClient(
+                path=CHROMA_PATH,
+                settings=Settings(anonymized_telemetry=False)
+            )
 
         self.collection = self.client.get_or_create_collection(
             name=f"{COLLECTION_LOCATION_EVENTS}_{LOCATION_ID}",

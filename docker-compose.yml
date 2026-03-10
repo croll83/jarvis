@@ -254,6 +254,32 @@ services:
   # Per avviare: cd security && docker compose -f docker-compose.security.yml up -d
 
   # ===========================================================================
+  # CHROMADB - Shared Vector Store (CPU-only, no GPU needed)
+  # ===========================================================================
+  # Single ChromaDB server condiviso tra:
+  #   - Orchestrator (user_messages, user_facts)
+  #   - HA Memory Service (location_events_*)
+  #   - OpenClaw ontology-bridge plugin (semantic search)
+  # Sostituisce i 3 PersistentClient embedded separati.
+  # API: http://localhost:8000 (standard ChromaDB port)
+  chromadb:
+    image: chromadb/chroma:0.6.3
+    container_name: jarvis_chromadb
+    volumes:
+      - chroma_data:/chroma/chroma
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # restart gestito da jarvis.sh
+
+  # ===========================================================================
   # DATABASES - Side Projects
   # ===========================================================================
   postgres:
@@ -302,6 +328,7 @@ volumes:
   ollama_storage:
   fastembed_cache:
   xtts_models:
+  chroma_data:
   postgres_data:
   mongo_data:
   ontology_data:
