@@ -20,6 +20,9 @@ wheels/
 .installed.cfg
 *.egg
 
+#NodeJS
+node_modules
+
 #ESPIF
 managed_components/
 build/
