@@ -1520,12 +1520,13 @@ def format_recent_turns_for_llm(turns: List[Dict]) -> str:
 _previous_intents: Dict[int, Dict] = {}
 
 
-def save_last_intent(user_id: int, intent: str, confidence: float):
-    """Salva l'ultimo intent routato per un utente."""
+def save_last_intent(user_id: int, intent: str, confidence: float, payload: dict = None):
+    """Salva l'ultimo intent routato per un utente (con payload per context multi-turn)."""
     _previous_intents[user_id] = {
         "intent": intent,
         "confidence": confidence,
         "timestamp": time.time(),
+        "payload": payload or {},
     }
 
 

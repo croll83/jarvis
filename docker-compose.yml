@@ -66,7 +66,8 @@ services:
       # Senza questo Ollama usa 4096 e forza un model reload catastrofico.
       # NOTA: OLLAMA_NUM_CTX NON funziona come default — solo CONTEXT_LENGTH lo fa.
       - OLLAMA_CONTEXT_LENGTH=32768
-      - OLLAMA_KEEP_ALIVE=-1           # Mantiene i modelli in VRAM permanentemente
+      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_FLASH_ATTENTION=1           # Mantiene i modelli in VRAM permanentemente
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     healthcheck:
@@ -207,7 +208,7 @@ services:
       - XTTS_URL=http://localhost:8890
       # Qwen tool calling (Brave Search)
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
-      - ROUTER_MODEL=${ROUTER_MODEL:-qwen2.5:3b}
+      - ROUTER_MODEL=${ROUTER_MODEL:-qwen2.5:3b-32k}
       - OLLAMA_NUM_CTX=32768
       # API keys (only needed if AI_BACKEND=api)
       - GROQ_API_KEY=${GROQ_API_KEY:-}

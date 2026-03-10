@@ -4249,6 +4249,7 @@ async def process_jarvis_logic(text: str, context: dict):
     if prev_intent:
         router_context["previous_intent"] = prev_intent["intent"]
         router_context["previous_confidence"] = prev_intent["confidence"]
+        router_context["previous_payload"] = prev_intent.get("payload", {})
 
     routing_start = time.time()
     router_data = await get_routing(text, router_context)
@@ -4260,7 +4261,7 @@ async def process_jarvis_logic(text: str, context: dict):
 
     # Salva intent per continuità multi-turn
     if speaker_id and intent:
-        save_last_intent(speaker_id, intent, conf)
+        save_last_intent(speaker_id, intent, conf, router_data.get('payload', {}))
 
     # Recupera soglie confidenza da DB
     conf_high, conf_low = get_confidence_thresholds()

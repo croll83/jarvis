@@ -301,7 +301,7 @@ async def _normalize_ollama(text: str, llm_params: dict) -> Optional[str]:
         "options": {
             "temperature": 0.1,
             "num_predict": 150,
-            "num_ctx": config.OLLAMA_NUM_CTX,  # Valore unico ovunque per evitare reload
+            "num_gpu": 37,  # Forza 37/37 GPU layers (Modelfile gestisce num_ctx)
         },
         "stream": False
     }
@@ -448,7 +448,7 @@ async def _pre_route_ollama(text: str, llm_params: dict) -> Optional[dict]:
         "options": {
             "temperature": llm_params["temperature"],
             "num_predict": 120,
-            "num_ctx": config.OLLAMA_NUM_CTX,  # Valore unico ovunque per evitare reload
+            "num_gpu": 37,  # Forza 37/37 GPU layers (Modelfile gestisce num_ctx)
         },
         "stream": False
     }
@@ -611,8 +611,21 @@ def _build_routing_prompt(text: str, context: dict) -> str:
     previous_intent_section = ""
     prev_intent = context.pop("previous_intent", None)
     prev_conf = context.pop("previous_confidence", None)
+    prev_payload = context.pop("previous_payload", {})
     if prev_intent:
-        previous_intent_section = f"\n\n[INTENT PRECEDENTE]: {prev_intent} (confidence={prev_conf:.2f})"
+        # Includi dettagli entità per risolvere pronomi ("accendila" → quale entità?)
+        payload_detail = ""
+        if prev_payload:
+            entity = prev_payload.get("entity", "")
+            action = prev_payload.get("action", "")
+            domain = prev_payload.get("domain", "")
+            if entity:
+                payload_detail = f" → {entity}"
+                if action:
+                    payload_detail += f", {action}"
+                if domain:
+                    payload_detail += f" ({domain})"
+        previous_intent_section = f"\n\n[INTENT PRECEDENTE]: {prev_intent}{payload_detail} (confidence={prev_conf:.2f})"
 
     # Carica entity map dal DB (per-location, con fallback a user location)
     location_id = context.get("location")
@@ -657,7 +670,7 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
         "options": {
             "temperature": _rp["temperature"],
             "num_predict": _rp["max_tokens"],
-            "num_ctx": config.OLLAMA_NUM_CTX,  # Valore unico ovunque per evitare reload
+            "num_gpu": 37,  # Forza 37/37 GPU layers (Modelfile gestisce num_ctx)
             "stop": ["<|im_start|>"],  # Previene hallucination loop
         },
         "stream": False
@@ -818,7 +831,7 @@ async def get_quick_response(
         "options": {
             "temperature": _rp["temperature"],
             "num_predict": _rp.get("max_tokens", 200),
-            "num_ctx": config.OLLAMA_NUM_CTX,  # Valore unico ovunque per evitare reload
+            "num_gpu": 37,  # Forza 37/37 GPU layers (Modelfile gestisce num_ctx)
         }
     }
 
@@ -922,7 +935,7 @@ async def call_qwen_summary(prompt: str, max_tokens: int = 150) -> str:
             "options": {
                 "temperature": _rp["temperature"],
                 "num_predict": max_tokens or _rp["max_tokens"],
-                "num_ctx": config.OLLAMA_NUM_CTX,  # Valore unico ovunque per evitare reload
+                "num_gpu": 37,  # Forza 37/37 GPU layers (Modelfile gestisce num_ctx)
             }
         }
 
