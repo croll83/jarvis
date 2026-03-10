@@ -115,7 +115,7 @@ def migrate_collection(
                 "documents": documents,
                 "metadatas": metadatas,
             }
-            if embeddings:
+            if embeddings is not None:
                 upsert_kwargs["embeddings"] = embeddings
 
             target_col.upsert(**upsert_kwargs)
