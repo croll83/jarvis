@@ -1,0 +1,92 @@
+[
+  {
+    "timestamp": "2026-03-16T20:32:23.006Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single bearish MACD cross conflicts with existing long position.",
+    "confidence": 28,
+    "price": 182.22
+  },
+  {
+    "timestamp": "2026-03-16T20:37:30.280Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single MACD cross at 56% confidence insufficient; no whale confirmation signal present.",
+    "confidence": 28,
+    "price": 183.4
+  },
+  {
+    "timestamp": "2026-03-16T20:39:59.291Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "Single breakout signal lacks whale confirmation required by copytrading strategy.",
+    "confidence": 45,
+    "price": 183.215
+  },
+  {
+    "timestamp": "2026-03-16T20:40:28.403Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single MACD cross at 62% confidence insufficient. No whale confirmation present.",
+    "confidence": 28,
+    "price": 183.45
+  },
+  {
+    "timestamp": "2026-03-16T20:45:46.280Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single MACD cross insufficient. No whale confirmation. Existing position underwater.",
+    "confidence": 32,
+    "price": 183.59
+  },
+  {
+    "timestamp": "2026-03-16T20:49:16.027Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single MACD cross at 67% confidence insufficient. Price below entry, no corroboration.",
+    "confidence": 28,
+    "price": 183.46
+  },
+  {
+    "timestamp": "2026-03-16T21:01:26.435Z",
+    "signalCount": 1,
+    "signalTypes": "rsi_extreme",
+    "verdict": "SKIP",
+    "brief": "RSI overbought alone insufficient; no confirmation signal present.",
+    "confidence": 72,
+    "price": 183.3
+  },
+  {
+    "timestamp": "2026-03-16T21:05:47.969Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Weak signal confidence 58%, repeated MACD crosses in 26min, existing loss position.",
+    "confidence": 28,
+    "price": 183.14
+  },
+  {
+    "timestamp": "2026-03-16T21:09:15.208Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single macd_cross signal, moderate confidence, repeated pattern of skips suggests noise.",
+    "confidence": 28,
+    "price": 183.79
+  },
+  {
+    "timestamp": "2026-03-16T21:52:01.997Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "Low confidence breakout signal (58%) contradicts existing long position.",
+    "confidence": 35,
+    "price": 182.525
+  }
+]

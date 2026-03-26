@@ -1,8 +1,0 @@
-{
-  "slug": "trading-engine",
-  "version": "3.0.0",
-  "name": "Trading Engine",
-  "description": "Multi-strategy Hyperliquid perpetual futures trading engine with ontology-tracked strategies, whale monitoring, and agentic execution.",
-  "author": "jarvis",
-  "tags": ["trading", "hyperliquid", "crypto", "multi-strategy"]
-}

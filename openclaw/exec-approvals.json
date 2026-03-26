@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "socket": {
-    "path": "/home/jarvis/.openclaw/exec-approvals.sock",
-    "token": "2JPX5vAiz73nUrINX2RsvT4u_VkcLiES"
-  },
-  "defaults": {},
-  "agents": {}
-}

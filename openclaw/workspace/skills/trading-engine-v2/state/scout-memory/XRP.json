@@ -1,0 +1,96 @@
+[
+  {
+    "timestamp": "2026-03-16T21:08:49.435Z",
+    "signalCount": 4,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "Strong bearish alignment but news bullish conflict undermines conviction.",
+    "confidence": 42,
+    "price": 1.4965
+  },
+  {
+    "timestamp": "2026-03-16T21:57:01.718Z",
+    "signalCount": 2,
+    "signalTypes": "ema_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Bearish signals contradict bullish SEC news; low individual confidence.",
+    "confidence": 35,
+    "price": 1.5081
+  },
+  {
+    "timestamp": "2026-03-16T22:00:07.658Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "PASS",
+    "brief": "Bearish signal contradicts bullish SEC news; analyst should evaluate conflict.",
+    "confidence": 45,
+    "price": 1.5274,
+    "outcome": "RISK_BLOCKED",
+    "outcomeDetail": "Margin would exceed 80%"
+  },
+  {
+    "timestamp": "2026-03-16T22:06:43.419Z",
+    "signalCount": 3,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout",
+    "verdict": "PASS",
+    "brief": "Strong bearish alignment: MACD+EMA+BB all DOWN. Contrasts bullish news.",
+    "confidence": 70,
+    "price": 1.5096,
+    "outcome": "HOLD",
+    "outcomeDetail": "Sentiment strategy weights sentiment 70% — bullish news (SEC progress, 70% confidence) conflicts with bearish technicals, creating insufficient conviction for a short position."
+  },
+  {
+    "timestamp": "2026-03-16T22:11:54.300Z",
+    "signalCount": 3,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Bearish technicals (85% MACD) conflict with bullish news (70% SEC); insufficient conviction.",
+    "confidence": 42,
+    "price": 1.5077
+  },
+  {
+    "timestamp": "2026-03-16T22:17:05.339Z",
+    "signalCount": 3,
+    "signalTypes": "macd_cross,bb_squeeze_breakout,ema_cross",
+    "verdict": "SKIP",
+    "brief": "Conflicting technicals (bearish MACD vs bullish EMA) lack conviction.",
+    "confidence": 42,
+    "price": 1.5077
+  },
+  {
+    "timestamp": "2026-03-16T22:21:43.673Z",
+    "signalCount": 3,
+    "signalTypes": "macd_cross,bb_squeeze_breakout,ema_cross",
+    "verdict": "SKIP",
+    "brief": "Conflicting signals: bearish technicals vs bullish news, weak consensus.",
+    "confidence": 42,
+    "price": 1.5084
+  },
+  {
+    "timestamp": "2026-03-16T22:26:51.583Z",
+    "signalCount": 2,
+    "signalTypes": "bb_squeeze_breakout,macd_cross",
+    "verdict": "SKIP",
+    "brief": "Bearish technicals conflict with bullish SEC news. Insufficient conviction.",
+    "confidence": 42,
+    "price": 1.5084
+  },
+  {
+    "timestamp": "2026-03-16T22:31:50.803Z",
+    "signalCount": 3,
+    "signalTypes": "macd_cross,bb_squeeze_breakout,ema_cross",
+    "verdict": "SKIP",
+    "brief": "Conflicting signals: bearish technicals vs bullish news. Insufficient conviction.",
+    "confidence": 42,
+    "price": 1.5069
+  },
+  {
+    "timestamp": "2026-03-16T22:37:01.727Z",
+    "signalCount": 3,
+    "signalTypes": "bb_squeeze_breakout,macd_cross,ema_cross",
+    "verdict": "SKIP",
+    "brief": "Conflicting signals: bearish breakdown vs bullish crosses. Weak confluence.",
+    "confidence": 35,
+    "price": 1.513
+  }
+]

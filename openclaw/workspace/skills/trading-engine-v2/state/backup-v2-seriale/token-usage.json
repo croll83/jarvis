@@ -1,0 +1,63 @@
+{
+  "daily": {
+    "2026-03-12": {
+      "sonnet": {
+        "input": 258470,
+        "output": 494813,
+        "cost_usd": 8.1976,
+        "calls": 634
+      },
+      "total_cost_usd": 10.0067,
+      "grok_fast": {
+        "input": 30280,
+        "output": 330844,
+        "cost_usd": 0.1715,
+        "calls": 456
+      },
+      "gemini_flash_lite": {
+        "input": 73244,
+        "output": 422883,
+        "cost_usd": 0.6526,
+        "calls": 342
+      },
+      "haiku": {
+        "input": 29372,
+        "output": 240382,
+        "cost_usd": 0.985,
+        "calls": 162
+      }
+    },
+    "2026-03-13": {
+      "grok_fast": {
+        "input": 5159,
+        "output": 130637,
+        "cost_usd": 0.0664,
+        "calls": 55
+      },
+      "total_cost_usd": 4.4422,
+      "sonnet": {
+        "input": 147582,
+        "output": 210821,
+        "cost_usd": 3.6051,
+        "calls": 227
+      },
+      "gemini_flash_lite": {
+        "input": 26304,
+        "output": 111146,
+        "cost_usd": 0.1733,
+        "calls": 103
+      },
+      "haiku": {
+        "input": 40101,
+        "output": 141326,
+        "cost_usd": 0.5974,
+        "calls": 251
+      }
+    }
+  },
+  "alerts": {
+    "daily_budget_usd": 10,
+    "warn_at_pct": 70,
+    "pause_at_pct": 100
+  }
+}

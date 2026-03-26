@@ -800,10 +800,13 @@ const plugin: OpenClawPluginDefinition = {
         return {};
       }
 
-      const promptForMarkers = rawPrompt.replace(/^\[cron:[^\]]*\]\s*/, "");
+      const promptForMarkers = rawPrompt
+        .replace(/^\[cron:[^\]]*\]\s*/, "")
+        .replace(/^\[\w{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\]\s*/, ""); // strip timestamp envelope
 
       // ── [routed] marker ──
-      if (promptForMarkers.startsWith(ROUTED_MARKER)) {
+      // Use includes() instead of startsWith() — context engines may prepend data
+      if (promptForMarkers.includes(ROUTED_MARKER)) {
         api.logger.debug(`[intelligent-routing] Skipping pre-routed subagent prompt`);
         routingState.set(sessionKey, {
           tier: "ROUTED", model: "(pre-routed)", provider: "",
@@ -830,7 +833,11 @@ const plugin: OpenClawPluginDefinition = {
       }
 
       // ── [force-model:X] marker ──
-      const forceModelMatch = promptForMarkers.match(/^\[force-model:([^\]]+)\]/);
+      // Search anywhere in prompt — context engines (lossless-claw, ontology-bridge)
+      // may prepend context before before_model_resolve fires, pushing the marker
+      // away from position 0. This was causing all force-model calls to be classified
+      // by the scorer instead of being forced, routing Haiku calls to Sonnet/Opus.
+      const forceModelMatch = promptForMarkers.match(/\[force-model:([^\]]+)\]/);
       if (forceModelMatch) {
         const requested = forceModelMatch[1].trim();
         const split = splitModelId(requested);
@@ -858,7 +865,8 @@ const plugin: OpenClawPluginDefinition = {
       }
 
       // ── [tier:X] marker ──
-      const tierMatch = promptForMarkers.match(/^\[tier:([^\]]+)\]/);
+      // Same fix: search anywhere (context may be prepended before this marker)
+      const tierMatch = promptForMarkers.match(/\[tier:([^\]]+)\]/);
       if (tierMatch) {
         const requestedTier = tierMatch[1].trim().toUpperCase();
         const tierModel = TIER_CONFIG[requestedTier];

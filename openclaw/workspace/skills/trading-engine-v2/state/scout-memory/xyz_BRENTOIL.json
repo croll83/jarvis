@@ -1,0 +1,92 @@
+[
+  {
+    "timestamp": "2026-03-16T21:10:17.274Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single weak bearish signal (55% confidence) conflicts with existing short position.",
+    "confidence": 35,
+    "price": 96.529
+  },
+  {
+    "timestamp": "2026-03-16T21:52:33.837Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single MACD cross at 59% confidence insufficient. Contradicts existing SHORT position.",
+    "confidence": 35,
+    "price": 96.979
+  },
+  {
+    "timestamp": "2026-03-16T22:01:03.419Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "59% confidence breakout insufficient; contradicts existing SHORT position bias",
+    "confidence": 35,
+    "price": 97.1055
+  },
+  {
+    "timestamp": "2026-03-16T22:04:31.934Z",
+    "signalCount": 2,
+    "signalTypes": "macd_cross,price_breakout",
+    "verdict": "SKIP",
+    "brief": "Weak alignment: 61% MACD, 57% breakout. Low confidence signals.",
+    "confidence": 28,
+    "price": 96.661
+  },
+  {
+    "timestamp": "2026-03-16T22:08:00.913Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single bearish MACD cross lacks sufficient strength; repeated signals ignored recently.",
+    "confidence": 35,
+    "price": 96.4
+  },
+  {
+    "timestamp": "2026-03-16T22:16:47.059Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single weak MACD signal conflicts with existing SHORT position fundamentals",
+    "confidence": 28,
+    "price": 96.5
+  },
+  {
+    "timestamp": "2026-03-16T22:19:49.788Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single MACD cross signal, 61% confidence insufficient for opportunity threshold",
+    "confidence": 32,
+    "price": 96.638
+  },
+  {
+    "timestamp": "2026-03-16T22:24:37.734Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single weak signal with repeated false positives. Insufficient conviction.",
+    "confidence": 28,
+    "price": 96.809
+  },
+  {
+    "timestamp": "2026-03-16T22:30:36.550Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single weak MACD cross signal. Insufficient strength for escalation.",
+    "confidence": 28,
+    "price": 96.814
+  },
+  {
+    "timestamp": "2026-03-16T22:34:37.535Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single MACD bearish signal. Insufficient strength for senior analyst review.",
+    "confidence": 35,
+    "price": 96.46
+  }
+]

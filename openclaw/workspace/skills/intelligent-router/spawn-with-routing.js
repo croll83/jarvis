@@ -28,14 +28,13 @@ const { route } = require('./intelligent-router-hook');
 // When present, the hook returns {} (no override) so the model selected here prevails.
 const ROUTED_MARKER = '[routed]';
 
-function spawn(task, model, thinking, timeoutMinutes) {
+function spawn(task, model, timeoutMinutes) {
   // Prepend [routed] marker so the plugin hook skips re-routing
   const routedTask = `${ROUTED_MARKER} ${task}`;
 
   // Build openclaw spawn command
   let cmd = `openclaw spawn`;
   cmd += ` --model "${model}"`;
-  if (thinking) cmd += ` --thinking ${thinking}`;
   if (timeoutMinutes) cmd += ` --timeout ${timeoutMinutes * 60}`;
   cmd += ` --task "${routedTask.replace(/"/g, '\\"')}"`;
 
@@ -115,7 +114,7 @@ function main() {
   
   // Try primary model
   const timeout = TIMEOUT_MAP[routing.tier] || 5;
-  let result = spawn(task, routing.modelAlias, routing.thinking, timeout);
+  let result = spawn(task, routing.modelAlias, timeout);
   
   if (result.success) {
     console.log(JSON.stringify({
@@ -131,7 +130,7 @@ function main() {
   for (let i = 0; i < routing.fallbacks.length; i++) {
     const fallbackModel = routing.fallbacks[i];
     console.error(`Primary failed, trying fallback ${i + 1}: ${fallbackModel}`);
-    result = spawn(task, fallbackModel, routing.thinking, timeout);
+    result = spawn(task, fallbackModel, timeout);
     
     if (result.success) {
       console.log(JSON.stringify({
@@ -156,7 +155,6 @@ function main() {
 
 function buildSpawnCmd(task, routing) {
   let cmd = `sessions_spawn(task="${ROUTED_MARKER} ${task}", model="${routing.modelAlias}"`;
-  if (routing.thinking) cmd += `, thinking="${routing.thinking}"`;
   cmd += `)`;
   return cmd;
 }

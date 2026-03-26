@@ -1,0 +1,94 @@
+[
+  {
+    "timestamp": "2026-03-16T21:06:18.178Z",
+    "signalCount": 1,
+    "signalTypes": "bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Isolated signal, low confidence, neutral news contradicts bearish call",
+    "confidence": 28,
+    "price": 0.00395
+  },
+  {
+    "timestamp": "2026-03-16T21:57:51.105Z",
+    "signalCount": 2,
+    "signalTypes": "macd_cross,bb_squeeze_breakout",
+    "verdict": "PASS",
+    "brief": "Two aligned bearish signals with moderate-high confidence. Worth escalation.",
+    "confidence": 74,
+    "price": 0.003927,
+    "outcome": "HOLD",
+    "outcomeDetail": "News sentiment is NEUTRAL with only 30% confidence — insufficient for a sentiment-driven strategy that weights news/sentiment at 70%."
+  },
+  {
+    "timestamp": "2026-03-16T22:02:57.710Z",
+    "signalCount": 2,
+    "signalTypes": "macd_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Signals contradictory: MACD bullish vs BB squeeze bearish. Weak confluence.",
+    "confidence": 35,
+    "price": 0.003955
+  },
+  {
+    "timestamp": "2026-03-16T22:07:21.156Z",
+    "signalCount": 2,
+    "signalTypes": "macd_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Aligned bearish signals but neutral news contradicts 70% sentiment weighting.",
+    "confidence": 28,
+    "price": 0.003917
+  },
+  {
+    "timestamp": "2026-03-16T22:12:39.367Z",
+    "signalCount": 3,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Strong bearish alignment but neutral news contradicts 70% sentiment weighting.",
+    "confidence": 35,
+    "price": 0.00392
+  },
+  {
+    "timestamp": "2026-03-16T22:18:06.193Z",
+    "signalCount": 3,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Bearish signals aligned but news sentiment too weak for strategy requirements.",
+    "confidence": 35,
+    "price": 0.003926
+  },
+  {
+    "timestamp": "2026-03-16T22:22:32.626Z",
+    "signalCount": 2,
+    "signalTypes": "macd_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Bearish signals aligned but news sentiment too weak (30%) for strategy weight requirements.",
+    "confidence": 42,
+    "price": 0.003925
+  },
+  {
+    "timestamp": "2026-03-16T22:27:39.226Z",
+    "signalCount": 3,
+    "signalTypes": "macd_cross,ema_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Conflicting signals (bearish MACD vs bullish EMA). Low consensus strength.",
+    "confidence": 35,
+    "price": 0.003923
+  },
+  {
+    "timestamp": "2026-03-16T22:32:36.382Z",
+    "signalCount": 3,
+    "signalTypes": "macd_cross,ema_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Conflicting signals (bearish MACD vs bullish EMA). Weak conviction.",
+    "confidence": 42,
+    "price": 0.003917
+  },
+  {
+    "timestamp": "2026-03-16T22:37:47.457Z",
+    "signalCount": 3,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Conflicting signals: bearish EMA vs bullish MACD. Weak conviction.",
+    "confidence": 42,
+    "price": 0.003953
+  }
+]

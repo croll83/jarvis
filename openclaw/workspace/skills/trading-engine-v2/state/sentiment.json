@@ -1,0 +1,137 @@
+{
+  "timestamp": "2026-03-26T07:31:28.815Z",
+  "scores": [
+    {
+      "coin": "BTC",
+      "score": -15,
+      "confidence": 72,
+      "trend": "bearish"
+    },
+    {
+      "coin": "ETH",
+      "score": 35,
+      "confidence": 78,
+      "trend": "bullish"
+    },
+    {
+      "coin": "TRX",
+      "score": 25,
+      "confidence": 60,
+      "trend": "bullish"
+    },
+    {
+      "coin": "ADA",
+      "score": 40,
+      "confidence": 65,
+      "trend": "bullish"
+    },
+    {
+      "coin": "SOL",
+      "score": -5,
+      "confidence": 55,
+      "trend": "neutral"
+    },
+    {
+      "coin": "MKR",
+      "score": 15,
+      "confidence": 50,
+      "trend": "neutral"
+    },
+    {
+      "coin": "DOGE",
+      "score": -10,
+      "confidence": 45,
+      "trend": "bearish"
+    },
+    {
+      "coin": "LINK",
+      "score": 5,
+      "confidence": 40,
+      "trend": "neutral"
+    },
+    {
+      "coin": "AVAX",
+      "score": -5,
+      "confidence": 40,
+      "trend": "neutral"
+    },
+    {
+      "coin": "ARB",
+      "score": -5,
+      "confidence": 40,
+      "trend": "neutral"
+    },
+    {
+      "coin": "HYPE",
+      "score": 0,
+      "confidence": 35,
+      "trend": "neutral"
+    },
+    {
+      "coin": "WIF",
+      "score": -15,
+      "confidence": 45,
+      "trend": "bearish"
+    },
+    {
+      "coin": "PENGU",
+      "score": -10,
+      "confidence": 40,
+      "trend": "bearish"
+    }
+  ],
+  "macro": [
+    "Arthur Hayes strongly bearish - not buying risk",
+    "BTC below 200-week EMA technical breakdown",
+    "Tom Lee Bitmine accumulated 117k ETH ($253M) in 2 days",
+    "Massive USDC stablecoin deployments ($1.3B+ in motion)",
+    "SEC Atkins tokenization exemption within weeks",
+    "Iran war fears creating macro risk-off",
+    "Late business cycle liquidity conditions",
+    "TRON AI Fund $1B commitment",
+    "ADA Midnight major partnership deal",
+    "UK PM crypto donation pause - minor regulatory headwind"
+  ],
+  "sources": [
+    {
+      "account": "@CryptoHayes",
+      "summary": "Markets smoking hopium, not buying risk, fears Iran invasion"
+    },
+    {
+      "account": "@lookonchain",
+      "summary": "Bitmine/Tom Lee bought 117k ETH ($253M) in 2 days - massive accumulation"
+    },
+    {
+      "account": "@whale_alert",
+      "summary": "$1.3B+ stablecoin movements in last 2h"
+    },
+    {
+      "account": "@RektCapital",
+      "summary": "BTC weekly close below 200-week EMA, 45% into bear market"
+    },
+    {
+      "account": "@intocryptoverse",
+      "summary": "Late business cycle, bearish stance confirmed"
+    },
+    {
+      "account": "@WatcherGuru",
+      "summary": "SEC tokenization exemption weeks away - bullish regulatory"
+    },
+    {
+      "account": "@saylor",
+      "summary": "BTC/MSTR bullish volatility framing"
+    },
+    {
+      "account": "@justinsuntron",
+      "summary": "TRON $1B AI Fund for agentic economy"
+    },
+    {
+      "account": "@Wolf_of_All_Streets",
+      "summary": "ADA Midnight major TVL deal"
+    },
+    {
+      "account": "@VitalikButerin",
+      "summary": "ETH post-quantum security EIP-8141 development"
+    }
+  ]
+}

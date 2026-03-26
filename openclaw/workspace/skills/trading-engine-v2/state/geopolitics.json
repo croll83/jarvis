@@ -1,0 +1,136 @@
+{
+  "summary": "Middle East escalates, gold crashes",
+  "analysis": {
+    "BTC": {
+      "rating": "NEUTRAL",
+      "confidence": 10,
+      "factor": "No direct crypto news"
+    },
+    "ETH": {
+      "rating": "NEUTRAL",
+      "confidence": 10,
+      "factor": "No direct crypto news"
+    },
+    "HYPE": {
+      "rating": "NEUTRAL",
+      "confidence": 5,
+      "factor": "No relevant news"
+    },
+    "SOL": {
+      "rating": "NEUTRAL",
+      "confidence": 10,
+      "factor": "No direct crypto news"
+    },
+    "XRP": {
+      "rating": "NEUTRAL",
+      "confidence": 10,
+      "factor": "No direct crypto news"
+    },
+    "SUI": {
+      "rating": "NEUTRAL",
+      "confidence": 5,
+      "factor": "No relevant news"
+    },
+    "DOGE": {
+      "rating": "NEUTRAL",
+      "confidence": 10,
+      "factor": "No direct crypto news"
+    },
+    "BNB": {
+      "rating": "NEUTRAL",
+      "confidence": 10,
+      "factor": "No direct crypto news"
+    },
+    "PAXG": {
+      "rating": "BULLISH",
+      "confidence": 85,
+      "factor": "Gold crash inverse rally"
+    },
+    "AVAX": {
+      "rating": "NEUTRAL",
+      "confidence": 10,
+      "factor": "No direct crypto news"
+    },
+    "LINK": {
+      "rating": "NEUTRAL",
+      "confidence": 10,
+      "factor": "No direct crypto news"
+    },
+    "AAVE": {
+      "rating": "NEUTRAL",
+      "confidence": 10,
+      "factor": "No direct crypto news"
+    },
+    "ENA": {
+      "rating": "NEUTRAL",
+      "confidence": 5,
+      "factor": "No relevant news"
+    },
+    "kPEPE": {
+      "rating": "NEUTRAL",
+      "confidence": 5,
+      "factor": "No relevant news"
+    },
+    "SEI": {
+      "rating": "NEUTRAL",
+      "confidence": 5,
+      "factor": "No relevant news"
+    },
+    "CL": {
+      "rating": "BULLISH",
+      "confidence": 75,
+      "factor": "ME conflict oil risk"
+    },
+    "SILVER": {
+      "rating": "BULLISH",
+      "confidence": 70,
+      "factor": "Gold crash commodities up"
+    },
+    "BRENTOIL": {
+      "rating": "BULLISH",
+      "confidence": 80,
+      "factor": "Iran mines Gulf, ME strikes"
+    },
+    "GOLD": {
+      "rating": "BULLISH",
+      "confidence": 95,
+      "factor": "Crashes 5% under $4300"
+    },
+    "NATGAS": {
+      "rating": "NEUTRAL",
+      "confidence": 20,
+      "factor": "Energy crisis vague"
+    },
+    "COPPER": {
+      "rating": "NEUTRAL",
+      "confidence": 15,
+      "factor": "Supply chains risk"
+    },
+    "TSLA": {
+      "rating": "NEUTRAL",
+      "confidence": 5,
+      "factor": "No relevant news"
+    },
+    "HOOD": {
+      "rating": "NEUTRAL",
+      "confidence": 20,
+      "factor": "Prediction bets ban"
+    },
+    "NVDA": {
+      "rating": "NEUTRAL",
+      "confidence": 5,
+      "factor": "No relevant news"
+    },
+    "COIN": {
+      "rating": "NEUTRAL",
+      "confidence": 20,
+      "factor": "Prediction bets ban"
+    },
+    "ORCL": {
+      "rating": "NEUTRAL",
+      "confidence": 5,
+      "factor": "No relevant news"
+    }
+  },
+  "timestamp": "2026-03-23T09:51:57.910Z"
+}

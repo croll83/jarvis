@@ -1,0 +1,92 @@
+[
+  {
+    "timestamp": "2026-03-16T20:44:45.219Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "Low confidence breakout signal (56%). Repeated identical signals skipped in recent history.",
+    "confidence": 28,
+    "price": 75.365
+  },
+  {
+    "timestamp": "2026-03-16T20:47:48.824Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single weak bearish signal insufficient for trade opportunity.",
+    "confidence": 28,
+    "price": 75.14
+  },
+  {
+    "timestamp": "2026-03-16T20:51:51.349Z",
+    "signalCount": 1,
+    "signalTypes": "rsi_extreme",
+    "verdict": "SKIP",
+    "brief": "RSI 13.9 oversold signal contradicts price at 75.147; data integrity issue.",
+    "confidence": 85,
+    "price": 75.147
+  },
+  {
+    "timestamp": "2026-03-16T20:55:37.535Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single weak MACD cross signal insufficient for pass threshold",
+    "confidence": 35,
+    "price": 75.18
+  },
+  {
+    "timestamp": "2026-03-16T21:06:03.869Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "Weak breakout signal. Low confidence 59%, conflicting with recent skip pattern.",
+    "confidence": 35,
+    "price": 75.419
+  },
+  {
+    "timestamp": "2026-03-16T21:55:07.378Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "Single DOWN breakout signal with moderate confidence insufficient for pass.",
+    "confidence": 32,
+    "price": 75.465
+  },
+  {
+    "timestamp": "2026-03-16T22:03:48.961Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "Single price_breakout DOWN signal. Insufficient strength, low confidence 66%.",
+    "confidence": 28,
+    "price": 75.386
+  },
+  {
+    "timestamp": "2026-03-16T22:08:31.859Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "Single price_breakout signal at 70% confidence, low strength, repetitive pattern.",
+    "confidence": 25,
+    "price": 75.501
+  },
+  {
+    "timestamp": "2026-03-16T22:13:01.851Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "Low confidence breakout signal (55%) amid repeated recent signals.",
+    "confidence": 35,
+    "price": 75.592
+  },
+  {
+    "timestamp": "2026-03-16T22:17:26.880Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single weak MACD cross signal. Insufficient strength for escalation.",
+    "confidence": 28,
+    "price": 75.411
+  }
+]

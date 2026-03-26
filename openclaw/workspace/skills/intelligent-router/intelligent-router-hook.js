@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Intelligent Router Hook v1.2
+ * Intelligent Router Hook v1.3
  *
  * Input: task description (string)
  * Output (JSON): { tier, model, fallbacks, thinking, confidence }
@@ -11,6 +11,10 @@
  * Usage:
  *   node intelligent-router-hook.js "task description here"
  *   node intelligent-router-hook.js --tier MEDIUM   # force tier override
+ *
+ * v1.3 changes:
+ *   - Removed THINKING_MAP entirely (thinking handled by OpenClaw natively)
+ *   - thinking field always null in output
  *
  * v1.2 changes:
  *   - Low-confidence guard REMOVED (policy moved to plugin index.ts)
@@ -30,22 +34,14 @@ const CONFIG_PATH = path.join(ROUTER_DIR, 'config.json');
 const LOW_CONFIDENCE_THRESHOLD = 0.30;
 
 // Thinking settings per tier
-const THINKING_MAP = {
-  SIMPLE: null,
-  MEDIUM: null,
-  COMPLEX: 'on',
-  REASONING: 'high',
-  CRITICAL: 'high',
-};
-
 // Model alias map for spawn commands
 const ALIAS_MAP = {
   'anthropic/claude-haiku-4-5': 'haiku',
   'anthropic/claude-sonnet-4-6': 'sonnet',
   'anthropic/claude-opus-4-6': 'opus',
   'google/gemini-2.5-flash': 'gemini-flash',
-  'google/gemini-3-flash-preview': 'gemini-3-flash',
-  'google/gemini-3-pro-preview': 'gemini-3-pro',
+  'google/gemini-3.1-flash-preview': 'gemini-3-1-flash',
+  'google/gemini-3.1-pro-preview': 'gemini-3-1-pro',
   'xai/grok-4-1-fast-non-reasoning': 'grok',
   'qwen/qwen-2.5-7b-instruct': 'qwen',
 };
@@ -68,23 +64,31 @@ function loadConfig() {
 function stripTelegramEnvelope(text) {
   let s = text;
 
-  // Remove ```json ... ``` fenced blocks that look like Telegram metadata
-  // (contain message_id, sender_name, chat_id, etc.)
+  // Remove "Sender (untrusted metadata):" header + following ```json...``` block
+  // v1.4 fix: The Sender block uses field names like label/id/name/username,
+  // NOT message_id/sender_name/chat_id — so the old check never matched.
+  s = s.replace(/Sender\s+\(untrusted[^)]*\)\s*:\s*```json[\s\S]*?```/gi, '');
+
+  // Remove any remaining ```json...``` blocks that look like platform metadata
   s = s.replace(/```json[\s\S]*?```/g, (block) => {
-    if (/message_id|sender_name|chat_id|from_user_id|reply_to_message_id/i.test(block)) {
+    if (/message_id|sender_name|chat_id|from_user_id|reply_to_message_id|"label"|"username"|"e164"|"sender_id"/i.test(block)) {
       return '';
     }
     return block; // keep non-metadata JSON blocks
   });
 
-  // Remove "Conversation info (untrusted metadata)" sections until next blank line
+  // Remove "Conversation info (untrusted metadata)" sections
   s = s.replace(/Conversation info \(untrusted[^)]*\)[\s\S]*?(?=\n\n|\n[A-Z][a-z]|$)/gi, '');
 
-  // Remove "Replied message (untrusted, for context)" sections until next blank line
+  // Remove "Replied message (untrusted, for context)" sections
   s = s.replace(/Replied message \(untrusted[^)]*\)[\s\S]*?(?=\n\n|\n[A-Z][a-z]|$)/gi, '');
 
-  // Remove lines that look like key: value Telegram metadata
+  // Remove lines that look like key: value metadata
   s = s.replace(/^\s*(message_id|sender_name|sender_id|chat_id|chat_title|from_user_id|reply_to_message_id|timestamp|platform)\s*:.*$/gim, '');
+
+  // Remove [media attached: ...] instruction lines
+  s = s.replace(/^\[media attached:.*$/gim, '');
+  s = s.replace(/^To send an image back.*$/gim, '');
 
   // Collapse multiple blank lines
   s = s.replace(/\n{3,}/g, '\n\n');
@@ -235,7 +239,7 @@ function route(task, overrideTier) {
     model: rules.primary,
     modelAlias: ALIAS_MAP[rules.primary] || rules.primary,
     fallbacks: rules.fallback_chain,
-    thinking: THINKING_MAP[tier] || null,
+    thinking: null,
     confidence,
     handleDirectly: isSimple,
     fastPath: fastPath || undefined,

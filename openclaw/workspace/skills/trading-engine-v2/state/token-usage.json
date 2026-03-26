@@ -1,0 +1,324 @@
+{
+  "daily": {
+    "2026-03-15": {
+      "grok_fast": {
+        "input": 0,
+        "output": 0,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0,
+        "calls": 8
+      },
+      "total_cost_usd": 4.7973,
+      "haiku": {
+        "input": 3356,
+        "output": 116793,
+        "cacheWrite": 851412,
+        "cacheRead": 8484555,
+        "cost_usd": 2.5,
+        "calls": 1678
+      },
+      "sonnet": {
+        "input": 288,
+        "output": 78645,
+        "cacheWrite": 191665,
+        "cacheRead": 452569,
+        "cost_usd": 2.0351,
+        "calls": 96
+      },
+      "gemini_flash_lite": {
+        "input": 1000118,
+        "output": 8094,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.2622,
+        "calls": 183
+      }
+    },
+    "2026-03-16": {
+      "haiku": {
+        "input": 2924954,
+        "output": 848966,
+        "cacheWrite": 58209,
+        "cacheRead": 366183,
+        "cost_usd": 7.2792,
+        "calls": 4845
+      },
+      "total_cost_usd": 12.256,
+      "sonnet": {
+        "input": 36588,
+        "output": 187401,
+        "cacheWrite": 519929,
+        "cacheRead": 46299,
+        "cost_usd": 4.8844,
+        "calls": 240
+      },
+      "gemini_flash_lite": {
+        "input": 310031,
+        "output": 9559,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0918,
+        "calls": 281
+      },
+      "grok_fast": {
+        "input": 862,
+        "output": 917,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0006,
+        "calls": 42
+      }
+    },
+    "2026-03-17": {
+      "grok_fast": {
+        "input": 48100,
+        "output": 13548,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0164,
+        "calls": 30
+      },
+      "total_cost_usd": 8.836,
+      "haiku": {
+        "input": 824743,
+        "output": 631524,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 3.9824,
+        "calls": 5600
+      },
+      "sonnet": {
+        "input": 590143,
+        "output": 204090,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 4.8318,
+        "calls": 151
+      },
+      "gemini_flash_lite": {
+        "input": 11525,
+        "output": 1646,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0054,
+        "calls": 51
+      }
+    },
+    "2026-03-18": {
+      "haiku": {
+        "input": 993578,
+        "output": 739104,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 4.6891,
+        "calls": 6477
+      },
+      "total_cost_usd": 14.3368,
+      "sonnet": {
+        "input": 1203319,
+        "output": 400807,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 9.6221,
+        "calls": 263
+      },
+      "grok_fast": {
+        "input": 31598,
+        "output": 7970,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0103,
+        "calls": 17
+      },
+      "gemini_flash_lite": {
+        "input": 39228,
+        "output": 3658,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0153,
+        "calls": 134
+      }
+    },
+    "2026-03-19": {
+      "haiku": {
+        "input": 1079382,
+        "output": 803013,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 5.0944,
+        "calls": 6999
+      },
+      "total_cost_usd": 18.147,
+      "sonnet": {
+        "input": 1666075,
+        "output": 535688,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 13.0335,
+        "calls": 347
+      },
+      "gemini_flash_lite": {
+        "input": 28294,
+        "output": 2656,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0111,
+        "calls": 87
+      },
+      "grok_fast": {
+        "input": 24717,
+        "output": 6045,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.008,
+        "calls": 13
+      }
+    },
+    "2026-03-20": {
+      "haiku": {
+        "input": 875308,
+        "output": 675050,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 4.2506,
+        "calls": 5953
+      },
+      "total_cost_usd": 14.4868,
+      "sonnet": {
+        "input": 1350493,
+        "output": 411217,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 10.2197,
+        "calls": 283
+      },
+      "gemini_flash_lite": {
+        "input": 23524,
+        "output": 2260,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0093,
+        "calls": 71
+      },
+      "grok_fast": {
+        "input": 22010,
+        "output": 5618,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0072,
+        "calls": 12
+      }
+    },
+    "2026-03-21": {
+      "haiku": {
+        "input": 684642,
+        "output": 558030,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 3.4748,
+        "calls": 4969
+      },
+      "total_cost_usd": 6.725,
+      "sonnet": {
+        "input": 420920,
+        "output": 131819,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 3.24,
+        "calls": 94
+      },
+      "gemini_flash_lite": {
+        "input": 8173,
+        "output": 763,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0032,
+        "calls": 25
+      },
+      "grok_fast": {
+        "input": 20980,
+        "output": 5553,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.007,
+        "calls": 12
+      }
+    },
+    "2026-03-22": {
+      "haiku": {
+        "input": 951044,
+        "output": 707603,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 4.4891,
+        "calls": 6201
+      },
+      "total_cost_usd": 11.3315,
+      "sonnet": {
+        "input": 901243,
+        "output": 275024,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 6.8291,
+        "calls": 187
+      },
+      "gemini_flash_lite": {
+        "input": 16056,
+        "output": 1515,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0063,
+        "calls": 48
+      },
+      "grok_fast": {
+        "input": 21254,
+        "output": 5444,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.007,
+        "calls": 12
+      }
+    },
+    "2026-03-23": {
+      "haiku": {
+        "input": 467085,
+        "output": 350439,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 2.2193,
+        "calls": 3066
+      },
+      "total_cost_usd": 8.3091,
+      "sonnet": {
+        "input": 775194,
+        "output": 250387,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 6.0814,
+        "calls": 157
+      },
+      "gemini_flash_lite": {
+        "input": 13803,
+        "output": 1408,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0056,
+        "calls": 43
+      },
+      "grok_fast": {
+        "input": 8098,
+        "output": 2341,
+        "cacheWrite": 0,
+        "cacheRead": 0,
+        "cost_usd": 0.0028,
+        "calls": 5
+      }
+    }
+  },
+  "alerts": {
+    "daily_budget_usd": 10,
+    "warn_at_pct": 70,
+    "over_budget_step_pct": 25
+  }
+}
