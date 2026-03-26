@@ -1,0 +1,585 @@
+{
+  "timestamp": "2026-03-23T10:51:54.202Z",
+  "strategies": [
+    {
+      "id": "stra_843cdd73",
+      "name": "Sentiment",
+      "status": "paused",
+      "target_assets": [],
+      "budget_pct": 30,
+      "rules": [
+        {
+          "trigger": "sentiment_score > 40 AND confidence > 50",
+          "action": "open LONG"
+        },
+        {
+          "trigger": "sentiment_score < -40 AND confidence > 50",
+          "action": "open SHORT"
+        },
+        {
+          "trigger": "pnl >= 5%",
+          "action": "take profit"
+        },
+        {
+          "trigger": "pnl <= -3%",
+          "action": "stop loss"
+        }
+      ],
+      "config": {
+        "weights": {
+          "technical": 10,
+          "sentiment": 70,
+          "whales": 20
+        },
+        "timeframe": "15m",
+        "hold_time": {
+          "min": 60,
+          "max": 1440,
+          "unit": "minutes"
+        },
+        "leverage": {
+          "base": 3,
+          "max": 5,
+          "dynamic": false
+        },
+        "max_positions": 2,
+        "tp_pct": 5,
+        "sl_pct": 3,
+        "sl_mode": "pct",
+        "trailing_stop": true,
+        "min_sentiment_confidence": 50,
+        "sentiment_window_hours": 24,
+        "_manualOverride": false
+      },
+      "performance": {
+        "pnl": -4,
+        "trades": 31,
+        "wins": 7,
+        "winRate": 22.6
+      },
+      "_rawDescription": "Narrative-driven trades based on Twitter sentiment and market mood. Medium frequency.\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 10,\n    \"sentiment\": 70,\n    \"whales\": 20\n  },\n  \"timeframe\": \"15m\",\n  \"hold_time\": {\n    \"min\": 60,\n    \"max\": 1440,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 3,\n    \"max\": 5,\n    \"dynamic\": false\n  },\n  \"max_positions\": 2,\n  \"tp_pct\": 5,\n  \"sl_pct\": 3,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": true,\n  \"min_sentiment_confidence\": 50,\n  \"sentiment_window_hours\": 24,\n  \"_manualOverride\": false\n}\n[Performance: PnL $-4, Trades: 31, Wins: 7, WinRate: 22.6%, Updated: 2026-03-23T09:59:40.469Z]",
+      "_entityProps": {
+        "name": "Sentiment",
+        "description": "Narrative-driven trades based on Twitter sentiment and market mood. Medium frequency.\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 10,\n    \"sentiment\": 70,\n    \"whales\": 20\n  },\n  \"timeframe\": \"15m\",\n  \"hold_time\": {\n    \"min\": 60,\n    \"max\": 1440,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 3,\n    \"max\": 5,\n    \"dynamic\": false\n  },\n  \"max_positions\": 2,\n  \"tp_pct\": 5,\n  \"sl_pct\": 3,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": true,\n  \"min_sentiment_confidence\": 50,\n  \"sentiment_window_hours\": 24,\n  \"_manualOverride\": false\n}\n[Performance: PnL $-4, Trades: 31, Wins: 7, WinRate: 22.6%, Updated: 2026-03-23T09:59:40.469Z]",
+        "topic": "crypto-trading",
+        "target_assets": [],
+        "status": "paused",
+        "visibility": "family",
+        "rules": [
+          {
+            "trigger": "sentiment_score > 40 AND confidence > 50",
+            "action": "open LONG"
+          },
+          {
+            "trigger": "sentiment_score < -40 AND confidence > 50",
+            "action": "open SHORT"
+          },
+          {
+            "trigger": "pnl >= 5%",
+            "action": "take profit"
+          },
+          {
+            "trigger": "pnl <= -3%",
+            "action": "stop loss"
+          }
+        ],
+        "budget_limit": 30,
+        "owner": "pers_b2e2a84a",
+        "config": {
+          "weights": {
+            "technical": 10,
+            "sentiment": 70,
+            "whales": 20
+          },
+          "timeframe": "15m",
+          "hold_time": {
+            "min": 60,
+            "max": 1440,
+            "unit": "minutes"
+          },
+          "leverage": {
+            "base": 3,
+            "max": 5,
+            "dynamic": false
+          },
+          "max_positions": 2,
+          "tp_pct": 5,
+          "sl_pct": 3,
+          "sl_mode": "pct",
+          "trailing_stop": true,
+          "min_sentiment_confidence": 50,
+          "sentiment_window_hours": 24,
+          "_manualOverride": false
+        }
+      }
+    },
+    {
+      "id": "stra_fb5867dd",
+      "name": "Copytrading",
+      "status": "paused",
+      "target_assets": [],
+      "budget_pct": 30,
+      "rules": [
+        {
+          "trigger": "whale opens position AND technical_score > -20",
+          "action": "mirror position"
+        },
+        {
+          "trigger": "whale closes position",
+          "action": "close mirrored position"
+        },
+        {
+          "trigger": "pnl >= 10% OR whale exits",
+          "action": "take profit"
+        },
+        {
+          "trigger": "pnl <= -5%",
+          "action": "stop loss"
+        }
+      ],
+      "config": {
+        "weights": {
+          "technical": 25,
+          "sentiment": 10,
+          "whales": 70
+        },
+        "timeframe": "1h",
+        "hold_time": {
+          "min": 60,
+          "max": 2880,
+          "unit": "minutes"
+        },
+        "leverage": {
+          "base": 5,
+          "max": 10,
+          "mirror_whale": true
+        },
+        "max_positions": 3,
+        "tp_pct": 10,
+        "sl_pct": 5,
+        "sl_mode": "pct",
+        "trailing_stop": true,
+        "whale_min_position_usd": 10000,
+        "_manualOverride": false
+      },
+      "performance": {
+        "pnl": -3.44,
+        "trades": 17,
+        "wins": 2,
+        "winRate": 11.8
+      },
+      "_rawDescription": "Follow top HL whale traders. Low frequency, high conviction.\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 25,\n    \"sentiment\": 10,\n    \"whales\": 70\n  },\n  \"timeframe\": \"1h\",\n  \"hold_time\": {\n    \"min\": 60,\n    \"max\": 2880,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 5,\n    \"max\": 10,\n    \"mirror_whale\": true\n  },\n  \"max_positions\": 3,\n  \"tp_pct\": 10,\n  \"sl_pct\": 5,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": true,\n  \"whale_min_position_usd\": 10000,\n  \"_manualOverride\": false\n}\n[Performance: PnL $-3.44, Trades: 17, Wins: 2, WinRate: 11.8%, Updated: 2026-03-23T09:59:40.467Z]",
+      "_entityProps": {
+        "name": "Copytrading",
+        "description": "Follow top HL whale traders. Low frequency, high conviction.\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 25,\n    \"sentiment\": 10,\n    \"whales\": 70\n  },\n  \"timeframe\": \"1h\",\n  \"hold_time\": {\n    \"min\": 60,\n    \"max\": 2880,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 5,\n    \"max\": 10,\n    \"mirror_whale\": true\n  },\n  \"max_positions\": 3,\n  \"tp_pct\": 10,\n  \"sl_pct\": 5,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": true,\n  \"whale_min_position_usd\": 10000,\n  \"_manualOverride\": false\n}\n[Performance: PnL $-3.44, Trades: 17, Wins: 2, WinRate: 11.8%, Updated: 2026-03-23T09:59:40.467Z]",
+        "topic": "crypto-trading",
+        "target_assets": [],
+        "status": "paused",
+        "visibility": "family",
+        "rules": [
+          {
+            "trigger": "whale opens position AND technical_score > -20",
+            "action": "mirror position"
+          },
+          {
+            "trigger": "whale closes position",
+            "action": "close mirrored position"
+          },
+          {
+            "trigger": "pnl >= 10% OR whale exits",
+            "action": "take profit"
+          },
+          {
+            "trigger": "pnl <= -5%",
+            "action": "stop loss"
+          }
+        ],
+        "budget_limit": 30,
+        "owner": "pers_b2e2a84a",
+        "config": {
+          "weights": {
+            "technical": 25,
+            "sentiment": 10,
+            "whales": 70
+          },
+          "timeframe": "1h",
+          "hold_time": {
+            "min": 60,
+            "max": 2880,
+            "unit": "minutes"
+          },
+          "leverage": {
+            "base": 5,
+            "max": 10,
+            "mirror_whale": true
+          },
+          "max_positions": 3,
+          "tp_pct": 10,
+          "sl_pct": 5,
+          "sl_mode": "pct",
+          "trailing_stop": true,
+          "whale_min_position_usd": 10000,
+          "_manualOverride": false
+        }
+      }
+    },
+    {
+      "id": "stra_65b1c509",
+      "name": "Scalping",
+      "status": "paused",
+      "target_assets": [],
+      "budget_pct": 40,
+      "rules": [
+        {
+          "trigger": "signal_score > 15",
+          "action": "open LONG"
+        },
+        {
+          "trigger": "signal_score < -15",
+          "action": "open SHORT"
+        },
+        {
+          "trigger": "pnl >= 1.5%",
+          "action": "take profit"
+        },
+        {
+          "trigger": "pnl <= -ATR*1.5",
+          "action": "stop loss"
+        }
+      ],
+      "config": {
+        "weights": {
+          "technical": 70,
+          "sentiment": 25,
+          "whales": 5
+        },
+        "timeframe": "5m",
+        "hold_time": {
+          "min": 5,
+          "max": 60,
+          "unit": "minutes"
+        },
+        "leverage": {
+          "base": 5,
+          "max": 10,
+          "dynamic": true
+        },
+        "max_positions": 3,
+        "tp_pct": 2.5,
+        "sl_pct": 2,
+        "sl_mode": "pct",
+        "trailing_stop": true,
+        "close_rule": "fee_based",
+        "close_fee_multiple_sl": 2,
+        "close_fee_multiple_tp": 4,
+        "note": "Close ONLY if PnL < -2x_fee (cut loss) OR PnL > +4x_fee (take profit). Hold everything else to avoid churn and keep margin occupied.",
+        "_manualOverride": false
+      },
+      "performance": {
+        "pnl": -7.11,
+        "trades": 61,
+        "wins": 8,
+        "winRate": 13.1
+      },
+      "_rawDescription": "Fast in/out trades targeting 1-2% PnL. High frequency, technical-driven.\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 70,\n    \"sentiment\": 25,\n    \"whales\": 5\n  },\n  \"timeframe\": \"5m\",\n  \"hold_time\": {\n    \"min\": 5,\n    \"max\": 60,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 5,\n    \"max\": 10,\n    \"dynamic\": true\n  },\n  \"max_positions\": 3,\n  \"tp_pct\": 2.5,\n  \"sl_pct\": 2,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": true,\n  \"close_rule\": \"fee_based\",\n  \"close_fee_multiple_sl\": 2,\n  \"close_fee_multiple_tp\": 4,\n  \"note\": \"Close ONLY if PnL < -2x_fee (cut loss) OR PnL > +4x_fee (take profit). Hold everything else to avoid churn and keep margin occupied.\",\n  \"_manualOverride\": false\n}\n[Performance: PnL $-7.11, Trades: 61, Wins: 8, WinRate: 13.1%, Updated: 2026-03-23T09:59:40.466Z]",
+      "_entityProps": {
+        "name": "Scalping",
+        "description": "Fast in/out trades targeting 1-2% PnL. High frequency, technical-driven.\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 70,\n    \"sentiment\": 25,\n    \"whales\": 5\n  },\n  \"timeframe\": \"5m\",\n  \"hold_time\": {\n    \"min\": 5,\n    \"max\": 60,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 5,\n    \"max\": 10,\n    \"dynamic\": true\n  },\n  \"max_positions\": 3,\n  \"tp_pct\": 2.5,\n  \"sl_pct\": 2,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": true,\n  \"close_rule\": \"fee_based\",\n  \"close_fee_multiple_sl\": 2,\n  \"close_fee_multiple_tp\": 4,\n  \"note\": \"Close ONLY if PnL < -2x_fee (cut loss) OR PnL > +4x_fee (take profit). Hold everything else to avoid churn and keep margin occupied.\",\n  \"_manualOverride\": false\n}\n[Performance: PnL $-7.11, Trades: 61, Wins: 8, WinRate: 13.1%, Updated: 2026-03-23T09:59:40.466Z]",
+        "topic": "crypto-trading",
+        "target_assets": [],
+        "status": "paused",
+        "visibility": "family",
+        "rules": [
+          {
+            "trigger": "signal_score > 15",
+            "action": "open LONG"
+          },
+          {
+            "trigger": "signal_score < -15",
+            "action": "open SHORT"
+          },
+          {
+            "trigger": "pnl >= 1.5%",
+            "action": "take profit"
+          },
+          {
+            "trigger": "pnl <= -ATR*1.5",
+            "action": "stop loss"
+          }
+        ],
+        "budget_limit": 40,
+        "owner": "pers_b2e2a84a",
+        "config": {
+          "weights": {
+            "technical": 70,
+            "sentiment": 25,
+            "whales": 5
+          },
+          "timeframe": "5m",
+          "hold_time": {
+            "min": 5,
+            "max": 60,
+            "unit": "minutes"
+          },
+          "leverage": {
+            "base": 5,
+            "max": 10,
+            "dynamic": true
+          },
+          "max_positions": 3,
+          "close_rule": "fee_based",
+          "close_fee_multiple_sl": 2,
+          "close_fee_multiple_tp": 4,
+          "trailing_stop": true,
+          "note": "Close ONLY if PnL < -2x_fee (cut loss) OR PnL > +4x_fee (take profit). Hold everything else to avoid churn and keep margin occupied.",
+          "tp_pct": 2.5,
+          "sl_pct": 2,
+          "sl_mode": "pct",
+          "_manualOverride": false
+        }
+      }
+    },
+    {
+      "id": "stra_5ef195eb",
+      "name": "Scalping-v2",
+      "status": "active",
+      "target_assets": [],
+      "budget_pct": 20,
+      "rules": [],
+      "config": {
+        "weights": {
+          "technical": 55,
+          "sentiment": 40,
+          "whales": 5
+        },
+        "timeframe": "5m",
+        "hold_time": {
+          "min": 5,
+          "max": 90,
+          "unit": "minutes"
+        },
+        "leverage": {
+          "base": 4,
+          "max": 7,
+          "dynamic": true
+        },
+        "max_positions": 3,
+        "tp_pct": 1.2,
+        "sl_pct": 1.5,
+        "sl_mode": "pct",
+        "trailing_stop": false,
+        "close_rule": "fee_based",
+        "close_fee_multiple_sl": 2,
+        "close_fee_multiple_tp": 4,
+        "note": "Optimized 2026-03-18: TP 2.5->1.2, SL 2.5->1.5, hold 60->90min, lev 10->7",
+        "_manualOverride": true
+      },
+      "performance": {
+        "pnl": -25.66,
+        "trades": 165,
+        "wins": 66,
+        "winRate": 40
+      },
+      "_rawDescription": "Variant of failing strategy Scalping with adjusted weights and wider stops\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 55,\n    \"sentiment\": 40,\n    \"whales\": 5\n  },\n  \"timeframe\": \"5m\",\n  \"hold_time\": {\n    \"min\": 5,\n    \"max\": 90,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 4,\n    \"max\": 7,\n    \"dynamic\": true\n  },\n  \"max_positions\": 3,\n  \"tp_pct\": 1.2,\n  \"sl_pct\": 1.5,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": false,\n  \"close_rule\": \"fee_based\",\n  \"close_fee_multiple_sl\": 2,\n  \"close_fee_multiple_tp\": 4,\n  \"note\": \"Optimized 2026-03-18: TP 2.5->1.2, SL 2.5->1.5, hold 60->90min, lev 10->7\",\n  \"_manualOverride\": true\n}\n[Performance: PnL $-25.66, Trades: 165, Wins: 66, WinRate: 40%, Updated: 2026-03-23T09:59:40.465Z]",
+      "_entityProps": {
+        "name": "Scalping-v2",
+        "description": "Variant of failing strategy Scalping with adjusted weights and wider stops\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 55,\n    \"sentiment\": 40,\n    \"whales\": 5\n  },\n  \"timeframe\": \"5m\",\n  \"hold_time\": {\n    \"min\": 5,\n    \"max\": 90,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 4,\n    \"max\": 7,\n    \"dynamic\": true\n  },\n  \"max_positions\": 3,\n  \"tp_pct\": 1.2,\n  \"sl_pct\": 1.5,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": false,\n  \"close_rule\": \"fee_based\",\n  \"close_fee_multiple_sl\": 2,\n  \"close_fee_multiple_tp\": 4,\n  \"note\": \"Optimized 2026-03-18: TP 2.5->1.2, SL 2.5->1.5, hold 60->90min, lev 10->7\",\n  \"_manualOverride\": true\n}\n[Performance: PnL $-25.66, Trades: 165, Wins: 66, WinRate: 40%, Updated: 2026-03-23T09:59:40.465Z]",
+        "config": {
+          "weights": {
+            "technical": 55,
+            "sentiment": 40,
+            "whales": 5
+          },
+          "timeframe": "5m",
+          "hold_time": {
+            "min": 5,
+            "max": 90,
+            "unit": "minutes"
+          },
+          "leverage": {
+            "base": 4,
+            "max": 7,
+            "dynamic": true
+          },
+          "max_positions": 3,
+          "tp_pct": 1.2,
+          "sl_pct": 1.5,
+          "sl_mode": "pct",
+          "trailing_stop": false,
+          "close_rule": "fee_based",
+          "close_fee_multiple_sl": 2,
+          "close_fee_multiple_tp": 4,
+          "note": "Optimized 2026-03-18: TP 2.5->1.2, SL 2.5->1.5, hold 60->90min, lev 10->7",
+          "_manualOverride": true
+        },
+        "topic": "crypto-trading",
+        "target_assets": [],
+        "status": "active",
+        "visibility": "family",
+        "budget_limit": 20,
+        "rules": [],
+        "owner": "pers_b2e2a84a"
+      }
+    },
+    {
+      "id": "stra_9ea2e95a",
+      "name": "Copytrading-v2",
+      "status": "active",
+      "target_assets": [],
+      "budget_pct": 20,
+      "rules": [],
+      "config": {
+        "weights": {
+          "technical": 40,
+          "sentiment": 10,
+          "whales": 55
+        },
+        "timeframe": "15m",
+        "hold_time": {
+          "min": 60,
+          "max": 2880,
+          "unit": "minutes"
+        },
+        "leverage": {
+          "base": 4,
+          "max": 7,
+          "mirror_whale": true,
+          "dynamic": true
+        },
+        "max_positions": 2,
+        "tp_pct": 8,
+        "sl_pct": 4,
+        "sl_mode": "pct",
+        "trailing_stop": true,
+        "whale_min_position_usd": 10000,
+        "_manualOverride": true,
+        "note": "Optimized 2026-03-18: TP 10->8, SL 5.5->4, lev 10->7"
+      },
+      "performance": {
+        "pnl": -7.98,
+        "trades": 9,
+        "wins": 3,
+        "winRate": 33.3
+      },
+      "_rawDescription": "Copy-follow whale trades and high-conviction signals with wider timeframes\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 40,\n    \"sentiment\": 10,\n    \"whales\": 55\n  },\n  \"timeframe\": \"15m\",\n  \"hold_time\": {\n    \"min\": 60,\n    \"max\": 2880,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 4,\n    \"max\": 7,\n    \"mirror_whale\": true,\n    \"dynamic\": true\n  },\n  \"max_positions\": 2,\n  \"tp_pct\": 8,\n  \"sl_pct\": 4,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": true,\n  \"whale_min_position_usd\": 10000,\n  \"_manualOverride\": true,\n  \"note\": \"Optimized 2026-03-18: TP 10->8, SL 5.5->4, lev 10->7\"\n}\n[Performance: PnL $-7.98, Trades: 9, Wins: 3, WinRate: 33.3%, Updated: 2026-03-23T09:59:40.461Z]",
+      "_entityProps": {
+        "name": "Copytrading-v2",
+        "description": "Copy-follow whale trades and high-conviction signals with wider timeframes\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 40,\n    \"sentiment\": 10,\n    \"whales\": 55\n  },\n  \"timeframe\": \"15m\",\n  \"hold_time\": {\n    \"min\": 60,\n    \"max\": 2880,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 4,\n    \"max\": 7,\n    \"mirror_whale\": true,\n    \"dynamic\": true\n  },\n  \"max_positions\": 2,\n  \"tp_pct\": 8,\n  \"sl_pct\": 4,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": true,\n  \"whale_min_position_usd\": 10000,\n  \"_manualOverride\": true,\n  \"note\": \"Optimized 2026-03-18: TP 10->8, SL 5.5->4, lev 10->7\"\n}\n[Performance: PnL $-7.98, Trades: 9, Wins: 3, WinRate: 33.3%, Updated: 2026-03-23T09:59:40.461Z]",
+        "config": {
+          "weights": {
+            "technical": 40,
+            "sentiment": 10,
+            "whales": 55
+          },
+          "timeframe": "15m",
+          "hold_time": {
+            "min": 60,
+            "max": 2880,
+            "unit": "minutes"
+          },
+          "leverage": {
+            "base": 4,
+            "max": 7,
+            "mirror_whale": true,
+            "dynamic": true
+          },
+          "max_positions": 2,
+          "tp_pct": 8,
+          "sl_pct": 4,
+          "sl_mode": "pct",
+          "trailing_stop": true,
+          "whale_min_position_usd": 10000,
+          "_manualOverride": true,
+          "note": "Optimized 2026-03-18: TP 10->8, SL 5.5->4, lev 10->7"
+        },
+        "topic": "crypto-trading",
+        "target_assets": [],
+        "status": "active",
+        "visibility": "family",
+        "budget_limit": 20,
+        "rules": [],
+        "owner": "pers_b2e2a84a"
+      }
+    },
+    {
+      "id": "stra_dcf8e713",
+      "name": "Sentiment-v2",
+      "status": "active",
+      "target_assets": [],
+      "budget_pct": 20,
+      "rules": [],
+      "config": {
+        "weights": {
+          "technical": 10,
+          "sentiment": 55,
+          "whales": 35
+        },
+        "timeframe": "15m",
+        "hold_time": {
+          "min": 60,
+          "max": 1440,
+          "unit": "minutes"
+        },
+        "leverage": {
+          "base": 3,
+          "max": 5,
+          "dynamic": true
+        },
+        "max_positions": 2,
+        "tp_pct": 4,
+        "sl_pct": 3,
+        "sl_mode": "pct",
+        "trailing_stop": true,
+        "min_sentiment_confidence": 50,
+        "sentiment_window_hours": 24,
+        "_manualOverride": true,
+        "note": "Optimized 2026-03-18: TP 5->4, SL 3.5->3, max_positions 1->2"
+      },
+      "performance": {
+        "pnl": -7.25,
+        "trades": 15,
+        "wins": 7,
+        "winRate": 46.7
+      },
+      "_rawDescription": "Sentiment-driven swing trades based on market mood and whale activity\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 10,\n    \"sentiment\": 55,\n    \"whales\": 35\n  },\n  \"timeframe\": \"15m\",\n  \"hold_time\": {\n    \"min\": 60,\n    \"max\": 1440,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 3,\n    \"max\": 5,\n    \"dynamic\": true\n  },\n  \"max_positions\": 2,\n  \"tp_pct\": 4,\n  \"sl_pct\": 3,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": true,\n  \"min_sentiment_confidence\": 50,\n  \"sentiment_window_hours\": 24,\n  \"_manualOverride\": true,\n  \"note\": \"Optimized 2026-03-18: TP 5->4, SL 3.5->3, max_positions 1->2\"\n}\n[Performance: PnL $-7.25, Trades: 15, Wins: 7, WinRate: 46.7%, Updated: 2026-03-23T09:59:40.459Z]",
+      "_entityProps": {
+        "name": "Sentiment-v2",
+        "description": "Sentiment-driven swing trades based on market mood and whale activity\n\n---CONFIG---\n{\n  \"weights\": {\n    \"technical\": 10,\n    \"sentiment\": 55,\n    \"whales\": 35\n  },\n  \"timeframe\": \"15m\",\n  \"hold_time\": {\n    \"min\": 60,\n    \"max\": 1440,\n    \"unit\": \"minutes\"\n  },\n  \"leverage\": {\n    \"base\": 3,\n    \"max\": 5,\n    \"dynamic\": true\n  },\n  \"max_positions\": 2,\n  \"tp_pct\": 4,\n  \"sl_pct\": 3,\n  \"sl_mode\": \"pct\",\n  \"trailing_stop\": true,\n  \"min_sentiment_confidence\": 50,\n  \"sentiment_window_hours\": 24,\n  \"_manualOverride\": true,\n  \"note\": \"Optimized 2026-03-18: TP 5->4, SL 3.5->3, max_positions 1->2\"\n}\n[Performance: PnL $-7.25, Trades: 15, Wins: 7, WinRate: 46.7%, Updated: 2026-03-23T09:59:40.459Z]",
+        "config": {
+          "weights": {
+            "technical": 10,
+            "sentiment": 55,
+            "whales": 35
+          },
+          "timeframe": "15m",
+          "hold_time": {
+            "min": 60,
+            "max": 1440,
+            "unit": "minutes"
+          },
+          "leverage": {
+            "base": 3,
+            "max": 5,
+            "dynamic": true
+          },
+          "max_positions": 2,
+          "tp_pct": 4,
+          "sl_pct": 3,
+          "sl_mode": "pct",
+          "trailing_stop": true,
+          "min_sentiment_confidence": 50,
+          "sentiment_window_hours": 24,
+          "_manualOverride": true,
+          "note": "Optimized 2026-03-18: TP 5->4, SL 3.5->3, max_positions 1->2"
+        },
+        "topic": "crypto-trading",
+        "target_assets": [],
+        "status": "active",
+        "visibility": "family",
+        "budget_limit": 20,
+        "rules": [],
+        "owner": "pers_b2e2a84a"
+      }
+    }
+  ]
+}

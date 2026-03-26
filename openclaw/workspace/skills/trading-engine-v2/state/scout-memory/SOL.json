@@ -1,0 +1,92 @@
+[
+  {
+    "timestamp": "2026-03-16T21:08:43.561Z",
+    "signalCount": 3,
+    "signalTypes": "bb_squeeze_breakout,macd_cross,ema_cross",
+    "verdict": "SKIP",
+    "brief": "Signal contradiction: BB squeeze DOWN vs MACD/EMA BULLISH. Weak sentiment.",
+    "confidence": 35,
+    "price": 93.276
+  },
+  {
+    "timestamp": "2026-03-16T21:56:55.181Z",
+    "signalCount": 3,
+    "signalTypes": "macd_cross,bb_squeeze_breakout,ema_cross",
+    "verdict": "SKIP",
+    "brief": "Strong bearish signals contradicted by bullish news; sentiment too weak to confirm.",
+    "confidence": 35,
+    "price": 93.742
+  },
+  {
+    "timestamp": "2026-03-16T22:02:13.569Z",
+    "signalCount": 3,
+    "signalTypes": "bb_squeeze_breakout,macd_cross,ema_cross",
+    "verdict": "SKIP",
+    "brief": "Contradictory signals: breakout DOWN vs two BULLISH crosses. Low sentiment.",
+    "confidence": 35,
+    "price": 93.76
+  },
+  {
+    "timestamp": "2026-03-16T22:05:33.685Z",
+    "signalCount": 1,
+    "signalTypes": "bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Sentiment deeply misaligned with news; isolated signal lacks conviction.",
+    "confidence": 28,
+    "price": 97.137
+  },
+  {
+    "timestamp": "2026-03-16T22:09:32.527Z",
+    "signalCount": 2,
+    "signalTypes": "vwap_deviation,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "Sentiment severely lagging signals; low confidence setup despite technical alignment.",
+    "confidence": 32,
+    "price": 97.315
+  },
+  {
+    "timestamp": "2026-03-16T22:16:59.020Z",
+    "signalCount": 4,
+    "signalTypes": "macd_cross,ema_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "Technical bearish signals contradicted by bullish news and BB breakout.",
+    "confidence": 42,
+    "price": 93.917
+  },
+  {
+    "timestamp": "2026-03-16T22:21:01.506Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Bearish signal contradicted by bullish news; low sentiment confidence.",
+    "confidence": 35,
+    "price": 96.827
+  },
+  {
+    "timestamp": "2026-03-16T22:25:02.279Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Bearish signal contradicted by bullish news; weak sentiment baseline undermines conviction.",
+    "confidence": 35,
+    "price": 96.56
+  },
+  {
+    "timestamp": "2026-03-16T22:31:45.294Z",
+    "signalCount": 4,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "EMA bearish contradicts 3 bullish signals; sentiment weak at 25/100.",
+    "confidence": 42,
+    "price": 93.734
+  },
+  {
+    "timestamp": "2026-03-16T22:36:56.061Z",
+    "signalCount": 3,
+    "signalTypes": "macd_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "Sentiment critically misaligned; technical signals insufficient without momentum confirmation.",
+    "confidence": 42,
+    "price": 94.751
+  }
+]

@@ -1,0 +1,87 @@
+#!/bin/bash
+# tpm-prerun.sh — TPM unseal + write EnvironmentFile for openclaw-gateway
+# Chiamato da ExecStartPre nel drop-in systemd.
+# NON avvia il gateway — ci pensa ExecStart nel .service principale.
+set -euo pipefail
+
+# --- Config ---
+export TPM2TOOLS_TCTI="device:/dev/tpmrm0"
+SECRETS_FILE="/home/jarvis/.openclaw/secrets/secrets.enc.json"
+TPM_HANDLE="0x81000001"
+TPM_AUTH_FILE="/run/user/$(id -u)/tpm-auth"
+ENV_FILE="/run/user/$(id -u)/openclaw-secrets.env"
+
+# --- Pre-flight: flush stale TPM sessions ---
+tpm2_flushcontext -s 2>/dev/null || true
+tpm2_flushcontext -t 2>/dev/null || true
+
+# --- Read TPM password ---
+if [ -f "$TPM_AUTH_FILE" ]; then
+    TPM_PASS=$(cat "$TPM_AUTH_FILE")
+elif [ -n "${TPM_AUTH_PASSWORD:-}" ]; then
+    TPM_PASS="$TPM_AUTH_PASSWORD"
+else
+    echo "ERROR: No TPM password found. Set TPM_AUTH_PASSWORD or run: tpm-unlock" >&2
+    exit 1
+fi
+
+# --- Unseal age key from TPM ---
+AGE_KEY=$(tpm2_unseal -c "$TPM_HANDLE" -p "$TPM_PASS" 2>&1) || {
+    echo "ERROR: TPM unseal failed: $AGE_KEY" >&2
+    exit 1
+}
+
+if ! echo "$AGE_KEY" | grep -q "^AGE-SECRET-KEY-"; then
+    echo "ERROR: TPM returned invalid data (not an age key)" >&2
+    exit 1
+fi
+
+# --- Decrypt vault ---
+DECRYPTED=$(echo "$AGE_KEY" | SOPS_AGE_KEY_FILE=/dev/stdin sops decrypt "$SECRETS_FILE" 2>&1) || {
+    echo "ERROR: SOPS decrypt failed: $DECRYPTED" >&2
+    exit 1
+}
+
+# --- Collect SecretRef exec:tpm IDs (gestiti da OpenClaw, da non esportare) ---
+SECRETREF_IDS=""
+
+# 1) Auth profiles (agenti)
+for ap in ~/.openclaw/agents/*/agent/auth-profiles.json; do
+    [ -f "$ap" ] || continue
+    SECRETREF_IDS="${SECRETREF_IDS}
+$(jq -r '[ (.profiles // {} | to_entries[].value.keyRef  | select(type == "object" and .source == "exec" and .provider == "tpm") | .id), (.profiles // {} | to_entries[].value.tokenRef | select(type == "object" and .source == "exec" and .provider == "tpm") | .id) ] | unique | .[]' "$ap" 2>/dev/null || true)"
+done
+
+# 2) openclaw.json — SecretRef nelle skill e models
+# NOTA: NON escludere le skill apiKey perché OpenClaw non le inietta
+# via SecretRef nell'agent process. Le escludiamo SOLO per models.providers
+# (che vengono risolte dal gateway).
+OPENCLAW_JSON="$HOME/.openclaw/openclaw.json"
+if [ -f "$OPENCLAW_JSON" ]; then
+    # Escludi solo SecretRef in models.providers (non skill)
+    SECRETREF_IDS="${SECRETREF_IDS}
+$(jq -r '(.models.providers // {} | to_entries[].value.apiKey | select(type == "object" and .source == "exec" and .provider == "tpm") | .id) // empty' "$OPENCLAW_JSON" 2>/dev/null || true)"
+fi
+
+SECRETREF_IDS=$(echo "$SECRETREF_IDS" | sort -u | sed '/^$/d')
+
+# --- Scrivi EnvironmentFile (formato KEY=VALUE, senza 'export') ---
+> "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+
+for key in $(echo "$DECRYPTED" | jq -r 'keys[]'); do
+    if ! echo "$SECRETREF_IDS" | grep -qxF "$key"; then
+        val=$(echo "$DECRYPTED" | jq -r --arg k "$key" '.[$k]')
+        upper=$(echo "$key" | tr '[:lower:]' '[:upper:]')
+        printf '%s=%s\n' "$upper" "$val" >> "$ENV_FILE"
+    fi
+done
+
+# --- GROQ_API_KEY per trascrizione audio ---
+GROQ_VAL=$(echo "$DECRYPTED" | jq -r .whisper_api_key)
+printf 'GROQ_API_KEY=%s\n' "$GROQ_VAL" >> "$ENV_FILE"
+
+# --- Clear sensitive vars ---
+unset AGE_KEY TPM_PASS DECRYPTED
+
+echo "tpm-prerun: env file written to $ENV_FILE"

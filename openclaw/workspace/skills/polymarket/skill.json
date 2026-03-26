@@ -1,0 +1,6 @@
+{
+  "name": "polymarket",
+  "description": "Prediction market trading and monitoring on Polymarket (Polygon chain)",
+  "version": "1.0.0",
+  "dependencies": ["polymarket"]
+}

@@ -1,0 +1,92 @@
+[
+  {
+    "timestamp": "2026-03-16T21:54:37.101Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "Failed to parse scout response",
+    "confidence": 0,
+    "price": 80.909
+  },
+  {
+    "timestamp": "2026-03-16T22:03:39.343Z",
+    "signalCount": 1,
+    "signalTypes": "price_breakout",
+    "verdict": "SKIP",
+    "brief": "Single price breakout signal at 61% confidence insufficient for escalation.",
+    "confidence": 35,
+    "price": 80.919
+  },
+  {
+    "timestamp": "2026-03-16T22:08:54.360Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single weak MACD signal at 61% confidence, insufficient for escalation",
+    "confidence": 35,
+    "price": 80.766
+  },
+  {
+    "timestamp": "2026-03-16T22:11:36.971Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Low confidence bearish signal, repeated dismissals suggest poor reliability.",
+    "confidence": 25,
+    "price": 80.907
+  },
+  {
+    "timestamp": "2026-03-16T22:16:36.421Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Low confidence bearish signal (55%). Repeated MACD crosses recently skipped.",
+    "confidence": 35,
+    "price": 80.907
+  },
+  {
+    "timestamp": "2026-03-16T22:19:31.310Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Low confidence bearish signal. Repetitive MACD crosses, no corroborating strength.",
+    "confidence": 28,
+    "price": 80.907
+  },
+  {
+    "timestamp": "2026-03-16T22:24:31.983Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Weak bearish signal, repeated macd_cross pattern, low 55% confidence",
+    "confidence": 25,
+    "price": 80.907
+  },
+  {
+    "timestamp": "2026-03-16T22:29:31.440Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single weak MACD bearish signal; repeated pattern suggests noise not opportunity",
+    "confidence": 25,
+    "price": 80.907
+  },
+  {
+    "timestamp": "2026-03-16T22:34:31.984Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Single weak bearish signal with 55% confidence, repeated five times in succession",
+    "confidence": 25,
+    "price": 80.907
+  },
+  {
+    "timestamp": "2026-03-16T22:38:02.215Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Low confidence bearish MACD cross, repeated signal pattern, insufficient strength.",
+    "confidence": 32,
+    "price": 80.907
+  }
+]

@@ -1,0 +1,38 @@
+{
+  "id": "video-context",
+  "name": "Video Context",
+  "version": "1.0.0",
+  "description": "Injects ComfyUI workflow references and project state into video-producer agent context",
+  "hooks": ["before_prompt_build"],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "targetAgents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["video-producer"],
+        "description": "Agent IDs that receive context injection"
+      },
+      "referencesPath": {
+        "type": "string",
+        "default": "./references",
+        "description": "Path to reference markdown files (relative to plugin dir)"
+      },
+      "projectsBasePath": {
+        "type": "string",
+        "default": "/home/jarvis/.openclaw/workspace-video-producer/projects",
+        "description": "Base path for project folders"
+      },
+      "maxContextTokens": {
+        "type": "number",
+        "default": 4000,
+        "description": "Max approximate tokens for injected context"
+      },
+      "logPath": {
+        "type": "string",
+        "default": "",
+        "description": "Optional JSONL log file path"
+      }
+    }
+  }
+}

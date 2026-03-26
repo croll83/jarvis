@@ -657,15 +657,15 @@ const plugin: OpenClawPluginDefinition = {
               chromaAvailable = r;
               api.logger.info(`[ontology-bridge] ChromaDB ${r ? "reachable" : "unreachable"} at ${chromaUrl} (retry)`);
             });
-          }, 3000);
+          }, 3000).unref();
         }
       });
-    }, 2000);
+    }, 2000).unref();
 
     // Periodic health re-check for ChromaDB (every 5 min)
     setInterval(() => {
       chromaClient.healthCheck().then((ok) => { chromaAvailable = ok; });
-    }, 300_000);
+    }, 300_000).unref();
 
     // ── Hook 1: before_prompt_build (unified context injection) ──────
     api.on("before_prompt_build", async (event, ctx) => {

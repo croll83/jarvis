@@ -63,4 +63,4 @@ export GROQ_API_KEY=$(echo "$DECRYPTED" | jq -r .whisper_api_key)
 unset AGE_KEY TPM_PASS
 
 # --- Start gateway ---
-exec /usr/local/bin/node /home/jarvis/.nvm/versions/node/v22.22.0/lib/node_modules/openclaw/dist/index.js gateway --port 18789
+exec openclaw gateway --port 18789

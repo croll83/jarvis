@@ -1,0 +1,303 @@
+[
+  {
+    "timestamp": "2026-03-16T04:10:08.908Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:GOLD"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:11:13.567Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:SILVER"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:13:10.056Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:ORCL"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:21:12.647Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:COPPER"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:23:10.098Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:NATGAS"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:24:09.856Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:COIN"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:25:11.312Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "ETH"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:26:13.546Z",
+    "signalCount": 2,
+    "strategyCount": 4,
+    "decisionsCount": 8,
+    "trades": 0,
+    "coins": [
+      "xyz:SILVER",
+      "xyz:COIN"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:32:06.978Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:TSLA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:38:08.719Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "ETH"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:51:05.171Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "XRP"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:53:11.438Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:TSLA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T04:55:12.819Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "BTC"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T05:18:10.001Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:NATGAS"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T05:43:10.874Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:NATGAS"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T05:52:06.571Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:ORCL"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T06:21:08.470Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:NVDA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T06:28:07.251Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:COPPER"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T06:34:13.955Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:GOLD"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T06:40:12.283Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:GOLD"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T06:42:09.161Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:ORCL"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T06:49:11.126Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:NVDA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T07:01:08.536Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:CL"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T07:02:14.070Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:NATGAS"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T07:40:09.735Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:SILVER"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T07:56:12.381Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:BRENTOIL"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T07:57:14.718Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:CL"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T08:00:36.488Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:BRENTOIL"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T08:05:08.917Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 4,
+    "coins": [
+      "BTC"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T08:20:10.712Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "xyz:ORCL"
+    ]
+  }
+]

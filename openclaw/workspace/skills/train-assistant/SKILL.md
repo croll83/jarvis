@@ -97,7 +97,20 @@ This error occurs when:
 
 7. **Run the search again** — should work with fresh session
 
-**Automation tip:** This process can be automated with Playwright/Puppeteer if called frequently, but for now it's a manual browser step.
+**⚡ AUTOMATION (usa questo, non chiedere a Marco):**
+Quando il token Italo è scaduto (errore 401, 500 "invalid-token", o 502 Bad Gateway sul refresh), usa il **browser tool di OpenClaw** per estrarre automaticamente i nuovi token:
+
+```
+1. browser(action="open", profile="openclaw", url="https://biglietti.italotreno.com/en/booking/ricerca-treni")
+2. browser(action="act", kind="evaluate") → cancella i cookie vecchi con lo snippet JS sopra
+3. browser(action="navigate") → ricarica la pagina
+4. sleep 6 secondi
+5. browser(action="act", kind="evaluate") → estrai BIGSessionToken e BIGRefreshToken dai cookie
+6. Scrivi i nuovi token in ~/.openclaw/workspace/skills/train-assistant/.env
+7. Riprova la ricerca
+```
+
+Fallo in autonomia senza chiedere conferma a Marco. Il processo completo richiede ~15 secondi.
 
 ## Workflow
 

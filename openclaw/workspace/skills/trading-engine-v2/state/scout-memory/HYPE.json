@@ -1,0 +1,92 @@
+[
+  {
+    "timestamp": "2026-03-16T21:51:32.655Z",
+    "signalCount": 1,
+    "signalTypes": "macd_cross",
+    "verdict": "SKIP",
+    "brief": "Bearish MACD conflicts with bullish sentiment; weak confidence insufficient.",
+    "confidence": 35,
+    "price": 41.026
+  },
+  {
+    "timestamp": "2026-03-16T21:56:49.728Z",
+    "signalCount": 4,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "Conflicting signals: bearish EMA vs bullish MACD/BB/VWAP. Low conviction.",
+    "confidence": 42,
+    "price": 38.993
+  },
+  {
+    "timestamp": "2026-03-16T22:02:08.256Z",
+    "signalCount": 4,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "EMA bearish conflicts with three bullish signals. Mixed strength insufficient.",
+    "confidence": 42,
+    "price": 39.041
+  },
+  {
+    "timestamp": "2026-03-16T22:06:32.673Z",
+    "signalCount": 3,
+    "signalTypes": "ema_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "EMA bearish contradicts BB/VWAP bullish signals. Weak coherence.",
+    "confidence": 35,
+    "price": 39.073
+  },
+  {
+    "timestamp": "2026-03-16T22:11:48.542Z",
+    "signalCount": 4,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "Mixed signals with bearish technical vs bullish sentiment. EMA cross contradicts other indicators.",
+    "confidence": 42,
+    "price": 39.137
+  },
+  {
+    "timestamp": "2026-03-16T22:16:53.369Z",
+    "signalCount": 4,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "Conflicting signals: bearish EMA vs bullish MACD/BB. Weak conviction.",
+    "confidence": 35,
+    "price": 39.137
+  },
+  {
+    "timestamp": "2026-03-16T22:21:37.664Z",
+    "signalCount": 4,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "EMA bearish conflicts with MACD bullish; mixed signals lack conviction.",
+    "confidence": 35,
+    "price": 39.117
+  },
+  {
+    "timestamp": "2026-03-16T22:26:39.717Z",
+    "signalCount": 4,
+    "signalTypes": "vwap_deviation,ema_cross,macd_cross,bb_squeeze_breakout",
+    "verdict": "SKIP",
+    "brief": "EMA bearish conflicts with MACD/BB bullish. Weak conviction.",
+    "confidence": 35,
+    "price": 39.117
+  },
+  {
+    "timestamp": "2026-03-16T22:30:02.726Z",
+    "signalCount": 1,
+    "signalTypes": "vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "Single weak signal with low confidence; repeated pattern suggests noise.",
+    "confidence": 28,
+    "price": 41.11
+  },
+  {
+    "timestamp": "2026-03-16T22:36:50.002Z",
+    "signalCount": 4,
+    "signalTypes": "ema_cross,macd_cross,bb_squeeze_breakout,vwap_deviation",
+    "verdict": "SKIP",
+    "brief": "EMA bearish conflicts with MACD bullish; low conviction mix.",
+    "confidence": 42,
+    "price": 39.018
+  }
+]

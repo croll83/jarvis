@@ -18,7 +18,7 @@ elif [ -n "${TPM_AUTH_PASSWORD:-}" ]; then
     TPM_PASS="$TPM_AUTH_PASSWORD"
 else
     jq -n '{protocolVersion: 1, values: {}, error: "TPM password not set"}'
-    exit 0
+    exit 1
 fi
 
 # Read request from stdin (OpenClaw exec protocol)
@@ -26,15 +26,17 @@ REQUEST=$(cat)
 IDS=$(echo "$REQUEST" | jq -r '.ids[]' 2>/dev/null)
 
 # Unseal age key
-AGE_KEY=$(tpm2_unseal -c "$TPM_HANDLE" -p "$TPM_PASS" 2>/dev/null) || {
-    jq -n '{protocolVersion: 1, values: {}, error: "TPM unseal failed"}'
-    exit 0
+AGE_KEY=$(tpm2_unseal -c "$TPM_HANDLE" -p "$TPM_PASS" 2>/tmp/tpm-unseal-err.log) || {
+    ERR_MSG=$(cat /tmp/tpm-unseal-err.log 2>/dev/null | head -5)
+    jq -n --arg e "TPM unseal failed: $ERR_MSG" '{protocolVersion: 1, values: {}, error: $e}'
+    exit 1
 }
 
 # Decrypt secrets
-DECRYPTED=$(echo "$AGE_KEY" | SOPS_AGE_KEY_FILE=/dev/stdin sops decrypt "$SECRETS_FILE" 2>/dev/null) || {
-    jq -n '{protocolVersion: 1, values: {}, error: "SOPS decrypt failed"}'
-    exit 0
+DECRYPTED=$(echo "$AGE_KEY" | SOPS_AGE_KEY_FILE=/dev/stdin sops decrypt "$SECRETS_FILE" 2>/tmp/sops-decrypt-err.log) || {
+    ERR_MSG=$(cat /tmp/sops-decrypt-err.log 2>/dev/null | head -5)
+    jq -n --arg e "SOPS decrypt failed: $ERR_MSG" '{protocolVersion: 1, values: {}, error: $e}'
+    exit 1
 }
 
 # Build response

@@ -1,0 +1,306 @@
+[
+  {
+    "timestamp": "2026-03-16T19:15:29.320Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "ENA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T19:20:04.828Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "AVAX"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T19:21:30.863Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "ENA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T19:23:02.305Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "xyz:NVDA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T19:24:45.715Z",
+    "signalCount": 3,
+    "strategyCount": 4,
+    "decisionsCount": 12,
+    "trades": 4,
+    "coins": [
+      "SOL",
+      "XRP",
+      "SUI"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T19:27:33.472Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "ENA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T19:29:03.312Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "ETH"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T19:31:57.384Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "xyz:BRENTOIL"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T19:35:11.671Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "ENA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T19:40:55.317Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "ENA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T19:48:35.059Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "xyz:HOOD"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T20:01:56.950Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "xyz:NVDA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T20:10:55.986Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "AAVE"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T20:28:55.531Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "xyz:NVDA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T20:35:04.146Z",
+    "signalCount": 2,
+    "strategyCount": 4,
+    "decisionsCount": 8,
+    "trades": 2,
+    "coins": [
+      "xyz:CL",
+      "ENA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T20:37:56.815Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "xyz:ORCL"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T20:40:56.199Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "kPEPE"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T20:45:30.314Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 1,
+    "coins": [
+      "AAVE"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T20:47:07.182Z",
+    "signalCount": 2,
+    "strategyCount": 4,
+    "decisionsCount": 8,
+    "trades": 2,
+    "coins": [
+      "xyz:BRENTOIL",
+      "xyz:TSLA"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T20:51:27.070Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 3,
+    "coins": [
+      "xyz:COPPER"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T20:52:59.207Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "BTC"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T21:00:29.215Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "SEI"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T21:04:57.466Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "PAXG"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T21:58:49.940Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "kPEPE"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T22:01:52.153Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 0,
+    "coins": [
+      "XRP"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T22:06:11.585Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 3,
+    "coins": [
+      "BTC"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T22:07:45.636Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "XRP"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T22:09:15.981Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "BTC"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T22:19:44.878Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 2,
+    "coins": [
+      "SEI"
+    ]
+  },
+  {
+    "timestamp": "2026-03-16T22:36:12.686Z",
+    "signalCount": 1,
+    "strategyCount": 4,
+    "decisionsCount": 4,
+    "trades": 4,
+    "coins": [
+      "BTC"
+    ]
+  }
+]
