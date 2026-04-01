@@ -36,12 +36,12 @@ SYSTEM_RULES_PATH = BASE_DIR / "config/router_system_prompt.txt"
 # ===========================================================================
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 EMBEDDING_URL = os.getenv("EMBEDDING_URL", OLLAMA_URL)  # fastembed CPU (default: fallback a Ollama)
-WHISPER_URL = os.getenv("WHISPER_URL", "http://localhost:9000")
+STT_URL = os.getenv("STT_URL", os.getenv("WHISPER_URL", "http://100.98.187.12:7865"))
 
 # Endpoint derivati
 OLLAMA_CHAT_URL = f"{OLLAMA_URL}/api/chat"
 OLLAMA_GENERATE_URL = f"{OLLAMA_URL}/api/generate"
-WHISPER_TRANSCRIBE_URL = f"{WHISPER_URL}/v1/audio/transcriptions"
+STT_TRANSCRIBE_URL = f"{STT_URL}/v1/audio/transcriptions"
 
 # Home Assistant - Configurazione base di fallback
 # NOTA: URL e Token per le location sono nel database (tabella locations)
@@ -322,7 +322,7 @@ LLM_PARAMS = {
 # ===========================================================================
 TIMEOUTS = {
     "telegram": int(os.getenv("TIMEOUT_TELEGRAM", "5")),
-    "whisper": int(os.getenv("TIMEOUT_WHISPER", "30")),
+    "stt": int(os.getenv("TIMEOUT_STT", os.getenv("TIMEOUT_WHISPER", "30"))),
     "ha_read": int(os.getenv("TIMEOUT_HA_READ", "5")),
     "health_check": int(os.getenv("TIMEOUT_HEALTH_CHECK", "5")),
     "embedding": int(os.getenv("TIMEOUT_EMBEDDING", "30")),
@@ -344,14 +344,18 @@ INTERVALS = {
     "tts_clear_delay": float(os.getenv("INTERVAL_TTS_CLEAR_DELAY", "5.0")),
 }
 
-# Whisper locale
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "deepdml/faster-whisper-large-v3-turbo-ct2")
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "it")
+# STT Engine: "parakeet" (Parakeet-TDT su GX10, GPU) o "whisper" (legacy, locale)
+# Parakeet: nvidia/parakeet-tdt-0.6b-v3 — multilingue, auto-detection, 20x realtime
+# Default: Parakeet su GX10 via Tailscale
+STT_ENGINE = os.getenv("STT_ENGINE", "parakeet")
 
-# Whisper initial_prompt — context per migliorare trascrizione (max ~224 token / ~900 chars)
+# Parametri STT (Parakeet non usa model/language/prompt — auto-detection multilingue)
+STT_MODEL = os.getenv("STT_MODEL", os.getenv("WHISPER_MODEL", "deepdml/faster-whisper-large-v3-turbo-ct2"))
+STT_LANGUAGE = os.getenv("STT_LANGUAGE", os.getenv("WHISPER_LANGUAGE", "it"))
+
+# Initial prompt — usato solo da Whisper (Parakeet non lo supporta).
 # IMPORTANTE: scrivere in PROSA FLUIDA, senza elenchi numerati/puntati né separatori.
-# Whisper replica lo stile del prompt nell'output: prosa → output pulito.
-WHISPER_PROMPT = os.getenv("WHISPER_PROMPT", (
+STT_PROMPT = os.getenv("STT_PROMPT", os.getenv("WHISPER_PROMPT", (
     "JARVIS è l'assistente AI di casa. Le persone che parlano sono Marco, Ada, "
     "Giorgio, Sofia, Loredana, Mario e Melina. "
     "I comandi domotici più frequenti sono accendi, spegni, apri, chiudi, alza, "
@@ -366,7 +370,7 @@ WHISPER_PROMPT = os.getenv("WHISPER_PROMPT", (
     "Braava, Roomba, Letto e Specchio. "
     "Si può anche chiedere di cercare su email, Drive, internet, Amazon, "
     "shopping, cron, trading e Twitter."
-))
+)))
 
 # STT normalization via LLM (Qwen) — disable per test con solo Whisper prompt
 STT_NORMALIZE_ENABLED = os.getenv("STT_NORMALIZE_ENABLED", "false").lower() == "true"
@@ -464,11 +468,17 @@ SECURITY_ANIMAL_LABELS = os.getenv("SECURITY_ANIMAL_LABELS", "cat,dog").split(",
 # ===========================================================================
 # TTS ENGINE
 # ===========================================================================
-# Engine: "xtts" (XTTSv2 Coqui, locale GPU) o "kokoro" (Kokoro-82M, cloud/CPU)
-# Default: "xtts" per deploy locale (AI_BACKEND=local), "kokoro" per cloud (AI_BACKEND=api)
-TTS_ENGINE = os.getenv("TTS_ENGINE", "xtts" if AI_BACKEND == "local" else "kokoro")
+# Engine: "qwen3tts" (Qwen3-TTS su GX10, GPU) o "kokoro" (Kokoro-82M, cloud/CPU)
+# Legacy: "xtts" (XTTSv2 Coqui, deprecato — rimosso dallo stack Atomman)
+# Default: "qwen3tts" per deploy locale (AI_BACKEND=local), "kokoro" per cloud (AI_BACKEND=api)
+TTS_ENGINE = os.getenv("TTS_ENGINE", "qwen3tts" if AI_BACKEND == "local" else "kokoro")
 
-# --- XTTSv2 (deploy locale, GPU ~2.1 GB VRAM fp16) ---
+# --- Qwen3-TTS (GX10, GPU ~4.4 GiB VRAM, voice cloning) ---
+QWEN3_TTS_URL = os.getenv("QWEN3_TTS_URL", "http://100.98.187.12:9880")
+QWEN3_TTS_VOICE = os.getenv("QWEN3_TTS_VOICE", "sofia")  # sofia(IT-F), marco(IT-M), emma(EN-F), james(EN-M)
+QWEN3_TTS_LANGUAGE = os.getenv("QWEN3_TTS_LANGUAGE", "it")
+
+# --- XTTSv2 (DEPRECATO — rimosso dallo stack Atomman, mantenuto per backward compat) ---
 XTTS_URL = os.getenv("XTTS_URL", "http://localhost:8890")
 XTTS_SPEAKER = os.getenv("XTTS_SPEAKER", "jarvis")   # nome file WAV in speakers/ (senza .wav)
 XTTS_LANGUAGE = os.getenv("XTTS_LANGUAGE", "it")

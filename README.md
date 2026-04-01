@@ -17,10 +17,10 @@
          |        JARVIS ORCHESTRATOR                   |
          |        (FastAPI - :5000)                     |
          |                                              |
-         |  +------------+   +--------------+           |
-         |  | Whisper     |   | Resemblyzer  |          |
-         |  | large-v3-   |   | (speaker ID) |          |
-         |  | turbo :9000 |   | biometric    |          |
+         |  +-----+------+   +--------------+           |
+         |  | Resemblyzer |   | fastembed    |          |
+         |  | (speaker ID)|   | :11435 (CPU) |          |
+         |  | biometric   |   | ONNX embed   |          |
          |  +-----+------+   +------+-------+          |
          |        |                  |                  |
          |        v                  v                  |
@@ -47,11 +47,11 @@
      +------------+ +-------------------+  +------------------+
 
      +--------------------------------------------+
-     |           AI / MEDIA SERVICES               |
-     |  XTTSv2       | fastembed :11435             |
-     |  (TTS voice   | (nomic-embed-text-v1.5      |
-     |  cloning)     |  CPU ONNX, 768-dim)         |
-     |  :8890        | Brave Search (web tool)      |
+     |    GX10 DGX Spark (via Tailscale)           |
+     |  Parakeet STT :7865  | Qwen3-TTS :9880     |
+     |  (nvidia/parakeet-   | (voice cloning,      |
+     |   tdt-0.6b-v3)       |  IT/EN voices)       |
+     |  Brave Search (web tool)                    |
      +--------------------------------------------+
 
      +--------------------------------------------+
@@ -76,8 +76,8 @@
 | **OpenClaw + Gemini 3 Pro** | Brain | Reasoning, web search, Telegram chat, multi-turn conversations |
 | **JARVIS Orchestrator** | Skill / Executor | Voice processing, home control (single + bulk), speaker ID, security enforcement |
 | **Qwen 2.5 3B** | Pre-router + Tool calling | Local Ollama model for domotics fast path, tool calling (web_search, web_fetch, memory_search, home_status), offline fallback |
-| **Whisper large-v3-turbo** | Speech-to-Text | Local model (custom Blackwell image, int8_float16), low-latency transcription |
-| **XTTSv2** | Text-to-Speech | GPU-accelerated voice cloning (custom Blackwell image, Italian voice) |
+| **Parakeet STT** | Speech-to-Text | nvidia/parakeet-tdt-0.6b-v3 on GX10 DGX Spark, multilingual auto-detection, 20x realtime |
+| **Qwen3-TTS** | Text-to-Speech | Qwen3-TTS-12Hz-1.7B on GX10, voice cloning, Italian/English voices (sofia, marco, emma, james) |
 | **Resemblyzer** | Speaker ID | Voice biometric identification (embedded in orchestrator) |
 | **Ontology Server** | Knowledge Graph | Entity/relation graph with speaker-based ACL, SQLite + FastAPI |
 | **fastembed (nomic-embed-text-v1.5)** | Embeddings | 768-dim CPU-only ONNX embeddings (Ollama-compatible API :11435) for orchestrator, ha-memory-service, and OpenClaw |
@@ -96,8 +96,6 @@
 |---------|---------------|------|-----|---------|
 | `ollama` | ollama/ollama | 11434 | Yes | Qwen 2.5 3B (LLM only) |
 | `fastembed` | ./infrastructure/fastembed | 11435 | No | nomic-embed-text-v1.5 embeddings (CPU ONNX) |
-| `whisper` | jarvis/whisper-blackwell | 9000 | Yes | Local STT (large-v3-turbo, int8_float16) |
-| `xtts` | jarvis/xtts-blackwell | 8890 | Yes | TTS voice cloning (XTTSv2, Italian) |
 | `orchestrator` | ./jarvis-orchestrator | 5000 | No | Core FastAPI app + Resemblyzer + Admin UI (host network) |
 | `chromadb` | chromadb/chroma:0.6.3 | 127.0.0.1:8000 | No | Shared vector store (used by orchestrator, ha-memory-service, ontology-bridge) |
 | `ontology-server` | ./ontology-server | 127.0.0.1:8100 | No | Knowledge Graph API (SQLite + ACL) |
@@ -105,6 +103,7 @@
 | `mongo` | mongo:7 | 27017 | No | Document database (side projects) |
 
 > **Note**: OpenClaw runs bare-metal on a dedicated LXC (`100.116.99.9`), not in this Docker stack.
+> **Note**: STT (Parakeet `:7865`) and TTS (Qwen3-TTS `:9880`) run on GX10 DGX Spark (`100.98.187.12`) as systemd services, reachable via Tailscale.
 
 ---
 
@@ -205,7 +204,7 @@ jarvis/
 |   +-- vector_store.py        # ChromaDB HttpClient (shared :8000) with embedded fallback
 |   +-- memory_jobs.py         # Scheduled summarization + fact extraction
 |   +-- multi_ha.py            # Multi-location HA manager (single + bulk ops)
-|   +-- internal_tts.py        # Dual TTS backend (XTTSv2 local / Kokoro cloud)
+|   +-- internal_tts.py        # TTS backend (Qwen3-TTS on GX10 / Kokoro cloud)
 |   +-- admin_api.py           # Admin dashboard API
 |   +-- templates/             # Admin UI (HTML/JS)
 +-- ontology-server/           # Knowledge Graph API (SQLite + FastAPI + ACL)
@@ -214,18 +213,19 @@ jarvis/
 |   +-- helpers.py             # Query helpers
 |   +-- schema.yaml            # Entity/relation schema definitions
 +-- infrastructure/            # Infra-as-code
-|   +-- whisper-custom/        # Custom Whisper Dockerfile (Blackwell GPU)
-|   +-- xtts-custom/           # Custom XTTSv2 Dockerfile (Blackwell GPU)
+|   +-- whisper-custom-deprecated/  # Custom Whisper Dockerfile (DEPRECATED — STT on GX10)
+|   +-- xtts-custom-deprecated/    # Custom XTTSv2 Dockerfile (DEPRECATED — TTS on GX10)
+|   +-- gb10/                  # GX10 DGX Spark documentation
 |   +-- terraform/             # Terraform configs
 |   +-- ansible/               # Ansible playbooks
 +-- openclaw/                  # OpenClaw deployment config
-|   +-- xtts-proxy/            # XTTS OpenAI-compat proxy (systemd on OpenClaw LXC)
+|   +-- xtts-proxy/            # TTS proxy (systemd on OpenClaw LXC, now points to Qwen3-TTS)
 |   +-- skills/                # OpenClaw skill definitions
 |   +-- extensions/            # OpenClaw extensions
 +-- wakeword-server/           # Wake word model training / serving
 +-- config/
 |   +-- router_system_prompt.txt  # Qwen router system prompt (loaded as SYSTEM_RULES)
-+-- speakers/                  # WAV reference files for XTTSv2 voice cloning
++-- speakers/                  # WAV reference files for voice cloning (legacy XTTSv2)
 +-- docker-compose.yml         # Full local stack (GPU)
 +-- .env.example               # Environment variable template
 ```
@@ -239,8 +239,8 @@ jarvis/
 - **Brave Search API**: Web search tool available to both Qwen (via tool calling) and OpenClaw (via skill), providing real-time web information.
 - **fastembed for all embeddings**: Single 768-dim embedding model (nomic-embed-text-v1.5 via ONNX, CPU-only) served by a dedicated container on port 11435 with Ollama-compatible API. Runs on CPU to avoid CUDA context switching with Qwen on the GPU, reducing routing latency from ~3.5s to ~0.5s.
 - **ChromaDB shared server**: Vector store runs as a dedicated container on :8000 (`chromadb/chroma:0.6.3`), shared by orchestrator, ha-memory-service, and the ontology-bridge plugin. Clients use `HttpClient` with automatic fallback to embedded `PersistentClient` if the server is unreachable.
-- **XTTSv2 for TTS**: GPU-accelerated voice cloning with custom Blackwell image. Italian voice via WAV reference files. Cloud fallback to Kokoro-82M (CPU).
-- **Custom Dockerfiles for GPU services**: Whisper and XTTS use custom images (`jarvis/whisper-blackwell`, `jarvis/xtts-blackwell`) built for CUDA 12.9 / Blackwell sm_120 support.
+- **Parakeet STT on GX10**: nvidia/parakeet-tdt-0.6b-v3 running on GX10 DGX Spark (128 GB VRAM). Multilingual auto-detection, 20x realtime, no initial prompt needed. Replaces Whisper (deprecated) to free VRAM on Atomman for router upgrades.
+- **Qwen3-TTS on GX10**: Qwen3-TTS-12Hz-1.7B with voice cloning, Italian/English preset voices (sofia, marco, emma, james). Replaces XTTSv2 (deprecated). OpenAI-compatible API.
 - **Nginx + Cloudflare Tunnel**: Public endpoints (Telegram webhook, health) served via Cloudflare Tunnel with no port forwarding. Internal services accessible only through Tailscale mesh.
 - **Speaker biometrics**: Resemblyzer runs inside the orchestrator process -- no separate container needed.
 - **Ontology Server**: Centralized knowledge graph with speaker-based ACL, serving as the single source of truth for entities and relations across the agent ecosystem.

@@ -1,9 +1,9 @@
 # JARVIS — Deploy Locale (GPU + OpenClaw su LXC separato)
 
 Guida completa per il deploy locale di JARVIS su Proxmox con GPU NVIDIA.
-I modelli locali (Qwen 2.5 3B router, Whisper large-v3-turbo STT) girano on-premise su un **LXC con
-GPU device sharing** (driver NVIDIA installato sull'host Proxmox, GPU condivisa via
-cgroup2 — NON PCIe passthrough esclusivo).
+Il router locale (Qwen 2.5 3B) gira on-premise su un **LXC con GPU device sharing**
+(driver NVIDIA installato sull'host Proxmox, GPU condivisa via cgroup2 — NON PCIe
+passthrough esclusivo). STT e TTS girano sul **GX10 DGX Spark** (128 GB VRAM) via Tailscale.
 Il reasoning e gestito da Gemini 3 Pro via OpenClaw che gira **bare-metal su un
 LXC dedicato e separato** per isolamento di sicurezza.
 Tailscale gira host-level (non in Docker) su tutti i container/VM per raggiungere
@@ -40,11 +40,11 @@ HA remoti e il LXC OpenClaw.
 |  +----------------------------------------------------------------+ |
 |  |                     jarvis_network                              | |
 |  |                                                                 | |
-|  |  ollama:11434   whisper:9000    xtts:8890     postgres:5432     | |
-|  |  GPU: ~2.5 GB   GPU: ~1.3 GB   GPU: ~2.0 GB  (side proj)      | |
-|  |  Qwen 2.5 3B    faster-whisper  XTTSv2 Coqui                   | |
-|  |  (LLM only)     large-v3-turbo  voice cloning  mongo:27017     | |
-|  |  ctx=3072       int8_float16                    (side proj)     | |
+|  |  ollama:11434   postgres:5432   mongo:27017                     | |
+|  |  GPU: ~2.6 GB   (side proj)    (side proj)                     | |
+|  |  Qwen 2.5 3B                                                   | |
+|  |  (LLM only)                                                    | |
+|  |  ctx=32768                                                     | |
 |  |                                                                 | |
 |  |  fastembed:11435 (CPU, no GPU)                                  | |
 |  |  nomic-embed-text-v1.5 ONNX — Ollama-compat API                | |
@@ -53,7 +53,7 @@ HA remoti e il LXC OpenClaw.
 |  |  orchestrator:5000 (network_mode: host)                        | |
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
-|  |  Internal TTS (XTTSv2 + Opus streaming per AtomS3R mobile)     | |
+|  |  Internal TTS (Qwen3-TTS@GX10 + Opus streaming per AtomS3R)   | |
 |  |  SQLite + ChromaDB (HttpClient → :8000)                        | |
 |  |                                                                 | |
 |  |  ontology-server:8100 (127.0.0.1 only)                         | |
@@ -64,13 +64,11 @@ HA remoti e il LXC OpenClaw.
 |  Cloudflared — tunnel per jarvis-pub.mintwork.it                     |
 |                                                                      |
 |  GPU VRAM Budget (misurato — GPU dedicata, no display):              |
-|  +-- Qwen 2.5 3B Q4_K_M (weights+KV) . ~2.5 GB (@ ctx=3072)       |
-|  +-- XTTSv2 fp16 (PyTorch runtime) ... ~2.0 GB                     |
-|  +-- Whisper large-v3-turbo int8_fp16 . ~1.3 GB                    |
-|  +-- TOTALE ........................... ~5.8 GB / 8.15 GB VRAM     |
-|  +-- BUFFER CUDA ...................... ~2.3 GB                     |
+|  +-- Qwen 2.5 3B Q4_K_M (weights+KV) . ~2.6 GB (@ ctx=32768)     |
+|  +-- TOTALE ........................... ~2.6 GB / 8.15 GB VRAM     |
+|  +-- LIBERI ........................... ~5.5 GB (per router upgrade)|
+|  Nota: STT (Parakeet) e TTS (Qwen3-TTS) su GX10 — zero VRAM locale|
 |  Nota: Embeddings su fastembed CPU (:11435) — zero VRAM             |
-|  Nota: pipeline sequenziale (Whisper→Qwen→TTS), buffer sufficiente |
 +---------------------------------------------------------------------+
 
 +---------------------------------------------------------------------+
@@ -180,13 +178,12 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 ```
 1. tailscaled      -> host-level service, si connette alla tailnet
 2. ollama          -> diventa healthy (modelli caricati)
-3. whisper         -> started
    chromadb        -> started (shared vector store :8000)
-4. xtts            -> started (primo boot: ~2 min per download modello)
-5. orchestrator    -> aspetta ollama + whisper + xtts + chromadb, poi parte (network_mode: host)
-                      vede Tailscale direttamente, raggiunge OpenClaw via OPENCLAW_URL
-6. nginx           -> started (TLS per jarvis.mintwork.it)
-7. cloudflared     -> started (tunnel per jarvis-pub.mintwork.it)
+3. orchestrator    -> aspetta ollama + chromadb, poi parte (network_mode: host)
+                      vede Tailscale direttamente, raggiunge GX10 + OpenClaw
+                      STT (Parakeet :7865) e TTS (Qwen3-TTS :9880) su GX10
+4. nginx           -> started (TLS per jarvis.mintwork.it)
+5. cloudflared     -> started (tunnel per jarvis-pub.mintwork.it)
 ```
 
 **LXC-Wakeword** (boot autonomo, 1 per casa):
@@ -204,8 +201,8 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | **Tailscale** | LXC-JARVIS | host-level (`tailscaled.service`) | - | 64 MB | - | VPN mesh per HA remoti + OpenClaw |
 | **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | ~2.5 GB | Qwen 2.5 3B routing + tool calling (ctx=32768) — solo LLM |
 | **fastembed** | LXC-JARVIS | `jarvis_fastembed` (Docker, CPU) | 0.5 | 300 MB | - | nomic-embed-text-v1.5 ONNX embeddings (Ollama-compat :11435) |
-| **Whisper** | LXC-JARVIS | `jarvis_whisper` (Docker, `--gpus all`) | - | - | ~1.3 GB | STT large-v3-turbo (int8_float16) |
-| **XTTSv2** | LXC-JARVIS | `jarvis_xtts` (Docker, `--gpus all`) | - | - | ~2.0 GB | TTS voice cloning (italiano, fp16) |
+| **Parakeet STT** | GX10 DGX Spark | `parakeet-stt.service` (systemd) | - | - | ~5.1 GB | STT multilingue (nvidia/parakeet-tdt-0.6b-v3) |
+| **Qwen3-TTS** | GX10 DGX Spark | `qwen3-tts.service` (systemd) | - | - | ~4.4 GB | TTS voice cloning IT/EN (Qwen3-TTS-12Hz-1.7B) |
 | **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
 | **ChromaDB** | LXC-JARVIS | `jarvis_chromadb` (Docker, 127.0.0.1:8000) | 0.5 | 512 MB | - | Shared vector store (HttpClient) |
 | **Ontology Server** | LXC-JARVIS | `jarvis_ontology` (Docker, 127.0.0.1:8100) | 0.5 | 256 MB | - | Knowledge Graph API + ACL |
@@ -215,7 +212,7 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | **Cloudflared** | LXC-JARVIS | `cloudflared` (systemd) | 0.1 | 64 MB | - | Tunnel per jarvis-pub.mintwork.it |
 | **OpenClaw** | LXC-OpenClaw (bare-metal) | `openclaw.service` (systemd) | 0.5 | 512 MB | - | Gemini 3 Pro brain (API cloud) |
 | **Chrome Headless** | LXC-OpenClaw (bare-metal) | `openclaw-chrome.service` (systemd) | 0.5 | <=1 GB | - | Browser automation via CDP :18800 |
-| **XTTS Proxy** | LXC-OpenClaw (bare-metal) | `xtts-proxy.service` (systemd) | 0.1 | 64 MB | - | Traduce OpenAI TTS → XTTSv2 nativo (:8891) |
+| **TTS Proxy** | LXC-OpenClaw (bare-metal) | `xtts-proxy.service` (systemd) | 0.1 | 64 MB | - | Proxy TTS per OpenClaw → Qwen3-TTS@GX10 (:8891) |
 | **Wakeword Server** | LXC-Wakeword (1/casa) | `jarvis_wakeword` (Docker) | 1 | 2 GB | - | openWakeWord detection + relay :8200 |
 | **Workstation** | VM-Workstation (opz.) | KVM VM (Ubuntu + XFCE) | 6 | 12 GB | - | Chrome reale + OpenClaw ext + IDE + dev |
 | **HAOS** | VM-HAOS (opz.) | KVM VM | 2 | 8 GB | - | Home Assistant OS + MASS + add-ons |
@@ -228,9 +225,9 @@ Quando "Speaker Interno" è attivo per un device, il TTS viene generato dall'orc
 via XTTSv2 (locale) o Kokoro (cloud) e inviato come frame Opus via WebSocket direttamente
 allo speaker integrato del device (ES8311 DAC + NS4150B amp).
 
-**Flusso (locale):**
+**Flusso (locale — Qwen3-TTS su GX10):**
 ```
-AI Response → XTTSv2 (PCM 24kHz streaming) → resample 16kHz → Opus encode → WS binary → Device speaker
+AI Response → Qwen3-TTS@GX10 (PCM 24kHz streaming) → resample 16kHz → Opus encode → WS binary → Device speaker
 ```
 
 **Flusso (cloud):**
@@ -244,9 +241,8 @@ di frame Opus binari via WebSocket (opcode 0x02 in `jarvis_ws_audio.c`).
 **Configurazione**: Dashboard orchestrator → Dispositivi → checkbox "Speaker Interno".
 Quando attivo, i campi Speaker Principale e Speaker Fallback vengono ignorati.
 
-**Voice cloning (solo locale)**: metti un WAV di riferimento (6-15s, mono, 22050Hz+)
-nella directory `speakers/` del progetto. Il nome del file (senza .wav) è il nome
-dello speaker da usare in `XTTS_SPEAKER`. Vedi `speakers/README.md` per dettagli.
+**Voice**: Qwen3-TTS ha voci preconfigurate (sofia, marco, emma, james) + voice cloning.
+Configurabile via `QWEN3_TTS_VOICE` (default: `sofia`).
 
 ---
 

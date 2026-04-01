@@ -598,7 +598,7 @@ async def transcribe_audio(audio_bytes: bytes) -> Optional[str]:
 
 
 async def _transcribe_local(audio_bytes: bytes) -> Optional[str]:
-    """Trascrizione via faster-whisper locale (speaches)."""
+    """Trascrizione via STT locale (Parakeet su GX10 o Whisper legacy)."""
     try:
         # Wrap raw PCM in WAV header se non ha già un RIFF header
         if not audio_bytes[:4] == b'RIFF':
@@ -609,18 +609,22 @@ async def _transcribe_local(audio_bytes: bytes) -> Optional[str]:
             data.add_field('file', audio_bytes,
                           filename='audio.wav',
                           content_type='audio/wav')
-            data.add_field('model', config.WHISPER_MODEL)
-            data.add_field('language', config.WHISPER_LANGUAGE)
-            if config.WHISPER_PROMPT:
-                data.add_field('initial_prompt', config.WHISPER_PROMPT)
 
-            async with session.post(config.WHISPER_TRANSCRIBE_URL,
-                                   data=data, timeout=config.TIMEOUTS["whisper"]) as resp:
+            # Parakeet: auto-detection multilingue, non serve model/language/prompt
+            # Whisper: necessita model, language e initial_prompt
+            if config.STT_ENGINE != "parakeet":
+                data.add_field('model', config.STT_MODEL)
+                data.add_field('language', config.STT_LANGUAGE)
+                if config.STT_PROMPT:
+                    data.add_field('initial_prompt', config.STT_PROMPT)
+
+            async with session.post(config.STT_TRANSCRIBE_URL,
+                                   data=data, timeout=config.TIMEOUTS["stt"]) as resp:
                 if resp.status == 200:
                     result = await resp.json()
                     return result.get("text", "").strip()
                 else:
-                    logger.error(f"Whisper error: {resp.status}")
+                    logger.error(f"STT ({config.STT_ENGINE}) error: {resp.status}")
                     return None
 
     except Exception as e:
@@ -730,8 +734,8 @@ async def _transcribe_groq(audio_bytes: bytes) -> Optional[str]:
             data.add_field('model', config.GROQ_WHISPER_MODEL)
             data.add_field('language', 'it')
             data.add_field('response_format', 'json')
-            if config.WHISPER_PROMPT:
-                data.add_field('prompt', config.WHISPER_PROMPT)
+            if config.STT_PROMPT:
+                data.add_field('prompt', config.STT_PROMPT)
 
             url = f"{config.GROQ_API_URL}/audio/transcriptions"
 

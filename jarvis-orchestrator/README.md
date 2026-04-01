@@ -31,9 +31,9 @@ Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 
 │      ┌───────────────────┼──────────────────┐                │
 │      ▼                   ▼                  ▼                │
 │  ┌──────────┐    ┌──────────────┐   ┌──────────────┐        │
-│  │ Ollama   │    │   Whisper    │   │Home Assistant │        │
-│  │ :11434   │    │   :9000      │   │   :8123       │        │
-│  │ Qwen 7B  │    │ faster-whis  │   │ (N locations) │        │
+│  │ Ollama   │    │Parakeet STT │   │Home Assistant │        │
+│  │ :11434   │    │  GX10:7865  │   │   :8123       │        │
+│  │ Qwen 3B  │    │ (Tailscale) │   │ (N locations) │        │
 │  └──────────┘    └──────────────┘   └──────────────┘        │
 │                                                               │
 │  ┌──────────────┐                                            │
@@ -152,7 +152,7 @@ OpenClaw ──▶ jarvis_home_control (L3 action)
 | 6 | `/api/tools/entity_resolve` | POST | Risolvi friendly name -> entity_id HA |
 | 7 | `/api/tools/entity_discover` | POST | Scopri entita per stanza, zona, piano, dominio |
 | 8 | `/api/tools/entity_bulk` | POST | **Query/azione bulk** su gruppi di entita (room/zone/floor/domain) |
-| 9 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker o speaker interno AtomS3R (XTTSv2/Kokoro) |
+| 9 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker o speaker interno AtomS3R (Qwen3-TTS/Kokoro) |
 | 10 | `/api/tools/locations` | GET | Lista location con stato health HA |
 | 11 | `/api/tools/audit_log` | POST | Registra evento nel trail di audit |
 | 12 | `/api/recent_turns` | GET | Ultimi N turni conversazione (`?max_turns=N`) — usato dal plugin ontology-bridge |
@@ -221,7 +221,7 @@ da un media_player Home Assistant (Alexa/Echo).
 ```
 AI Response text
   ↓
-TTS Engine (XTTSv2 locale / Kokoro cloud) → PCM 24kHz streaming
+TTS Engine (Qwen3-TTS su GX10 / Kokoro cloud) → PCM 24kHz streaming
   ↓
 scipy resample → PCM 16kHz mono int16
   ↓
@@ -239,7 +239,7 @@ Server invia tts_done → Device: BUSY → IDLE
 Dalla dashboard admin (tab Voice Devices), attivare il checkbox **Speaker Interno (mobile)**.
 Quando attivato:
 - L'output speaker HA diventa opzionale (non necessario)
-- Le risposte TTS vengono generate server-side (XTTSv2 locale o Kokoro cloud, in base a `TTS_ENGINE`)
+- Le risposte TTS vengono generate server-side (Qwen3-TTS su GX10 o Kokoro cloud, in base a `TTS_ENGINE`)
 - L'audio viene codificato in frame Opus e inviato al device via WebSocket
 - Il firmware decodifica e riproduce direttamente (nessuna modifica firmware richiesta)
 - Speaker suppress HA non viene attivato (non necessario)
@@ -247,14 +247,14 @@ Quando attivato:
 
 ### Dipendenze
 
-- `xtts` container (xtts-api-server, porta 8890) — deploy locale GPU
+- `qwen3-tts` service su GX10 (Qwen3-TTS-12Hz-1.7B, porta 9880) — via Tailscale
 - `kokoro-tts` container (Kokoro-FastAPI, porta 8890) — deploy cloud CPU
 - `opuslib` (Python, gia presente)
 - `scipy` (Python, gia presente — resample 24kHz → 16kHz)
 
 ### Modulo
 
-`internal_tts.py` — chiama XTTSv2 o Kokoro via HTTP (selezionabile via `TTS_ENGINE`), resampla PCM 24→16kHz, codifica Opus, invia frame via `ws_audio_handler.send_tts_frame()`.
+`internal_tts.py` — chiama Qwen3-TTS o Kokoro via HTTP (selezionabile via `TTS_ENGINE`), resampla PCM 24→16kHz, codifica Opus, invia frame via `ws_audio_handler.send_tts_frame()`.
 
 ---
 
@@ -263,7 +263,7 @@ Quando attivato:
 Riconoscimento vocale biometrico tramite Resemblyzer (deep speaker embeddings):
 
 ```
-Audio ──▶ Whisper STT ──▶ testo
+Audio ──▶ Parakeet STT (GX10) ──▶ testo
   │
   └─────▶ Resemblyzer ──▶ embedding 256-dim ──▶ cosine similarity ──▶ user_id
                                                     threshold: 0.75
@@ -302,7 +302,7 @@ Riferimento: `.env` nella root del progetto (vedi `docker-compose.yml`).
 # ============================
 AI_BACKEND=local                    # "local" (Ollama) o "api" (Cloud)
 OLLAMA_URL=http://ollama:11434
-WHISPER_URL=http://whisper:8000
+STT_URL=http://100.98.187.12:7865
 
 # API keys (solo se AI_BACKEND=api)
 GROQ_API_KEY=gsk_xxx                # STT cloud
@@ -365,8 +365,8 @@ Definiti in `docker-compose.yml` nella root del progetto:
 | Servizio | Immagine | Porta | Ruolo |
 |----------|----------|-------|-------|
 | `ollama` | ollama/ollama | 11434 | Qwen 7B Q4 + nomic-embed-text (GPU) |
-| `whisper` | faster-whisper-server | 9000 | Speech-to-text (GPU) |
-| `xtts` | xtts-api-server (locale) | 8890 | XTTSv2 Coqui TTS — voice cloning italiana (GPU) |
+| Parakeet STT | GX10 systemd | 7865 | Speech-to-text (nvidia/parakeet-tdt-0.6b-v3, via Tailscale) |
+| Qwen3-TTS | GX10 systemd | 9880 | TTS voice cloning IT/EN (Qwen3-TTS-12Hz-1.7B, via Tailscale) |
 | `orchestrator` | build locale | 5000 | JARVIS Skill (questo progetto) |
 | `chromadb` | chromadb/chroma:0.6.3 | 8000 | Shared vector store (HttpClient, fallback embedded) |
 | `tailscale` | tailscale/tailscale | - | VPN mesh per HA remoti |
@@ -461,7 +461,7 @@ pending_actions (action_id, payload, requester_id, source_channel, security_leve
 
 | Scenario | Target | Percorso |
 |----------|--------|----------|
-| Domotica certa (voce) | <500ms | Whisper + Resemblyzer + Qwen locale + HA |
+| Domotica certa (voce) | <500ms | Parakeet STT + Resemblyzer + Qwen locale + HA |
 | Domotica certa (Telegram) | <200ms | Qwen locale + HA |
 | Domotica incerta | 1-3s | OpenClaw + jarvis_home_control |
 | Chat / reasoning | 2-10s | OpenClaw (Gemini 3 Pro) |

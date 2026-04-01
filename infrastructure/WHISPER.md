@@ -1,10 +1,17 @@
-# Whisper (faster-whisper-large-v3-turbo) — Riferimento e Troubleshooting
+# ⚠️ DEPRECATO — Whisper (faster-whisper-large-v3-turbo)
 
-> **NOTA:** L'installazione di Whisper e' gestita automaticamente da Ansible
-> (`jarvis.yml` — docker compose up). Questo file serve come riferimento per
-> la configurazione e il troubleshooting.
+> **DEPRECATO**: Whisper è stato sostituito da **Parakeet STT** (nvidia/parakeet-tdt-0.6b-v3)
+> che gira sul **GX10 DGX Spark** (porta 7865, via Tailscale).
+> Questo file è mantenuto come riferimento storico. Il Dockerfile è in `whisper-custom-deprecated/`.
+>
+> **Nuovo STT**: Parakeet — multilingue, auto-detection, 20x realtime, ~5.1 GiB VRAM su GX10.
+> Vedi `infrastructure/gb10/gx10-full-inventory.md` per la configurazione.
 
-Server Speech-to-Text locale per JARVIS. Usa una build custom di
+---
+
+*Contenuto originale (per riferimento):*
+
+Server Speech-to-Text locale per JARVIS (DEPRECATO). Usava una build custom di
 [speaches](https://github.com/speaches-ai/speaches) con CTranslate2 >=4.7.0
 per supporto INT8 su GPU Blackwell (sm_120).
 

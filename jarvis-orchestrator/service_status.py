@@ -47,7 +47,7 @@ class ServiceStatus:
 
     Servizi monitorati:
     - ollama_router: Qwen (routing) - CRITICO
-    - whisper: STT - IMPORTANTE per voice
+    - stt: STT (Parakeet/Whisper) - IMPORTANTE per voice
     - home_assistant: Domotica - IMPORTANTE per HOME_CONTROL
     - openclaw: Servizio AI avanzato - IMPORTANTE
     """
@@ -69,10 +69,10 @@ class ServiceStatus:
             # HA services aggiunti dinamicamente da _load_ha_services()
         }
 
-        # Ollama e Whisper solo in modalita local (non in cloud/API)
+        # Ollama e STT solo in modalita local (non in cloud/API)
         if config.AI_BACKEND != "api":
             self.services["ollama_router"] = ServiceHealth()
-            self.services["whisper"] = ServiceHealth()
+            self.services["stt"] = ServiceHealth()
 
         self._lock = asyncio.Lock()
         self._check_interval = 30  # secondi
@@ -117,11 +117,11 @@ class ServiceStatus:
         async with self._lock:
             tasks = [self._check_openclaw()]
 
-            # Ollama e Whisper solo in local mode
+            # Ollama e STT solo in local mode
             if "ollama_router" in self.services:
                 tasks.append(self._check_ollama_router())
-            if "whisper" in self.services:
-                tasks.append(self._check_whisper())
+            if "stt" in self.services:
+                tasks.append(self._check_stt())
 
             # Aggiungi check per tutte le location HA
             try:
@@ -172,21 +172,22 @@ class ServiceStatus:
 
         service.last_check = time.time()
 
-    async def _check_whisper(self):
-        """Check Whisper STT service."""
-        service = self.services["whisper"]
+    async def _check_stt(self):
+        """Check STT service (Parakeet on GX10 or Whisper legacy)."""
+        service = self.services.get("stt", self.services.get("whisper"))
         start = time.time()
 
         try:
             async with aiohttp.ClientSession() as session:
-                # Solo check che il servizio risponda
+                # Check health endpoint; Parakeet ha /health, Whisper risponde su /
+                health_url = f"{config.STT_URL}/health"
                 async with session.get(
-                    config.WHISPER_URL,
+                    health_url,
                     timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS["health_check"])
                 ) as resp:
                     elapsed = (time.time() - start) * 1000
 
-                    # Whisper potrebbe restituire 404 su / ma è OK se risponde
+                    # Il servizio potrebbe restituire 404 su /health ma è OK se risponde
                     if resp.status in [200, 404, 405]:
                         service.state = ServiceState.ONLINE
                         service.last_success = time.time()
@@ -363,7 +364,7 @@ class ServiceStatus:
 
         if "openclaw" in offline_services:
             hints.append("- Openclaw non disponibile, il servizio AI avanzato è offline")
-        if "whisper" in offline_services:
+        if "stt" in offline_services:
             hints.append("- STT offline, input vocale non funzionante")
 
         if hints:

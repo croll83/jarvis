@@ -11,7 +11,7 @@
 # Componenti da creare (abilita/disabilita singolarmente)
 # -----------------------------------------------------------------------------
 # Scegli cosa creare su Proxmox. Puoi abilitarne anche solo uno.
-jarvis_enabled      = true     # LXC-JARVIS (Ollama, Whisper, Orchestrator)
+jarvis_enabled      = true     # LXC-JARVIS (Ollama, Orchestrator — STT/TTS su GX10)
 openclaw_enabled    = true     # LXC-OpenClaw (Gateway Gemini, Chrome headless)
 workstation_enabled = false    # VM-Workstation (Ubuntu Desktop + Chrome reale)
 # wakeword: si abilita aggiungendo istanze a wakeword_instances (sotto)
@@ -19,7 +19,7 @@ workstation_enabled = false    # VM-Workstation (Ubuntu Desktop + Chrome reale)
 # -----------------------------------------------------------------------------
 # Tipo di deploy (solo per LXC-JARVIS)
 # -----------------------------------------------------------------------------
-# "lxc_gpu" = LXC con GPU NVIDIA (AI locale — Ollama/Whisper)
+# "lxc_gpu" = LXC con GPU NVIDIA (Ollama router — STT/TTS su GX10 via Tailscale)
 # "lxc"     = LXC senza GPU (AI via API — Groq/OpenRouter/Gemini)
 deploy_type = "lxc_gpu"
 
