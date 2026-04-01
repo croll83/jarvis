@@ -1,0 +1,158 @@
+# acpx Process Group Kill Patch
+
+## Problem
+
+When an ACP session's queue-owner process terminates (TTL expiry, explicit close,
+or gateway shutdown), it only kills the **direct child** agent process via
+`child.kill("SIGTERM")`. Grandchild processes spawned by the agent — MCP servers,
+`node`, `sh`, `npm`, etc. — survive as orphans and accumulate indefinitely.
+
+On a system with 8 GB RAM, two active ACP Telegram topics generated **64 orphaned
+processes in 5 hours** without any gateway restart, eventually exhausting memory.
+
+**Upstream issue:** https://github.com/openclaw/openclaw/issues/35886
+**Status (2026-03-10):** No upstream fix. PR #35969 targets the wrong layer
+(OpenClaw extension, not the acpx binary). No PR exists on
+https://github.com/openclaw/acpx for this bug.
+
+## Root Cause
+
+In `acpx/dist/cli.js`, the `AcpClient` class:
+
+1. **Spawns the agent** without `detached: true`, so the agent and all its
+   children share the queue-owner's process group.
+2. **Kills only the direct child PID** in `terminateAgentProcess()` via
+   `child.kill("SIGTERM")` / `child.kill("SIGKILL")`, leaving grandchildren alive.
+
+## What the Patch Does
+
+### Change 1 — Agent spawn: add `detached: true`
+
+```javascript
+// BEFORE (line ~1165):
+const child = spawn2(command, args, {
+  cwd: this.options.cwd,
+  env: buildAgentEnvironment(this.options.authCredentials),
+  stdio: ["pipe", "pipe", "pipe"]
+});
+
+// AFTER:
+const child = spawn2(command, args, {
+  cwd: this.options.cwd,
+  env: buildAgentEnvironment(this.options.authCredentials),
+  stdio: ["pipe", "pipe", "pipe"], detached: true
+});
+```
+
+The agent now becomes a **process-group leader** with its own PGID (equal to its
+PID). All processes it spawns (MCP servers, tools, subshells) inherit this PGID.
+
+### Change 2 — terminateAgentProcess: SIGTERM the process group
+
+```javascript
+// BEFORE (line ~1478):
+child.kill("SIGTERM");
+
+// AFTER:
+process.kill(-child.pid, "SIGTERM");
+```
+
+`process.kill(-pid)` sends the signal to **every process in the group**, not just
+the leader. This kills the agent AND all its descendants (MCP servers, etc.).
+
+### Change 3 — terminateAgentProcess: SIGKILL the process group
+
+```javascript
+// BEFORE (line ~1488):
+child.kill("SIGKILL");
+
+// AFTER:
+process.kill(-child.pid, "SIGKILL");
+```
+
+Same as above, for the SIGKILL fallback after the grace period.
+
+## What Is NOT Changed
+
+- **Terminal manager kills** (`terminal.process.kill("SIGTERM"/"SIGKILL")`) —
+  these are for individual tool terminals and are already covered by the group kill.
+- **Spawn error kill** (`child.kill()` without arguments) — this runs when the
+  agent fails to initialize; process group may not be set up yet.
+- **Queue-owner spawn** — already uses `detached: true` in the original code.
+
+## Applying the Patch
+
+```bash
+/home/jarvis/patch-acpx-process-group-kill.sh
+systemctl --user restart openclaw-gateway
+```
+
+## Checking Patch Status
+
+```bash
+/home/jarvis/patch-acpx-process-group-kill.sh --check
+```
+
+## Re-applying After OpenClaw Update
+
+The patch modifies the bundled acpx binary inside the OpenClaw npm package.
+Any `openclaw` update (brew, npm, curl installer) will overwrite the patched file.
+
+Run the script again after updating:
+
+```bash
+# Update openclaw (however you do it)
+brew upgrade openclaw   # or: npm update -g openclaw
+
+# Re-apply patch
+/home/jarvis/patch-acpx-process-group-kill.sh
+
+# Restart
+systemctl --user restart openclaw-gateway
+```
+
+The script is **idempotent** — it detects if the patch is already applied and
+skips in that case. It also auto-detects acpx 0.1.x (single `cli.js`) and
+0.2.x (split `session-*.js`) file layouts.
+
+## Recommended systemd Configuration
+
+With this patch, use `KillMode=process` in the gateway service unit:
+
+```ini
+KillMode=process
+```
+
+This way:
+- Gateway restart only kills the gateway process, not the queue-owners.
+- Queue-owners and their agents survive the restart.
+- The gateway reconnects to surviving sessions on startup (reconciliation).
+- When a queue-owner's TTL expires, it cleanly kills the entire agent process tree.
+
+## Backups
+
+Backups of the original file are stored in:
+
+```
+/home/jarvis/acpx-patch-backups/
+```
+
+Each backup is named `cli.js.orig-<version>-<timestamp>`.
+
+## TTL Configuration
+
+To reduce the frequency of queue-owner respawn cycles (and thus reduce the window
+for any remaining edge cases), increase the TTL in `openclaw.json`:
+
+```json
+{
+  "extensions": {
+    "acpx": {
+      "ttlMinutes": 30
+    }
+  }
+}
+```
+
+Default is 5 minutes. With 30 minutes, the queue-owner stays alive longer between
+messages, reducing respawn overhead and maintaining the agent process in memory.
