@@ -837,7 +837,7 @@ async def get_all_health_status() -> Dict[str, Any]:
     # Define services to check
     services = [
         ("Ollama", f"{config.OLLAMA_URL}/api/tags"),
-        ("Whisper", f"{config.WHISPER_URL}/health"),
+        ("STT", f"{config.STT_URL}/health"),
         ("Home Assistant", f"{config.HASS_URL_DEFAULT}/api/"),
         ("OpenClaw", f"{config.OPENCLAW_URL}/health"),
     ]
@@ -981,7 +981,8 @@ async def get_config() -> Dict[str, Any]:
         },
         "readonly": {
             "ollama_url": config.OLLAMA_URL,
-            "whisper_url": config.WHISPER_URL,
+            "stt_url": config.STT_URL,
+            "stt_engine": config.STT_ENGINE,
             "hass_url": config.HASS_URL_DEFAULT,
             "openclaw_url": config.OPENCLAW_URL,
             "router_model": config.ROUTER_MODEL,

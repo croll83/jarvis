@@ -1,24 +1,25 @@
 # =============================================================================
-# JARVIS DOCKER STACK (Locale — GPU)
+# JARVIS DOCKER STACK (Locale — GPU + GX10)
 # =============================================================================
 #
 # ARCHITECTURE (OpenClaw + Gemini 3 Pro):
 # - OpenClaw (Gemini 3 Pro): Brain — gira su VM separata (bare-metal)
 # - JARVIS Orchestrator: Skill — domotics, memory, speaker ID, security, TTS
-# - XTTSv2 (Coqui): TTS engine (voice cloning italiana, GPU accelerated)
 # - Qwen 2.5 3B (Q4_K_M): Pre-routing + tool calling (web_search, web_fetch,
 #     memory_search, home_status) + offline fallback
-# - Whisper large-v3-turbo: Speech-to-text (GPU, int8_float16, ~1.0 GB VRAM)
-# - Ollama: Hosts Qwen 2.5 3B (num_ctx 20480, 37/37 GPU) — solo LLM, no embeddings
+# - Ollama: Hosts Qwen 2.5 3B (num_ctx 32768, 37/37 GPU) — solo LLM, no embeddings
 # - fastembed: Embedding server CPU-only (nomic-embed-text-v1.5, ONNX, :11435)
 #
-# VRAM BUDGET (RTX 5070 Laptop 8 GB, GPU dedicata — no display):
-#   Ollama Qwen 2.5 3B Q4_K_M (weights+KV): ~2.6 GB  (misurato @ ctx=20480, 37/37 GPU)
-#   XTTSv2 (PyTorch fp16):                   ~2.3 GB  (misurato)
-#   Whisper large-v3-turbo (int8_float16):    ~1.3 GB  (misurato)
-#   Totale:                                   ~6.2 / 8.15 GB (~1.6 GB buffer)
+# AUDIO SERVICES (su GX10 DGX Spark via Tailscale):
+# - Parakeet STT (nvidia/parakeet-tdt-0.6b-v3): STT multilingue, ~5.1 GiB VRAM, :7865
+# - Qwen3-TTS (Qwen3-TTS-12Hz-1.7B): TTS con voice cloning, ~4.4 GiB VRAM, :9880
+# Nota: Whisper e XTTSv2 DEPRECATI — rimossi dallo stack Atomman per liberare VRAM
+#
+# VRAM BUDGET Atomman (RTX 5070 Laptop 8 GB, GPU dedicata — no display):
+#   Ollama Qwen 2.5 3B Q4_K_M (weights+KV): ~2.6 GB  (misurato @ ctx=32768, 37/37 GPU)
+#   Totale:                                   ~2.6 / 8.15 GB (~5.5 GB liberi per router upgrade)
 #   NOTA: Embeddings (nomic-embed-text) su fastembed CPU — zero VRAM.
-#   NOTA: KV cresce con context usato. No FA su Qwen 2.5 = KV dinamico.
+#   NOTA: STT e TTS ora su GX10 (128 GB VRAM) — zero VRAM locale.
 #
 # NOTA SU OPENCLAW:
 # OpenClaw NON e in questo compose — gira bare-metal su una VM dedicata
@@ -28,8 +29,13 @@
 # NOTA SU TAILSCALE:
 # Tailscale gira host-level (NON in Docker) su entrambe le VM (GPU e OpenClaw).
 # L'orchestrator usa network_mode: host per vedere l'interfaccia Tailscale
-# e raggiungere HA remoti, OpenClaw e MagicDNS direttamente.
+# e raggiungere HA remoti, OpenClaw, GX10 e MagicDNS direttamente.
 # Installazione: curl -fsSL https://tailscale.com/install.sh | sh
+#
+# NOTA SU GX10 (NVIDIA DGX Spark):
+# STT (Parakeet :7865) e TTS (Qwen3-TTS :9880) girano sul GX10 (100.98.187.12)
+# come servizi systemd. L'orchestrator li raggiunge via Tailscale.
+# Vedi infrastructure/gb10/gx10-full-inventory.md per dettagli.
 #
 # NOTA SU RESEMBLYZER:
 # Resemblyzer e una libreria Python per speaker identification.
@@ -99,69 +105,13 @@ services:
     # restart gestito da jarvis.sh
 
   # ===========================================================================
-  # SPEECH-TO-TEXT - speaches (ex faster-whisper-server) + CTranslate2 4.7.x
-  # Image custom: CUDA 12.9 (Blackwell sm_120) + CTranslate2 int8_float16
-  # Modello nella request API: model=deepdml/faster-whisper-large-v3-turbo-ct2
+  # SPEECH-TO-TEXT & TTS — Ora su GX10 DGX Spark (via Tailscale)
   # ===========================================================================
-  whisper:
-    build: ./infrastructure/whisper-custom
-    image: jarvis/whisper-blackwell:latest
-    container_name: jarvis_whisper
-    ports:
-      - "9000:8000"
-    environment:
-      - WHISPER__INFERENCE_DEVICE=cuda
-      - WHISPER__COMPUTE_TYPE=int8_float16      # CTranslate2 >= 4.7.0 + CUDA 12.9 — INT8 su Blackwell (PR #1982)
-      - WHISPER__TTL=-1                        # Mai scaricare il modello dalla VRAM
-      - HF_HUB_OFFLINE=1                      # Previene ri-download da HuggingFace (modello montato via volume)
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    volumes:
-      - ../models/faster-whisper-large-v3-turbo:/models/faster-whisper-large-v3-turbo:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    # restart gestito da jarvis.sh
-
-  # ===========================================================================
-  # TTS - XTTSv2 / Coqui (GPU accelerated, voice cloning italiana)
-  # ===========================================================================
-  # Modello: XTTSv2 (~1.9 GB su disco, ~2.1 GB VRAM fp16)
-  # Al primo avvio scarica il modello automaticamente (~2 min con buona connessione).
-  # Per voice cloning: metti un WAV di riferimento (6-15s, mono, 22050Hz+) in ./speakers/
-  # API docs: http://localhost:8890/docs
-  xtts:
-    build: ./infrastructure/xtts-custom
-    image: jarvis/xtts-blackwell:latest
-    container_name: jarvis_xtts
-    ports:
-      - "8890:8020"
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - EXAMPLE_FOLDER=/app/speakers            # Speaker folder override (CMD uses -sf $EXAMPLE_FOLDER)
-      # Limita il caching allocator PyTorch — libera VRAM per Ollama
-      # gc_threshold:0.5 = rilascia cache quando >50% reserved inutilizzata
-      # expandable_segments = riduce frammentazione con segmenti espandibili
-      # max_split_size_mb:256 = previene splitting eccessivo (XTTS ha tensori grandi)
-      - PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.5,expandable_segments:True,max_split_size_mb:256
-      # DeepSpeed per 2-4x speedup (opzionale, richiede piu RAM di sistema)
-      # - DEEPSPEED=1
-    volumes:
-      - xtts_models:/root/.local/share/tts   # Cache modello XTTSv2 (~1.9 GB)
-      - ./speakers:/app/speakers              # WAV di riferimento per voice cloning
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8020/docs"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 120s  # Primo avvio: download modello + caricamento GPU
-    # restart gestito da jarvis.sh
-
+  # STT: Parakeet (nvidia/parakeet-tdt-0.6b-v3) su GX10 :7865
+  # TTS: Qwen3-TTS (Qwen3-TTS-12Hz-1.7B) su GX10 :9880
+  # Whisper e XTTSv2 DEPRECATI — Dockerfile mantenuti in *-deprecated/
+  # Questo libera ~3.6 GB VRAM sull'Atomman per upgrade router (100K ctx)
+  #
   # ===========================================================================
   # JARVIS ORCHESTRATOR - OpenClaw Skill (FastAPI)
   # Include: Qwen pre-routing + tool calling (web_search, web_fetch, memory, home),
@@ -179,10 +129,6 @@ services:
       #depends_on:
       #ollama:
       #  condition: service_healthy
-      #whisper:
-      #  condition: service_started
-      #xtts:
-      #  condition: service_started
     network_mode: host
     volumes:
       - ./data:/app/data                    # SQLite + voice models
@@ -192,7 +138,9 @@ services:
       - AI_BACKEND=${AI_BACKEND:-local}
       - OLLAMA_URL=http://localhost:11434
       - EMBEDDING_URL=http://localhost:11435   # fastembed (CPU, ONNX) — no GPU context switch
-      - WHISPER_URL=http://localhost:9000
+      # STT (Parakeet su GX10 via Tailscale)
+      - STT_ENGINE=parakeet
+      - STT_URL=http://100.98.187.12:7865
       # OpenClaw gira su VM separata — raggiungibile via Tailscale + TLS
       - OPENCLAW_URL=${OPENCLAW_URL:-https://openclaw.mintwork.it:18789}
       - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
@@ -203,9 +151,10 @@ services:
       # JARVIS Approval Bot (L3 critical actions - separate from OpenClaw Telegram)
       - JARVIS_APPROVAL_BOT_TOKEN=${JARVIS_APPROVAL_BOT_TOKEN:-}
       - JARVIS_APPROVAL_CHAT_ID=${JARVIS_APPROVAL_CHAT_ID:-}
-      # TTS (XTTSv2 — porta esposta su host via xtts service)
-      - TTS_ENGINE=xtts
-      - XTTS_URL=http://localhost:8890
+      # TTS (Qwen3-TTS su GX10 via Tailscale)
+      - TTS_ENGINE=qwen3tts
+      - QWEN3_TTS_URL=http://100.98.187.12:9880
+      - QWEN3_TTS_VOICE=${QWEN3_TTS_VOICE:-sofia}
       # Qwen tool calling (Brave Search)
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
       - ROUTER_MODEL=${ROUTER_MODEL:-qwen2.5:3b-32k}
@@ -328,7 +277,6 @@ services:
 volumes:
   ollama_storage:
   fastembed_cache:
-  xtts_models:
   chroma_data:
   postgres_data:
   mongo_data:

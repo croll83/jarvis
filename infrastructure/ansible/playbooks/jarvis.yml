@@ -69,22 +69,10 @@
       when: deploy_type == "lxc" or ai_backend == "api"
 
     # -----------------------------------------------------------------
-    # SPEAKERS — WAV di riferimento per XTTS voice cloning
+    # NOTA: Voice cloning WAV files per Qwen3-TTS sono gestiti direttamente
+    # sul GX10 DGX Spark (/home/jarvis/qwen3-tts-voices/).
+    # Le voci preconfigurate (sofia, marco, emma, james) non richiedono WAV.
     # -----------------------------------------------------------------
-    # I WAV sono gitignored (troppo grandi + privati).
-    # Se speaker_wav_src è definita in group_vars, copia il file sul target.
-    # Altrimenti XTTS usa la voce built-in "default".
-    - name: Copia WAV speaker per XTTS voice cloning
-      ansible.builtin.copy:
-        src: "{{ speaker_wav_src }}"
-        dest: "{{ jarvis_dir }}/speakers/{{ xtts_speaker | default('default') }}.wav"
-        owner: "{{ jarvis_user }}"
-        group: "{{ jarvis_user }}"
-        mode: "0644"
-      when:
-        - speaker_wav_src is defined
-        - speaker_wav_src | length > 0
-        - deploy_type == "lxc_gpu"
 
     # -----------------------------------------------------------------
     # DOCKER COMPOSE — AVVIO SERVIZI
@@ -259,8 +247,8 @@
             - OpenClaw (Gemini):       {{ openclaw_url | default('http://localhost:18789') }}
           {% if deploy_type == 'lxc_gpu' and ai_backend == 'local' %}
             - Ollama API:              http://localhost:11434
-            - Whisper STT:             http://localhost:9000
-            - XTTS TTS (GPU):         http://localhost:8890/docs
+            - Parakeet STT (GX10):     http://100.98.187.12:7865
+            - Qwen3-TTS (GX10):       http://100.98.187.12:9880
           {% endif %}
 
           Prossimi passi manuali:

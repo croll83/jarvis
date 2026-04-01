@@ -2,19 +2,23 @@
 # =============================================================================
 # JARVIS Stack Manager
 # =============================================================================
-# Gestisce l'ordine di avvio per garantire che Ollama carichi il modello
-# con tutta la VRAM disponibile (33/33 GPU layers) PRIMA che XTTS e Whisper
-# occupino la loro porzione.
+# Gestisce l'ordine di avvio dello stack Docker locale (Atomman) e verifica
+# la disponibilità dei servizi audio sul GX10 (Parakeet STT + Qwen3-TTS).
+#
+# STT e TTS ora girano sul GX10 DGX Spark (via Tailscale):
+#   - Parakeet STT: http://100.98.187.12:7865
+#   - Qwen3-TTS:    http://100.98.187.12:9880
+# Whisper e XTTSv2 DEPRECATI — rimossi dallo stack Atomman.
 #
 # Con restart automatico disabilitato, se un container muore lo stack va
 # riavviato con: jarvis.sh restart
 #
 # Usage:
-#   jarvis.sh start       Avvio ordinato (Ollama → model load → GPU services → rest)
+#   jarvis.sh start       Avvio ordinato (Ollama → model load → GX10 check → rest)
 #   jarvis.sh stop        Ferma tutti i container
 #   jarvis.sh down        Stop + rimuove container
 #   jarvis.sh restart     Stop + Start
-#   jarvis.sh status      Stato container + VRAM
+#   jarvis.sh status      Stato container + VRAM + GX10 services
 #   jarvis.sh vram        Solo VRAM usage
 #   jarvis.sh logs [svc]  Segui i log (opzionale: nome servizio)
 # =============================================================================
@@ -27,6 +31,11 @@ COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 # Modello da pre-caricare in VRAM (deve matchare quello usato in ai_engines.py)
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:3b}"
 OLLAMA_URL="http://localhost:11434"
+
+# GX10 DGX Spark (audio services via Tailscale)
+GX10_IP="${GX10_IP:-100.98.187.12}"
+PARAKEET_URL="http://${GX10_IP}:7865"
+QWEN3_TTS_URL="http://${GX10_IP}:9880"
 
 # ── Colori ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -162,22 +171,29 @@ show_vram() {
 
 cmd_start() {
     echo -e "\n${BOLD}${CYAN}━━━ JARVIS Stack Start ━━━${NC}\n"
-    log "Strategia: Ollama carica modello PRIMO (33/33 GPU layers)"
-    log "           poi XTTS + Whisper prendono la VRAM rimanente\n"
+    log "Strategia: Ollama unico servizio GPU locale"
+    log "           STT + TTS su GX10 DGX Spark (via Tailscale)\n"
 
-    # ── Fase 1: Ollama (unico processo GPU) ───────────────────────────────
+    # ── Fase 1: Ollama (unico processo GPU locale) ────────────────────────
     log "═══ Fase 1: Ollama ═══"
     dc up -d ollama
     wait_for "${OLLAMA_URL}/api/tags" "Ollama API" 60
     preload_model
     echo ""
 
-    # ── Fase 2: Servizi GPU (XTTS + Whisper) ──────────────────────────────
-    log "═══ Fase 2: XTTS + Whisper ═══"
-    dc up -d xtts whisper fastembed
-    # XTTS ha start_period 120s al primo avvio (download modello)
-    wait_for "http://localhost:8890/docs" "XTTS" 240
-    wait_for "http://localhost:9000/docs" "Whisper" 120
+    # ── Fase 2: Verifica servizi audio su GX10 ───────────────────────────
+    log "═══ Fase 2: GX10 Audio Services (Parakeet STT + Qwen3-TTS) ═══"
+    dc up -d fastembed
+    if wait_for "${PARAKEET_URL}/health" "Parakeet STT (GX10)" 15; then
+        ok "Parakeet STT disponibile su GX10"
+    else
+        warn "Parakeet STT non raggiungibile — input vocale non funzionerà"
+    fi
+    if wait_for "${QWEN3_TTS_URL}/health" "Qwen3-TTS (GX10)" 15; then
+        ok "Qwen3-TTS disponibile su GX10"
+    else
+        warn "Qwen3-TTS non raggiungibile — output vocale non funzionerà"
+    fi
     echo ""
 
     # ── Fase 3: Servizi non-GPU ───────────────────────────────────────────
@@ -214,6 +230,19 @@ cmd_restart() {
 cmd_status() {
     echo -e "\n${BOLD}${CYAN}━━━ JARVIS Stack Status ━━━${NC}\n"
     dc ps
+
+    echo -e "\n${BOLD}GX10 Audio Services:${NC}"
+    if curl -sf --max-time 3 "${PARAKEET_URL}/health" > /dev/null 2>&1; then
+        ok "Parakeet STT (${PARAKEET_URL})"
+    else
+        err "Parakeet STT (${PARAKEET_URL}) — non raggiungibile"
+    fi
+    if curl -sf --max-time 3 "${QWEN3_TTS_URL}/health" > /dev/null 2>&1; then
+        ok "Qwen3-TTS (${QWEN3_TTS_URL})"
+    else
+        err "Qwen3-TTS (${QWEN3_TTS_URL}) — non raggiungibile"
+    fi
+
     show_vram
     echo ""
 }
@@ -242,7 +271,7 @@ usage() {
     echo "Usage: $(basename "$0") <comando>"
     echo ""
     echo "Comandi:"
-    echo "  start       Avvio ordinato (Ollama → GPU services → rest)"
+    echo "  start       Avvio ordinato (Ollama → GX10 check → rest)"
     echo "  stop        Ferma tutti i container"
     echo "  down        Stop + rimuove container"
     echo "  restart     Stop + Start"
