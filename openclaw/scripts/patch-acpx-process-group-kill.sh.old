@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# ============================================================================
+# patch-acpx-process-group-kill.sh
+#
+# Patches the bundled acpx CLI to kill the entire process group (agent +
+# grandchildren such as MCP servers) when an ACP session's queue-owner
+# terminates, instead of only killing the direct child PID.
+#
+# Without this patch, every queue-owner TTL expiry cycle leaves orphaned
+# grandchild processes (claude-agent-acp, metabase-mcp, node, sh, npm …)
+# that accumulate and eventually exhaust system memory.
+#
+# Related: https://github.com/openclaw/openclaw/issues/35886
+#          https://github.com/openclaw/acpx (no upstream fix as of 2026-03-10)
+#
+# What it does:
+#   1. Adds  detached: true  to the agent spawn() call so the agent becomes
+#      a process-group leader with its own PGID.
+#   2. Replaces  child.kill("SIGTERM")  and  child.kill("SIGKILL")  inside
+#      terminateAgentProcess() with  process.kill(-child.pid, …)  to send
+#      the signal to the entire process group, killing all descendants.
+#
+# Safety:
+#   - Only patches child.kill() inside terminateAgentProcess(); terminal
+#     manager kills (terminal.process.kill) are untouched.
+#   - child.kill() without arguments (spawn error path) is untouched.
+#   - All kill calls are already wrapped in try/catch in the original code.
+#   - A backup of the original file is saved before patching.
+#
+# Usage:
+#   ./patch-acpx-process-group-kill.sh          # auto-detect acpx location
+#   ./patch-acpx-process-group-kill.sh /path/to/cli.js   # explicit path
+#   ./patch-acpx-process-group-kill.sh --check   # verify patch status
+#
+# Designed to be re-run safely after openclaw updates (idempotent).
+# ============================================================================
+set -euo pipefail
+
+OPENCLAW_BASE="/home/linuxbrew/.linuxbrew/lib/node_modules/openclaw"
+BACKUP_DIR="/home/jarvis/acpx-patch-backups"
+
+# ---------------------------------------------------------------------------
+# Locate the acpx cli.js file
+# ---------------------------------------------------------------------------
+find_cli_js() {
+  local candidates=(
+    # acpx 0.1.x — single cli.js
+    "$OPENCLAW_BASE/extensions/acpx/node_modules/acpx/dist/cli.js"
+    # acpx 0.2.x — split into session-*.js
+    # (the session file contains terminateAgentProcess)
+  )
+
+  # 0.2.x: session chunk file
+  local session_file
+  session_file=$(find "$OPENCLAW_BASE/extensions/acpx/node_modules/acpx/dist/" \
+    -maxdepth 1 -name 'session-*.js' 2>/dev/null | head -1) || true
+  if [[ -n "$session_file" ]]; then
+    candidates+=("$session_file")
+  fi
+
+  for f in "${candidates[@]}"; do
+    if [[ -f "$f" ]] && grep -q 'terminateAgentProcess' "$f" 2>/dev/null; then
+      echo "$f"
+      return 0
+    fi
+  done
+
+  echo ""
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Detect acpx version from package.json
+# ---------------------------------------------------------------------------
+get_acpx_version() {
+  local pkg="$OPENCLAW_BASE/extensions/acpx/node_modules/acpx/package.json"
+  if [[ -f "$pkg" ]]; then
+    grep '"version"' "$pkg" | head -1 | sed 's/.*"version".*"\(.*\)".*/\1/'
+  else
+    echo "unknown"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Check if patch is already applied
+# ---------------------------------------------------------------------------
+is_patched() {
+  local file="$1"
+  # Check for our detached:true marker AND process group kill
+  if grep -q 'detached: true' "$file" && \
+     grep -q 'process\.kill(-child\.pid' "$file"; then
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Verify the file has the expected patterns to patch
+# ---------------------------------------------------------------------------
+verify_patchable() {
+  local file="$1"
+  local errors=0
+
+  # Pattern 1: agent spawn with stdio pipe (without detached)
+  if ! grep -q 'stdio: \["pipe", "pipe", "pipe"\]' "$file"; then
+    echo "  ERROR: Cannot find agent spawn stdio pattern" >&2
+    errors=$((errors + 1))
+  fi
+
+  # Pattern 2: child.kill("SIGTERM") in terminateAgentProcess
+  if ! grep -q 'child\.kill("SIGTERM")' "$file"; then
+    echo "  ERROR: Cannot find child.kill(\"SIGTERM\") pattern" >&2
+    errors=$((errors + 1))
+  fi
+
+  # Pattern 3: child.kill("SIGKILL") in terminateAgentProcess
+  if ! grep -q 'child\.kill("SIGKILL")' "$file"; then
+    echo "  ERROR: Cannot find child.kill(\"SIGKILL\") pattern" >&2
+    errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ---------------------------------------------------------------------------
+# Apply the patch
+# ---------------------------------------------------------------------------
+apply_patch() {
+  local file="$1"
+  local version
+  version=$(get_acpx_version)
+
+  echo "Patching acpx v${version}: ${file}"
+
+  # Backup
+  mkdir -p "$BACKUP_DIR"
+  local backup_name
+  backup_name="cli.js.orig-${version}-$(date +%Y%m%d-%H%M%S)"
+  cp "$file" "${BACKUP_DIR}/${backup_name}"
+  echo "  Backup: ${BACKUP_DIR}/${backup_name}"
+
+  # Patch 1: Add detached:true to agent spawn
+  # Before:  stdio: ["pipe", "pipe", "pipe"]
+  # After:   stdio: ["pipe", "pipe", "pipe"], detached: true
+  sed -i 's|stdio: \["pipe", "pipe", "pipe"\]|stdio: ["pipe", "pipe", "pipe"], detached: true|' "$file"
+  echo "  [1/3] Added detached: true to agent spawn"
+
+  # Patch 2: Replace child.kill("SIGTERM") with process group kill
+  # Only matches the exact pattern in terminateAgentProcess (not terminal.process.kill)
+  sed -i 's|child\.kill("SIGTERM")|process.kill(-child.pid, "SIGTERM")|' "$file"
+  echo "  [2/3] Replaced SIGTERM with process group kill"
+
+  # Patch 3: Replace child.kill("SIGKILL") with process group kill
+  sed -i 's|child\.kill("SIGKILL")|process.kill(-child.pid, "SIGKILL")|' "$file"
+  echo "  [3/3] Replaced SIGKILL with process group kill"
+
+  echo "  Done. Patch applied successfully."
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+main() {
+  local target_file=""
+
+  # Parse args
+  if [[ "${1:-}" == "--check" ]]; then
+    target_file=$(find_cli_js || true)
+    if [[ -z "$target_file" ]]; then
+      echo "ERROR: Cannot locate acpx cli.js" >&2
+      exit 1
+    fi
+    if is_patched "$target_file"; then
+      echo "PATCHED: ${target_file} (acpx v$(get_acpx_version))"
+      exit 0
+    else
+      echo "NOT PATCHED: ${target_file} (acpx v$(get_acpx_version))"
+      exit 1
+    fi
+  elif [[ -n "${1:-}" ]]; then
+    target_file="$1"
+  else
+    target_file=$(find_cli_js || true)
+  fi
+
+  if [[ -z "$target_file" || ! -f "$target_file" ]]; then
+    echo "ERROR: Cannot locate acpx cli.js" >&2
+    echo "  Searched in: $OPENCLAW_BASE/extensions/acpx/node_modules/acpx/dist/" >&2
+    echo "  Usage: $0 [/path/to/cli.js]" >&2
+    exit 1
+  fi
+
+  echo "Target: ${target_file}"
+  echo "Version: acpx v$(get_acpx_version)"
+  echo ""
+
+  # Check if already patched
+  if is_patched "$target_file"; then
+    echo "Already patched. Nothing to do."
+    exit 0
+  fi
+
+  # Verify patchable
+  if ! verify_patchable "$target_file"; then
+    echo ""
+    echo "ERROR: File structure does not match expected patterns." >&2
+    echo "  This may be a new acpx version with different code layout." >&2
+    echo "  Check https://github.com/openclaw/openclaw/issues/35886 for upstream fix." >&2
+    exit 1
+  fi
+
+  apply_patch "$target_file"
+
+  echo ""
+  echo "=== IMPORTANT ==="
+  echo "Restart the gateway to activate the patch:"
+  echo "  systemctl --user restart openclaw-gateway"
+}
+
+main "$@"
