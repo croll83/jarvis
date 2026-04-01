@@ -398,7 +398,7 @@ ansible-playbook playbooks/site.yml --tags common,nvidia,jarvis,verify
 Il playbook:
 1. Installa Docker + NVIDIA Container Toolkit (con `no-cgroups=true` per LXC)
 2. Clona il repository, genera `.env` da template
-3. Esegue `docker compose up -d` (Ollama, Whisper, XTTSv2, Orchestrator, Ontology, Postgres, Mongo)
+3. Esegue `docker compose up -d` (Ollama, Orchestrator, Ontology, Postgres, Mongo — STT/TTS su GX10)
 4. Scarica i modelli AI (`setup.sh` — Qwen 2.5 3B) + avvia fastembed (embeddings CPU)
 5. Verifica health di tutti i servizi
 6. Installa Nginx + Certbot (cert SSL via Cloudflare DNS per jarvis.mintwork.it)
@@ -547,7 +547,7 @@ Questi richiedono riavvio del container orchestrator sulla LXC-JARVIS:
 OPENCLAW_TIMEOUT=30
 TAILSCALE_TIMEOUT_REMOTE=15.0
 TAILSCALE_TIMEOUT_LOCAL=10.0
-TIMEOUT_WHISPER=30
+TIMEOUT_STT=30
 TIMEOUT_HA_READ=5
 
 # Intervalli (secondi)
@@ -571,9 +571,12 @@ VOICE_SIMILARITY_THRESHOLD=0.75
 MEMORY_HOURLY_MINUTE=5
 MEMORY_DAILY_HOUR=3
 
-# Whisper locale
-WHISPER_MODEL=Systran/faster-whisper-large-v3-turbo
-WHISPER_LANGUAGE=it
+# STT/TTS (su GX10 via Tailscale)
+STT_URL=http://100.98.187.12:7865
+STT_ENGINE=parakeet
+TTS_ENGINE=qwen3tts
+QWEN3_TTS_URL=http://100.98.187.12:9880
+QWEN3_TTS_VOICE=sofia
 
 # Proactive monitoring
 PROACTIVE_DOOR_OPEN_MINUTES=30
@@ -613,6 +616,7 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-OpenClaw senza aprir
 | **Napoli (Wagmi)** | Host-level nel LXC-JARVIS | Gateway VPN per lo stack | `jarvis-wagmi` |
 | **LXC-OpenClaw** | Host-level nel LXC dedicato | Espone OpenClaw sulla tailnet | `jarvis-openclaw` |
 | **LXC-Wakeword** | Host-level nel LXC wakeword | Orchestrator → push config, trigger_listen | `jarvis-wakeword-<casa>` |
+| **GX10 DGX Spark** | Host-level (Ubuntu) | Parakeet STT, Qwen3-TTS, ACE-Step, ComfyUI | `gx10-dgx` |
 | **Milano (Albani)** | Add-on HAOS o host-level | Espone HA sulla tailnet | `ha-albani` |
 
 ### Schema di rete
@@ -627,7 +631,7 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-OpenClaw senza aprir
 |   | Tailscale (host)  |           | Tailscale (host)  |        |
 |   |                   |           |                   |        |
 |   | Docker:           |           | OpenClaw Gateway  |        |
-|   |   Ollama, Whisper |           | Gemini 3 Pro      |        |
+|   |   Ollama (router) |           | Gemini 3 Pro      |        |
 |   |   Orchestrator    |           | Telegram bot      |        |
 |   |    (net: host)    |           | JARVIS skill      |        |
 |   |   Postgres, Mongo |           +-------------------+        |
@@ -636,12 +640,15 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-OpenClaw senza aprir
 |   +-------------------+                                        |
 |           |                                                     |
 |           v                                                     |
-|   Milano (Mini PC)                                             |
-|   +-------------------+                                        |
-|   | ha-albani         |                                        |
-|   | Home Assistant    |                                        |
-|   | Zigbee/Z-Wave     |                                        |
-|   | Automazioni       |                                        |
+|   Napoli GX10 DGX Spark           Milano (Mini PC)             |
+|   +-------------------+           +-------------------+        |
+|   | gx10-dgx          |           | ha-albani         |        |
+|   | Tailscale (host)  |           | Home Assistant    |        |
+|   |                   |           | Zigbee/Z-Wave     |        |
+|   | Parakeet STT:7865 |           | Automazioni       |        |
+|   | Qwen3-TTS  :9880  |           +-------------------+        |
+|   | ACE-Step   :8760  |                                        |
+|   | ComfyUI    :8188  |                                        |
 |   +-------------------+                                        |
 |                                                                 |
 |   Napoli (LXC su stesso host Proxmox)                          |
@@ -653,6 +660,7 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-OpenClaw senza aprir
 |                                                                 |
 |   wagmi -> openclaw: https://openclaw.mintwork.it:18789 (TLS) |
 |   wagmi -> albani: 100.x.x.x:8123 (HA API via Tailscale)     |
+|   wagmi -> gx10: 100.98.187.12:7865/9880 (STT/TTS Tailscale) |
 |   wagmi -> wakeword: http://jarvis-wakeword-casa1:8200        |
 |   Zero porte aperte, NAT traversal automatico                  |
 +---------------------------------------------------------------+
@@ -684,8 +692,8 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | Porta Host | Servizio | Protocollo | Accesso |
 |------------|----------|------------|---------|
 | 5000 | Orchestrator + Admin UI | HTTP | LAN / Tailscale |
-| 8890 | XTTSv2 TTS API | HTTP | Interno / Tailscale (per OpenClaw) |
-| 9000 | Whisper STT | HTTP | Interno |
+| — | Parakeet STT (GX10 :7865) | HTTP | Via Tailscale |
+| — | Qwen3-TTS (GX10 :9880) | HTTP | Via Tailscale |
 | 11434 | Ollama API (LLM) | HTTP | Interno |
 | 11435 | fastembed API (embeddings) | HTTP | Interno / Tailscale |
 | 8000 | ChromaDB (shared vector store) | HTTP | Interno (127.0.0.1) |
