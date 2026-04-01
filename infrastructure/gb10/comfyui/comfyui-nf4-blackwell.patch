@@ -1,0 +1,100 @@
+diff --git a/hunyuan_instruct_nodes.py b/hunyuan_instruct_nodes.py
+index f7140e8..182721f 100644
+--- a/hunyuan_instruct_nodes.py
++++ b/hunyuan_instruct_nodes.py
+@@ -17,6 +17,7 @@ Copyright (c) 2025-2026 Eric Hiss. All rights reserved.
+ import gc
+ import logging
+ import os
++import json
+ import tempfile
+ import time
+ from typing import Any, Dict, List, Optional, Tuple, Union
+@@ -1622,22 +1623,82 @@ class HunyuanInstructLoader:
+         start_time = time.time()
+         
+         if quant_type == "nf4":
+-            # NF4 pre-quantized models: load to single GPU, no quantization_config needed
+-            # These models are small enough (~24GB) to fit on one GPU
+-            logger.info("Loading pre-quantized NF4 Instruct model to single GPU...")
++            # NF4 pre-quantized models: load to single GPU
++            # Do NOT pass explicit quantization_config - transformers detects it
++            # from config.json and uses Bnb4bitDeserialize to properly reconstruct
++            # Params4bit with quant_state. Passing it triggers re-quantization OOM.
++            logger.info("Loading pre-quantized NF4 Instruct model...")
+             model = AutoModelForCausalLM.from_pretrained(
+                 model_path,
+-                device_map={"": "cuda:0"},  # Single GPU, moveable
++                device_map="cuda:0",
+                 trust_remote_code=True,
+                 torch_dtype=torch.bfloat16,
+                 attn_implementation=attention_impl,
+                 moe_impl=moe_impl,
+                 moe_drop_tokens=True,
+                 low_cpu_mem_usage=True,
+-                # No quantization_config - model is pre-quantized on disk
+             )
+             model_info["is_moveable"] = True
+             
++            # Fix broken Linear4bit modules: config.json skip list patterns
++            # (e.g. "shared_mlp") don't match nested paths like
++            # "layers.0.mlp.shared_mlp.gate_and_up_proj", so transformers
++            # incorrectly converts them to Linear4bit. These modules have
++            # bf16 weights stored as uint8 without quant_state → broken.
++            # Fix: convert them back to nn.Linear with proper bf16 weights.
++            import bitsandbytes as bnb
++            from safetensors import safe_open
++            
++            fixed_count = 0
++            index_path = os.path.join(model_path, "model.safetensors.index.json")
++            if os.path.exists(index_path):
++                with open(index_path) as f:
++                    weight_map = json.load(f)["weight_map"]
++                
++                shard_cache = {}
++                for name, module in model.named_modules():
++                    if isinstance(module, bnb.nn.Linear4bit):
++                        w = module.weight
++                        if isinstance(w, bnb.nn.Params4bit) and hasattr(w, "quant_state") and w.quant_state is not None:
++                            continue
++                        # This Linear4bit has no quant_state - reload as bf16
++                        weight_key = f"{name}.weight"
++                        shard = weight_map.get(weight_key)
++                        if shard is None:
++                            continue
++                        shard_path = os.path.join(model_path, shard)
++                        if shard_path not in shard_cache:
++                            shard_cache[shard_path] = safe_open(shard_path, framework="pt")
++                        sf = shard_cache[shard_path]
++                        if weight_key not in sf.keys():
++                            continue
++                        orig_tensor = sf.get_tensor(weight_key)
++                        if orig_tensor.dtype != torch.bfloat16:
++                            continue
++                        # Replace with nn.Linear
++                        new_linear = torch.nn.Linear(
++                            orig_tensor.shape[1], orig_tensor.shape[0],
++                            bias=module.bias is not None,
++                            dtype=torch.bfloat16,
++                            device=w.device,
++                        )
++                        new_linear.weight.data.copy_(orig_tensor.to(w.device))
++                        if module.bias is not None:
++                            bias_key = f"{name}.bias"
++                            if bias_key in sf.keys():
++                                new_linear.bias.data.copy_(sf.get_tensor(bias_key).to(w.device))
++                        # Replace in parent
++                        parts = name.rsplit(".", 1)
++                        if len(parts) == 2:
++                            parent = model.get_submodule(parts[0])
++                            setattr(parent, parts[1], new_linear)
++                        else:
++                            setattr(model, name, new_linear)
++                        fixed_count += 1
++                
++                if fixed_count > 0:
++                    logger.info(f"Fixed {fixed_count} Linear4bit modules with missing quant_state (restored to bf16 nn.Linear)")
++            
+         elif quant_type == "int8":
+             # INT8 pre-quantized models: ~80GB. Strategy depends on blocks_to_swap.
+             logger.info("Loading pre-quantized INT8 Instruct model...")

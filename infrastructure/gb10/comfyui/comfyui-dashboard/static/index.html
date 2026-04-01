@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jarvis Image Studio</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0f0f14;--surface:#1a1a24;--surface2:#24243a;--border:#2e2e48;
+  --text:#e4e4f0;--text2:#9595b0;--accent:#7c6aef;--accent2:#9b8afb;
+  --success:#4ade80;--danger:#f87171;--radius:12px;
+}
+body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+a{color:var(--accent2);text-decoration:none}
+button{cursor:pointer;font-family:inherit}
+
+/* Header */
+.header{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:16px;position:sticky;top:0;z-index:100}
+.header h1{font-size:18px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.tabs{display:flex;gap:4px;margin-left:auto}
+.tab{padding:8px 20px;border-radius:8px;border:none;background:transparent;color:var(--text2);font-size:14px;font-weight:500;transition:.2s}
+.tab:hover{background:var(--surface2);color:var(--text)}
+.tab.active{background:var(--accent);color:#fff}
+
+/* Layout */
+.container{max-width:1200px;margin:0 auto;padding:20px}
+.page{display:none}.page.active{display:block}
+
+/* Mode selector */
+.modes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px}
+.mode-card{background:var(--surface);border:2px solid var(--border);border-radius:var(--radius);padding:20px;text-align:center;cursor:pointer;transition:.2s}
+.mode-card:hover{border-color:var(--accent);transform:translateY(-2px)}
+.mode-card.active{border-color:var(--accent);background:var(--surface2)}
+.mode-card .icon{font-size:32px;margin-bottom:8px}
+.mode-card h3{font-size:15px;font-weight:600;margin-bottom:4px}
+.mode-card p{font-size:12px;color:var(--text2)}
+
+/* Form */
+.form-section{background:var(--surface);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+.form-section h4{font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
+.form-row{display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.form-group{flex:1;min-width:120px}
+.form-group label{display:block;font-size:13px;color:var(--text2);margin-bottom:6px}
+.form-group.full{flex-basis:100%}
+textarea,select,input[type="number"]{
+  width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;
+  color:var(--text);font-size:14px;font-family:inherit;resize:vertical;transition:.2s}
+textarea:focus,select:focus,input:focus{outline:none;border-color:var(--accent)}
+textarea{min-height:80px}
+input[type="range"]{-webkit-appearance:none;width:100%;height:6px;background:var(--border);border-radius:3px;border:none;padding:0;margin-top:8px}
+input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;background:var(--accent);border-radius:50%;cursor:pointer}
+input[type="range"]::-moz-range-thumb{width:18px;height:18px;background:var(--accent);border-radius:50%;cursor:pointer;border:none}
+.slider-val{float:right;color:var(--accent2);font-weight:600}
+select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%239595b0'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+
+/* Toggle */
+.toggle-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.toggle{position:relative;width:44px;height:24px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle span{position:absolute;inset:0;background:var(--border);border-radius:12px;transition:.2s;cursor:pointer}
+.toggle span::after{content:'';position:absolute;width:18px;height:18px;background:#fff;border-radius:50%;top:3px;left:3px;transition:.2s}
+.toggle input:checked+span{background:var(--accent)}
+.toggle input:checked+span::after{left:23px}
+.toggle-label{font-size:13px;color:var(--text2)}
+
+/* Image upload */
+.upload-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+.upload-slot{position:relative;aspect-ratio:1;background:var(--bg);border:2px dashed var(--border);border-radius:var(--radius);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;transition:.2s;overflow:hidden}
+.upload-slot:hover{border-color:var(--accent)}
+.upload-slot.has-image{border-style:solid;border-color:var(--accent)}
+.upload-slot.disabled{opacity:.4;pointer-events:none;border-color:var(--border)}
+.upload-slot img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.upload-slot .placeholder{font-size:28px;color:var(--text2);margin-bottom:4px}
+.upload-slot .label{font-size:11px;color:var(--text2)}
+.upload-slot .remove{position:absolute;top:6px;right:6px;width:24px;height:24px;background:rgba(0,0,0,.7);border:none;border-radius:50%;color:#fff;font-size:14px;display:none;align-items:center;justify-content:center;z-index:2}
+.upload-slot.has-image .remove{display:flex}
+.upload-slot input{display:none}
+
+/* Gate toggle on upload slots */
+.slot-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.slot-wrapper{display:flex;flex-direction:column}
+.slot-wrapper .slot-label{font-size:12px;color:var(--text2);margin-bottom:4px;display:flex;align-items:center;gap:8px}
+
+/* Generate button */
+.btn-generate{
+  width:100%;padding:14px;border:none;border-radius:var(--radius);
+  background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;
+  font-size:16px;font-weight:600;transition:.2s}
+.btn-generate:hover{opacity:.9;transform:translateY(-1px)}
+.btn-generate:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+/* Progress */
+.progress-area{margin-top:16px;display:none}
+.progress-area.active{display:block}
+.progress-bar{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-bottom:8px}
+.progress-bar .fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .3s;width:0%}
+.progress-text{font-size:13px;color:var(--text2);text-align:center}
+
+/* Result */
+.result-area{margin-top:16px;display:none;text-align:center}
+.result-area.active{display:block}
+.result-area img{max-width:100%;max-height:70vh;border-radius:var(--radius);border:1px solid var(--border)}
+.result-meta{margin-top:8px;font-size:12px;color:var(--text2)}
+
+/* Gallery */
+.gallery-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.gallery-item{position:relative;aspect-ratio:1;border-radius:var(--radius);overflow:hidden;cursor:pointer;background:var(--surface);border:1px solid var(--border);transition:.2s}
+.gallery-item:hover{border-color:var(--accent);transform:translateY(-2px)}
+.gallery-item img{width:100%;height:100%;object-fit:cover}
+.gallery-empty{text-align:center;padding:60px 20px;color:var(--text2)}
+
+/* Lightbox */
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:200;display:none;align-items:center;justify-content:center;padding:20px}
+.lightbox.active{display:flex}
+.lightbox img{max-width:95vw;max-height:90vh;border-radius:var(--radius)}
+.lightbox-close{position:absolute;top:16px;right:16px;width:40px;height:40px;border:none;background:rgba(255,255,255,.1);border-radius:50%;color:#fff;font-size:20px;cursor:pointer}
+
+/* Responsive */
+@media(max-width:640px){
+  .modes{grid-template-columns:1fr}
+  .header h1{font-size:15px}
+  .tabs{gap:2px}
+  .tab{padding:6px 14px;font-size:13px}
+  .upload-grid{grid-template-columns:repeat(2,1fr)}
+  .gallery-grid{grid-template-columns:repeat(2,1fr)}
+  .form-row{flex-direction:column}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Jarvis Image Studio</h1>
+  <div class="tabs">
+    <button class="tab active" data-page="generate">Genera</button>
+    <button class="tab" data-page="gallery">Galleria</button>
+  </div>
+</div>
+
+<!-- GENERATE PAGE -->
+<div class="container">
+<div id="page-generate" class="page active">
+
+  <div class="modes">
+    <div class="mode-card active" data-mode="t2i">
+      <div class="icon">&#x1f3a8;</div>
+      <h3>Text to Image</h3>
+      <p>Genera da una descrizione</p>
+    </div>
+    <div class="mode-card" data-mode="edit">
+      <div class="icon">&#x270f;&#xfe0f;</div>
+      <h3>Image Edit</h3>
+      <p>Modifica un'immagine</p>
+    </div>
+    <div class="mode-card" data-mode="fusion">
+      <div class="icon">&#x1f500;</div>
+      <h3>Multi Fusion</h3>
+      <p>Combina 2-4 immagini</p>
+    </div>
+  </div>
+
+  <!-- Prompt -->
+  <div class="form-section">
+    <h4>Prompt</h4>
+    <div class="form-group full">
+      <textarea id="prompt" placeholder="Descrivi l'immagine che vuoi generare... (qualsiasi lingua)"></textarea>
+    </div>
+    <div class="toggle-row">
+      <label class="toggle"><input type="checkbox" id="refine" checked><span></span></label>
+      <span class="toggle-label">Migliora prompt con AI (Ollama)</span>
+    </div>
+  </div>
+
+  <!-- Images (edit/fusion) -->
+  <div class="form-section" id="images-section" style="display:none">
+    <h4>Immagini</h4>
+    <div class="upload-grid" id="upload-grid"></div>
+  </div>
+
+  <!-- Settings -->
+  <div class="form-section">
+    <h4>Impostazioni</h4>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Larghezza</label>
+        <input type="number" id="width" value="1024" min="256" max="2048" step="64">
+      </div>
+      <div class="form-group">
+        <label>Altezza</label>
+        <input type="number" id="height" value="1024" min="256" max="2048" step="64">
+      </div>
+      <div class="form-group">
+        <label>Batch</label>
+        <input type="number" id="batch" value="1" min="1" max="8">
+        <span style="font-size:11px;color:var(--text2)">N. immagini per run</span>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Steps</label>
+        <input type="number" id="steps" value="6" min="1" max="50">
+        <span style="font-size:11px;color:var(--text2)">Phr00t ottimale: 4-8</span>
+      </div>
+      <div class="form-group">
+        <label>Seed</label>
+        <input type="number" id="seed" value="-1" min="-1">
+        <span style="font-size:11px;color:var(--text2)">-1 = casuale</span>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>CFG <span class="slider-val" id="cfg-val">1.0</span></label>
+        <input type="range" id="cfg" min="0" max="20" step="0.5" value="1.0" oninput="document.getElementById('cfg-val').textContent=this.value">
+      </div>
+      <div class="form-group">
+        <label>Denoise <span class="slider-val" id="denoise-val">1.0</span></label>
+        <input type="range" id="denoise" min="0" max="1" step="0.05" value="1.0" oninput="document.getElementById('denoise-val').textContent=this.value">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Sampler</label>
+        <select id="sampler_name"><option>euler_ancestral</option></select>
+      </div>
+      <div class="form-group">
+        <label>Scheduler</label>
+        <select id="scheduler"><option>beta</option></select>
+      </div>
+    </div>
+  </div>
+
+  <button class="btn-generate" id="btn-generate" onclick="generate()">Genera</button>
+
+  <div class="progress-area" id="progress-area">
+    <div class="progress-bar"><div class="fill" id="progress-fill"></div></div>
+    <div class="progress-text" id="progress-text">In attesa...</div>
+  </div>
+
+  <div class="result-area" id="result-area">
+    <img id="result-img" src="" alt="Risultato">
+    <div class="result-meta" id="result-meta"></div>
+  </div>
+
+</div>
+
+<!-- GALLERY PAGE -->
+<div id="page-gallery" class="page">
+  <div class="gallery-grid" id="gallery-grid"></div>
+  <div class="gallery-empty" id="gallery-empty">Nessuna generazione ancora</div>
+</div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
+  <img id="lightbox-img" src="">
+</div>
+
+<script>
+// --- State ---
+let currentMode = 't2i';
+let uploadedImages = {};  // slot index -> {filename, preview}
+let currentPromptId = null;
+let ws = null;
+
+// --- Tab navigation ---
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('page-' + tab.dataset.page).classList.add('active');
+    if (tab.dataset.page === 'gallery') loadGallery();
+  });
+});
+
+// --- Mode selection ---
+document.querySelectorAll('.mode-card').forEach(card => {
+  card.addEventListener('click', () => {
+    document.querySelectorAll('.mode-card').forEach(c => c.classList.remove('active'));
+    card.classList.add('active');
+    currentMode = card.dataset.mode;
+    updateUI();
+  });
+});
+
+function updateUI() {
+  const sec = document.getElementById('images-section');
+  const grid = document.getElementById('upload-grid');
+  uploadedImages = {};
+
+  if (currentMode === 't2i') {
+    sec.style.display = 'none';
+    return;
+  }
+  sec.style.display = 'block';
+  grid.innerHTML = '';
+
+  if (currentMode === 'edit') {
+    grid.innerHTML = buildSlot(0, 'Immagine', true, false);
+  } else {
+    // fusion: 4 slots, first always on, 2-4 with gate toggles
+    for (let i = 0; i < 4; i++) {
+      const required = i === 0;
+      const hasGate = i >= 1;
+      const defaultOn = i <= 1;
+      grid.innerHTML += buildSlotWrapper(i, `Immagine ${i+1}`, required, hasGate, defaultOn);
+    }
+  }
+
+  // Bind events
+  grid.querySelectorAll('.upload-slot').forEach(slot => {
+    const idx = parseInt(slot.dataset.idx);
+    const input = slot.querySelector('input[type="file"]');
+    slot.addEventListener('click', e => {
+      if (e.target.closest('.remove') || e.target.closest('.toggle')) return;
+      if (!slot.classList.contains('disabled')) input.click();
+    });
+    input.addEventListener('change', e => handleUpload(idx, e.target.files[0], slot));
+    slot.querySelector('.remove')?.addEventListener('click', e => {
+      e.stopPropagation();
+      clearSlot(idx, slot);
+    });
+  });
+
+  // Gate toggles
+  grid.querySelectorAll('.gate-toggle').forEach(toggle => {
+    toggle.addEventListener('change', () => {
+      const idx = parseInt(toggle.dataset.idx);
+      const slot = grid.querySelector(`.upload-slot[data-idx="${idx}"]`);
+      if (toggle.checked) {
+        slot.classList.remove('disabled');
+      } else {
+        slot.classList.add('disabled');
+      }
+    });
+  });
+}
+
+function buildSlot(idx, label, required, disabled) {
+  return `<div class="upload-slot ${disabled ? 'disabled' : ''}" data-idx="${idx}">
+    <input type="file" accept="image/*">
+    <span class="placeholder">+</span>
+    <span class="label">${label}${required ? '' : ' (opz.)'}</span>
+    <button class="remove">&times;</button>
+  </div>`;
+}
+
+function buildSlotWrapper(idx, label, required, hasGate, defaultOn) {
+  let html = '<div class="slot-wrapper">';
+  if (hasGate) {
+    html += `<label class="slot-label">
+      <label class="toggle" style="transform:scale(.8)">
+        <input type="checkbox" class="gate-toggle" data-idx="${idx}" ${defaultOn ? 'checked' : ''}>
+        <span></span>
+      </label>
+      ${label}
+    </label>`;
+  } else {
+    html += `<span class="slot-label">${label}</span>`;
+  }
+  html += buildSlot(idx, '', required, hasGate && !defaultOn);
+  html += '</div>';
+  return html;
+}
+
+async function handleUpload(idx, file, slot) {
+  if (!file) return;
+  // Preview
+  const reader = new FileReader();
+  reader.onload = e => {
+    let img = slot.querySelector('img');
+    if (!img) {
+      img = document.createElement('img');
+      slot.appendChild(img);
+    }
+    img.src = e.target.result;
+    slot.classList.add('has-image');
+    slot.querySelector('.placeholder').style.display = 'none';
+    slot.querySelector('.label').style.display = 'none';
+  };
+  reader.readAsDataURL(file);
+
+  // Upload to ComfyUI
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const resp = await fetch('/api/upload', {method: 'POST', body: form});
+    const data = await resp.json();
+    uploadedImages[idx] = {filename: data.name, preview: URL.createObjectURL(file)};
+  } catch(e) {
+    alert('Errore upload: ' + e.message);
+  }
+}
+
+function clearSlot(idx, slot) {
+  delete uploadedImages[idx];
+  const img = slot.querySelector('img');
+  if (img) img.remove();
+  slot.classList.remove('has-image');
+  slot.querySelector('.placeholder').style.display = '';
+  slot.querySelector('.label').style.display = '';
+  slot.querySelector('input[type="file"]').value = '';
+}
+
+// --- WebSocket + Polling fallback ---
+let pollTimer = null;
+
+function connectWS() {
+  if (ws && ws.readyState <= 1) return;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/api/ws`);
+  ws.onmessage = e => {
+    if (typeof e.data !== 'string') return; // skip binary preview frames
+    try {
+      const msg = JSON.parse(e.data);
+      handleWSMessage(msg);
+    } catch(err) {
+      console.warn('WS parse error:', err, e.data?.substring?.(0, 200));
+    }
+  };
+  ws.onclose = () => setTimeout(connectWS, 2000);
+}
+
+function handleWSMessage(msg) {
+  if (!currentPromptId) return;
+  const type = msg.type;
+  const data = msg.data || {};
+
+  if (type === 'progress') {
+    const pct = Math.round((data.value / data.max) * 100);
+    document.getElementById('progress-fill').style.width = pct + '%';
+    document.getElementById('progress-text').textContent = `Step ${data.value}/${data.max}`;
+  }
+
+  if (type === 'executing') {
+    if (data.node === null) {
+      onGenerationDone();
+    } else {
+      document.getElementById('progress-text').textContent = 'Elaborazione...';
+    }
+  }
+
+  if (type === 'executed') {
+    onGenerationDone();
+  }
+
+  if (type === 'execution_error') {
+    document.getElementById('progress-text').textContent = 'Errore: ' + (data.exception_message || 'sconosciuto');
+    document.getElementById('btn-generate').disabled = false;
+    stopPolling();
+  }
+}
+
+function onGenerationDone() {
+  if (!currentPromptId) return;
+  const pid = currentPromptId;
+  stopPolling();
+  setTimeout(() => fetchResult(pid), 500);
+}
+
+function startPolling(promptId) {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    try {
+      const resp = await fetch('/api/history?limit=10');
+      const items = await resp.json();
+      if (items.find(i => i.prompt_id === promptId)) {
+        onGenerationDone();
+      }
+    } catch {}
+  }, 3000);
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// --- Generate ---
+async function generate() {
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) { alert('Inserisci un prompt'); return; }
+
+  const w = parseInt(document.getElementById('width').value);
+  const h = parseInt(document.getElementById('height').value);
+  const seed = parseInt(document.getElementById('seed').value);
+  const batch = parseInt(document.getElementById('batch').value);
+  const steps = parseInt(document.getElementById('steps').value);
+  const cfg = parseFloat(document.getElementById('cfg').value);
+  const denoise = parseFloat(document.getElementById('denoise').value);
+  const sampler_name = document.getElementById('sampler_name').value;
+  const scheduler = document.getElementById('scheduler').value;
+  const refine = document.getElementById('refine').checked;
+
+  const payload = {
+    mode: currentMode,
+    prompt,
+    width: w,
+    height: h,
+    seed: seed === -1 ? null : seed,
+    batch,
+    steps,
+    cfg,
+    sampler_name,
+    scheduler,
+    denoise,
+    refine,
+  };
+
+  if (currentMode === 'edit') {
+    if (!uploadedImages[0]) { alert("Carica un'immagine"); return; }
+    payload.image = uploadedImages[0].filename;
+  }
+
+  if (currentMode === 'fusion') {
+    const grid = document.getElementById('upload-grid');
+    const images = [];
+    const gates = [];
+    for (let i = 0; i < 4; i++) {
+      const gateToggle = grid.querySelector(`.gate-toggle[data-idx="${i}"]`);
+      const enabled = !gateToggle || gateToggle.checked;
+      if (enabled && uploadedImages[i]) {
+        images.push(uploadedImages[i].filename);
+        gates.push(true);
+      } else if (enabled && i === 0) {
+        alert('Carica almeno la prima immagine'); return;
+      } else {
+        images.push(uploadedImages[i]?.filename || 'example.png');
+        gates.push(false);
+      }
+    }
+    payload.images = images;
+    payload.gates = gates;
+  }
+
+  // UI state
+  document.getElementById('btn-generate').disabled = true;
+  document.getElementById('result-area').classList.remove('active');
+  const pa = document.getElementById('progress-area');
+  pa.classList.add('active');
+  document.getElementById('progress-fill').style.width = '0%';
+  document.getElementById('progress-text').textContent = refine ? 'Ottimizzazione prompt con AI...' : 'In coda...';
+
+  connectWS();
+
+  try {
+    const resp = await fetch('/api/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      const errMsg = typeof data.error === 'string' ? data.error : (data.error.message || JSON.stringify(data.error));
+      const nodeErrs = data.node_errors || {};
+      const details = Object.values(nodeErrs).flatMap(n => (n.errors || []).map(e => e.message)).join('; ');
+      document.getElementById('progress-text').textContent = 'Errore: ' + errMsg + (details ? ' — ' + details : '');
+      document.getElementById('btn-generate').disabled = false;
+      return;
+    }
+    currentPromptId = data.prompt_id;
+    startPolling(data.prompt_id); // fallback if WS misses completion
+    if (data.node_errors && Object.keys(data.node_errors).length > 0) {
+      const details = Object.values(data.node_errors).flatMap(n => (n.errors || []).map(e => e.message)).join('; ');
+      document.getElementById('progress-text').textContent = 'Errore nei nodi: ' + details;
+      document.getElementById('btn-generate').disabled = false;
+      stopPolling();
+    }
+  } catch(e) {
+    document.getElementById('progress-text').textContent = 'Errore: ' + e.message;
+    document.getElementById('btn-generate').disabled = false;
+  }
+}
+
+async function fetchResult(promptId) {
+  try {
+    const resp = await fetch(`/api/history?limit=5`);
+    const items = await resp.json();
+    const match = items.find(i => i.prompt_id === promptId);
+    if (match) {
+      const imgUrl = `/api/image/${match.filename}?type=${match.type}&subfolder=${match.subfolder}`;
+      document.getElementById('result-img').src = imgUrl;
+      document.getElementById('result-area').classList.add('active');
+      document.getElementById('progress-area').classList.remove('active');
+      document.getElementById('result-meta').textContent = match.filename;
+
+      // Click to enlarge
+      document.getElementById('result-img').onclick = () => openLightbox(imgUrl);
+    } else {
+      document.getElementById('progress-text').textContent = 'Completato (immagine non trovata nella history)';
+    }
+  } catch(e) {
+    document.getElementById('progress-text').textContent = 'Errore recupero risultato';
+  }
+  document.getElementById('btn-generate').disabled = false;
+  currentPromptId = null;
+}
+
+// --- Gallery ---
+async function loadGallery() {
+  const grid = document.getElementById('gallery-grid');
+  const empty = document.getElementById('gallery-empty');
+  try {
+    const resp = await fetch('/api/history?limit=100');
+    const items = await resp.json();
+    if (items.length === 0) {
+      grid.innerHTML = '';
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+    grid.innerHTML = items.map(item => {
+      const url = `/api/image/${item.filename}?type=${item.type}&subfolder=${item.subfolder}`;
+      return `<div class="gallery-item" onclick="openLightbox('${url}')">
+        <img src="${url}" loading="lazy" alt="${item.filename}">
+      </div>`;
+    }).join('');
+  } catch(e) {
+    empty.textContent = 'Errore caricamento galleria';
+    empty.style.display = 'block';
+  }
+}
+
+// --- Lightbox ---
+function openLightbox(src) {
+  document.getElementById('lightbox-img').src = src;
+  document.getElementById('lightbox').classList.add('active');
+}
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('active');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+
+// Init
+updateUI();
+
+// Load available samplers and schedulers from ComfyUI
+(async function loadSamplers() {
+  try {
+    const resp = await fetch('/api/samplers');
+    const data = await resp.json();
+    const samplerSelect = document.getElementById('sampler_name');
+    const schedulerSelect = document.getElementById('scheduler');
+    if (data.samplers && data.samplers.length) {
+      samplerSelect.innerHTML = data.samplers.map(s =>
+        `<option value="${s}" ${s === 'euler_ancestral' ? 'selected' : ''}>${s}</option>`
+      ).join('');
+    }
+    if (data.schedulers && data.schedulers.length) {
+      schedulerSelect.innerHTML = data.schedulers.map(s =>
+        `<option value="${s}" ${s === 'beta' ? 'selected' : ''}>${s}</option>`
+      ).join('');
+    }
+  } catch(e) {
+    console.warn('Could not load samplers:', e);
+  }
+})();
+</script>
+</body>
+</html>
