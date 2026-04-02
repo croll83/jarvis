@@ -94,8 +94,12 @@ JARVIS_APPROVAL_CHAT_ID = os.getenv("JARVIS_APPROVAL_CHAT_ID", "")
 TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 
 # ===========================================================================
-# MODEL NAMES (richiedono che i modelli siano caricati in Ollama)
+# ROUTER ENGINE & MODEL
 # ===========================================================================
+# ROUTER_ENGINE: "ollama" (legacy) o "llamacpp" (llama-server OpenAI-compatible)
+# Se "llamacpp", ROUTER_URL punta al llama-server (es. http://localhost:30000)
+ROUTER_ENGINE = os.getenv("ROUTER_ENGINE", "ollama")
+ROUTER_URL = os.getenv("ROUTER_URL", OLLAMA_URL)  # Base URL del router LLM
 ROUTER_MODEL = os.getenv("ROUTER_MODEL", "qwen2.5:3b")
 
 # Skip pre-route (3-way classifier) e vai diretto al routing completo.
