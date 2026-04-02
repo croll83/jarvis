@@ -347,23 +347,36 @@ async def _preprocess_tts_text_llm(text: str) -> str:
                             logger.info(f"TTS LLM preprocess ({elapsed:.2f}s): '{text[:40]}...' -> '{content[:40]}...'")
                             return content
         else:
-            payload = {
-                "model": _cfg.ROUTER_MODEL,
-                "messages": [
-                    {"role": "system", "content": _TTS_PREPROCESS_PROMPT},
-                    {"role": "user", "content": text},
-                ],
-                "stream": False,
-                "options": {"temperature": 0.2, "num_predict": 500},
-            }
+            messages = [
+                {"role": "system", "content": _TTS_PREPROCESS_PROMPT},
+                {"role": "user", "content": text},
+            ]
+            if _cfg.ROUTER_ENGINE == "llamacpp":
+                url = f"{_cfg.ROUTER_URL}/v1/chat/completions"
+                payload = {
+                    "model": _cfg.ROUTER_MODEL,
+                    "messages": messages,
+                    "temperature": 0.2,
+                    "max_tokens": 500,
+                    "stream": False,
+                }
+            else:
+                url = _cfg.OLLAMA_CHAT_URL
+                payload = {
+                    "model": _cfg.ROUTER_MODEL,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {"temperature": 0.2, "num_predict": 500},
+                }
             timeout = aiohttp.ClientTimeout(total=5)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    _cfg.OLLAMA_CHAT_URL, json=payload, timeout=timeout,
-                ) as resp:
+                async with session.post(url, json=payload, timeout=timeout) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        content = data.get("message", {}).get("content", "").strip()
+                        if _cfg.ROUTER_ENGINE == "llamacpp":
+                            content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                        else:
+                            content = data.get("message", {}).get("content", "").strip()
                         if content:
                             elapsed = time.monotonic() - t0
                             logger.info(f"TTS LLM preprocess ({elapsed:.2f}s): '{text[:40]}...' -> '{content[:40]}...'")

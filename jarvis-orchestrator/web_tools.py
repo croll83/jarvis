@@ -419,43 +419,69 @@ async def call_qwen_with_tools(
     msgs = list(messages)
 
     for iteration in range(max_iterations):
-        payload = {
-            "model": config.ROUTER_MODEL,
-            "messages": msgs,
-            "tools": tools,
-            "options": {
+        if config.ROUTER_ENGINE == "llamacpp":
+            # llama-server: OpenAI-compatible format
+            payload = {
+                "model": config.ROUTER_MODEL,
+                "messages": msgs,
+                "tools": tools,
                 "temperature": temperature,
-                "num_predict": max_tokens,
-                "num_ctx": config.OLLAMA_NUM_CTX,  # Valore unico ovunque per evitare reload
-            },
-            "stream": False,
-        }
+                "max_tokens": max_tokens,
+                "stream": False,
+            }
+            url = f"{config.ROUTER_URL}/v1/chat/completions"
+        else:
+            # Ollama format
+            payload = {
+                "model": config.ROUTER_MODEL,
+                "messages": msgs,
+                "tools": tools,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                    "num_ctx": config.OLLAMA_NUM_CTX,
+                },
+                "stream": False,
+            }
+            url = config.OLLAMA_CHAT_URL
 
         try:
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    config.OLLAMA_CHAT_URL,
-                    json=payload,
-                    timeout=timeout
-                ) as resp:
+                async with session.post(url, json=payload, timeout=timeout) as resp:
                     if resp.status != 200:
                         error = await resp.text()
-                        logger.error(f"Ollama tool call error HTTP {resp.status}: {error[:200]}")
+                        logger.error(f"LLM tool call error HTTP {resp.status}: {error[:200]}")
                         return "Mi dispiace, c'e' stato un problema con la risposta."
 
                     data = await resp.json()
 
         except asyncio.TimeoutError:
-            logger.error(f"Ollama tool call timeout (iteration {iteration})")
+            logger.error(f"LLM tool call timeout (iteration {iteration})")
             return "Mi dispiace, la risposta ha impiegato troppo tempo."
         except Exception as e:
-            logger.error(f"Ollama tool call exception: {e}")
+            logger.error(f"LLM tool call exception: {e}")
             return "Mi dispiace, c'e' stato un errore."
 
-        message = data.get("message", {})
-        content = message.get("content", "")
-        tool_calls = message.get("tool_calls", [])
+        if config.ROUTER_ENGINE == "llamacpp":
+            choice = data.get("choices", [{}])[0].get("message", {})
+            content = choice.get("content", "") or ""
+            tool_calls = choice.get("tool_calls", [])
+            # Normalize OpenAI tool_calls to Ollama format for downstream
+            message = {"role": "assistant", "content": content}
+            if tool_calls:
+                message["tool_calls"] = [
+                    {"function": {"name": tc["function"]["name"],
+                                  "arguments": tc["function"]["arguments"]
+                                  if isinstance(tc["function"]["arguments"], dict)
+                                  else json.loads(tc["function"]["arguments"])}}
+                    for tc in tool_calls
+                ]
+                tool_calls = message["tool_calls"]
+        else:
+            message = data.get("message", {})
+            content = message.get("content", "")
+            tool_calls = message.get("tool_calls", [])
 
         # Se non ci sono tool calls, abbiamo la risposta finale
         if not tool_calls:

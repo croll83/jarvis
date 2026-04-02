@@ -67,6 +67,58 @@ except FileNotFoundError:
     SYSTEM_RULES = "You are Jarvis, a home assistant."
 
 
+async def _llm_chat(messages: list, temperature: float = 0.1,
+                    max_tokens: int = 200, timeout: float = 15,
+                    stop: list = None) -> Optional[str]:
+    """Unified LLM chat call — routes to llama-server or Ollama based on config."""
+    if config.ROUTER_ENGINE == "llamacpp":
+        url = f"{config.ROUTER_URL}/v1/chat/completions"
+        payload = {
+            "model": config.ROUTER_MODEL,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        if stop:
+            payload["stop"] = stop
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload,
+                                       timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+                    return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.warning(f"llm_chat (llamacpp) error: {e}")
+            return None
+    else:
+        payload = {
+            "model": config.ROUTER_MODEL,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+                "num_gpu": 37,
+            }
+        }
+        if stop:
+            payload["options"]["stop"] = stop
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(config.OLLAMA_CHAT_URL, json=payload,
+                                       timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+                    return data.get("message", {}).get("content", "")
+        except Exception as e:
+            logger.warning(f"llm_chat (ollama) error: {e}")
+            return None
+
+
 def _get_entity_map_for_prompt(location_id: Optional[str] = None, user_id: Optional[int] = None) -> str:
     """
     Recupera entity map dal database per il prompt del router.
@@ -291,30 +343,15 @@ async def normalize_stt_text(text: str) -> str:
 
 
 async def _normalize_ollama(text: str, llm_params: dict) -> Optional[str]:
-    """Normalizzazione STT via Ollama (Qwen local)."""
-    payload = {
-        "model": config.ROUTER_MODEL,
-        "messages": [
-            {"role": "system", "content": _STT_NORMALIZE_SYSTEM},
-            {"role": "user", "content": text}
-        ],
-        "options": {
-            "temperature": 0.1,
-            "num_predict": 150,
-            "num_gpu": 37,  # Forza 37/37 GPU layers (Modelfile gestisce num_ctx)
-        },
-        "stream": False
-    }
+    """Normalizzazione STT via LLM locale (Ollama o llama-server)."""
+    messages = [
+        {"role": "system", "content": _STT_NORMALIZE_SYSTEM},
+        {"role": "user", "content": text}
+    ]
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                config.OLLAMA_CHAT_URL, json=payload,
-                timeout=aiohttp.ClientTimeout(total=llm_params["timeout"])
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
-                return data.get("message", {}).get("content", "")
+        result = await _llm_chat(messages, temperature=0.1, max_tokens=150,
+                                 timeout=llm_params["timeout"])
+        return result
     except Exception as e:
         logger.warning(f"STT normalize ollama error: {e}")
         return None
@@ -437,38 +474,22 @@ async def pre_route(text: str) -> dict:
 
 
 async def _pre_route_ollama(text: str, llm_params: dict) -> Optional[dict]:
-    """Pre-route classification via Ollama (Qwen local)."""
-    payload = {
-        "model": config.ROUTER_MODEL,
-        "messages": [
-            {"role": "system", "content": _PRE_ROUTE_SYSTEM},
-            {"role": "user", "content": text}
-        ],
-        "format": "json",
-        "options": {
-            "temperature": llm_params["temperature"],
-            "num_predict": 120,
-            "num_gpu": 37,  # Forza 37/37 GPU layers (Modelfile gestisce num_ctx)
-        },
-        "stream": False
-    }
+    """Pre-route classification via LLM locale (Ollama o llama-server)."""
+    messages = [
+        {"role": "system", "content": _PRE_ROUTE_SYSTEM},
+        {"role": "user", "content": text}
+    ]
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                config.OLLAMA_CHAT_URL, json=payload,
-                timeout=aiohttp.ClientTimeout(total=llm_params["timeout"])
-            ) as resp:
-                if resp.status != 200:
-                    logger.error(f"pre_route ollama error: HTTP {resp.status}")
-                    return None
-                data = await resp.json()
-                content = data.get("message", {}).get("content", "{}")
-                return json.loads(content)
+        content = await _llm_chat(messages, temperature=llm_params["temperature"],
+                                  max_tokens=120, timeout=llm_params["timeout"])
+        if content is None:
+            return None
+        return json.loads(content)
     except json.JSONDecodeError as e:
-        logger.error(f"pre_route ollama bad JSON: {e}")
+        logger.error(f"pre_route bad JSON: {e}")
         return None
     except Exception as e:
-        logger.error(f"pre_route ollama exception: {e}")
+        logger.error(f"pre_route exception: {e}")
         return None
 
 
@@ -883,25 +904,12 @@ async def get_quick_response(
             logger.info("Falling back to quick response without tools")
 
     # Fallback senza tools (o se enable_tools=False)
-    payload = {
-        "model": config.ROUTER_MODEL,
-        "messages": messages,
-        "stream": False,
-        "options": {
-            "temperature": _rp["temperature"],
-            "num_predict": _rp.get("max_tokens", 200),
-            "num_gpu": 37,  # Forza 37/37 GPU layers (Modelfile gestisce num_ctx)
-        }
-    }
-
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(config.OLLAMA_CHAT_URL,
-                                   json=payload, timeout=_rp["timeout"]) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("message", {}).get("content", "Non ho capito, puoi ripetere?")
-
+        result = await _llm_chat(messages, temperature=_rp["temperature"],
+                                 max_tokens=_rp.get("max_tokens", 200),
+                                 timeout=_rp["timeout"])
+        if result:
+            return result
     except Exception as e:
         logger.error(f"Quick response error: {e}")
 
@@ -985,27 +993,11 @@ async def call_qwen_summary(prompt: str, max_tokens: int = 150) -> str:
                 else:
                     raise Exception(f"Qwen API error: {resp.status}")
     else:
-        # Via Ollama locale
+        # Via LLM locale (Ollama o llama-server)
         _rp = get_llm_params("summary")
-        payload = {
-            "model": config.ROUTER_MODEL,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "temperature": _rp["temperature"],
-                "num_predict": max_tokens or _rp["max_tokens"],
-                "num_gpu": 37,  # Forza 37/37 GPU layers (Modelfile gestisce num_ctx)
-            }
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                config.OLLAMA_CHAT_URL,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=_rp["timeout"])
-            ) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    return result.get("message", {}).get("content", "")
-                else:
-                    raise Exception(f"Ollama error: {resp.status}")
+        result = await _llm_chat(messages, temperature=_rp["temperature"],
+                                 max_tokens=max_tokens or _rp["max_tokens"],
+                                 timeout=_rp["timeout"])
+        if result:
+            return result
+        raise Exception("LLM returned None")
