@@ -652,26 +652,87 @@ def _build_routing_prompt(text: str, context: dict) -> str:
 
 
 async def _qwen_routing_call(text: str, context: dict) -> dict:
-    """Chiamata effettiva a Qwen locale (Ollama) per routing."""
+    """Chiamata effettiva a Qwen locale per routing (Ollama o llama-server)."""
 
     # Usa il builder comune per il prompt
     full_prompt = _build_routing_prompt(text, context)
-
     _rp = get_llm_params("routing")
+
+    if config.ROUTER_ENGINE == "llamacpp":
+        return await _llamacpp_routing_call(full_prompt, _rp)
+    else:
+        return await _ollama_routing_call(full_prompt, _rp)
+
+
+async def _llamacpp_routing_call(full_prompt: str, _rp: dict) -> dict:
+    """Routing via llama-server (OpenAI-compatible API)."""
     payload = {
         "model": config.ROUTER_MODEL,
         "messages": [
             {"role": "system", "content": SYSTEM_RULES},
             {"role": "user", "content": full_prompt}
         ],
-        # format:"json" RIMOSSO — aggiunge 300-800ms di overhead su prompt grandi
-        # (constrained decoding). Il system prompt gia dice di rispondere in JSON,
-        # e stop+max_tokens prevengono allucinazioni.
+        "temperature": _rp["temperature"],
+        "max_tokens": _rp["max_tokens"],
+        "stop": ["<|im_start|>"],
+        "stream": False
+    }
+
+    url = f"{config.ROUTER_URL}/v1/chat/completions"
+    try:
+        t0 = time.time()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload,
+                                   timeout=aiohttp.ClientTimeout(total=_rp["timeout"])) as resp:
+                t1 = time.time()
+                if resp.status != 200:
+                    logger.error(f"Routing error: HTTP {resp.status}")
+                    return _fallback_routing()
+
+                data = await resp.json()
+                content = data["choices"][0]["message"]["content"].strip()
+                if content.startswith("```"):
+                    content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+                # Timing da llama-server
+                timings = data.get("timings", {})
+                usage = data.get("usage", {})
+                ptok = usage.get("prompt_tokens", 0)
+                etok = usage.get("completion_tokens", 0)
+                prompt_ms = timings.get("prompt_ms", 0)
+                predicted_ms = timings.get("predicted_ms", 0)
+                logger.info(
+                    f"Routing timing: total={((t1-t0)*1000):.0f}ms | "
+                    f"llama.cpp: prompt={prompt_ms:.0f}ms({ptok}t) "
+                    f"decode={predicted_ms:.0f}ms({etok}t) "
+                    f"tok/s={timings.get('predicted_per_second', 0):.1f}"
+                )
+
+                try:
+                    result = json.loads(content)
+                    return _validate_routing(result)
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON from router: {content}")
+                    return _fallback_routing()
+
+    except Exception as e:
+        logger.error(f"Routing exception (llamacpp): {e}", exc_info=True)
+        return _fallback_routing()
+
+
+async def _ollama_routing_call(full_prompt: str, _rp: dict) -> dict:
+    """Routing via Ollama API (legacy)."""
+    payload = {
+        "model": config.ROUTER_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_RULES},
+            {"role": "user", "content": full_prompt}
+        ],
         "options": {
             "temperature": _rp["temperature"],
             "num_predict": _rp["max_tokens"],
-            "num_gpu": 37,  # Forza 37/37 GPU layers (Modelfile gestisce num_ctx)
-            "stop": ["<|im_start|>"],  # Previene hallucination loop
+            "num_gpu": 37,
+            "stop": ["<|im_start|>"],
         },
         "stream": False
     }
@@ -690,11 +751,9 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
                 data = await resp.json()
                 t3 = time.time()
                 content = data.get("message", {}).get("content", "{}").strip()
-                # Qwen senza format:"json" a volte wrappa in ```json ... ```
                 if content.startswith("```"):
                     content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-                # Timing dettagliato da Ollama
                 ollama_load = data.get("load_duration", 0) / 1e6
                 ollama_prompt = data.get("prompt_eval_duration", 0) / 1e6
                 ollama_eval = data.get("eval_duration", 0) / 1e6

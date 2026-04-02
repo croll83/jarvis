@@ -157,6 +157,8 @@ services:
       - QWEN3_TTS_VOICE=${QWEN3_TTS_VOICE:-sofia}
       # Qwen tool calling (Brave Search)
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
+      - ROUTER_ENGINE=${ROUTER_ENGINE:-ollama}
+      - ROUTER_URL=${ROUTER_URL:-http://localhost:11434}
       - ROUTER_MODEL=${ROUTER_MODEL:-qwen2.5:3b-32k}
       - OLLAMA_NUM_CTX=32768
       # API keys (only needed if AI_BACKEND=api)
