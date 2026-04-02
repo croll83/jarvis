@@ -836,7 +836,7 @@ async def get_all_health_status() -> Dict[str, Any]:
 
     # Define services to check
     services = [
-        ("Ollama", f"{config.OLLAMA_URL}/api/tags"),
+        ("Router LLM", f"{config.ROUTER_URL}/health" if config.ROUTER_ENGINE == "llamacpp" else f"{config.OLLAMA_URL}/api/tags"),
         ("STT", f"{config.STT_URL}/health"),
         ("Home Assistant", f"{config.HASS_URL_DEFAULT}/api/"),
         ("OpenClaw", f"{config.OPENCLAW_URL}/health"),
