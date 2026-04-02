@@ -136,34 +136,50 @@ class ServiceStatus:
         return self.get_summary()
 
     async def _check_ollama_router(self):
-        """Check Ollama con modello router (Qwen)."""
+        """Check router LLM (Ollama o llama-server)."""
         service = self.services["ollama_router"]
         start = time.time()
 
         try:
             async with aiohttp.ClientSession() as session:
-                # Test con ping semplice al modello
-                payload = {
-                    "model": config.ROUTER_MODEL,
-                    "messages": [{"role": "user", "content": "ping"}],
-                    "stream": False,
-                    "options": {"num_predict": 1, "num_gpu": 37}
-                }
-                async with session.post(
-                    config.OLLAMA_CHAT_URL,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS["health_check"])
-                ) as resp:
-                    elapsed = (time.time() - start) * 1000
-
-                    if resp.status == 200:
-                        service.state = ServiceState.ONLINE
-                        service.last_success = time.time()
-                        service.response_time_ms = elapsed
-                        service.consecutive_failures = 0
-                        service.last_error = None
-                    else:
-                        self._mark_failed(service, f"HTTP {resp.status}", elapsed)
+                if config.ROUTER_ENGINE == "llamacpp":
+                    # llama-server: simple /health endpoint
+                    url = f"{config.ROUTER_URL}/health"
+                    async with session.get(
+                        url,
+                        timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS["health_check"])
+                    ) as resp:
+                        elapsed = (time.time() - start) * 1000
+                        if resp.status == 200:
+                            service.state = ServiceState.ONLINE
+                            service.last_success = time.time()
+                            service.response_time_ms = elapsed
+                            service.consecutive_failures = 0
+                            service.last_error = None
+                        else:
+                            self._mark_failed(service, f"HTTP {resp.status}", elapsed)
+                else:
+                    # Ollama: ping con modello
+                    payload = {
+                        "model": config.ROUTER_MODEL,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "stream": False,
+                        "options": {"num_predict": 1, "num_gpu": 37}
+                    }
+                    async with session.post(
+                        config.OLLAMA_CHAT_URL,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS["health_check"])
+                    ) as resp:
+                        elapsed = (time.time() - start) * 1000
+                        if resp.status == 200:
+                            service.state = ServiceState.ONLINE
+                            service.last_success = time.time()
+                            service.response_time_ms = elapsed
+                            service.consecutive_failures = 0
+                            service.last_error = None
+                        else:
+                            self._mark_failed(service, f"HTTP {resp.status}", elapsed)
 
         except asyncio.TimeoutError:
             self._mark_failed(service, "Timeout", (time.time() - start) * 1000)
