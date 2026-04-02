@@ -140,7 +140,7 @@ services:
       - EMBEDDING_URL=http://localhost:11435   # fastembed (CPU, ONNX) — no GPU context switch
       # STT (Parakeet su GX10 via Tailscale)
       - STT_ENGINE=parakeet
-      - STT_URL=http://100.98.187.12:7865
+      - STT_URL=http://100.98.187.12:9000
       # OpenClaw gira su VM separata — raggiungibile via Tailscale + TLS
       - OPENCLAW_URL=${OPENCLAW_URL:-https://openclaw.mintwork.it:18789}
       - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
