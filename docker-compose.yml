@@ -2,8 +2,8 @@
 # JARVIS DOCKER STACK (Locale — GPU + GX10)
 # =============================================================================
 #
-# ARCHITECTURE (OpenClaw + Gemini 3 Pro):
-# - OpenClaw (Gemini 3 Pro): Brain — gira su VM separata (bare-metal)
+# ARCHITECTURE (AI Agent — Hermes/OpenClaw/others):
+# - AI Agent (Hermes/OpenClaw/others): Brain — gira su VM separata (bare-metal)
 # - JARVIS Orchestrator: Skill — domotics, memory, speaker ID, security, TTS
 # - Qwen 2.5 3B (Q4_K_M): Pre-routing + tool calling (web_search, web_fetch,
 #     memory_search, home_status) + offline fallback
@@ -21,15 +21,15 @@
 #   NOTA: Embeddings (nomic-embed-text) su fastembed CPU — zero VRAM.
 #   NOTA: STT e TTS ora su GX10 (128 GB VRAM) — zero VRAM locale.
 #
-# NOTA SU OPENCLAW:
-# OpenClaw NON e in questo compose — gira bare-metal su una VM dedicata
+# NOTA SU AI AGENT:
+# AI Agent NON e in questo compose — gira bare-metal su una VM dedicata
 # per isolamento di sicurezza. L'orchestrator lo raggiunge via Tailscale
-# (es. http://jarvis-openclaw:18789). Vedi infrastructure/README.md.
+# (es. http://jarvis-agent:18789). Vedi infrastructure/README.md.
 #
 # NOTA SU TAILSCALE:
-# Tailscale gira host-level (NON in Docker) su entrambe le VM (GPU e OpenClaw).
+# Tailscale gira host-level (NON in Docker) su entrambe le VM (GPU e AI Agent).
 # L'orchestrator usa network_mode: host per vedere l'interfaccia Tailscale
-# e raggiungere HA remoti, OpenClaw, GX10 e MagicDNS direttamente.
+# e raggiungere HA remoti, AI Agent, GX10 e MagicDNS direttamente.
 # Installazione: curl -fsSL https://tailscale.com/install.sh | sh
 #
 # NOTA SU GX10 (NVIDIA DGX Spark):
@@ -68,7 +68,7 @@ services:
       # su GPU, 140 tok/s, totale ~3473 MiB (con XTTS+Whisper = ~6800 MiB / 8151).
       - OLLAMA_NUM_CTX=32768
       # OLLAMA_CONTEXT_LENGTH è il DEFAULT che Ollama usa quando un client
-      # NON specifica num_ctx (es. OpenClaw via /v1/messages, tool esterni).
+      # NON specifica num_ctx (es. AI Agent via /v1/messages, tool esterni).
       # Senza questo Ollama usa 4096 e forza un model reload catastrofico.
       # NOTA: OLLAMA_NUM_CTX NON funziona come default — solo CONTEXT_LENGTH lo fa.
       - OLLAMA_CONTEXT_LENGTH=32768
@@ -89,7 +89,7 @@ services:
   # Sostituisce nomic-embed-text su Ollama per eliminare il context switch
   # CUDA che rallenta Qwen di ~1.3s per ogni embedding call.
   # API Ollama-compatibile: POST /api/embeddings {"model":"...","prompt":"..."}
-  # Usato da: orchestrator (vector_store.py), ha_memory_service, OpenClaw
+  # Usato da: orchestrator (context_builder.py), AI Agent
   fastembed:
     build: ./infrastructure/fastembed
     container_name: jarvis_fastembed
@@ -113,7 +113,7 @@ services:
   # Questo libera ~3.6 GB VRAM sull'Atomman per upgrade router (100K ctx)
   #
   # ===========================================================================
-  # JARVIS ORCHESTRATOR - OpenClaw Skill (FastAPI)
+  # JARVIS ORCHESTRATOR - AI Agent Skill (FastAPI)
   # Include: Qwen pre-routing + tool calling (web_search, web_fetch, memory, home),
   # HA control, Memory, Speaker ID, Security L1-L4
   # Admin UI (/admin), Backup/Restore, SSE event bus
@@ -121,7 +121,7 @@ services:
   # network_mode: host permette all'orchestrator di:
   #   - Raggiungere Ollama/Whisper su localhost (porte esposte sull'host)
   #   - Raggiungere HA remoti via Tailscale (100.x.x.x, host-level)
-  #   - Raggiungere OpenClaw sulla VM separata via Tailscale MagicDNS
+  #   - Raggiungere AI Agent sulla VM separata via Tailscale MagicDNS
   # ===========================================================================
   orchestrator:
     build: ./jarvis-orchestrator
@@ -138,17 +138,20 @@ services:
       - AI_BACKEND=${AI_BACKEND:-local}
       - OLLAMA_URL=http://localhost:11434
       - EMBEDDING_URL=http://localhost:11435   # fastembed (CPU, ONNX) — no GPU context switch
+      # Memory: Redis context bus + mem0 long-term
+      - REDIS_URL=${REDIS_URL}
+      - MEM0_BASE_URL=${MEM0_BASE_URL}
       # STT (Parakeet su GX10 via Tailscale)
       - STT_ENGINE=parakeet
       - STT_URL=http://100.98.187.12:9000
-      # OpenClaw gira su VM separata — raggiungibile via Tailscale + TLS
-      - OPENCLAW_URL=${OPENCLAW_URL:-https://openclaw.mintwork.it:18789}
-      - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      # AI Agent gira su VM separata — raggiungibile via Tailscale + TLS
+      - AI_AGENT_URL=${AI_AGENT_URL:-}
+      - AI_AGENT_TOKEN=${AI_AGENT_TOKEN:-}
       # Gateway WS for exec approval operator (same host/port, wss:// scheme)
-      - OPENCLAW_WS_URL=${OPENCLAW_WS_URL:-wss://openclaw.mintwork.it:18789}
+      - AI_AGENT_WS_URL=${AI_AGENT_WS_URL:-}
       # Device firmware auth (AtomS3R Bearer token)
       - DEVICE_API_TOKEN=${DEVICE_API_TOKEN:-}
-      # JARVIS Approval Bot (L3 critical actions - separate from OpenClaw Telegram)
+      # JARVIS Approval Bot (L3 critical actions - separate from AI Agent Telegram)
       - JARVIS_APPROVAL_BOT_TOKEN=${JARVIS_APPROVAL_BOT_TOKEN:-}
       - JARVIS_APPROVAL_CHAT_ID=${JARVIS_APPROVAL_CHAT_ID:-}
       # TTS (Qwen3-TTS su GX10 via Tailscale)
@@ -178,7 +181,7 @@ services:
   # ACL basata su X-Speaker-Id: filtra entita per visibilita (private/family/public).
   # Raggiungibile da:
   #   - Orchestrator: http://127.0.0.1:8100 (network_mode: host)
-  #   - OpenClaw (bare-metal): http://127.0.0.1:8100 (porta esposta su localhost)
+  #   - AI Agent (bare-metal): http://127.0.0.1:8100 (porta esposta su localhost)
   # ===========================================================================
   ontology-server:
     build: ./ontology-server
@@ -206,14 +209,12 @@ services:
   # Per avviare: cd security && docker compose -f docker-compose.security.yml up -d
 
   # ===========================================================================
-  # CHROMADB - Shared Vector Store (CPU-only, no GPU needed)
+  # REDIS → su LXC Jarvis (vedi compose LXC), URL in .env REDIS_URL
   # ===========================================================================
-  # Single ChromaDB server condiviso tra:
-  #   - Orchestrator (user_messages, user_facts)
-  #   - HA Memory Service (location_events_*)
-  #   - OpenClaw ontology-bridge plugin (semantic search)
-  # Sostituisce i 3 PersistentClient embedded separati.
-  # API: http://localhost:8000 (standard ChromaDB port)
+
+  # ===========================================================================
+  # CHROMADB — vector store backend per mem0
+  # ===========================================================================
   chromadb:
     image: chromadb/chroma:1.5.2
     container_name: jarvis_chromadb
@@ -226,6 +227,33 @@ services:
       - ANONYMIZED_TELEMETRY=FALSE
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # restart gestito da jarvis.sh
+
+  # ===========================================================================
+  # MEM0 — Long-term behavioral memory (FastAPI wrapper)
+  # Backed by ChromaDB (vectors) + Kuzu (graph) + fastembed (embeddings)
+  # Used by orchestrator and ha-memory-service for long-term memory
+  # ===========================================================================
+  mem0-server:
+    build: ./mem0-server
+    container_name: jarvis_mem0
+    ports:
+      - "8200:8200"
+    environment:
+      - CHROMA_HOST=jarvis_chromadb
+      - CHROMA_PORT=8000
+      - EMBEDDING_URL=http://localhost:11435
+      - OLLAMA_URL=http://localhost:11434
+    volumes:
+      - mem0_data:/app/data    # Kuzu graph store
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -280,6 +308,7 @@ volumes:
   ollama_storage:
   fastembed_cache:
   chroma_data:
+  mem0_data:
   postgres_data:
   mongo_data:
   ontology_data:

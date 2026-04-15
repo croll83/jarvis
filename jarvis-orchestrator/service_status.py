@@ -1,7 +1,7 @@
 """
 Service Health Status Tracker for JARVIS Graceful Degradation.
 
-Tracks the health of external services (Ollama, Whisper, Home Assistant, Openclaw)
+Tracks the health of external services (Ollama, Whisper, Home Assistant, AI Agent)
 and provides status information to the router for intelligent responses when
 services are offline.
 
@@ -49,7 +49,7 @@ class ServiceStatus:
     - ollama_router: Qwen (routing) - CRITICO
     - stt: STT (Parakeet/Whisper) - IMPORTANTE per voice
     - home_assistant: Domotica - IMPORTANTE per HOME_CONTROL
-    - openclaw: Servizio AI avanzato - IMPORTANTE
+    - ai_agent: Servizio AI avanzato - IMPORTANTE
     """
 
     _instance = None
@@ -65,7 +65,7 @@ class ServiceStatus:
             return
 
         self.services: Dict[str, ServiceHealth] = {
-            "openclaw": ServiceHealth(),
+            "ai_agent": ServiceHealth(),
             # HA services aggiunti dinamicamente da _load_ha_services()
         }
 
@@ -115,7 +115,7 @@ class ServiceStatus:
     async def check_all(self) -> Dict[str, ServiceState]:
         """Esegue health check su tutti i servizi."""
         async with self._lock:
-            tasks = [self._check_openclaw()]
+            tasks = [self._check_ai_agent()]
 
             # Ollama e STT solo in local mode
             if "ollama_router" in self.services:
@@ -272,18 +272,18 @@ class ServiceStatus:
 
         service.last_check = time.time()
 
-    async def _check_openclaw(self):
-        """Check Openclaw service."""
-        service = self.services["openclaw"]
+    async def _check_ai_agent(self):
+        """Check AI Agent service."""
+        service = self.services["ai_agent"]
         start = time.time()
 
         try:
             async with aiohttp.ClientSession() as session:
-                # OPENCLAW_URL include gia http:// (es: http://localhost:18789)
-                openclaw_url = config.OPENCLAW_URL.rstrip("/")
+                # AI_AGENT_URL include gia http:// (es: http://localhost:18789)
+                ai_agent_url = config.AI_AGENT_URL.rstrip("/")
                 async with session.get(
-                    f"{openclaw_url}/health",
-                    timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS.get("openclaw", 5))
+                    f"{ai_agent_url}/health",
+                    timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS.get("ai_agent", 5))
                 ) as resp:
                     elapsed = (time.time() - start) * 1000
 
@@ -378,8 +378,8 @@ class ServiceStatus:
         elif ha_offline_locations and not ha_online_locations:
             hints.append("- HOME_CONTROL non disponibile, tutti gli Home Assistant sono offline")
 
-        if "openclaw" in offline_services:
-            hints.append("- Openclaw non disponibile, il servizio AI avanzato è offline")
+        if "ai_agent" in offline_services:
+            hints.append("- AI Agent non disponibile, il servizio AI avanzato è offline")
         if "stt" in offline_services:
             hints.append("- STT offline, input vocale non funzionante")
 
@@ -428,10 +428,10 @@ class ServiceStatus:
                     available.append(loc_id)
         return available
 
-    def can_do_openclaw(self) -> bool:
-        """Verifica se Openclaw è disponibile."""
-        openclaw = self.services["openclaw"]
-        return openclaw.state in [ServiceState.ONLINE, ServiceState.DEGRADED]
+    def can_do_ai_agent(self) -> bool:
+        """Verifica se AI Agent è disponibile."""
+        ai_agent = self.services["ai_agent"]
+        return ai_agent.state in [ServiceState.ONLINE, ServiceState.DEGRADED]
 
     def get_offline_message(self, intent: str, location_id: str = None) -> Optional[str]:
         """
@@ -458,8 +458,8 @@ class ServiceStatus:
             elif not self.can_do_home_control():
                 return "Mi dispiace, Home Assistant non è raggiungibile in questo momento. Riprova tra poco."
 
-        if intent in ("DEEP_REASONING", "RESEARCH") and not self.can_do_openclaw():
-            return "Il servizio Openclaw non è disponibile al momento. Riprova tra poco."
+        if intent in ("DEEP_REASONING", "RESEARCH") and not self.can_do_ai_agent():
+            return "Il servizio AI Agent non è disponibile al momento. Riprova tra poco."
 
         return None
 

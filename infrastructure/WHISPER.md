@@ -182,7 +182,7 @@ WHISPER_LANGUAGE=it       # Lingua default
 Microfono (AtomS3R) --> Wakeword Server --> Orchestrator --> Whisper (STT)
                                                 |
                                                 v
-                                           Testo --> Routing (Qwen 2.5 3B) --> OpenClaw
+                                           Testo --> Routing (Qwen 2.5 3B) --> AI Agent
 ```
 
 ---

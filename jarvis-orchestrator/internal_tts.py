@@ -275,7 +275,7 @@ def _preprocess_tts_text(text: str) -> str:
         return text
 
     original = text
-    # _strip_markdown: disabilitato — OpenClaw già strippa markdown prima di inviare
+    # _strip_markdown: disabilitato — AI Agent già strippa markdown prima di inviare
     # text = _strip_markdown(text)
     text = _clean_for_speech(text)
     # _expand_abbreviations: disabilitato — troppo prone a errori (false positive)

@@ -1,6 +1,6 @@
-# TPM-Backed Secret Management for OpenClaw
+# TPM-Backed Secret Management for AI Agent
 
-Hardware-backed secret storage using Intel fTPM + password auth → SOPS + age → OpenClaw exec provider.
+Hardware-backed secret storage using Intel fTPM + password auth → SOPS + age → AI Agent exec provider.
 
 **No secret ever touches the filesystem in plaintext.** The age decryption key is sealed inside the TPM and only released when the correct password is provided.
 
@@ -24,7 +24,7 @@ Hardware-backed secret storage using Intel fTPM + password auth → SOPS + age �
 │  └──────────────┘    └──────────────┘    └───────┬───────┘  │
 │                                                  │          │
 │                                          ┌───────▼───────┐  │
-│                                          │  OpenClaw      │  │
+│                                          │  AI Agent      │  │
 │                                          │  exec provider │  │
 │                                          │  (JSON proto)  │  │
 │                                          └───────────────┘  │
@@ -84,7 +84,7 @@ The corresponding private key exists **only inside the TPM** (backup offline\!).
 ├── secrets.enc.json          # SOPS-encrypted secrets (AES-256-GCM)
 ├── start-gateway.sh          # Main gateway startup (unseal → decrypt → exec node)
 ├── unseal-env.sh             # Systemd ExecStartPre (writes env file to tmpfs)
-├── tpm-secret-resolver.sh    # OpenClaw exec provider (JSON protocol)
+├── tpm-secret-resolver.sh    # AI Agent exec provider (JSON protocol)
 ├── tpm-secrets-edit.sh       # CLI helper (list/get/set/delete secrets)
 ├── tpm-unlock                # Post-reboot password setter (writes to tmpfs)
 ├── tpm-rotate-password       # Password rotation tool
@@ -107,7 +107,7 @@ The corresponding private key exists **only inside the TPM** (backup offline\!).
 | `wallet_private_key` | Crypto wallet private key (also used as POLYMARKET_PRIVATE_KEY) |
 | `JARVIS_WALLET` | Wallet address |
 | `HYPERLIQUID_ADDRESS` | Hyperliquid trading address |
-| `openclaw_gateway_token` | OpenClaw gateway auth token |
+| `openclaw_gateway_token` | AI Agent gateway auth token |
 | `telegram_bot_token` | Telegram bot token |
 | `ontology_api_token` | Ontology API token |
 | `TWITTER_AUTH_TOKEN` | Twitter/X auth cookie |
@@ -163,7 +163,7 @@ tpm2_unseal -c 0x81000001 -p "your-password"
 # If the TPM dies or is cleared, this is the ONLY way to recover secrets
 ```
 
-## OpenClaw Configuration
+## AI Agent Configuration
 
 ```json
 {

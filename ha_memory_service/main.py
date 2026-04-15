@@ -2,7 +2,7 @@
 JARVIS HA Memory Service
 - Event ingestion da Home Assistant via WebSocket
 - Summarization con Qwen (locale via Ollama o cloud via OpenRouter)
-- Embedding con nomic-embed-text (locale) o Gemini (cloud)
+- Embedding con nomic-embed-text (locale) o cloud/Google (cloud)
 - Vector search con ChromaDB per retrieval semantico
 - API per orchestrator
 """
@@ -32,7 +32,7 @@ LOCATION_ID = os.getenv("LOCATION_ID", "unknown")
 HA_URL = os.getenv("HA_URL", "http://supervisor/core")
 HA_TOKEN = os.getenv("HA_TOKEN", "")
 
-# AI Backend: "local" (Ollama) or "api" (OpenRouter + Gemini embeddings)
+# AI Backend: "local" (Ollama) or "api" (OpenRouter + cloud embeddings)
 AI_BACKEND = os.getenv("AI_BACKEND", "local")
 
 # --- Local mode (Ollama for LLM, fastembed for embeddings) ---
@@ -41,7 +41,7 @@ EMBEDDING_URL = os.getenv("EMBEDDING_URL", OLLAMA_URL)  # fastembed CPU (default
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen2.5:3b")
 
-# --- API mode (OpenRouter for summarization, Gemini for embeddings) ---
+# --- API mode (OpenRouter for summarization, cloud/Google for embeddings) ---
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "https://jarvis.yourdomain.com")
@@ -67,7 +67,7 @@ COLLECTION_LOCATION_EVENTS = "location_events"
 SKIP_ENTITY_PREFIXES = os.getenv("SKIP_ENTITY_PREFIXES", "update.").split(",")
 SKIP_ENTITY_SUFFIXES = os.getenv("SKIP_ENTITY_SUFFIXES", "_battery,_linkquality,_signal").split(",")
 
-EMBEDDING_DIM = 768  # Comune a nomic-embed-text e gemini-embedding-001 (con output_dimensionality)
+EMBEDDING_DIM = 768  # Comune a nomic-embed-text e cloud/Google embedding (con output_dimensionality)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("HA_MEMORY")
@@ -146,7 +146,7 @@ def init_db():
 # EMBEDDING FUNCTIONS
 # ===========================================================================
 # AI_BACKEND=local → OllamaEmbeddingFunction (nomic-embed-text, fastembed CPU)
-# AI_BACKEND=api   → GeminiEmbeddingFunction (gemini-embedding-001)
+# AI_BACKEND=api   → CloudEmbeddingFunction (gemini-embedding-001)
 # ===========================================================================
 
 class OllamaEmbeddingFunction:
@@ -180,8 +180,8 @@ class OllamaEmbeddingFunction:
         return embeddings
 
 
-class GeminiEmbeddingFunction:
-    """Embedding via Gemini API (gemini-embedding-001).
+class CloudEmbeddingFunction:
+    """Embedding via cloud/Google API (gemini-embedding-001).
     Stessa dimensionalita (768) di nomic-embed-text.
     """
 
@@ -214,10 +214,10 @@ class GeminiEmbeddingFunction:
                     data = response.json()
                     embeddings.append(data["embedding"]["values"])
                 else:
-                    logger.error(f"Gemini embedding error {response.status_code}: {response.text[:200]}")
+                    logger.error(f"Cloud embedding error {response.status_code}: {response.text[:200]}")
                     embeddings.append([0.0] * EMBEDDING_DIM)
             except Exception as e:
-                logger.error(f"Gemini embedding exception: {e}")
+                logger.error(f"Cloud embedding exception: {e}")
                 embeddings.append([0.0] * EMBEDDING_DIM)
         return embeddings
 
@@ -225,8 +225,8 @@ class GeminiEmbeddingFunction:
 def get_embedding_function():
     """Factory: seleziona embedding function in base a AI_BACKEND."""
     if AI_BACKEND == "api":
-        logger.info("Using Gemini embeddings (cloud mode)")
-        return GeminiEmbeddingFunction()
+        logger.info("Using cloud embeddings (cloud mode)")
+        return CloudEmbeddingFunction()
     else:
         logger.info("Using Ollama embeddings (local mode)")
         return OllamaEmbeddingFunction()
@@ -474,16 +474,20 @@ async def process_state_change(data: dict):
     conn.commit()
     conn.close()
 
-    # Salva in vector store
+    # Push to Redis context bus (short-term cross-system memory)
     try:
-        location_vector_store.add_event(
-            entity_id=entity_id,
-            old_state=old_state_val,
-            new_state=new_state_val,
-            timestamp=timestamp
+        from context_bus import ContextBus
+        bus = ContextBus(source="ha")
+        # HA events go to "shared" since they're location-level, not user-specific
+        bus.push(
+            "shared",
+            text=f"{entity_id}: {old_state_val} → {new_state_val}",
+            room=LOCATION_ID,
+            event_type="state_change",
+            entities=[entity_id],
         )
     except Exception as e:
-        logger.warning(f"Vector write failed: {e}")
+        logger.debug(f"Context bus push failed: {e}")
 
 
 def should_skip_entity(entity_id: str, old_state: dict, new_state: dict) -> bool:
@@ -680,6 +684,29 @@ async def run_daily_summary():
         conn.commit()
         logger.info(f"Daily summary: {len(data.get('new_facts', []))} new facts")
 
+        # Push behavioral patterns to mem0 (long-term memory)
+        new_facts = data.get("new_facts", [])
+        patterns = data.get("patterns", {})
+        if new_facts or patterns:
+            try:
+                import httpx
+                mem0_url = os.environ["MEM0_BASE_URL"]
+                facts_text = f"Location {LOCATION_ID} - pattern giornalieri:\n"
+                if patterns:
+                    facts_text += "\n".join(f"- {k}: {v}" for k, v in patterns.items()) + "\n"
+                if new_facts:
+                    facts_text += "\n".join(f"- {f}" for f in new_facts)
+                resp = httpx.post(
+                    f"{mem0_url}/add",
+                    json={"text": facts_text, "user_id": "shared"},
+                    timeout=120.0,
+                )
+                resp.raise_for_status()
+                result = resp.json()
+                logger.info(f"HA patterns pushed to mem0: {len(result.get('results', []))} facts")
+            except Exception as e:
+                logger.warning(f"mem0 push failed: {e}")
+
     except Exception as e:
         logger.error(f"Daily summary failed: {e}")
 
@@ -704,9 +731,6 @@ async def scheduler():
 
             if now.hour == 3 and now.minute == 0:
                 await run_daily_summary()
-
-                # Cleanup vector store
-                location_vector_store.cleanup_old(max_age_days=7)
         except Exception as e:
             logger.error(f"Scheduler error: {e}")
 
@@ -721,12 +745,12 @@ async def scheduler():
 async def lifespan(app: FastAPI):
     # Log backend mode
     if AI_BACKEND == "api":
-        logger.info(f"AI Backend: cloud (OpenRouter: {OPENROUTER_SUMMARY_MODEL}, Gemini embeddings)")
+        logger.info(f"AI Backend: cloud (OpenRouter: {OPENROUTER_SUMMARY_MODEL}, Cloud embeddings)")
     else:
         logger.info(f"AI Backend: local (Ollama: {SUMMARY_MODEL}, {EMBEDDING_MODEL})")
 
     init_db()
-    location_vector_store.initialize()
+    # ChromaDB vector store removed — using Redis context bus + mem0 for memory
     asyncio.create_task(subscribe_ha_events())
     asyncio.create_task(scheduler())
     yield

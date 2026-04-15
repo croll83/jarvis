@@ -1329,20 +1329,18 @@ def save_chat_message(
     conn.commit()
     conn.close()
 
-    # Salva anche in vector store (async-safe)
-    if speaker_id:
-        try:
-            from vector_store import user_vector_store
-            user_vector_store.add_message(
-                user_id=speaker_id,
-                role=role,
-                content=content,
-                speaker_name=speaker_name or "Unknown",
-                timestamp=timestamp,
-                source=source
-            )
-        except Exception as e:
-            logging.getLogger("JARVIS").warning(f"Vector store write failed: {e}")
+    # Push to Redis context bus (short-term cross-system memory)
+    try:
+        from context_bus import ContextBus, speaker_to_user_id
+        bus = ContextBus(source="orchestrator")
+        user_id = speaker_to_user_id(speaker_id, speaker_name)
+        bus.push(
+            user_id,
+            text=content[:200],
+            event_type="command" if role == "user" else "response",
+        )
+    except Exception as e:
+        logging.getLogger("JARVIS").debug(f"Context bus push failed: {e}")
 
 
 def get_weighted_context(
@@ -1630,11 +1628,11 @@ def get_llm_params(category: str) -> dict:
     """
     Recupera parametri LLM da global_preferences (runtime).
 
-    Chiave DB: 'llm_params' → JSON dict con categorie routing/reasoning/quick_response/summary/gemini.
+    Chiave DB: 'llm_params' → JSON dict con categorie routing/reasoning/quick_response/summary/cloud.
     Se il DB non ha la chiave, usa i default da config.LLM_PARAMS.
 
     Args:
-        category: Una di 'routing', 'reasoning', 'quick_response', 'summary', 'gemini'
+        category: Una di 'routing', 'reasoning', 'quick_response', 'summary', 'cloud'
 
     Returns:
         Dict con temperature, max_tokens, timeout (varia per categoria)
@@ -3788,18 +3786,8 @@ def save_user_longterm_fact(
     conn.commit()
     conn.close()
 
-    # Salva anche in vector store
-    try:
-        from vector_store import user_vector_store
-        user_vector_store.add_user_fact(
-            user_id=user_id,
-            fact=fact,
-            category=category,
-            confidence=confidence,
-            source=source
-        )
-    except Exception as e:
-        logging.getLogger("JARVIS").warning(f"Vector store fact write failed: {e}")
+    # Facts go to mem0 via nightly batch job (memory_jobs.py)
+    # No more direct ChromaDB writes
 
 
 def cleanup_old_user_memory(

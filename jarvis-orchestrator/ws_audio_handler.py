@@ -664,11 +664,11 @@ async def ws_audio_endpoint(
                                 await end_live_session(device_id, reason="device_reconnect")
                         except Exception as e:
                             logger.debug(f"Device {device_id}: live session cleanup on hello: {e}")
-                        # Clean up stale OpenClaw follow-up
+                        # Clean up stale AI Agent follow-up
                         try:
-                            from main import _openclaw_followup, _openclaw_followup_triggered
-                            _openclaw_followup.pop(device_id, None)
-                            _openclaw_followup_triggered.discard(device_id)
+                            from main import _ai_agent_followup, _ai_agent_followup_triggered
+                            _ai_agent_followup.pop(device_id, None)
+                            _ai_agent_followup_triggered.discard(device_id)
                         except Exception:
                             pass
 
@@ -813,11 +813,11 @@ async def ws_audio_endpoint(
             if _persistent_connections.get(device_id) is conn:
                 del _persistent_connections[device_id]
 
-        # Clean up OpenClaw follow-up tracker
+        # Clean up AI Agent follow-up tracker
         try:
-            from main import _openclaw_followup, _openclaw_followup_triggered
-            _openclaw_followup.pop(device_id, None)
-            _openclaw_followup_triggered.discard(device_id)
+            from main import _ai_agent_followup, _ai_agent_followup_triggered
+            _ai_agent_followup.pop(device_id, None)
+            _ai_agent_followup_triggered.discard(device_id)
         except Exception:
             pass
 

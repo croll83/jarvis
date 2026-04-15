@@ -14,20 +14,12 @@ FROM ${BUILD_FROM}
 
 WORKDIR /app
 
-# Build tools for native extensions (hnswlib, grpcio, etc.)
+# Build tools for native extensions
 RUN apk add --no-cache --virtual .build-deps \
     gcc g++ musl-dev python3-dev cmake make linux-headers libffi-dev \
     && apk add --no-cache libstdc++
 
 # Install Python dependencies
-# ChromaDB depends on onnxruntime which has NO Alpine/musl wheel.
-# We don't need it — we provide our own embedding function (Ollama/Gemini).
-# Fix: create a stub onnxruntime package to satisfy pip, then install normally.
-RUN mkdir -p /tmp/onnxstub/onnxruntime \
-    && echo "# stub — not needed, embeddings via Ollama/Gemini" > /tmp/onnxstub/onnxruntime/__init__.py \
-    && printf '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n\n[project]\nname = "onnxruntime"\nversion = "999.0.0"\n' > /tmp/onnxstub/pyproject.toml \
-    && pip install --no-cache-dir /tmp/onnxstub \
-    && rm -rf /tmp/onnxstub
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -37,6 +29,7 @@ RUN apk del .build-deps \
 
 # Copy application
 COPY main.py .
+COPY context_bus.py .
 COPY prompts/ prompts/
 COPY run.sh /
 
@@ -50,7 +43,8 @@ ENV HA_URL=http://supervisor/core
 ENV HA_TOKEN=""
 ENV OLLAMA_URL=http://localhost:11434
 ENV DB_PATH=/data/ha_memory.db
-ENV CHROMA_PATH=/data/chroma
+ENV REDIS_URL=""
+ENV MEM0_BASE_URL=""
 ENV SERVICE_PORT=8100
 
 VOLUME /data

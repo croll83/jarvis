@@ -1,13 +1,13 @@
 # JARVIS Orchestrator
 
-Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 9 endpoint REST per OpenClaw e gestisce domotica multi-location, voice processing, speaker identification, memoria stratificata e sicurezza L1-L4.
+Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 9 endpoint REST per AI Agent (Hermes/OpenClaw/others) e gestisce domotica multi-location, voice processing, speaker identification, memoria stratificata e sicurezza L1-L4.
 
 ## Architettura
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  OpenClaw (VM separata / bare-metal)                         │
-│  Gemini 3 Pro — Reasoning, web search, Telegram, multi-turn │
+│  AI Agent (VM separata / bare-metal)                         │
+│  Cloud LLM (via AI Agent) — Reasoning, web search, Telegram, multi-turn │
 │  Chiama JARVIS Orchestrator come Skill via REST              │
 │  :18789 (raggiungibile via Tailscale o LAN)                  │
 └──────────────────────────┬───────────────────────────────────┘
@@ -36,16 +36,16 @@ Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 
 │  │ Qwen 3B  │    │ (Tailscale) │   │ (N locations) │        │
 │  └──────────┘    └──────────────┘   └──────────────┘        │
 │                                                               │
-│  ┌──────────────┐                                            │
-│  │ ChromaDB     │  Shared vector store (:8000)               │
-│  │ :8000        │  Used by orchestrator + ha-memory-service  │
-│  │ HttpClient   │  + ontology-bridge plugin                  │
-│  └──────────────┘                                            │
+│  ┌──────────────┐  ┌──────────────┐                          │
+│  │ Redis :6379  │  │ mem0 :8200   │                          │
+│  │ Context Bus  │  │ Long-term    │                          │
+│  │ (short-term) │  │ (behavioral) │                          │
+│  └──────────────┘  └──────────────┘                          │
 │                                                               │
 │  JARVIS Approval Bot — Telegram bot separato per conferme L3 │
-│  (locks, alarm, cameras) — canale isolato da OpenClaw        │
+│  (locks, alarm, cameras) — canale isolato da AI Agent        │
 │                                                               │
-│  OpenClaw WS Operator Client — WebSocket conn a gateway       │
+│  AI Agent WS Operator Client — WebSocket conn a gateway       │
 │  Riceve exec approval events, invia bottoni inline Telegram   │
 │  (Once/Always/Deny), risolve approvazioni via WS              │
 └──────────────────────────────────────────────────────────────┘
@@ -55,7 +55,7 @@ Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 
 
 | Componente | Ruolo | Modello |
 |------------|-------|---------|
-| **OpenClaw** | Brain: reasoning, web search, Telegram, multi-turn (VM separata, bare-metal) | Gemini 3 Pro |
+| **AI Agent** | Brain: reasoning, web search, Telegram, multi-turn (VM separata, bare-metal) | Cloud LLM (via AI Agent) |
 | **JARVIS Orchestrator** | Skill/Executor: domotica, voice, speaker ID, security | FastAPI |
 | **Qwen 7B Q4** | Pre-routing locale per domotica fast path + offline fallback | Ollama |
 
@@ -66,7 +66,7 @@ Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 
 Ogni richiesta viene classificata in una delle 3 categorie prima di raggiungere il modello AI:
 
 ```
-Input (voce / Telegram / OpenClaw)
+Input (voce / Telegram / AI Agent)
         │
         ▼
 ┌──────────────────┐
@@ -74,13 +74,13 @@ Input (voce / Telegram / OpenClaw)
 │  Classificazione │  oppure regex fast-path (~1ms)
 └───────┬──────────┘
         │
-        ├─── DOMOTICA_CERTA ───▶ Qwen locale → Home Assistant (bypass OpenClaw)
+        ├─── DOMOTICA_CERTA ───▶ Qwen locale → Home Assistant (bypass AI Agent)
         │    conf > 0.90          Latenza totale: <200ms
         │
-        ├─── DOMOTICA_INCERTA ──▶ OpenClaw con hint domotico
-        │    conf 0.50-0.90       OpenClaw decide se usare jarvis_home_control
+        ├─── DOMOTICA_INCERTA ──▶ AI Agent con hint domotico
+        │    conf 0.50-0.90       AI Agent decide se usare jarvis_home_control
         │
-        └─── ALTRO ────────────▶ OpenClaw (reasoning, search, chat, etc.)
+        └─── ALTRO ────────────▶ AI Agent (reasoning, search, chat, etc.)
              conf < 0.50          Nessun hint domotico
 ```
 
@@ -89,8 +89,8 @@ Input (voce / Telegram / OpenClaw)
 | Categoria | Confidenza | Esempio | Percorso |
 |-----------|------------|---------|----------|
 | `DOMOTICA_CERTA` | > 0.90 | "Accendi la luce del salotto" | Qwen locale -> HA diretto |
-| `DOMOTICA_INCERTA` | 0.50-0.90 | "Cerca il telecomando e apri le tapparelle" | OpenClaw + hint |
-| `ALTRO` | < 0.50 | "Che tempo fa domani a Roma?" | OpenClaw puro |
+| `DOMOTICA_INCERTA` | 0.50-0.90 | "Cerca il telecomando e apri le tapparelle" | AI Agent + hint |
+| `ALTRO` | < 0.50 | "Che tempo fa domani a Roma?" | AI Agent puro |
 
 Il pre-routing locale garantisce che i comandi domotici puri non tocchino mai la rete esterna, mantenendo latenza sotto 200ms e funzionando anche offline.
 
@@ -115,10 +115,10 @@ Ogni azione domotica viene classificata per livello di rischio e filtrata in bas
 
 ### JARVIS Approval Bot
 
-Bot Telegram separato da quello di OpenClaw, dedicato esclusivamente alle conferme L3. Canale isolato per prevenire prompt injection nel flusso di approvazione.
+Bot Telegram separato da quello di AI Agent, dedicato esclusivamente alle conferme L3. Canale isolato per prevenire prompt injection nel flusso di approvazione.
 
 ```
-OpenClaw ──▶ jarvis_home_control (L3 action)
+AI Agent ──▶ jarvis_home_control (L3 action)
                      │
                      ▼
               ┌─────────────┐
@@ -138,9 +138,9 @@ OpenClaw ──▶ jarvis_home_control (L3 action)
 
 ---
 
-## OpenClaw Skill API
+## AI Agent Skill API
 
-10 endpoint REST su `/api/tools/`, autenticati via Bearer token (`OPENCLAW_GATEWAY_TOKEN`).
+10 endpoint REST su `/api/tools/`, autenticati via Bearer token (`AI_AGENT_TOKEN`).
 
 | # | Endpoint | Metodo | Descrizione |
 |---|----------|--------|-------------|
@@ -175,25 +175,30 @@ Filtri combinabili: `domain`, `room`, `zone`, `floor`, `search`, `entity_ids`. S
 
 ---
 
-## Memoria Stratificata
+## Sistema di Memoria
 
-Il sistema usa una memoria ibrida a 4 livelli con PostgreSQL (strutturato) + ChromaDB shared server :8000 (semantico, `HttpClient` con fallback a `PersistentClient` embedded).
+Architettura a 3 layer: SQLite locale, Redis cross-system, mem0 long-term.
+
+### Layer 1: SQLite (locale, stratificata)
 
 | Strato | Retention | Contenuto | Creazione |
 |--------|-----------|-----------|-----------|
 | **HOT** | 30 minuti | Messaggi raw (role, content, speaker) | Real-time |
 | **WARM** | 24 ore | Summary orario via LLM | Job ogni ora |
 | **COLD** | 7 giorni | Summary giornaliero via LLM | Job alle 03:00 |
-| **LONG-TERM** | Permanente | Fatti/preferenze + vector embeddings | Job alle 03:00 |
+| **LONG-TERM** | Permanente | Fatti estratti (solo SQLite) | Job alle 03:00 |
 
-### Vector Search con Recency Boost
+### Layer 2: Redis Context Bus (cross-system, short-term)
 
-```
-final_score = vector_similarity * recency_factor
-recency_factor = 1 / (1 + age_hours * 0.05)
-```
+Redis condiviso tra orchestrator, HA memory service e Hermes (URL in `REDIS_URL` env var).
 
-Embedding model: `nomic-embed-text` via Ollama. Threshold: >= 0.3 per messaggi, >= 0.4 per fatti.
+- Ogni sistema scrive eventi con il proprio `source` tag e legge solo eventi da ALTRI sistemi (no auto-duplicazione)
+- Struttura: `ctx:{user_id}:events` → lista JSON cappata (max 20 eventi, TTL 30 min)
+- L'orchestrator legge max 3-5 eventi recenti per arricchire il contesto delle risposte
+
+### Layer 3: mem0 (long-term, behavioral)
+
+Job notturno (`run_mem0_behavioral_extraction`) estrae abitudini comportamentali dalle interazioni vocali giornaliere (via Qwen) e le invia a mem0 (URL in `MEM0_BASE_URL` env var). Segregazione per utente tramite `SPEAKER_USER_MAP`.
 
 ### Previous Intent Tracking
 
@@ -206,7 +211,7 @@ Il router Qwen mantiene continuita conversazionale tramite tracking dell'intent 
 
 ### HA Memory Sidecar
 
-Ogni istanza Home Assistant ha un sidecar che traccia state changes, genera summary orari/giornalieri e espone API per vector search contestuale alla location.
+Ogni istanza Home Assistant ha un sidecar che traccia state changes, genera summary orari/giornalieri, pubblica contesto real-time su Redis e estrae pattern long-term su mem0.
 
 ---
 
@@ -310,10 +315,10 @@ OPENROUTER_API_KEY=sk-or-xxx        # Routing cloud
 GEMINI_API_KEY=AIza_xxx             # Reasoning + immagini
 
 # ============================
-# OPENCLAW
+# AI AGENT
 # ============================
-OPENCLAW_URL=http://jarvis-openclaw:18789  # VM separata via Tailscale/LAN
-OPENCLAW_GATEWAY_TOKEN=xxx          # Token condiviso OpenClaw <-> Orchestrator
+AI_AGENT_URL=https://your-agent-host:18789  # AI Agent gateway URL (VM separata via Tailscale/LAN)
+AI_AGENT_TOKEN=xxx                  # AI Agent gateway token (condiviso AI Agent <-> Orchestrator)
 
 # ============================
 # HOME ASSISTANT
@@ -336,10 +341,14 @@ JARVIS_SMTP_USER=your_email@gmail.com
 JARVIS_SMTP_PASSWORD=your_app_password
 
 # ============================
-# CHROMADB (shared vector store)
+# REDIS (cross-system context bus)
 # ============================
-CHROMA_HOST=localhost                # ChromaDB server host (default: localhost)
-CHROMA_PORT=8000                     # ChromaDB server port (default: 8000)
+REDIS_URL=redis://your_redis_host:6379/0
+
+# ============================
+# MEM0 (long-term behavioral memory)
+# ============================
+MEM0_BASE_URL=http://your_mem0_host:8200
 
 # ============================
 # POSTGRESQL
@@ -368,12 +377,13 @@ Definiti in `docker-compose.yml` nella root del progetto:
 | Parakeet STT | GX10 systemd | 7865 | Speech-to-text (nvidia/parakeet-tdt-0.6b-v3, via Tailscale) |
 | Qwen3-TTS | GX10 systemd | 9880 | TTS voice cloning IT/EN (Qwen3-TTS-12Hz-1.7B, via Tailscale) |
 | `orchestrator` | build locale | 5000 | JARVIS Skill (questo progetto) |
-| `chromadb` | chromadb/chroma:0.6.3 | 8000 | Shared vector store (HttpClient, fallback embedded) |
+| `redis` | redis:7-alpine | 6379 | Context bus cross-system (su LXC Jarvis) |
+| `mem0` | mem0 server | 8200 | Long-term behavioral memory (su LXC Jarvis) |
 | `tailscale` | tailscale/tailscale | - | VPN mesh per HA remoti |
 | `postgres` | postgres:16-alpine | 5432 | Database principale |
 | `mongo` | mongo:7 | 27017 | Database side-projects |
 
-**OpenClaw** gira bare-metal su VM separata (non in Docker) per isolamento di sicurezza. Porta 18789.
+**AI Agent** gira bare-metal su VM separata (non in Docker) per isolamento di sicurezza. Porta 18789.
 
 Profilo opzionale `tools` per Adminer (DB web UI) sulla porta 8080.
 
@@ -403,7 +413,7 @@ Accessibile via `http://jarvis:5000/admin` (richiede login).
 | **Audit Log** | Log eventi con filtri categoria/speaker |
 | **Dispositivi** | Device failures, voice devices (AtomS3R), configurazione speaker interno |
 | **Cache** | Query cache, statistiche hit/miss |
-| **Memory** | Stats ChromaDB vectors, SQL summaries, per-user breakdown, HA Memory |
+| **Memory** | Stats SQL summaries, per-user breakdown, mem0 search, HA Memory |
 | **Access Log** | HTTP access log, auth attempts, anomaly detection |
 
 SSE real-time updates con fallback a polling. Dark/light theme.
@@ -449,10 +459,10 @@ access_log (id, timestamp, method, path, status_code, ip_address, user_agent, ..
 auth_attempts (id, timestamp, email, ip_address, user_agent, success, failure_reason)
 pending_actions (action_id, payload, requester_id, source_channel, security_level, ...)
 
--- ===== CHROMADB (vector store, separato) =====
--- user_messages     (embedding 7 giorni)
--- user_facts        (embedding permanente)
--- location_events_* (embedding per location, 7 giorni)
+-- ===== EXTERNAL MEMORY =====
+-- Redis: ctx:{user_id}:events (short-term cross-system, TTL 30min, max 20)
+-- mem0:  long-term behavioral (user: marco/ada/shared, via nightly batch)
+-- ChromaDB: backend di mem0 (non usato direttamente)
 ```
 
 ---
@@ -463,8 +473,8 @@ pending_actions (action_id, payload, requester_id, source_channel, security_leve
 |----------|--------|----------|
 | Domotica certa (voce) | <500ms | Parakeet STT + Resemblyzer + Qwen locale + HA |
 | Domotica certa (Telegram) | <200ms | Qwen locale + HA |
-| Domotica incerta | 1-3s | OpenClaw + jarvis_home_control |
-| Chat / reasoning | 2-10s | OpenClaw (Gemini 3 Pro) |
+| Domotica incerta | 1-3s | AI Agent + jarvis_home_control |
+| Chat / reasoning | 2-10s | AI Agent (Cloud LLM) |
 | Cache hit | <1ms | PostgreSQL lookup |
 
 ---

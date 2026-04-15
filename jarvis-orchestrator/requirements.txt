@@ -29,8 +29,11 @@ pyrnnoise>=0.0.2
 # Google Gemini (for image generation)
 google-generativeai>=0.8.0
 
-# Vector Store (Semantic Search)
-chromadb>=0.4.0
+# Context Bus (Redis short-term cross-system memory)
+redis>=5.0.0
+
+# HTTP Client (async, for mem0 API)
+httpx>=0.27.0
 
 # WebSocket audio reception (Opus + Silero VAD)
 opuslib>=3.0.1

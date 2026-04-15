@@ -355,7 +355,7 @@ PREFERENCE_METADATA = {
         "default": "0.85"
     },
     "confidence_threshold_low": {
-        "description": "Soglia confidenza BASSA (0.0-1.0). Sotto questa soglia la richiesta viene inoltrata a OpenClaw/Gemini.",
+        "description": "Soglia confidenza BASSA (0.0-1.0). Sotto questa soglia la richiesta viene inoltrata a AI Agent/Gemini.",
         "type": "float",
         "min": 0.0,
         "max": 1.0,
@@ -839,7 +839,7 @@ async def get_all_health_status() -> Dict[str, Any]:
         ("Router LLM", f"{config.ROUTER_URL}/health" if config.ROUTER_ENGINE == "llamacpp" else f"{config.OLLAMA_URL}/api/tags"),
         ("STT", f"{config.STT_URL}/health"),
         ("Home Assistant", f"{config.HASS_URL_DEFAULT}/api/"),
-        ("OpenClaw", f"{config.OPENCLAW_URL}/health"),
+        ("AI Agent", f"{config.AI_AGENT_URL}/health"),
     ]
 
     # Optional services (might not be configured)
@@ -984,9 +984,9 @@ async def get_config() -> Dict[str, Any]:
             "stt_url": config.STT_URL,
             "stt_engine": config.STT_ENGINE,
             "hass_url": config.HASS_URL_DEFAULT,
-            "openclaw_url": config.OPENCLAW_URL,
+            "ai_agent_url": config.AI_AGENT_URL,
             "router_model": config.ROUTER_MODEL,
-            "reasoning_model": "gemini (via OpenClaw)",
+            "reasoning_model": "gemini (via AI Agent)",
             "approval_timeout": config.APPROVAL_TIMEOUT,
             "memory_window_seconds": config.MEMORY_WINDOW_SECONDS,
             "router_memory": {
@@ -1806,16 +1806,16 @@ async def get_ha_media_players_for_location(location_id: str) -> Dict[str, Any]:
 
 
 # ===========================================================================
-# OPENCLAW STATUS ENDPOINT
+# AI AGENT STATUS ENDPOINT
 # ===========================================================================
 
-@router.get("/openclaw/status")
-async def get_openclaw_status() -> Dict[str, Any]:
-    """Get OpenClaw service health status."""
+@router.get("/ai_agent/status")
+async def get_ai_agent_status() -> Dict[str, Any]:
+    """Get AI Agent service health status."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             start = time.time()
-            response = await client.get(f"{config.OPENCLAW_URL}/health")
+            response = await client.get(f"{config.AI_AGENT_URL}/health")
             latency = (time.time() - start) * 1000
 
             if response.status_code < 400:
@@ -1825,27 +1825,27 @@ async def get_openclaw_status() -> Dict[str, Any]:
                     data = {}
                 return {
                     "status": "up",
-                    "url": config.OPENCLAW_URL,
+                    "url": config.AI_AGENT_URL,
                     "latency_ms": round(latency, 2),
                     "details": data
                 }
             else:
                 return {
                     "status": "degraded",
-                    "url": config.OPENCLAW_URL,
+                    "url": config.AI_AGENT_URL,
                     "status_code": response.status_code,
                     "latency_ms": round(latency, 2)
                 }
     except httpx.TimeoutException:
         return {
             "status": "timeout",
-            "url": config.OPENCLAW_URL,
+            "url": config.AI_AGENT_URL,
             "error": "Health check timed out after 5s"
         }
     except Exception as e:
         return {
             "status": "down",
-            "url": config.OPENCLAW_URL,
+            "url": config.AI_AGENT_URL,
             "error": str(e)
         }
 

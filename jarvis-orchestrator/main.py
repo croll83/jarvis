@@ -2,7 +2,7 @@
 JARVIS Core Orchestrator
 - Voice command processing con speaker identification
 - Weighted memory context (differenziato per router vs reasoning)
-- Intent routing con fallback a OpenClaw per comandi avanzati
+- Intent routing con fallback a AI Agent per comandi avanzati
 """
 
 import asyncio
@@ -46,7 +46,7 @@ from integrations import (
 from ai_engines import (
     is_safe, get_routing, get_quick_response, pre_route,
     normalize_stt_text,
-    is_openclaw_intent,
+    is_ai_agent_intent,
     is_dirty_audio,
     is_image_generation_intent
 )
@@ -65,7 +65,7 @@ from multi_ha import multi_ha
 from memory_jobs import memory_scheduler
 from location_memory import load_memory_services_from_db
 # build_full_context/build_reasoning_context restano in context_builder.py
-# per OpenClaw reasoning e tools_api — qui non servono più per routing
+# per AI Agent reasoning e tools_api — qui non servono più per routing
 from proactive import proactive_check_loop
 from vector_store import init_vector_store
 from ws_audio_handler import (
@@ -95,7 +95,7 @@ logging.getLogger("uvicorn.access").addFilter(_QuietDevicePollingFilter())
 speaking_state: dict = {}
 speaking_state_lock = asyncio.Lock()
 
-# Pending exec approvals from OpenClaw (approval_id -> full request data)
+# Pending exec approvals from AI Agent (approval_id -> full request data)
 pending_exec_approvals: dict = {}
 
 # Strong references to background tasks (prevents GC from destroying them)
@@ -106,9 +106,9 @@ _vmic_responses: dict = {}
 
 
 # ===========================================================================
-# OPENCLAW GATEWAY OPERATOR (WebSocket client for exec approvals)
+# AI_AGENT GATEWAY OPERATOR (WebSocket client for exec approvals)
 # ===========================================================================
-# OpenClaw gateway broadcasts exec.approval.requested events to connected
+# AI Agent gateway broadcasts exec.approval.requested events to connected
 # operator clients. We connect as an operator, receive these events, forward
 # them to Telegram with inline buttons, and resolve via exec.approval.resolve.
 #
@@ -120,9 +120,9 @@ _vmic_responses: dict = {}
 # Reference WS connection that stays open for resolving approvals
 _operator_ws = None
 
-async def openclaw_operator_loop():
+async def ai_agent_operator_loop():
     """
-    Connects to OpenClaw gateway as a WebSocket operator client.
+    Connects to AI Agent gateway as a WebSocket operator client.
     Listens for exec.approval.requested events and forwards them
     to Telegram with inline buttons via the JARVIS Approval Bot.
     """
@@ -130,18 +130,18 @@ async def openclaw_operator_loop():
     import websockets
     import json as _json
 
-    ws_url = config.OPENCLAW_WS_URL
-    token = config.OPENCLAW_TOKEN
+    ws_url = config.AI_AGENT_WS_URL
+    token = config.AI_AGENT_TOKEN
 
     if not ws_url or not token:
-        logger.warning("OPENCLAW_WS_URL or OPENCLAW_TOKEN not set, exec approval operator disabled")
+        logger.warning("AI_AGENT_WS_URL or AI_AGENT_TOKEN not set, exec approval operator disabled")
         return
 
     reconnect_delay = 5
 
     while True:
         try:
-            logger.info(f"Connecting to OpenClaw gateway WS: {ws_url}")
+            logger.info(f"Connecting to AI Agent gateway WS: {ws_url}")
             async with websockets.connect(
                 ws_url,
                 ping_interval=30,
@@ -199,10 +199,10 @@ async def openclaw_operator_loop():
                 hello = _json.loads(hello_raw)
                 if hello.get("type") == "res" and hello.get("ok"):
                     proto = hello.get("payload", {}).get("protocol", "?")
-                    logger.info(f"✅ OpenClaw operator WS connected (proto={proto})")
+                    logger.info(f"✅ AI Agent operator WS connected (proto={proto})")
                 else:
                     err = hello.get("error", hello)
-                    logger.error(f"OpenClaw WS handshake failed: {err}")
+                    logger.error(f"AI Agent WS handshake failed: {err}")
                     await asyncio.sleep(reconnect_delay)
                     continue
 
@@ -261,20 +261,20 @@ async def openclaw_operator_loop():
                             logger.debug(f"WS response: {msg}")
 
                     except Exception as e:
-                        logger.error(f"Error processing OpenClaw WS message: {e}")
+                        logger.error(f"Error processing AI Agent WS message: {e}")
 
         except asyncio.CancelledError:
-            logger.info("OpenClaw operator loop cancelled")
+            logger.info("AI Agent operator loop cancelled")
             return
         except Exception as e:
-            logger.warning(f"OpenClaw operator WS disconnected: {e}, reconnecting in {reconnect_delay}s")
+            logger.warning(f"AI Agent operator WS disconnected: {e}, reconnecting in {reconnect_delay}s")
             _operator_ws = None
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, 60)
 
 
 async def _handle_exec_approval_event(payload: dict):
-    """Handle an exec.approval.requested event from OpenClaw gateway."""
+    """Handle an exec.approval.requested event from AI Agent gateway."""
     # Payload structure: {id, request: {command, cwd, agentId, ...}, createdAtMs, expiresAtMs}
     logger.debug(f"Exec approval payload keys: {list(payload.keys())}")
 
@@ -310,7 +310,7 @@ async def _handle_exec_approval_event(payload: dict):
 
 async def resolve_exec_approval(approval_id: str, decision: str):
     """
-    Resolve an exec approval via the OpenClaw gateway WebSocket.
+    Resolve an exec approval via the AI Agent gateway WebSocket.
     decision: "allow-once" | "allow-always" | "deny"
 
     The gateway may send approvals either as:
@@ -392,15 +392,15 @@ async def _tg_bot_api(method: str, payload: dict = None) -> dict:
 async def _process_telegram_text(text: str, context: dict):
     """Processa un messaggio di testo Telegram attraverso la pipeline JARVIS."""
     try:
-        # ── OPENCLAW FOLLOW-UP BYPASS (Telegram) ──────────────────────
+        # ── AI_AGENT FOLLOW-UP BYPASS (Telegram) ──────────────────────
         _tg_chat_id = context.get("chat_id", "default")
         _tg_key = f"tg_{_tg_chat_id}"
-        if _tg_key in _openclaw_followup:
-            followup = _openclaw_followup[_tg_key]
+        if _tg_key in _ai_agent_followup:
+            followup = _ai_agent_followup[_tg_key]
             if time.time() - followup["timestamp"] < 300:  # 5 min per Telegram
-                logger.info(f"🔄 Telegram OpenClaw follow-up active — bypassing routing")
+                logger.info(f"🔄 Telegram AI Agent follow-up active — bypassing routing")
                 _fu_session = followup["session_user"]
-                response, _ = await forward_to_openclaw(text, followup["context"], session_user=_fu_session)
+                response, _ = await forward_to_ai_agent(text, followup["context"], session_user=_fu_session)
                 if response:
                     save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
                     await deliver_final_response(response, context, sound_type="neutral")
@@ -409,12 +409,12 @@ async def _process_telegram_text(text: str, context: dict):
                         followup["timestamp"] = time.time()
                         logger.info(f"🔄 Telegram follow-up continues for {_tg_key}")
                     else:
-                        _openclaw_followup.pop(_tg_key, None)
+                        _ai_agent_followup.pop(_tg_key, None)
                         logger.info(f"🔄 Telegram follow-up ended for {_tg_key}")
                 return
             else:
                 logger.info(f"🔄 Telegram follow-up expired for {_tg_key}")
-                _openclaw_followup.pop(_tg_key, None)
+                _ai_agent_followup.pop(_tg_key, None)
 
         if config.SKIP_PRE_ROUTE:
             # Routing unificato: salta pre-route, vai diretto al routing completo
@@ -429,9 +429,9 @@ async def _process_telegram_text(text: str, context: dict):
             if classification == "DOMOTICA_CERTA":
                 await process_jarvis_logic(text, context)
             elif classification == "DOMOTICA_INCERTA":
-                await _handle_openclaw_voice(text, context, hint="domotics")
+                await _handle_ai_agent_voice(text, context, hint="domotics")
             else:
-                await _handle_openclaw_voice(text, context, hint="")
+                await _handle_ai_agent_voice(text, context, hint="")
     except Exception as e:
         logger.error(f"Error processing Telegram text: {e}", exc_info=True)
         await _tg_bot_api("sendMessage", {
@@ -556,7 +556,7 @@ async def _handle_approval_update(update: dict):
     action_type = parts[0]
     slug = parts[1] if len(parts) > 1 else ""
 
-    # Exec approvals (OpenClaw)
+    # Exec approvals (AI Agent)
     exec_decision_map = {
         "execonce": "allow-once",
         "execalways": "allow-always",
@@ -786,8 +786,8 @@ async def lifespan(app: FastAPI):
     _keep(asyncio.create_task(memory_scheduler()))
     _keep(asyncio.create_task(proactive_check_loop()))
 
-    # OpenClaw gateway operator (exec approval buttons via WS)
-    _keep(asyncio.create_task(openclaw_operator_loop()))
+    # AI Agent gateway operator (exec approval buttons via WS)
+    _keep(asyncio.create_task(ai_agent_operator_loop()))
 
     # Approval Bot: webhook (preferred) or polling fallback
     _keep(asyncio.create_task(approval_bot_setup()))
@@ -1080,7 +1080,7 @@ async def clear_speaking_state_after_delay(room: str, delay_seconds: float = Non
 # In live session, the device stays in a persistent conversation loop:
 # - No wakeword between turns (trigger_listen after every TTS)
 # - No speaker ID (locked to the user who activated the session)
-# - No Qwen routing (everything goes straight to OpenClaw)
+# - No Qwen routing (everything goes straight to AI Agent)
 # - Concise prompt forces short, direct responses
 # - Session ends via voice command, button (speaker_stop), or timeout
 
@@ -1093,7 +1093,7 @@ class LiveSession:
     room: str
     media_player_id: Optional[str]  # None when using internal speaker
     use_internal_speaker: bool
-    openclaw_session_user: str     # stable OpenClaw session key
+    ai_agent_session_user: str     # stable AI Agent session key
     started_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     turn_count: int = 0
@@ -1120,20 +1120,20 @@ class PendingLiveSession:
 
 _pending_live_sessions: Dict[str, PendingLiveSession] = {}
 
-# Lightweight multi-turn OpenClaw tracker.
-# Quando OpenClaw chiede chiarimenti (?), il prossimo voice/telegram input bypassa routing.
+# Lightweight multi-turn AI Agent tracker.
+# Quando AI Agent chiede chiarimenti (?), il prossimo voice/telegram input bypassa routing.
 # Key: device_id (voice) o "tg_{chat_id}" (Telegram)
-_openclaw_followup: Dict[str, dict] = {}
+_ai_agent_followup: Dict[str, dict] = {}
 # Set di device_id per cui trigger_device_listen è stato chiamato per un follow-up.
 # Distingue "mic riattivato automaticamente" da "utente ha premuto bottone".
-_openclaw_followup_triggered: set = set()
+_ai_agent_followup_triggered: set = set()
 
 # Keyword sets for pending session confirmation
 _CONFIRM_YES = {"sì", "si", "ok", "vai", "certo", "procedi", "avvia", "yes", "sí"}
 _CONFIRM_NO = {"no", "annulla", "lascia", "niente", "stop", "esci"}
 _RETRY_ID = {"sono", "riconoscimi", "riconoscere", "prova", "riprova", "identifica", "identificami"}
 
-# Voice session instructions are now in OpenClaw SOUL.md.
+# Voice session instructions are now in AI Agent SOUL.md.
 # The orchestrator sends a structured [VOICE_SESSION] block in the `instructions`
 # field of /v1/responses, and SOUL.md defines per-hint behavior rules.
 
@@ -1384,7 +1384,7 @@ async def start_live_session(
     # Clean up any pending session for this device
     _pending_live_sessions.pop(device_id, None)
 
-    # Build stable session key (same logic as _handle_openclaw_voice).
+    # Build stable session key (same logic as _handle_ai_agent_voice).
     # Uses speaker name for identified users, room for anonymous.
     if speaker_name and speaker_name != "Sconosciuto":
         session_user = speaker_name.lower()
@@ -1399,7 +1399,7 @@ async def start_live_session(
         room=room,
         media_player_id=media_player_id,
         use_internal_speaker=use_internal_speaker,
-        openclaw_session_user=session_user,
+        ai_agent_session_user=session_user,
     )
     _live_sessions[device_id] = session
 
@@ -1484,7 +1484,7 @@ async def end_live_session(device_id: str, reason: str = "unknown"):
 async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
     """
     Process one turn of a live session.
-    Simplified pipeline: audio normalize → STT → deactivation check → OpenClaw → TTS → trigger_listen.
+    Simplified pipeline: audio normalize → STT → deactivation check → AI Agent → TTS → trigger_listen.
     No speaker ID, no Qwen routing.
     """
     session = _live_sessions.get(device_id)
@@ -1527,7 +1527,7 @@ async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
     _device_type = _device_cfg.get("device_type", "AtomS3R") if _device_cfg else "AtomS3R"
     save_chat_message("user", text, _device_type, session.user_id, session.speaker_name)
 
-    # 5. Forward to OpenClaw (no routing, direct)
+    # 5. Forward to AI Agent (no routing, direct)
     context = {
         "source": _device_type,
         "room": session.room,
@@ -1557,11 +1557,11 @@ async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
                 logger.error(f"Live TTS chunk error: {e}")
 
     # Use live session TTS instructions (ultra-concise)
-    # We call forward_to_openclaw with the live session context
-    response, response_id = await forward_to_openclaw(
+    # We call forward_to_ai_agent with the live session context
+    response, response_id = await forward_to_ai_agent(
         text, context, hint="live_session",
         stream_tts_callback=_live_tts_chunk,
-        session_user=session.openclaw_session_user,
+        session_user=session.ai_agent_session_user,
     )
 
     # 6. Save assistant response
@@ -1730,7 +1730,7 @@ async def _post_tts_handler(
             # Device transitions BUSY → LISTENING without going through IDLE
             success = await trigger_device_listen(device_id, silent=True)
             if success:
-                _openclaw_followup_triggered.add(device_id)
+                _ai_agent_followup_triggered.add(device_id)
                 logger.info(f"🔄 Multi-turn: triggered listen on {device_id} "
                             f"(after {duration:.1f}s TTS)")
             else:
@@ -1945,18 +1945,18 @@ def build_speaker_context(audio_bytes: Optional[bytes], source: str, explicit_sp
 
 
 # ===========================================================================
-# OPENCLAW STUB (Phase 4)
+# AI_AGENT STUB (Phase 4)
 # ===========================================================================
 
-async def forward_to_openclaw(text: str, context: dict, hint: str = "",
+async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
                               stream_tts_callback=None,
                               session_user: str = None) -> tuple:
     """
-    Forward request to OpenClaw Gateway via OpenResponses API (POST /v1/responses).
+    Forward request to AI Agent via Chat Completions API (POST /v1/chat/completions).
 
-    Uses SSE streaming (stream: True) to avoid hard timeout on long multi-turn
-    conversations. As long as OpenClaw sends SSE events (deltas, tool calls, etc.),
-    the connection stays alive. Timeout triggers only on prolonged silence.
+    Uses SSE streaming to avoid hard timeout on long multi-turn conversations.
+    As long as AI Agent sends SSE events (deltas), the connection stays alive.
+    Timeout triggers only on prolonged silence.
 
     If stream_tts_callback is provided, sentences are delivered progressively
     to TTS as they complete during streaming (sentence boundaries: .!?\n).
@@ -1966,11 +1966,11 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
     Args:
         text: User input text
         context: Request context dict
-        hint: Optional hint for OpenClaw (e.g. "domotics")
+        hint: Optional hint for AI Agent (e.g. "domotics")
         stream_tts_callback: Optional async callable(chunk: str, is_first: bool) -> None
                              Called for each complete sentence during streaming.
-        session_user: Optional stable user identifier for OpenClaw multi-turn sessions.
-                      When provided, OpenClaw maintains conversation history across calls.
+        session_user: Optional stable user identifier for AI Agent multi-turn sessions.
+                      When provided, AI Agent maintains conversation history across calls.
 
     Returns:
         tuple: (response_text: str, response_id: str | None)
@@ -1978,11 +1978,11 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
     import aiohttp
     import json as _json
 
-    if not config.OPENCLAW_URL or not config.OPENCLAW_TOKEN:
-        logger.warning("OpenClaw not configured, falling back to local response")
+    if not config.AI_AGENT_URL:
+        logger.warning("AI Agent not configured, falling back to local response")
         return await get_quick_response(text, context), None
 
-    # Build message with context for OpenClaw
+    # Build message with context for AI Agent
     speaker_name = context.get("speaker_name", "Sconosciuto")
     speaker_id = context.get("speaker_id")
     speaker_identified = context.get("speaker_identified", False)
@@ -1990,8 +1990,8 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
     location = context.get("location", "")
     room = context.get("room", "")
 
-    # Build [VOICE_SESSION] structured block for OpenClaw instructions.
-    # SOUL.md on OpenClaw defines per-hint behavior (live_session, domotics, etc.)
+    # Build [VOICE_SESSION] structured block for AI Agent system message.
+    # SOUL.md on AI Agent defines per-hint behavior (live_session, domotics, etc.)
     # and TTS formatting rules. We only pass the structured context here.
     speaker_payload = _json.dumps({
         "user_id": speaker_id if speaker_id is not None else "None",
@@ -2016,62 +2016,57 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
         voice_instructions += "\n" + "\n".join(loc_parts)
 
     payload = {
-        "input": text,
-        "model": "openclaw:main",
+        "model": "hermes-agent",
+        "messages": [
+            {"role": "system", "content": voice_instructions},
+            {"role": "user", "content": text},
+        ],
         "stream": True,
-        "instructions": voice_instructions,
     }
-    # Multi-turn session: 'user' param enables stable session routing in OpenClaw.
-    # Uses speaker name (identified) or device/room name (unidentified) for
-    # session key: openresponses-main-user:{session_user}
-    if session_user:
-        payload["user"] = str(session_user)
 
     try:
         timeout = aiohttp.ClientTimeout(
-            total=config.OPENCLAW_TIMEOUT_TOTAL,   # 300s max totale
-            sock_read=config.OPENCLAW_TIMEOUT_READ  # 90s max silenzio tra chunk
+            total=config.AI_AGENT_TIMEOUT_TOTAL,   # 300s max totale
+            sock_read=config.AI_AGENT_TIMEOUT_READ  # 90s max silenzio tra chunk
         )
         async with aiohttp.ClientSession() as session:
-            headers = {
-                "Authorization": f"Bearer {config.OPENCLAW_TOKEN}",
-                "Content-Type": "application/json"
-            }
+            headers = {"Content-Type": "application/json"}
+            if config.AI_AGENT_TOKEN:
+                headers["Authorization"] = f"Bearer {config.AI_AGENT_TOKEN}"
+            # Multi-turn session via Hermes session header
+            if session_user:
+                headers["X-Hermes-Session-Id"] = str(session_user)
+
             async with session.post(
-                f"{config.OPENCLAW_URL}/v1/responses",
+                f"{config.AI_AGENT_URL}/v1/chat/completions",
                 json=payload,
                 headers=headers,
                 timeout=timeout,
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    logger.error(f"OpenClaw error {resp.status}: {body[:200]}")
+                    logger.error(f"AI Agent error {resp.status}: {body[:200]}")
                     return await get_quick_response(text, context), None
 
-                # Parse SSE stream
-                accumulated_text = ""  # Tutto il testo ricevuto finora
-                pending_chunk = ""     # Buffer per sentence splitting (solo con callback)
-                event_count = 0
-                final_status = None
-                response_id = None     # OpenClaw response ID for session tracking
-                is_first_chunk = True  # Per sound_type solo sul primo chunk
+                # Parse SSE stream (Chat Completions format)
+                accumulated_text = ""
+                pending_chunk = ""
+                chunk_count = 0
+                is_first_chunk = True
                 chunks_sent = 0
 
                 # Reset chunk counter per streaming TTS
                 if stream_tts_callback:
                     _flush_tts_sentences.chunks_sent = 0
 
-                # Minimum chunk size per evitare frasi troppo corte
                 MIN_CHUNK_LEN = 20
 
                 async for raw_line in resp.content:
                     line = raw_line.decode("utf-8", errors="replace").strip()
 
-                    # Fine stream
                     if line == "data: [DONE]":
                         break
 
-                    # Solo righe "data:" contengono payload JSON
                     if not line.startswith("data: "):
                         continue
 
@@ -2080,48 +2075,36 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
                     except _json.JSONDecodeError:
                         continue
 
-                    event_type = event.get("type", "")
-                    event_count += 1
+                    chunk_count += 1
 
-                    # Accumula testo dai delta incrementali
-                    if event_type == "response.output_text.delta":
-                        delta = event.get("delta", "")
-                        if delta:
-                            accumulated_text += delta
+                    # Chat Completions delta format
+                    choices = event.get("choices", [])
+                    if not choices:
+                        continue
 
-                            # Streaming TTS: split at sentence boundaries
-                            if stream_tts_callback:
-                                pending_chunk += delta
-                                pending_chunk = await _flush_tts_sentences(
-                                    pending_chunk, stream_tts_callback,
-                                    is_first_chunk, MIN_CHUNK_LEN,
-                                    flush_all=False
-                                )
-                                if chunks_sent != _flush_tts_sentences.chunks_sent:
-                                    is_first_chunk = False
-                                    chunks_sent = _flush_tts_sentences.chunks_sent
+                    choice = choices[0]
+                    delta = choice.get("delta", {})
+                    content = delta.get("content", "")
+                    finish_reason = choice.get("finish_reason")
 
-                    # Testo completo — più affidabile dei delta accumulati
-                    elif event_type == "response.output_text.done":
-                        done_text = event.get("text", "")
-                        if done_text:
-                            accumulated_text = done_text
+                    if content:
+                        accumulated_text += content
 
-                    # Risposta completata — estrai testo se non accumulato
-                    elif event_type == "response.completed":
-                        resp_data = event.get("response", {})
-                        final_status = resp_data.get("status")
-                        response_id = resp_data.get("id")
-                        if not accumulated_text:
-                            accumulated_text = _extract_openclaw_response(resp_data)
+                        if stream_tts_callback:
+                            pending_chunk += content
+                            pending_chunk = await _flush_tts_sentences(
+                                pending_chunk, stream_tts_callback,
+                                is_first_chunk, MIN_CHUNK_LEN,
+                                flush_all=False
+                            )
+                            if chunks_sent != _flush_tts_sentences.chunks_sent:
+                                is_first_chunk = False
+                                chunks_sent = _flush_tts_sentences.chunks_sent
 
-                    # Errore
-                    elif event_type == "response.failed":
-                        error = event.get("response", {}).get("error", {})
-                        logger.error(f"OpenClaw stream failed: {error.get('code', '?')}: {error.get('message', '?')}")
-                        return await get_quick_response(text, context), None
+                    if finish_reason == "stop":
+                        break
 
-                # Flush remaining pending chunk (coda che non termina con .!?\n)
+                # Flush remaining pending chunk
                 if stream_tts_callback and pending_chunk.strip():
                     await _flush_tts_sentences(
                         pending_chunk, stream_tts_callback,
@@ -2131,26 +2114,25 @@ async def forward_to_openclaw(text: str, context: dict, hint: str = "",
 
                 if accumulated_text:
                     logger.info(
-                        f"OpenClaw stream response ({len(accumulated_text)} chars, "
-                        f"{event_count} events, status={final_status}, "
-                        f"resp_id={response_id[:20] + '...' if response_id and len(response_id) > 20 else response_id}, "
+                        f"AI Agent response ({len(accumulated_text)} chars, "
+                        f"{chunk_count} chunks, "
                         f"tts_chunks={_flush_tts_sentences.chunks_sent if stream_tts_callback else 'n/a'})"
                     )
-                    return accumulated_text, response_id
+                    return accumulated_text, None
 
-                logger.warning(f"OpenClaw stream ended with no text ({event_count} events, status={final_status})")
+                logger.warning(f"AI Agent stream ended with no text ({chunk_count} chunks)")
 
     except asyncio.TimeoutError:
         logger.warning(
-            f"OpenClaw stream timeout (total={config.OPENCLAW_TIMEOUT_TOTAL}s, "
-            f"read={config.OPENCLAW_TIMEOUT_READ}s)"
+            f"AI Agent stream timeout (total={config.AI_AGENT_TIMEOUT_TOTAL}s, "
+            f"read={config.AI_AGENT_TIMEOUT_READ}s)"
         )
         return "Mi dispiace, l'operazione sta richiedendo più tempo del previsto. Riprova tra poco.", None
     except aiohttp.ClientConnectorError:
-        logger.warning("OpenClaw unreachable, falling back to local")
-        service_status.set_offline("openclaw")
+        logger.warning("AI Agent unreachable, falling back to local")
+        service_status.set_offline("ai_agent")
     except Exception as e:
-        logger.error(f"OpenClaw stream error: {e}")
+        logger.error(f"AI Agent stream error: {e}")
 
     # Fallback: local Qwen quick response
     return await get_quick_response(text, context), None
@@ -2215,31 +2197,6 @@ async def _flush_tts_sentences(pending: str, callback, is_first: bool,
 # Initialize chunk counter
 _flush_tts_sentences.chunks_sent = 0
 
-
-def _extract_openclaw_response(data: dict) -> str:
-    """
-    Extract text from OpenResponses API response format.
-
-    Response structure:
-    {
-        "output": [
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": "..."}]
-            }
-        ]
-    }
-    """
-    output = data.get("output", [])
-    texts = []
-    for item in output:
-        if item.get("type") == "message" and item.get("role") == "assistant":
-            content = item.get("content", [])
-            for part in content:
-                if part.get("type") == "output_text" and part.get("text"):
-                    texts.append(part["text"])
-    return "\n\n".join(texts) if texts else ""
 
 
 # ===========================================================================
@@ -2792,30 +2749,30 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
 
     # ── LIVE SESSION BYPASS ──────────────────────────────────────────────
     # If device is in a live session, skip speaker ID, routing, normalize.
-    # Only do: audio normalize → STT → deactivation check → OpenClaw
+    # Only do: audio normalize → STT → deactivation check → AI Agent
     if device_id in _live_sessions:
         logger.info(f"🎙️ Live session active for {device_id} — using simplified pipeline")
         await handle_live_session_turn(device_id, audio_bytes)
         return
 
-    # ── OPENCLAW FOLLOW-UP BYPASS ─────────────────────────────────────
-    # Se OpenClaw ha chiesto chiarimenti, il prossimo input bypassa routing
-    # e va diretto a OpenClaw. Speaker ID: se anonimo al turno 1, rifa
+    # ── AI_AGENT FOLLOW-UP BYPASS ─────────────────────────────────────
+    # Se AI Agent ha chiesto chiarimenti, il prossimo input bypassa routing
+    # e va diretto a AI Agent. Speaker ID: se anonimo al turno 1, rifa
     # speaker ID; se già riconosciuto, usa identità bloccata.
     # SOLO se il mic è stato riattivato da trigger_device_listen (non bottone fisico).
-    if device_id in _openclaw_followup:
-        followup = _openclaw_followup[device_id]
-        if device_id not in _openclaw_followup_triggered:
+    if device_id in _ai_agent_followup:
+        followup = _ai_agent_followup[device_id]
+        if device_id not in _ai_agent_followup_triggered:
             # Bottone fisico premuto → reset follow-up, routing normale
-            logger.info(f"🔄 OpenClaw follow-up reset by button press on {device_id}")
-            _openclaw_followup.pop(device_id, None)
+            logger.info(f"🔄 AI Agent follow-up reset by button press on {device_id}")
+            _ai_agent_followup.pop(device_id, None)
         elif time.time() - followup["timestamp"] >= 120:  # 2 min timeout
-            logger.info(f"🔄 OpenClaw follow-up expired for {device_id}")
-            _openclaw_followup.pop(device_id, None)
-            _openclaw_followup_triggered.discard(device_id)
+            logger.info(f"🔄 AI Agent follow-up expired for {device_id}")
+            _ai_agent_followup.pop(device_id, None)
+            _ai_agent_followup_triggered.discard(device_id)
         else:
-            _openclaw_followup_triggered.discard(device_id)  # Consumato
-            logger.info(f"🔄 OpenClaw follow-up active for {device_id} — bypassing routing")
+            _ai_agent_followup_triggered.discard(device_id)  # Consumato
+            logger.info(f"🔄 AI Agent follow-up active for {device_id} — bypassing routing")
             try:
                 # Audio normalization
                 import numpy as _np_fu
@@ -2853,7 +2810,7 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
 
                 # STT normalization
                 text_fu = await normalize_stt_text(text_fu)
-                logger.info(f"🔄 Follow-up transcribed: '{text_fu[:80]}' → sending to OpenClaw")
+                logger.info(f"🔄 Follow-up transcribed: '{text_fu[:80]}' → sending to AI Agent")
 
                 # Update speaker if re-identified
                 fu_speaker_id = followup["speaker_id"]
@@ -2889,12 +2846,12 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
                     if _fu_user:
                         context_fu["is_admin"] = _fu_user.is_admin
 
-                await _handle_openclaw_voice(text_fu, context_fu, hint="followup")
+                await _handle_ai_agent_voice(text_fu, context_fu, hint="followup")
                 return
             except Exception as e:
-                logger.error(f"🔄 OpenClaw follow-up error: {e}", exc_info=True)
-                _openclaw_followup.pop(device_id, None)
-                _openclaw_followup_triggered.discard(device_id)
+                logger.error(f"🔄 AI Agent follow-up error: {e}", exc_info=True)
+                _ai_agent_followup.pop(device_id, None)
+                _ai_agent_followup_triggered.discard(device_id)
                 # Fall through to normal pipeline
 
     # Recupera configurazione device
@@ -3041,9 +2998,9 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
             if classification == "DOMOTICA_CERTA":
                 await process_jarvis_logic(text, context)
             elif classification == "DOMOTICA_INCERTA":
-                await _handle_openclaw_voice(text, context, hint="domotics")
+                await _handle_ai_agent_voice(text, context, hint="domotics")
             else:
-                await _handle_openclaw_voice(text, context, hint="")
+                await _handle_ai_agent_voice(text, context, hint="")
 
     except Exception as e:
         logger.error(f"Error processing WS audio from {device_id}: {e}")
@@ -3207,9 +3164,9 @@ async def voice_stream(
             if classification == "DOMOTICA_CERTA":
                 asyncio.create_task(process_jarvis_logic(text, context))
             elif classification == "DOMOTICA_INCERTA":
-                asyncio.create_task(_handle_openclaw_voice(text, context, hint="domotics"))
+                asyncio.create_task(_handle_ai_agent_voice(text, context, hint="domotics"))
             else:
-                asyncio.create_task(_handle_openclaw_voice(text, context, hint=""))
+                asyncio.create_task(_handle_ai_agent_voice(text, context, hint=""))
 
         return {
             "status": "processing",
@@ -3238,9 +3195,9 @@ def _needs_followup(response_text: str) -> bool:
     Check if the response warrants a follow-up listen trigger.
 
     A response needs follow-up if it ends with a question mark,
-    indicating OpenClaw is asking the user something (multi-turn).
+    indicating AI Agent is asking the user something (multi-turn).
 
-    Simple regex is the right choice: OpenClaw produces well-punctuated Italian,
+    Simple regex is the right choice: AI Agent produces well-punctuated Italian,
     and false positives (rhetorical questions) are harmless (device just times out).
 
     Strips markdown artifacts (**, *, _) and whitespace before checking,
@@ -3254,28 +3211,28 @@ def _needs_followup(response_text: str) -> bool:
 
 
 # ===========================================================================
-# OPENCLAW VOICE HANDLER (for DOMOTICA_INCERTA and ALTRO pre-routes)
+# AI_AGENT VOICE HANDLER (for DOMOTICA_INCERTA and ALTRO pre-routes)
 # ===========================================================================
 
-async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
+async def _handle_ai_agent_voice(text: str, context: dict, hint: str = ""):
     """
-    Handle voice commands that need OpenClaw (non-certain domotics or general queries).
+    Handle voice commands that need AI Agent (non-certain domotics or general queries).
 
     For voice device sources: uses streaming TTS — sentences are spoken as they
-    arrive from OpenClaw SSE, without waiting for the full response. This dramatically
+    arrive from AI Agent SSE, without waiting for the full response. This dramatically
     reduces perceived latency.
 
     For other sources (Telegram, etc.): waits for full response, then delivers.
 
-    Multi-turn: uses OpenClaw 'user' parameter for stable session routing.
+    Multi-turn: uses AI Agent 'user' parameter for stable session routing.
     If the speaker is identified, session key = speaker name (e.g. "marco").
     Otherwise, session key = room/device name to group anonymous interactions.
-    OpenClaw generates: openresponses-main-user:{session_user}
+    AI Agent generates: openresponses-main-user:{session_user}
     """
     context["_user_text"] = text  # Per VirtualMic response tracking
-    context["_intent"] = f"OPENCLAW:{hint}" if hint else "OPENCLAW"
+    context["_intent"] = f"AI_AGENT:{hint}" if hint else "AI_AGENT"
 
-    # Build stable session user key for OpenClaw multi-turn.
+    # Build stable session user key for AI Agent multi-turn.
     # Uses speaker name for identified users, room/source for anonymous.
     speaker_id = context.get("speaker_id")
     speaker_name = context.get("speaker_name", "")
@@ -3288,7 +3245,7 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
         session_user = room.lower()
     else:
         session_user = context.get("source", "unknown").lower()
-    logger.info(f"OpenClaw multi-turn session_user={session_user}")
+    logger.info(f"AI Agent multi-turn session_user={session_user}")
 
     save_chat_message("user", text, context.get("source", "AtomS3R"),
                       context.get("speaker_id"), context.get("speaker_name", "Sconosciuto"))
@@ -3370,14 +3327,14 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
                 except Exception as e:
                     logger.error(f"TTS stream chunk delivery error: {e}")
 
-        # Forward to OpenClaw with streaming callback + multi-turn session
-        response, response_id = await forward_to_openclaw(
+        # Forward to AI Agent with streaming callback + multi-turn session
+        response, response_id = await forward_to_ai_agent(
             text, context, hint=hint,
             stream_tts_callback=_stream_tts_chunk,
             session_user=session_user
         )
         if response_id:
-            logger.debug(f"OpenClaw response_id={response_id[:30]}... for session={session_user}")
+            logger.debug(f"AI Agent response_id={response_id[:30]}... for session={session_user}")
 
         # Log full response text for debugging
         if response:
@@ -3391,10 +3348,10 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
         device_id = context.get("device_id", "unknown")
         is_multi_turn = _needs_followup(response) and source in config.VOICE_SOURCES and source != "VirtualMic"
 
-        # ── OpenClaw follow-up tracking ──
-        # Se OpenClaw chiede chiarimenti (?), il prossimo voice input bypassa routing
+        # ── AI Agent follow-up tracking ──
+        # Se AI Agent chiede chiarimenti (?), il prossimo voice input bypassa routing
         if is_multi_turn and device_id and device_id != "unknown":
-            _openclaw_followup[device_id] = {
+            _ai_agent_followup[device_id] = {
                 "session_user": session_user,
                 "speaker_id": speaker_id,
                 "speaker_name": speaker_name,
@@ -3404,10 +3361,10 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
                 "source": source,
                 "timestamp": time.time(),
             }
-            logger.info(f"🔄 OpenClaw follow-up SET for {device_id} (session={session_user})")
+            logger.info(f"🔄 AI Agent follow-up SET for {device_id} (session={session_user})")
         elif device_id:
             # Conversazione finita, cleanup
-            _openclaw_followup.pop(device_id, None)
+            _ai_agent_followup.pop(device_id, None)
 
         if use_internal_speaker and device_id and device_id != "unknown":
             # Internal speaker: niente polling HA, gestione diretta
@@ -3419,7 +3376,7 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
             if is_multi_turn:
                 success = await trigger_device_listen(device_id, silent=True)
                 if success:
-                    _openclaw_followup_triggered.add(device_id)
+                    _ai_agent_followup_triggered.add(device_id)
                     logger.info(f"🔄 Multi-turn (internal speaker): triggered listen on {device_id} "
                                 f"(after {_internal_tts_total_duration:.1f}s TTS)")
             else:
@@ -3485,7 +3442,7 @@ async def _handle_openclaw_voice(text: str, context: dict, hint: str = ""):
             if fb_speaker:
                 asyncio.create_task(play_feedback_sound("neutral", fb_speaker, fb_loc))
 
-        response, _ = await forward_to_openclaw(text, context, hint=hint, session_user=session_user)
+        response, _ = await forward_to_ai_agent(text, context, hint=hint, session_user=session_user)
 
         # Log full response text for debugging
         if response:
@@ -4147,10 +4104,10 @@ async def process_jarvis_logic(text: str, context: dict):
         return
 
     # 0b. IMAGE GENERATION KEYWORD CHECK (puro Python)
-    # Se è un comando di generazione immagini, forwarda a OpenClaw che ha Gemini
+    # Se è un comando di generazione immagini, forwarda a AI Agent che ha Cloud LLM
     if is_image_generation_intent(text):
         logger.info(f"Image generation keyword detected: '{text[:50]}'")
-        await _handle_openclaw_voice(text, context, hint="image_generation")
+        await _handle_ai_agent_voice(text, context, hint="image_generation")
         return
 
     # 0c. CHECK CRITICAL SERVICES
@@ -4204,7 +4161,7 @@ async def process_jarvis_logic(text: str, context: dict):
     # 3. MEMORIA RECENTE per routing (ultimi N turni, pura SQLite — no vector/embedding)
     # Qwen 3B non fa coreference complessa, ma 3 turni in 5 min coprono
     # "accendi X" → "spegnila" senza portare rumore da ore prima.
-    # Il contesto completo (weighted + vector + stratified) resta per OpenClaw/reasoning.
+    # Il contesto completo (weighted + vector + stratified) resta per AI Agent/reasoning.
     _t = time.time()
     recent_turns = get_recent_turns(
         max_turns=config.ROUTER_MEMORY_TURNS,
@@ -4322,7 +4279,7 @@ async def process_jarvis_logic(text: str, context: dict):
             await deliver_final_response(response, context, sound_type="neutral")
             return
 
-        # Detect multi-entity/multi-command → redirect to OpenClaw (Qwen 3B can't split)
+        # Detect multi-entity/multi-command → redirect to AI Agent (Qwen 3B can't split)
         _entity_str = str(entity_raw) if entity_raw else ""
         _has_multi_entity = "," in _entity_str or (isinstance(entity_raw, list) and len(entity_raw) > 1)
         _has_array_params = any(isinstance(v, list) for v in ha_params.values()) if ha_params else False
@@ -4333,11 +4290,11 @@ async def process_jarvis_logic(text: str, context: dict):
         _verb_positions = [i for i, w in enumerate(_text_words) if w in _domotica_verbs]
         _has_multi_command = len(_verb_positions) >= 2
         if _has_multi_entity or _has_array_params or _has_multi_command:
-            logger.info(f"HOME_CONTROL multi-entity detected, redirecting to OpenClaw: entity={entity_raw}")
+            logger.info(f"HOME_CONTROL multi-entity detected, redirecting to AI Agent: entity={entity_raw}")
             if source in config.VOICE_SOURCES:
-                await _handle_openclaw_voice(text, context, hint="")
+                await _handle_ai_agent_voice(text, context, hint="")
             else:
-                response, _ = await forward_to_openclaw(text, context)
+                response, _ = await forward_to_ai_agent(text, context)
                 if response:
                     save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
                     await deliver_final_response(response, context)
@@ -4753,23 +4710,23 @@ async def process_jarvis_logic(text: str, context: dict):
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
         await deliver_final_response(response, context, sound_type="positive")
 
-    # --- OPENCLAW (reasoning via OpenClaw gateway) ---
-    elif intent == "OPENCLAW":
-        logger.info("OPENCLAW intent, forwarding to OpenClaw")
+    # --- AI_AGENT (reasoning via AI Agent gateway) ---
+    elif intent == "AI_AGENT":
+        logger.info("AI_AGENT intent, forwarding to AI Agent")
         if source in config.VOICE_SOURCES:
             # Voice: usa streaming TTS (sentence-by-sentence) per latenza percepita minima
-            await _handle_openclaw_voice(text, context, hint="")
+            await _handle_ai_agent_voice(text, context, hint="")
         else:
             # Telegram/altro: non-streaming
-            response, _ = await forward_to_openclaw(text, context)
-            log_event("OPENCLAW", f"Domanda: {text[:50]}...", speaker_id, speaker_name)
+            response, _ = await forward_to_ai_agent(text, context)
+            log_event("AI_AGENT", f"Domanda: {text[:50]}...", speaker_id, speaker_name)
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context, sound_type="neutral")
             # Track follow-up per Telegram
             _tg_key = f"tg_{chat_id}"
             if _needs_followup(response):
                 _tg_session = speaker_name.lower() if speaker_name and speaker_name != "Sconosciuto" else f"tg_{chat_id}"
-                _openclaw_followup[_tg_key] = {
+                _ai_agent_followup[_tg_key] = {
                     "session_user": _tg_session,
                     "speaker_id": speaker_id,
                     "speaker_name": speaker_name,
@@ -4777,13 +4734,13 @@ async def process_jarvis_logic(text: str, context: dict):
                     "context": context,
                     "timestamp": time.time(),
                 }
-                logger.info(f"🔄 Telegram OpenClaw follow-up SET for {_tg_key}")
+                logger.info(f"🔄 Telegram AI Agent follow-up SET for {_tg_key}")
             else:
-                _openclaw_followup.pop(_tg_key, None)
+                _ai_agent_followup.pop(_tg_key, None)
         return
 
-    # --- VERIFY_WITH_OPENCLAW (confronto risposta precedente) ---
-    elif intent == "VERIFY_WITH_OPENCLAW":
+    # --- VERIFY_WITH_AI_AGENT (confronto risposta precedente) ---
+    elif intent == "VERIFY_WITH_AI_AGENT":
         last_exchange = _get_last_qa_from_memory(weighted_memory)
         if not last_exchange:
             response = "Non ricordo cosa ti ho detto. Puoi ripetere la domanda?"
@@ -4793,23 +4750,23 @@ async def process_jarvis_logic(text: str, context: dict):
 
         if source in config.VOICE_SOURCES:
             verify_text = f"Verifica questa risposta: alla domanda '{last_exchange['question']}' ho risposto '{last_exchange['answer']}'. È corretto?"
-            await _handle_openclaw_voice(verify_text, context, hint="verify")
+            await _handle_ai_agent_voice(verify_text, context, hint="verify")
         else:
             await deliver_final_response("Chiedo conferma...", context)
             verify_text = f"Verifica questa risposta: alla domanda '{last_exchange['question']}' ho risposto '{last_exchange['answer']}'. È corretto?"
-            response, _ = await forward_to_openclaw(verify_text, context)
-            log_event("VERIFY_OPENCLAW", f"Verifica risposta precedente", speaker_id, speaker_name)
+            response, _ = await forward_to_ai_agent(verify_text, context)
+            log_event("VERIFY_AI_AGENT", f"Verifica risposta precedente", speaker_id, speaker_name)
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context, sound_type="neutral")
         return
 
-    # --- IMAGE_GENERATION → forwarda a OpenClaw (ha Gemini nativo) ---
+    # --- IMAGE_GENERATION → forwarda a AI Agent (ha Cloud LLM nativo) ---
     elif intent == "IMAGE_GENERATION":
-        logger.info("IMAGE_GENERATION intent, forwarding to OpenClaw")
+        logger.info("IMAGE_GENERATION intent, forwarding to AI Agent")
         if source in config.VOICE_SOURCES:
-            await _handle_openclaw_voice(text, context, hint="image_generation")
+            await _handle_ai_agent_voice(text, context, hint="image_generation")
         else:
-            response, _ = await forward_to_openclaw(text, context, hint="image_generation")
+            response, _ = await forward_to_ai_agent(text, context, hint="image_generation")
             log_event("IMAGE_GEN", f"Richiesta: {text[:50]}...", speaker_id, speaker_name)
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context, sound_type="neutral")
@@ -4822,13 +4779,13 @@ async def process_jarvis_logic(text: str, context: dict):
         # Richiesta chiarimento con suono neutrale
         await deliver_final_response(response, context, sound_type="neutral")
 
-    # --- LOW CONFIDENCE: forward to OpenClaw ---
+    # --- LOW CONFIDENCE: forward to AI Agent ---
     elif conf < conf_low:
-        logger.info(f"Low confidence ({conf:.2f} < {conf_low}), forwarding to OpenClaw")
+        logger.info(f"Low confidence ({conf:.2f} < {conf_low}), forwarding to AI Agent")
         if source in config.VOICE_SOURCES:
-            await _handle_openclaw_voice(text, context, hint=f"low_confidence_{intent}")
+            await _handle_ai_agent_voice(text, context, hint=f"low_confidence_{intent}")
         else:
-            response, _ = await forward_to_openclaw(text, context, hint=f"low_confidence_{intent}")
+            response, _ = await forward_to_ai_agent(text, context, hint=f"low_confidence_{intent}")
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context, sound_type="neutral")
 
@@ -4945,7 +4902,7 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
         await _immediate_tts_done()
         return
 
-    if is_silent_time and source == "OpenClaw":
+    if is_silent_time and source == "AI Agent":
         await send_telegram(f"🌙 {text}")
         await _immediate_tts_done()
         return

@@ -1,13 +1,13 @@
-# JARVIS — Deploy Locale (GPU + OpenClaw su LXC separato)
+# JARVIS — Deploy Locale (GPU + AI Agent su LXC separato)
 
 Guida completa per il deploy locale di JARVIS su Proxmox con GPU NVIDIA.
 Il router locale (Qwen 2.5 3B) gira on-premise su un **LXC con GPU device sharing**
 (driver NVIDIA installato sull'host Proxmox, GPU condivisa via cgroup2 — NON PCIe
 passthrough esclusivo). STT e TTS girano sul **GX10 DGX Spark** (128 GB VRAM) via Tailscale.
-Il reasoning e gestito da Gemini 3 Pro via OpenClaw che gira **bare-metal su un
+Il reasoning e gestito da Cloud LLM via AI Agent che gira **bare-metal su un
 LXC dedicato e separato** per isolamento di sicurezza.
 Tailscale gira host-level (non in Docker) su tutti i container/VM per raggiungere
-HA remoti e il LXC OpenClaw.
+HA remoti e il LXC AI Agent.
 
 > **NOTA IMPORTANTE — GPU Device Sharing vs Passthrough:**
 > La GPU **non** e assegnata in esclusiva a nessuna VM/LXC tramite PCIe passthrough.
@@ -49,12 +49,14 @@ HA remoti e il LXC OpenClaw.
 |  |  fastembed:11435 (CPU, no GPU)                                  | |
 |  |  nomic-embed-text-v1.5 ONNX — Ollama-compat API                | |
 |  |  chromadb:8000 (127.0.0.1 only)                                | |
-|  |  Shared vector store — chromadb/chroma:0.6.3                    | |
+|  |  Vector store backend — chromadb/chroma                         | |
+|  |  mem0-server:8200 (long-term behavioral memory)                 | |
+|  |  ChromaDB + Kuzu graph + fastembed                              | |
 |  |  orchestrator:5000 (network_mode: host)                        | |
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
 |  |  Internal TTS (Qwen3-TTS@GX10 + Opus streaming per AtomS3R)   | |
-|  |  SQLite + ChromaDB (HttpClient → :8000)                        | |
+|  |  SQLite + Redis (context bus) + mem0 (long-term)               | |
 |  |                                                                 | |
 |  |  ontology-server:8100 (127.0.0.1 only)                         | |
 |  |  Knowledge Graph API — SQLite + ACL (X-Speaker-Id)             | |
@@ -72,13 +74,13 @@ HA remoti e il LXC OpenClaw.
 +---------------------------------------------------------------------+
 
 +---------------------------------------------------------------------+
-|  [2] LXC-OpenClaw (Ubuntu 22.04, NO Docker, NO GPU)                 |
+|  [2] LXC-AI-Agent (Ubuntu 22.04, NO Docker, NO GPU)                 |
 |  Node.js bare-metal | systemd service                                |
-|  Tailscale host-level - jarvis-openclaw                              |
+|  Tailscale host-level - jarvis-ai-agent                              |
 |                                                                      |
-|  openclaw gateway :18789 (localhost only)                            |
+|  AI Agent gateway :18789 (localhost only)                            |
 |  Chrome headless  :18800 (CDP, solo localhost)                       |
-|  Gemini 3 Pro (API cloud)                                            |
+|  Cloud LLM (API cloud)                                               |
 |  Telegram bot integrato                                              |
 |  Linuxbrew + skill dependencies                                      |
 |  XTTS Proxy (:8891) — traduce OpenAI TTS → XTTSv2 nativo            |
@@ -86,17 +88,16 @@ HA remoti e il LXC OpenClaw.
 |  Nginx reverse proxy (TLS termination):                              |
 |    :18789 (Tailscale IP) -> ws://127.0.0.1:18789  (API + WSS)       |
 |    :443   (Tailscale IP) -> http://127.0.0.1:18789 (Dashboard)      |
-|  Certbot + Cloudflare DNS per openclaw.mintwork.it                   |
+|  Certbot + Cloudflare DNS per TLS termination                        |
 |                                                                      |
-|  Skill (copiata):                                                    |
-|  ~/.openclaw/workspace/skills/jarvis-orchestrator/                   |
+|  Skill (copiata nella directory dell'agent)                          |
 |                                                                      |
 |  Plugin:                                                             |
-|  ~/.openclaw/extensions/browser-dom/ (DOM automation via CDP)        |
+|  browser-dom (DOM automation via CDP)                                |
 |                                                                      |
 |  Raggiungibile via:                                                  |
-|  - API/WS (TLS): https://openclaw.mintwork.it:18789 (wss://)        |
-|  - Dashboard:    https://openclaw.mintwork.it (porta 443)            |
+|  - API/WS (TLS): https://your-agent-host:18789 (wss://)             |
+|  - Dashboard:    https://your-agent-host (porta 443)                 |
 +---------------------------------------------------------------------+
 
 +---------------------------------------------------------------------+
@@ -119,7 +120,7 @@ HA remoti e il LXC OpenClaw.
 |  CPU: 6 core | RAM: 12 GB | Disco: 400 GB                           |
 |  Display: VirtIO-GPU (QXL) | Accesso: RDP (xrdp) + noVNC Proxmox   |
 |                                                                      |
-|  Chrome (reale, non headless) + OpenClaw browser extension           |
+|  Chrome (reale, non headless) + AI Agent browser extension           |
 |  Cursor IDE, Git, Node.js (nvm), Python 3                            |
 |  Workspace di sviluppo, email, browsing                              |
 |                                                                      |
@@ -147,7 +148,7 @@ HA remoti e il LXC OpenClaw.
 
   Topologia di rete:
 
-  LXC-JARVIS <--- LAN / Tailscale ---> LXC-OpenClaw
+  LXC-JARVIS <--- LAN / Tailscale ---> LXC-AI-Agent
       ^
       |  (Tailscale, on-demand relay + push config)
       |
@@ -167,20 +168,21 @@ HA remoti e il LXC OpenClaw.
 
 I container/VM sono indipendenti su Proxmox e si avviano in parallelo.
 
-**LXC-OpenClaw** (boot autonomo):
+**LXC-AI-Agent** (boot autonomo):
 ```
-systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
-                              -> openclaw.service (Node.js, porta 18789)
+systemd -> tailscaled.service -> ai-agent-chrome.service (Chrome CDP :18800)
+                              -> ai-agent.service (Node.js, porta 18789)
 ```
-`openclaw-chrome.service` ha `Before=openclaw.service`, quindi Chrome parte prima del gateway.
+`ai-agent-chrome.service` ha `Before=ai-agent.service`, quindi Chrome parte prima del gateway.
 
 **LXC-JARVIS** (boot sequenziale):
 ```
 1. tailscaled      -> host-level service, si connette alla tailnet
 2. ollama          -> diventa healthy (modelli caricati)
-   chromadb        -> started (shared vector store :8000)
+   chromadb        -> started (vector store :8000)
+   mem0-server     -> aspetta chromadb, poi parte (long-term memory :8200)
 3. orchestrator    -> aspetta ollama + chromadb, poi parte (network_mode: host)
-                      vede Tailscale direttamente, raggiunge GX10 + OpenClaw
+                      vede Tailscale direttamente, raggiunge GX10 + AI Agent
                       STT (Parakeet :7865) e TTS (Qwen3-TTS :9880) su GX10
 4. nginx           -> started (TLS per jarvis.mintwork.it)
 5. cloudflared     -> started (tunnel per jarvis-pub.mintwork.it)
@@ -198,23 +200,24 @@ systemd -> tailscaled.service -> openclaw-chrome.service (Chrome CDP :18800)
 | Servizio | Dove gira | Container/Processo | CPU | RAM | GPU/VRAM | Funzione |
 |----------|-----------|-------------------|-----|-----|----------|----------|
 | **NVIDIA Driver** | **Host Proxmox** | kernel module | - | - | - | Driver GPU, `nvidia-smi` funziona qui |
-| **Tailscale** | LXC-JARVIS | host-level (`tailscaled.service`) | - | 64 MB | - | VPN mesh per HA remoti + OpenClaw |
+| **Tailscale** | LXC-JARVIS | host-level (`tailscaled.service`) | - | 64 MB | - | VPN mesh per HA remoti + AI Agent |
 | **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | ~2.5 GB | Qwen 2.5 3B routing + tool calling (ctx=32768) — solo LLM |
 | **fastembed** | LXC-JARVIS | `jarvis_fastembed` (Docker, CPU) | 0.5 | 300 MB | - | nomic-embed-text-v1.5 ONNX embeddings (Ollama-compat :11435) |
 | **Parakeet STT** | GX10 DGX Spark | `parakeet-stt.service` (systemd) | - | - | ~5.1 GB | STT multilingue (nvidia/parakeet-tdt-0.6b-v3) |
 | **Qwen3-TTS** | GX10 DGX Spark | `qwen3-tts.service` (systemd) | - | - | ~4.4 GB | TTS voice cloning IT/EN (Qwen3-TTS-12Hz-1.7B) |
 | **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
-| **ChromaDB** | LXC-JARVIS | `jarvis_chromadb` (Docker, 127.0.0.1:8000) | 0.5 | 512 MB | - | Shared vector store (HttpClient) |
+| **ChromaDB** | LXC-JARVIS | `jarvis_chromadb` (Docker, 127.0.0.1:8000) | 0.5 | 512 MB | - | Vector store backend per mem0 |
+| **mem0-server** | LXC-JARVIS | `jarvis_mem0` (Docker, :8200) | 0.5 | 512 MB | - | Long-term behavioral memory (ChromaDB + Kuzu graph) |
 | **Ontology Server** | LXC-JARVIS | `jarvis_ontology` (Docker, 127.0.0.1:8100) | 0.5 | 256 MB | - | Knowledge Graph API + ACL |
 | **PostgreSQL** | LXC-JARVIS | `jarvis_postgres` (Docker) | 0.5 | 512 MB | - | Database side projects |
 | **MongoDB** | LXC-JARVIS | `jarvis_mongo` (Docker) | 0.5 | 512 MB | - | Database side projects |
 | **Nginx** | LXC-JARVIS | `nginx` (systemd) | 0.1 | 64 MB | - | TLS proxy per jarvis.mintwork.it (:80, :443) |
 | **Cloudflared** | LXC-JARVIS | `cloudflared` (systemd) | 0.1 | 64 MB | - | Tunnel per jarvis-pub.mintwork.it |
-| **OpenClaw** | LXC-OpenClaw (bare-metal) | `openclaw.service` (systemd) | 0.5 | 512 MB | - | Gemini 3 Pro brain (API cloud) |
-| **Chrome Headless** | LXC-OpenClaw (bare-metal) | `openclaw-chrome.service` (systemd) | 0.5 | <=1 GB | - | Browser automation via CDP :18800 |
-| **TTS Proxy** | LXC-OpenClaw (bare-metal) | `xtts-proxy.service` (systemd) | 0.1 | 64 MB | - | Proxy TTS per OpenClaw → Qwen3-TTS@GX10 (:8891) |
+| **AI Agent** | LXC-AI-Agent (bare-metal) | `ai-agent.service` (systemd) | 0.5 | 512 MB | - | Cloud LLM brain (API cloud) |
+| **Chrome Headless** | LXC-AI-Agent (bare-metal) | `ai-agent-chrome.service` (systemd) | 0.5 | <=1 GB | - | Browser automation via CDP :18800 |
+| **TTS Proxy** | LXC-AI-Agent (bare-metal) | `xtts-proxy.service` (systemd) | 0.1 | 64 MB | - | Proxy TTS per AI Agent → Qwen3-TTS@GX10 (:8891) |
 | **Wakeword Server** | LXC-Wakeword (1/casa) | `jarvis_wakeword` (Docker) | 1 | 2 GB | - | openWakeWord detection + relay :8200 |
-| **Workstation** | VM-Workstation (opz.) | KVM VM (Ubuntu + XFCE) | 6 | 12 GB | - | Chrome reale + OpenClaw ext + IDE + dev |
+| **Workstation** | VM-Workstation (opz.) | KVM VM (Ubuntu + XFCE) | 6 | 12 GB | - | Chrome reale + AI Agent ext + IDE + dev |
 | **HAOS** | VM-HAOS (opz.) | KVM VM | 2 | 8 GB | - | Home Assistant OS + MASS + add-ons |
 | **Alexa Media** | LXC-Alexa (opz.) | Docker/nativo | 1 | 1 GB | - | Echo come speaker JARVIS |
 
@@ -272,7 +275,7 @@ Configurabile via `QWEN3_TTS_VOICE` (default: `sofia`).
 | NVIDIA Container Toolkit | installato (`no-cgroups=true`) | latest |
 | Tailscale | installato host-level | latest |
 
-### LXC-OpenClaw
+### LXC-AI-Agent
 
 | Componente | Minimo | Consigliato |
 |------------|--------|-------------|
@@ -304,8 +307,8 @@ Configurabile via `QWEN3_TTS_VOICE` (default: `sofia`).
 ### Prerequisiti
 
 Prima di iniziare, raccogli:
-- **API keys**: Gemini ([aistudio.google.com](https://aistudio.google.com/app/apikey))
-- **Telegram bot tokens**: 2 bot da @BotFather (uno per OpenClaw, uno per Approval)
+- **API keys**: Cloud LLM ([aistudio.google.com](https://aistudio.google.com/app/apikey))
+- **Telegram bot tokens**: 2 bot da @BotFather (uno per AI Agent, uno per Approval)
 - **HA long-lived token**: Home Assistant > Profilo > Token di lunga durata
 - **Proxmox API token**: vedi [PROXMOX.md](PROXMOX.md) sezione 3
 - **Cloudflare API token**: per certbot DNS challenge e Cloudflare Tunnel
@@ -339,7 +342,7 @@ Scegli cosa creare abilitando i flag in `terraform.tfvars`:
 
 ```hcl
 jarvis_enabled      = true     # LXC-JARVIS (GPU + Ollama + Orchestrator)
-openclaw_enabled    = true     # LXC-OpenClaw (Gateway Gemini)
+ai_agent_enabled    = true     # LXC-AI-Agent (Gateway Cloud LLM)
 workstation_enabled = true     # VM-Workstation (Ubuntu Desktop + Chrome)
 # wakeword: si abilita aggiungendo istanze a wakeword_instances
 ```
@@ -379,7 +382,7 @@ ansible-playbook playbooks/workstation.yml
 
 Installa: GNOME Remote Desktop (RDP nativo), Chrome, Git, nvm + Node.js, Python 3, Zed IDE, Tailscale, UFW.
 
-6. Post-setup manuale: configura Git, connetti Tailscale, installa estensione OpenClaw su Chrome.
+6. Post-setup manuale: configura Git, connetti Tailscale, installa estensione AI Agent su Chrome.
    Vedi [WORKSTATION.md](WORKSTATION.md) Step 4 per dettagli.
 
 ### FASE 4 — LXC-JARVIS (Ansible)
@@ -389,7 +392,7 @@ Prerequisito: `jarvis_enabled = true` in Fase 2, `configure-gpu.sh` eseguito.
 ```bash
 cd infrastructure/ansible
 cp group_vars/all.yml.example group_vars/all.yml
-nano group_vars/all.yml    # API keys, OPENCLAW_URL, HA token, password DB
+nano group_vars/all.yml    # API keys, AI_AGENT_URL, HA token, password DB
 nano inventory/hosts.yml   # aggiungi IP del LXC-JARVIS
 
 ansible-playbook playbooks/site.yml --tags common,nvidia,jarvis,verify
@@ -415,46 +418,29 @@ tailscale up --hostname=jarvis-wagmi    # auth manuale
 # Crea utenti, enroll voci, configura location + entity map
 ```
 
-### FASE 5 — LXC-OpenClaw (Ansible + onboarding manuale)
+### FASE 5 — LXC-AI-Agent (Ansible + onboarding manuale)
 
-Prerequisito: `openclaw_enabled = true` in Fase 2.
+Prerequisito: `ai_agent_enabled = true` in Fase 2.
 
-```bash
-cd infrastructure/ansible
-nano inventory/hosts.yml   # aggiungi IP del LXC-OpenClaw nella sezione openclaw
-
-ansible-playbook playbooks/site.yml --tags openclaw
-```
-
-Il playbook:
-1. Installa Node.js 22, Google Chrome, Linuxbrew
-2. Installa OpenClaw (`npm i -g openclaw`) + skill dependencies
-3. Configura servizi systemd (`openclaw.service` + `openclaw-chrome.service`)
-4. Installa plugin browser-dom (se presente nel repo)
+Installa il tuo AI Agent (Hermes/OpenClaw/altri) seguendo la documentazione specifica
+del software scelto. L'orchestrator lo tratta come blackbox e si connette via
+`AI_AGENT_URL` (HTTPS/WSS) autenticandosi con `AI_AGENT_TOKEN`.
 
 Post-setup manuale:
 
 ```bash
-# SSH nel LXC-OpenClaw
+# SSH nel LXC-AI-Agent
 su - jarvis
 
-# Onboarding (inserisci GEMINI_API_KEY + OPENCLAW_GATEWAY_TOKEN)
-openclaw onboard
-
-# Copia la skill JARVIS
-bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
-
-# Configura browser-dom plugin
-bash /opt/jarvis/cloud/scripts/configure-browser-dom.sh
-
-# Avvia i servizi
-sudo systemctl start openclaw-chrome
-sudo systemctl start openclaw
+# Installa e configura l'AI Agent secondo la sua documentazione
+# Copia le skill JARVIS nella directory dell'agent:
+cp /opt/jarvis/jarvis-orchestrator/skill/* <agent-skills-dir>/jarvis-orchestrator/
+cp -r /opt/jarvis/ontology-server/skill/* <agent-skills-dir>/ontology/
 
 # Connetti Tailscale
-tailscale up --hostname=jarvis-openclaw
+tailscale up --hostname=jarvis-ai-agent
 
-# Verifica
+# Avvia l'agent e verifica
 curl http://localhost:18789/health
 ```
 
@@ -482,9 +468,9 @@ docker compose restart orchestrator
 
 ### Post-installazione
 
-1. **Telegram webhook** — configura il webhook del bot OpenClaw:
+1. **Telegram webhook** — configura il webhook del bot AI Agent:
    ```bash
-   curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
+   curl "https://api.telegram.org/bot<AI_AGENT_TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
    ```
 
 2. **Dashboard admin** — `http://<JARVIS_IP>:5000/admin`:
@@ -493,14 +479,14 @@ docker compose restart orchestrator
    - Configura location e entity maps
    - Monitora stato servizi
 
-3. **Dashboard OpenClaw** — `https://openclaw.mintwork.it` (TLS via Nginx):
+3. **Dashboard AI Agent** — `https://your-agent-host` (TLS via Nginx):
    - Gestisci skill registrate
    - Vedi log conversazioni
    - Monitora stato gateway
 
-4. **Estensione OpenClaw** — nella VM Workstation:
+4. **Estensione AI Agent** — nella VM Workstation:
    - Apri Chrome, installa l'estensione dal Web Store
-   - Configura URL gateway: `https://openclaw.mintwork.it:18789`
+   - Configura URL gateway: `https://your-agent-host:18789`
 
 5. **Nginx + Tunnel** — verifica accesso:
    ```bash
@@ -544,7 +530,7 @@ Questi richiedono riavvio del container orchestrator sulla LXC-JARVIS:
 
 ```env
 # Timeouts (secondi)
-OPENCLAW_TIMEOUT=30
+AI_AGENT_TIMEOUT=30
 TAILSCALE_TIMEOUT_REMOTE=15.0
 TAILSCALE_TIMEOUT_LOCAL=10.0
 TIMEOUT_STT=30
@@ -605,16 +591,16 @@ curl -X POST http://localhost:5000/admin/prompts/reload
 
 ## Tailscale Multi-Location
 
-Tailscale gira host-level su tutti i container/VM (LXC-JARVIS, LXC-OpenClaw, LXC-Wakeword), non come container Docker.
+Tailscale gira host-level su tutti i container/VM (LXC-JARVIS, LXC-AI-Agent, LXC-Wakeword), non come container Docker.
 L'orchestrator usa `network_mode: host` e vede l'interfaccia Tailscale direttamente.
-Permette all'orchestrator di raggiungere HA remoti e il LXC-OpenClaw senza aprire porte.
+Permette all'orchestrator di raggiungere HA remoti e il LXC-AI-Agent senza aprire porte.
 
 ### Dove serve Tailscale
 
 | Nodo | Dove gira | Ruolo | Hostname |
 |------|-----------|-------|----------|
 | **Napoli (Wagmi)** | Host-level nel LXC-JARVIS | Gateway VPN per lo stack | `jarvis-wagmi` |
-| **LXC-OpenClaw** | Host-level nel LXC dedicato | Espone OpenClaw sulla tailnet | `jarvis-openclaw` |
+| **LXC-AI-Agent** | Host-level nel LXC dedicato | Espone AI Agent sulla tailnet | `jarvis-ai-agent` |
 | **LXC-Wakeword** | Host-level nel LXC wakeword | Orchestrator → push config, trigger_listen | `jarvis-wakeword-<casa>` |
 | **GX10 DGX Spark** | Host-level (Ubuntu) | Parakeet STT, Qwen3-TTS, ACE-Step, ComfyUI | `gx10-dgx` |
 | **Milano (Albani)** | Add-on HAOS o host-level | Espone HA sulla tailnet | `ha-albani` |
@@ -625,13 +611,13 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-OpenClaw senza aprir
 +---------------------------------------------------------------+
 |                    TAILSCALE MESH (100.x.x.x)                  |
 |                                                                 |
-|   Napoli LXC-JARVIS                    LXC-OpenClaw (bare-metal)  |
+|   Napoli LXC-JARVIS                    LXC-AI-Agent (bare-metal)  |
 |   +-------------------+           +-------------------+        |
-|   | jarvis-wagmi      |<--------->| jarvis-openclaw   |        |
+|   | jarvis-wagmi      |<--------->| jarvis-ai-agent   |        |
 |   | Tailscale (host)  |           | Tailscale (host)  |        |
 |   |                   |           |                   |        |
-|   | Docker:           |           | OpenClaw Gateway  |        |
-|   |   Ollama (router) |           | Gemini 3 Pro      |        |
+|   | Docker:           |           | AI Agent Gateway  |        |
+|   |   Ollama (router) |           | Cloud LLM         |        |
 |   |   Orchestrator    |           | Telegram bot      |        |
 |   |    (net: host)    |           | JARVIS skill      |        |
 |   |   Postgres, Mongo |           +-------------------+        |
@@ -658,7 +644,7 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-OpenClaw senza aprir
 |   | Docker: wakeword  |              trigger_listen)           |
 |   +-------------------+                                        |
 |                                                                 |
-|   wagmi -> openclaw: https://openclaw.mintwork.it:18789 (TLS) |
+|   wagmi -> ai-agent: https://your-agent-host:18789 (TLS)      |
 |   wagmi -> albani: 100.x.x.x:8123 (HA API via Tailscale)     |
 |   wagmi -> gx10: 100.98.187.12:7865/9880 (STT/TTS Tailscale) |
 |   wagmi -> wakeword: http://jarvis-wakeword-casa1:8200        |
@@ -678,9 +664,9 @@ URL contiene "100." o ".ts.net"?
 
 Le location HA (URL + token) sono nel database SQLite, gestibili dalla dashboard admin.
 
-L'orchestrator raggiunge OpenClaw tramite la variabile `OPENCLAW_URL` (default: `https://openclaw.mintwork.it:18789`).
-Nginx sul LXC-OpenClaw termina TLS (Let's Encrypt via Cloudflare DNS) e proxya a `ws://127.0.0.1:18789`.
-OpenClaw 2026.2.25+ richiede `wss://` per connessioni non-loopback.
+L'orchestrator raggiunge AI Agent tramite la variabile `AI_AGENT_URL`.
+Nginx sul LXC-AI-Agent termina TLS (Let's Encrypt via Cloudflare DNS) e proxya a `ws://127.0.0.1:18789`.
+AI Agent richiede `wss://` per connessioni non-loopback.
 Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale direttamente senza bisogno di un container dedicato.
 
 ---
@@ -696,22 +682,23 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | — | Qwen3-TTS (GX10 :9880) | HTTP | Via Tailscale |
 | 11434 | Ollama API (LLM) | HTTP | Interno |
 | 11435 | fastembed API (embeddings) | HTTP | Interno / Tailscale |
-| 8000 | ChromaDB (shared vector store) | HTTP | Interno (127.0.0.1) |
+| 8000 | ChromaDB (vector store backend) | HTTP | Interno (127.0.0.1) |
+| 8200 | mem0-server (long-term memory) | HTTP | Interno |
 | 5432 | PostgreSQL | TCP | Interno |
 | 27017 | MongoDB | TCP | Interno |
 | 80 | Nginx HTTP (redirect + health) | HTTP | LAN / Tailscale |
 | 443 | Nginx HTTPS (jarvis.mintwork.it) | HTTPS | Tailscale |
 | 41641/udp | Tailscale NAT traversal | UDP | WAN (host-level) |
 
-### LXC-OpenClaw
+### LXC-AI-Agent
 
 | Porta | Servizio | Protocollo | Accesso |
 |-------|----------|------------|---------|
-| 18789 (Tailscale IP) | Nginx TLS proxy -> OpenClaw Gateway (API + WSS) | HTTPS/WSS | Tailscale (via openclaw.mintwork.it) |
-| 443 (Tailscale IP) | Nginx TLS proxy -> OpenClaw Dashboard | HTTPS | Tailscale (via openclaw.mintwork.it) |
-| 18789 (localhost) | OpenClaw Gateway (diretto) | HTTP/WS | Solo localhost (127.0.0.1) |
+| 18789 (Tailscale IP) | Nginx TLS proxy -> AI Agent Gateway (API + WSS) | HTTPS/WSS | Tailscale (via TLS domain) |
+| 443 (Tailscale IP) | Nginx TLS proxy -> AI Agent Dashboard | HTTPS | Tailscale (via TLS domain) |
+| 18789 (localhost) | AI Agent Gateway (diretto) | HTTP/WS | Solo localhost (127.0.0.1) |
 | 18800 | Chrome Headless (CDP) | HTTP/WS | Solo localhost (127.0.0.1) |
-| 8891 (localhost) | XTTS Proxy (OpenAI→XTTS) | HTTP | Solo localhost (OpenClaw TTS) |
+| 8891 (localhost) | XTTS Proxy (OpenAI→XTTS) | HTTP | Solo localhost (AI Agent TTS) |
 
 ### LXC-Wakeword (per ogni casa)
 
@@ -752,11 +739,11 @@ curl -k https://jarvis.mintwork.it/health
 sudo systemctl status cloudflared
 curl https://jarvis-pub.mintwork.it/health
 
-# OpenClaw raggiungibile? (via TLS)
-curl https://openclaw.mintwork.it:18789/health
+# AI Agent raggiungibile? (via TLS)
+curl https://your-agent-host:18789/health
 
 # Tailscale ping test
-tailscale ping jarvis-openclaw
+tailscale ping jarvis-ai-agent
 
 # === LXC-Wakeword (dal Proxmox host) ===
 
@@ -772,10 +759,10 @@ pct exec <CT_ID> -- docker logs -f jarvis_wakeword
 # Tailscale
 pct exec <CT_ID> -- tailscale status
 
-# === LXC-OpenClaw ===
+# === LXC-AI-Agent ===
 
-# Stato servizi
-sudo systemctl status openclaw-chrome openclaw
+# Stato servizi (adatta ai nomi del tuo agent)
+sudo systemctl status ai-agent-chrome ai-agent
 
 # Chrome CDP attivo?
 curl -s http://127.0.0.1:18800/json/version
@@ -783,11 +770,11 @@ curl -s http://127.0.0.1:18800/json/version
 # Tailscale status
 tailscale status
 
-# Logs OpenClaw
-sudo journalctl -u openclaw -f
+# Logs AI Agent
+sudo journalctl -u ai-agent -f
 
 # Logs Chrome headless
-sudo journalctl -u openclaw-chrome -f
+sudo journalctl -u ai-agent-chrome -f
 
 # Health
 curl http://localhost:18789/health
@@ -834,60 +821,60 @@ sudo journalctl -u tailscaled --since '5 min ago'
 sudo tailscale up --hostname=jarvis-wagmi
 ```
 
-### OpenClaw non raggiungibile (dalla LXC-JARVIS)
+### AI Agent non raggiungibile (dalla LXC-JARVIS)
 
 ```bash
-# Verifica che OpenClaw sia attivo sul suo LXC
-ssh user@jarvis-openclaw "sudo systemctl status openclaw"
+# Verifica che AI Agent sia attivo sul suo LXC
+ssh user@jarvis-ai-agent "sudo systemctl status ai-agent"
 
 # Test connettivita Tailscale
-tailscale ping jarvis-openclaw
+tailscale ping jarvis-ai-agent
 
 # Test TLS endpoint (API gateway)
-curl https://openclaw.mintwork.it:18789/health
+curl https://your-agent-host:18789/health
 
 # Test TLS endpoint (dashboard, porta 443)
-curl https://openclaw.mintwork.it/health
+curl https://your-agent-host/health
 
-# Test diretto localhost (dal LXC-OpenClaw stesso)
+# Test diretto localhost (dal LXC-AI-Agent stesso)
 curl http://localhost:18789/health
 
 # Verifica nginx
-ssh user@jarvis-openclaw "sudo systemctl status nginx"
-ssh user@jarvis-openclaw "sudo nginx -t"
+ssh user@jarvis-ai-agent "sudo systemctl status nginx"
+ssh user@jarvis-ai-agent "sudo nginx -t"
 
 # Verifica certificato TLS
-openssl s_client -connect openclaw.mintwork.it:18789 -servername openclaw.mintwork.it </dev/null 2>/dev/null | openssl x509 -noout -dates
+openssl s_client -connect your-agent-host:18789 -servername your-agent-host </dev/null 2>/dev/null | openssl x509 -noout -dates
 ```
 
-### OpenClaw non parte (LXC-OpenClaw)
+### AI Agent non parte (LXC-AI-Agent)
 
 ```bash
-sudo systemctl status openclaw
-sudo journalctl -u openclaw -e
+# Adatta i nomi dei servizi al tuo AI Agent
+sudo systemctl status ai-agent
+sudo journalctl -u ai-agent -e
 node --version
-which openclaw
-sudo systemctl restart openclaw
+sudo systemctl restart ai-agent
 ```
 
-### Chrome headless non parte (LXC-OpenClaw)
+### Chrome headless non parte (LXC-AI-Agent)
 
 ```bash
-sudo systemctl status openclaw-chrome
-sudo journalctl -u openclaw-chrome --since '5 min ago'
+sudo systemctl status ai-agent-chrome
+sudo journalctl -u ai-agent-chrome --since '5 min ago'
 google-chrome --version
 curl -s http://127.0.0.1:18800/json/version
-sudo systemctl restart openclaw-chrome
+sudo systemctl restart ai-agent-chrome
 ```
 
-### browser-dom plugin non carica (LXC-OpenClaw)
+### browser-dom plugin non carica (LXC-AI-Agent)
 
 ```bash
-ls -la ~/.openclaw/extensions/browser-dom/
-journalctl -u openclaw --since '5 min ago' | grep -i 'browser-dom\|plugin'
-jq '.plugins["browser-dom"]' ~/.openclaw/openclaw.json
+# Verifica installazione e log del plugin browser-dom
+# (adatta i path e i nomi dei servizi al tuo AI Agent)
+journalctl -u ai-agent --since '5 min ago' | grep -i 'browser-dom\|plugin'
 curl -s http://127.0.0.1:18800/json/list
-sudo systemctl restart openclaw-chrome && sudo systemctl restart openclaw
+sudo systemctl restart ai-agent-chrome && sudo systemctl restart ai-agent
 ```
 
 ### Wakeword server non risponde (LXC-Wakeword)
@@ -952,12 +939,13 @@ docker compose up -d
 sudo apt update && sudo apt upgrade -y nginx cloudflared
 ```
 
-### LXC-OpenClaw (bare-metal)
+### LXC-AI-Agent (bare-metal)
 
 ```bash
-# Sulla LXC-OpenClaw
-npm update -g openclaw
-sudo systemctl restart openclaw
+# Sulla LXC-AI-Agent
+# Aggiorna il tuo AI Agent secondo la sua documentazione
+# Poi riavvia il servizio
+sudo systemctl restart ai-agent
 curl http://localhost:18789/health
 ```
 
@@ -966,9 +954,10 @@ Per aggiornare la skill JARVIS:
 ```bash
 cd /opt/jarvis
 git pull
-cp jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
-cp jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
-# Non serve riavvio — OpenClaw ricarica le skill automaticamente
+# Copia le skill aggiornate nella directory del tuo agent
+cp jarvis-orchestrator/skill/SKILL.md <agent-skills-dir>/jarvis-orchestrator/
+cp jarvis-orchestrator/skill/skill.json <agent-skills-dir>/jarvis-orchestrator/
+# Non serve riavvio — AI Agent ricarica le skill automaticamente
 ```
 
 ### LXC-Wakeword
@@ -987,12 +976,11 @@ pct exec <CT_ID> -- bash -c '
 ### Plugin browser-dom
 
 ```bash
-# Sulla LXC-OpenClaw
+# Sulla LXC-AI-Agent — aggiorna il plugin browser-dom
+# (adatta i path alla directory del tuo agent)
 cd /opt/jarvis && git pull
-cp -r extensions/browser-dom/{src,index.ts,package.json,openclaw.plugin.json} \
-    ~/.openclaw/extensions/browser-dom/
-cd ~/.openclaw/extensions/browser-dom && npm install --omit=dev && cd -
-sudo systemctl restart openclaw
+# Copia i file aggiornati nella directory extensions dell'agent
+# Riavvia l'agent per ricaricare il plugin
 ```
 
 ---
@@ -1006,11 +994,11 @@ sudo systemctl restart openclaw
 | [DOCKER.md](DOCKER.md) | Docker + NVIDIA Toolkit — riferimento e troubleshooting |
 | [OLLAMA.md](OLLAMA.md) | Ollama — modelli AI, configurazione avanzata, troubleshooting |
 | [WHISPER.md](WHISPER.md) | faster-whisper STT — configurazione e troubleshooting |
-| [terraform/](terraform/) | IaC per Proxmox (LXC-JARVIS + LXC-OpenClaw + LXC-Wakeword + VM-Workstation) |
-| [ansible/](ansible/) | Playbook di configurazione (LXC-JARVIS + LXC-OpenClaw + VM-Workstation + Wakeword) |
+| [terraform/](terraform/) | IaC per Proxmox (LXC-JARVIS + LXC-AI-Agent + LXC-Wakeword + VM-Workstation) |
+| [ansible/](ansible/) | Playbook di configurazione (LXC-JARVIS + LXC-AI-Agent + VM-Workstation + Wakeword) |
 | [../docker-compose.yml](../docker-compose.yml) | Stack Docker dentro LXC-JARVIS |
 | [../wakeword-server/](../wakeword-server/) | Wakeword server (openWakeWord + relay) |
 | [../security/](../security/) | Stack security (Frigate + DoubleTake) |
-| [../openclaw/extensions/browser-dom/](../openclaw/extensions/browser-dom/) | Plugin DOM automation (CDP) |
+| [../extensions/browser-dom/](../extensions/browser-dom/) | Plugin DOM automation (CDP) |
 | [whisper-custom/](whisper-custom/) | Dockerfile custom Whisper (CUDA 12.9 Blackwell + CTranslate2 4.7) |
 | [xtts-custom/](xtts-custom/) | Dockerfile custom XTTSv2 (PyTorch 2.7 + CUDA 12.8) |

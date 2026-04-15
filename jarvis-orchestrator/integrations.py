@@ -335,7 +335,7 @@ async def quick_feedback(success: bool, media_player_id: str, error_msg: str = N
 # ===========================================================================
 # TELEGRAM (JARVIS Approval Bot)
 # ===========================================================================
-# The main Telegram webhook is handled by OpenClaw.
+# The main Telegram webhook is handled by AI Agent.
 # These functions use the JARVIS Approval Bot for:
 # - L3 critical action confirmations
 # - System notifications and alerts
@@ -409,7 +409,7 @@ async def edit_telegram(message_id: int, text: str, parse_mode: str = "Markdown"
 async def send_telegram_approval(text: str, action_id: str) -> bool:
     """
     Invia un messaggio con pulsanti Inline per approvazione L3 critical actions.
-    Usa il JARVIS Approval Bot (separato dal Telegram webhook di OpenClaw).
+    Usa il JARVIS Approval Bot (separato dal Telegram webhook di AI Agent).
     """
     if not config.JARVIS_APPROVAL_BOT_TOKEN or not config.JARVIS_APPROVAL_CHAT_ID:
         logger.error("JARVIS Approval Bot not configured (missing token or chat_id)")
@@ -439,7 +439,7 @@ async def send_telegram_approval(text: str, action_id: str) -> bool:
 
 async def send_exec_approval(approval_id: str, command: str, cwd: str = "", agent: str = "") -> bool:
     """
-    Invia un messaggio con pulsanti Inline per approvazione exec OpenClaw.
+    Invia un messaggio con pulsanti Inline per approvazione exec AI Agent.
     3 bottoni: Allow Once, Allow Always, Deny.
     """
     if not config.JARVIS_APPROVAL_BOT_TOKEN or not config.JARVIS_APPROVAL_CHAT_ID:

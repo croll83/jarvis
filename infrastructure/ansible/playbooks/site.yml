@@ -8,16 +8,17 @@
 #   ansible-playbook playbooks/site.yml                    # Deploy completo
 #   ansible-playbook playbooks/site.yml --tags common      # Solo sistema + Docker
 #   ansible-playbook playbooks/site.yml --tags nvidia      # Solo NVIDIA (GPU)
-#   ansible-playbook playbooks/site.yml --tags openclaw    # Solo setup VM OpenClaw
 #   ansible-playbook playbooks/site.yml --tags jarvis      # Solo deploy JARVIS
 #   ansible-playbook playbooks/site.yml --tags security    # Solo stack sicurezza
 #   ansible-playbook playbooks/site.yml --tags verify      # Solo verifica servizi
 #
 # Step by step:
 #   ansible-playbook playbooks/site.yml --tags common,nvidia
-#   ansible-playbook playbooks/site.yml --tags openclaw
 #   ansible-playbook playbooks/site.yml --tags jarvis
 #   ansible-playbook playbooks/site.yml --tags verify
+#
+# AI Agent (opzionale — NON incluso nel deploy automatico):
+#   ansible-playbook playbooks/openclaw.yml                # Setup OpenClaw manualmente
 
 - name: "Fase 1: Setup Sistema + Docker"
   ansible.builtin.import_playbook: common.yml
@@ -27,11 +28,12 @@
   ansible.builtin.import_playbook: nvidia.yml
   tags: [nvidia]
 
-- name: "Fase 3: Setup OpenClaw VM (Node.js, Chrome, Brew, Skill deps)"
-  ansible.builtin.import_playbook: openclaw.yml
-  tags: [openclaw]
+# Fase 3 (AI Agent) — rimossa dal deploy automatico.
+# Per installare un AI Agent (OpenClaw/Hermes/altri), eseguire il playbook manualmente:
+#   ansible-playbook playbooks/openclaw.yml
+# In futuro verra aggiunto anche un playbook per Hermes.
 
-- name: "Fase 4: Deploy JARVIS"
+- name: "Fase 3: Deploy JARVIS"
   ansible.builtin.import_playbook: jarvis.yml
   tags: [jarvis]
 

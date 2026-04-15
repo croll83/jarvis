@@ -1,6 +1,6 @@
 # JARVIS — Deploy Cloud (VPS senza GPU)
 
-> **⚠️ NOTA: Deploy Legacy**
+> **NOTA: Deploy Legacy**
 > Il deploy principale di JARVIS è stato migrato su **LXC locale con GPU** (vedi `infrastructure/README.md`).
 > Questa guida cloud rimane come riferimento per:
 > - Deploy senza GPU su VPS economico
@@ -8,9 +8,9 @@
 > - Scenari dove non si dispone di hardware GPU locale
 
 Guida completa per il deploy di JARVIS su un VPS. Nessuna GPU richiesta: AI via API esterne
-(Gemini 3 Pro via OpenClaw, Groq per STT, OpenRouter per routing).
+(Cloud LLM via AI Agent, Groq per STT, OpenRouter per routing).
 Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere Home Assistant.
-**OpenClaw gira bare-metal** (Node.js, non in Docker) sulla stessa macchina.
+**AI Agent gira bare-metal** sulla stessa macchina o su un server separato (blackbox — vedi documentazione dell'AI Agent usato).
 
 > **NOTA:** Il wakeword-server (`jarvis/wakeword-server/`) NON va deployato su VPS cloud.
 > Ogni casa ha il proprio wakeword-server su un LXC locale (stessa LAN degli AtomS3R).
@@ -25,7 +25,7 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
                         |
                         v
               +-------------------+
-              |   Nginx + SSL     |       (VPS — jarvis.mintwork.it)
+              |   Nginx + SSL     |       (VPS — jarvis.yourdomain.com)
               |  (certbot)        |
               +--------+----------+
                        | :5000
@@ -33,11 +33,10 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
               |  VPS (Hetzner / Contabo / simile)                  |
               |  2 vCPU, 4 GB RAM, 40 GB SSD                      |
               |                                                     |
-              |  OpenClaw (bare-metal, systemd)                     |
+              |  AI Agent (bare-metal, blackbox)                    |
               |  ws://127.0.0.1:18789 — loopback only              |
-              |  ~/.openclaw/workspace/skills/jarvis-orchestrator/  |
               |                                                     |
-              |  Nginx TLS proxy (openclaw.mintwork.it)             |
+              |  Nginx TLS proxy (your-agent-domain)                |
               |  :18789 TLS → ws://127.0.0.1:18789 (API/WS)       |
               |  :443   TLS → http://127.0.0.1:18789 (dashboard)   |
               |  Let's Encrypt cert (Cloudflare DNS challenge)      |
@@ -76,8 +75,8 @@ Tailscale gira host-level (servizio di sistema, NON in Docker) per raggiungere H
               +-------------------------------------------+
 
 Connessioni TLS esterne:
-  orchestrator  -->  wss://openclaw.mintwork.it:18789  (API/WS)
-  browser       -->  https://openclaw.mintwork.it      (dashboard, :443)
+  orchestrator  -->  wss://your-agent-host:18789  (API/WS)
+  browser       -->  https://your-agent-host       (dashboard, :443)
 ```
 
 > **Wakeword server**: il VPS raggiunge i wakeword-server locali via Tailscale per push
@@ -89,18 +88,18 @@ Connessioni TLS esterne:
 
 ```
 1. tailscale (systemd)     → servizio host-level, parte al boot del VPS, si connette alla tailnet
-2. openclaw (systemd)      → servizio bare-metal, bind: "auto" (loopback), parte al boot del VPS
+2. ai-agent (systemd)      → servizio bare-metal AI Agent, bind: "auto" (loopback), parte al boot del VPS
 3. nginx (systemd)         → TLS proxy, termina TLS e proxya a localhost:18789
 4. chromadb (Docker)        → Shared vector store, 127.0.0.1:8000
 5. ontology-server (Docker) → Knowledge Graph API, 127.0.0.1:8100
 6. orchestrator (Docker)    → network_mode: host, vede Tailscale direttamente
-                              raggiunge OpenClaw via wss://openclaw.mintwork.it:18789
+                              raggiunge AI Agent via wss://your-agent-host:18789
                               raggiunge ontology via localhost:8100
 ```
 
-Tailscale, OpenClaw e Nginx sono processi systemd che partono prima di Docker.
+Tailscale, AI Agent e Nginx sono processi systemd che partono prima di Docker.
 L'orchestrator usa `network_mode: host`, quindi vede la rete dell'host direttamente (Tailscale, localhost, ecc.).
-Nginx termina TLS (Let's Encrypt) e proxya le connessioni API/WS a OpenClaw su loopback.
+Nginx termina TLS (Let's Encrypt) e proxya le connessioni API/WS a AI Agent su loopback.
 
 ---
 
@@ -114,46 +113,40 @@ Nginx termina TLS (Let's Encrypt) e proxya le connessioni API/WS a OpenClaw su l
 - Account Tailscale: [login.tailscale.com](https://login.tailscale.com)
 - HA con Tailscale add-on attivo (o Tailscale host-level sulla macchina HA)
 
-### STEP 1 — Setup VPS (~3 minuti)
+### STEP 1 — Setup base VPS
 
-Per setup **headless** (consigliato), genera prima un auth key Tailscale:
-
-1. Vai su [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
-2. Clicca **Generate auth key**
-3. Seleziona **Reusable** (opzionale), **NOT ephemeral**
-4. Copia la chiave (`tskey-auth-...`)
+Installa i prerequisiti di sistema:
 
 ```bash
 ssh root@<vps-ip>
 
-# Con auth key (headless — Tailscale si connette automaticamente)
-export TAILSCALE_AUTHKEY=tskey-auth-xxxxxxxxxxxx
-bash /opt/jarvis/cloud/scripts/setup-vps.sh
+# Aggiornamento sistema
+apt update && apt upgrade -y
 
-# Oppure senza auth key (dovrai connettere Tailscale manualmente dopo)
-bash /opt/jarvis/cloud/scripts/setup-vps.sh
-```
+# Docker + Compose
+curl -fsSL https://get.docker.com | sh
+apt install -y docker-compose-plugin
 
-Lo script esegue 8 step:
+# Tailscale (host-level)
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --hostname=jarvis-cloud
 
-1. Aggiornamento sistema
-2. Installazione Docker + Compose
-3. Installazione Node.js 22 + OpenClaw (`npm install -g openclaw`)
-4. **Installazione e connessione Tailscale** (headless con auth key, o istruzioni per connessione manuale)
-5. Installazione Nginx + Certbot
-6. Creazione utente `jarvis` (con gruppo docker + sudo)
-7. Creazione directory (`/opt/jarvis`, `~/.openclaw/workspace/skills`, ecc.) + tool utili
-8. Configurazione firewall (SSH/HTTP/HTTPS/Tailscale UDP), swap 2GB, log rotation Docker, **servizio systemd OpenClaw**
+# Crea utente jarvis
+adduser --disabled-password --gecos "JARVIS System User" jarvis
+usermod -aG docker jarvis
 
-> **Tailscale gira host-level** — installato come servizio di sistema (systemd), non in Docker. L'auth key serve solo la prima volta.
-> **OpenClaw gira bare-metal** — installato globalmente via npm, gestito da systemd.
+# Directory
+mkdir -p /opt/jarvis /opt/jarvis/data /opt/jarvis/config /opt/jarvis/voice_models
+chown -R jarvis:jarvis /opt/jarvis
 
-Se non hai usato l'auth key, connetti Tailscale manualmente:
+# Tool utili
+apt install -y htop curl wget git vim nano jq nginx certbot python3-certbot-dns-cloudflare
 
-```bash
-sudo tailscale up --hostname=jarvis-cloud
-# Apri il link stampato nel browser per autenticare
-tailscale status   # verifica connessione
+# Firewall
+apt install -y ufw
+ufw default deny incoming && ufw default allow outgoing
+ufw allow ssh && ufw allow http && ufw allow https && ufw allow 41641/udp
+echo "y" | ufw enable
 ```
 
 ### STEP 2 — Clone repository
@@ -163,149 +156,33 @@ su - jarvis
 git clone https://github.com/croll83/jarvis.git /opt/jarvis
 ```
 
-### STEP 3 — Copia skill per OpenClaw
+### STEP 3 — Installa AI Agent (blackbox)
+
+AI Agent (Hermes, OpenClaw, o altro) viene trattato come una blackbox dall'orchestrator.
+L'orchestrator si connette via `AI_AGENT_URL` (HTTPS/WSS) e si autentica con `AI_AGENT_TOKEN`.
+
+**Installa il tuo AI Agent seguendo la documentazione specifica del software scelto.**
+
+Requisiti dall'orchestrator:
+- L'agent deve esporre un'API HTTP/WS sulla porta 18789 (o altra porta configurabile)
+- L'agent deve supportare skill registration (la skill JARVIS viene registrata come tool)
+- Il token di autenticazione gateway deve essere lo stesso configurato nel `.env` dell'orchestrator
+
+Dopo l'installazione, copia le skill JARVIS nella directory dell'agent:
 
 ```bash
 # Skill orchestrator (domotica, TTS, security, memory)
-mkdir -p ~/.openclaw/workspace/skills/jarvis-orchestrator
-cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
-cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
+# Adatta il path alla directory skills del tuo agent
+cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md <agent-skills-dir>/jarvis-orchestrator/
+cp /opt/jarvis/jarvis-orchestrator/skill/skill.json <agent-skills-dir>/jarvis-orchestrator/
 
 # Skill ontology (knowledge graph — crea/query/relate entita)
-mkdir -p ~/.openclaw/workspace/skills/ontology
-cp -r /opt/jarvis/ontology-server/skill/* ~/.openclaw/workspace/skills/ontology/
+cp -r /opt/jarvis/ontology-server/skill/* <agent-skills-dir>/ontology/
 ```
 
-Questo rende le skill visibili a OpenClaw. Dopo ogni `git pull` che modifica le skill, riesegui i `cp`.
+> **Nota**: non usare symlink — alcuni agent vanno in ELOOP con i link simbolici.
 
-La skill orchestrator espone 11 tool REST, tra cui `entity_bulk` per query/azioni di gruppo su entita HA (elimina il problema N+1 delle query multi-entita).
-
-La skill ontology espone il Knowledge Graph API (CRUD entita, relazioni, query, bulk) con ACL basata su `X-Speaker-Id`.
-
-> **Nota**: non usare symlink — il file watcher di OpenClaw va in ELOOP con i link simbolici.
-
-### STEP 4 — OpenClaw onboarding
-
-```bash
-openclaw onboard
-```
-
-Il wizard interattivo configura:
-- **Identita**: nome dell'istanza, descrizione
-- **API key Gemini**: la chiave per Gemini 3 Pro
-- **Gateway token**: il token per l'autenticazione skill (salvalo, servira nel `.env`)
-- **Telegram bot**: token del bot OpenClaw da @BotFather
-- **Skill discovery**: rileva automaticamente `jarvis-orchestrator` dalla directory copiata
-
-### STEP 4a — Configura env vars della skill JARVIS
-
-Dopo l'onboarding, esegui lo script che legge il gateway token dal config e lo inietta nella configurazione della skill:
-
-```bash
-bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
-```
-
-Lo script configura automaticamente `OPENCLAW_GATEWAY_TOKEN` e `JARVIS_ORCHESTRATOR_URL` in `skill.json` (le env vars nello skill hanno precedenza su `openclaw.json`).
-
-> **IMPORTANTE**: il `OPENCLAW_GATEWAY_TOKEN` nel `.env` dell'orchestratore DEVE essere lo stesso valore. Lo trovi con:
-> `jq -r '.gateway.auth.token' ~/.openclaw/openclaw.json`
-
-### STEP 4b — TLS proxy con Nginx (architettura wss://)
-
-A partire dalla release OpenClaw 2026.2.25, il gateway richiede TLS (`wss://`) per le connessioni non-loopback. OpenClaw ascolta su loopback (`bind: "auto"`) e Nginx sullo stesso server termina TLS e proxya le richieste.
-
-**Architettura:**
-```
-client (orchestrator/browser)
-  |  wss://openclaw.mintwork.it:18789 (API/WS)
-  |  https://openclaw.mintwork.it:443  (dashboard)
-  v
-Nginx TLS proxy (Let's Encrypt cert)
-  |  proxy_pass ws://127.0.0.1:18789
-  v
-OpenClaw (bind: "auto", loopback only)
-```
-
-**Configurazione OpenClaw** — verifica che il bind sia `"auto"` (default):
-
-```json5
-{
-  gateway: {
-    bind: "auto",
-    // ... auth e altro gia configurato dall'onboard
-  }
-}
-```
-
-Poi riavvia OpenClaw:
-
-```bash
-sudo systemctl restart openclaw
-
-# Verifica che ascolti su loopback
-ss -tlnp | grep 18789
-# Deve mostrare: 127.0.0.1:18789
-```
-
-> **Nota**: NON serve piu impostare `bind: "tailnet"`. OpenClaw ascolta solo su loopback, e Nginx si occupa di terminare TLS e proxyare le connessioni esterne. La configurazione Nginx e descritta nello STEP 9.
-
-### STEP 4c — Browser DOM Plugin (automazione browser headless)
-
-Il plugin `browser-dom` aggiunge tool di manipolazione DOM diretta (CSS selectors, XPath, JS evaluate) via Chrome DevTools Protocol. Permette all'agente di navigare siti web, compilare form, cliccare bottoni e fare screenshot senza i problemi di stale-ref del browser tool built-in.
-
-```bash
-su - jarvis
-
-# 1. Copia il plugin nella directory extensions di OpenClaw
-cp -r /opt/jarvis/extensions/browser-dom ~/.openclaw/extensions/browser-dom
-cd ~/.openclaw/extensions/browser-dom
-npm install
-
-# 2. Installa il servizio Chrome headless (gestito da systemd)
-sudo cp openclaw-chrome.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now openclaw-chrome
-
-# 3. Verifica che Chrome CDP sia attivo
-curl -s http://127.0.0.1:18800/json/version | head -3
-# Deve mostrare: { "Browser": "Chrome/xxx", ... }
-
-# 4. Configura il plugin in openclaw.json
-# (aggiungere queste sezioni alla configurazione esistente)
-python3 -c "
-import json
-with open('$HOME/.openclaw/openclaw.json') as f:
-    cfg = json.load(f)
-cfg.setdefault('browser', {})['enabled'] = True
-cfg['browser']['evaluateEnabled'] = True
-cfg['browser']['defaultProfile'] = 'openclaw'
-cfg['browser'].setdefault('profiles', {})['openclaw'] = {'cdpPort': 18800, 'color': '#4A90D9'}
-cfg.setdefault('plugins', {}).setdefault('entries', {})['browser-dom'] = {
-    'enabled': True,
-    'config': {'cdpUrl': 'http://127.0.0.1:18800', 'defaultTimeoutMs': 15000}
-}
-allow = cfg.setdefault('tools', {}).get('alsoAllow', [])
-if 'group:plugins' not in allow:
-    allow.append('group:plugins')
-    cfg['tools']['alsoAllow'] = allow
-with open('$HOME/.openclaw/openclaw.json', 'w') as f:
-    json.dump(cfg, f, indent=2)
-print('browser-dom plugin configured')
-"
-
-# 5. Riavvia OpenClaw
-sudo systemctl restart openclaw
-
-# 6. Verifica che il plugin sia caricato
-journalctl -u openclaw --no-pager -n 10 | grep browser-dom
-# Deve mostrare: [browser-dom] 8 DOM tools registered successfully.
-```
-
-> **Boot order**: `openclaw-chrome.service` parte prima di `openclaw.service` (grazie a `Before=openclaw.service`). Se Chrome non e attivo, i tool dom_* falliranno con "fetch failed".
-
-Per maggiori dettagli, vedi: [`extensions/browser-dom/README.md`](../../extensions/browser-dom/README.md)
-
-### STEP 5 — Configura .env
+### STEP 4 — Configura .env
 
 ```bash
 cd /opt/jarvis/cloud
@@ -317,23 +194,23 @@ Variabili obbligatorie da compilare:
 
 | Variabile | Come ottenerla |
 |-----------|----------------|
-| `OPENCLAW_URL` | `https://openclaw.mintwork.it:18789` — dominio TLS del gateway |
+| `AI_AGENT_URL` | URL HTTPS del gateway AI Agent (es. `https://your-agent-host:18789`) |
 | `GEMINI_API_KEY` | [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
 | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) |
 | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) |
-| `OPENCLAW_GATEWAY_TOKEN` | Stesso valore usato in `openclaw onboard` |
-| `OPENCLAW_WS_URL` | `wss://openclaw.mintwork.it:18789` — WebSocket TLS del gateway |
-| `OPENCLAW_TELEGRAM_BOT_TOKEN` | @BotFather su Telegram |
-| `JARVIS_APPROVAL_BOT_TOKEN` | @BotFather (secondo bot, separato da OpenClaw) |
+| `AI_AGENT_TOKEN` | Token gateway condiviso tra orchestrator e AI Agent |
+| `AI_AGENT_WS_URL` | URL WebSocket TLS del gateway (es. `wss://your-agent-host:18789`) |
+| `AI_AGENT_TELEGRAM_BOT_TOKEN` | @BotFather su Telegram |
+| `JARVIS_APPROVAL_BOT_TOKEN` | @BotFather (secondo bot, separato da AI Agent) |
 | `JARVIS_APPROVAL_CHAT_ID` | Scrivi al bot, poi `curl https://api.telegram.org/bot<TOKEN>/getUpdates` |
 | `HASS_URL` | `http://100.x.x.x:8123` (IP Tailscale del tuo HA, senza `/api`) |
 | `JARVIS_HASS_TOKEN` | HA → Profilo → Token di lunga durata |
 | `ONTOLOGY_API_TOKEN` | (opzionale) `openssl rand -hex 32` — protegge l'API ontology |
-| `WAKEWORD_SERVER_URLS` | (opzionale) JSON map `{"location_id": "http://<TAILSCALE_IP>:8200"}` — IP Tailscale dei wakeword-server locali |
+| `WAKEWORD_SERVER_URLS` | (opzionale) JSON map `{"location_id": "http://<TAILSCALE_IP>:8200"}` |
 
-> **Nota**: OpenClaw gira bare-metal, NON in Docker. Tailscale gira host-level, NON in Docker. Il `.env` viene letto solo dal container Docker (orchestrator). OpenClaw ha la sua configurazione in `~/.openclaw/`. Tailscale si autentica con `tailscale up --hostname=jarvis-cloud`.
+> **Nota**: AI Agent gira bare-metal, NON in Docker. Tailscale gira host-level, NON in Docker. Il `.env` viene letto solo dal container Docker (orchestrator). AI Agent ha la sua configurazione separata. Tailscale si autentica con `tailscale up --hostname=jarvis-cloud`.
 
-### STEP 5b — Deploy Wakeword Server (locale, 1 per casa)
+### STEP 4b — Deploy Wakeword Server (locale, 1 per casa)
 
 Il wakeword-server NON gira sul VPS. Va deployato su un LXC locale (Proxmox) nella stessa
 LAN degli AtomS3R. Dopo il deploy, inserisci il suo IP Tailscale nel `.env` del VPS.
@@ -348,37 +225,29 @@ Al termine, riporta l'IP Tailscale da inserire in `WAKEWORD_SERVER_URLS`.
 
 Per i dettagli, vedi: [`infrastructure/README.md` STEP 2b](../infrastructure/README.md#step-2b--deploy-vm-wakeword-1-per-casa-opzionale)
 
-### STEP 6 — Avvia OpenClaw + stack Docker
+### STEP 5 — Avvia AI Agent + stack Docker
 
 ```bash
 # 1. Verifica che Tailscale sia connesso (host-level, gia attivo dal boot)
 tailscale status
 
-# 2. Avvia OpenClaw (systemd)
-sudo systemctl start openclaw
+# 2. Avvia AI Agent (secondo la documentazione del tuo agent)
+# Esempio con systemd:
+sudo systemctl start ai-agent
 
-# 3. Verifica che OpenClaw sia attivo su loopback
+# 3. Verifica che AI Agent sia attivo su loopback
 curl http://127.0.0.1:18789/health
 
-# 4. Verifica che Nginx TLS proxy sia attivo
-curl https://openclaw.mintwork.it:18789/health
-
-# 5. Avvia lo stack Docker (orchestrator + ontology-server)
+# 4. Avvia lo stack Docker (orchestrator + ontology-server)
 cd /opt/jarvis/cloud
 docker compose -f docker-compose.cloud.yml up -d
 ```
 
-### STEP 7 — Verifica
+### STEP 6 — Verifica
 
 ```bash
-# OpenClaw healthy? (bare-metal, loopback)
+# AI Agent healthy? (bare-metal, loopback)
 curl http://127.0.0.1:18789/health
-
-# OpenClaw raggiungibile via TLS? (Nginx proxy)
-curl https://openclaw.mintwork.it:18789/health
-
-# Dashboard OpenClaw via TLS?
-curl https://openclaw.mintwork.it/health
 
 # Tailscale connesso alla tailnet? (host-level)
 tailscale status
@@ -389,9 +258,6 @@ curl http://127.0.0.1:8100/health
 # Orchestrator healthy?
 curl http://localhost:5000/health
 
-# L'orchestrator raggiunge OpenClaw? (network_mode: host, via TLS)
-curl -s https://openclaw.mintwork.it:18789/health
-
 # HA raggiungibile?
 curl -s -H "Authorization: Bearer <HASS_TOKEN>" \
   http://100.x.x.x:8123/api/ | head -c 100
@@ -399,78 +265,40 @@ curl -s -H "Authorization: Bearer <HASS_TOKEN>" \
 # Wakeword server raggiungibile via Tailscale? (se deployato)
 curl http://<TAILSCALE_IP_WAKEWORD>:8200/health
 
-# Nginx TLS proxy status
-sudo systemctl status nginx
-sudo nginx -t
-
 # Logs in tempo reale
 docker compose -f docker-compose.cloud.yml logs -f   # Docker (orchestrator)
-journalctl -u openclaw -f                             # OpenClaw (systemd)
-journalctl -u nginx -f                                # Nginx (systemd)
-journalctl -u tailscaled -f                           # Tailscale (systemd)
 ```
 
-### STEP 8 — Telegram webhook
+### STEP 7 — Telegram webhook
 
-Il webhook Telegram e gestito da **OpenClaw** (non dall'orchestrator).
-Configura il webhook del bot OpenClaw puntando al tuo dominio:
+Il webhook Telegram e gestito da **AI Agent** (non dall'orchestrator).
+Configura il webhook del bot AI Agent puntando al tuo dominio:
 
 ```bash
-curl "https://api.telegram.org/bot<OPENCLAW_TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
+curl "https://api.telegram.org/bot<AI_AGENT_TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<tuo-dominio>/telegram_webhook"
 ```
 
-### STEP 8b — Exec Approvals (bottoni Telegram)
+### STEP 7b — Exec Approvals (bottoni Telegram)
 
-L'orchestrator si connette al gateway OpenClaw via WebSocket come operator client.
+L'orchestrator si connette al gateway AI Agent via WebSocket come operator client.
 Quando un agente richiede l'esecuzione di un comando, l'approval arriva come
-messaggio Telegram con bottoni inline (✅ Once, 🔓 Always, ❌ Deny) sul **JARVIS Approval Bot**.
+messaggio Telegram con bottoni inline sul **JARVIS Approval Bot**.
 
-**Prerequisiti (già nel .env):**
-- `OPENCLAW_WS_URL` — URL WebSocket TLS del gateway (`wss://openclaw.mintwork.it:18789`)
-- `OPENCLAW_GATEWAY_TOKEN` — token di autenticazione gateway
-- `JARVIS_APPROVAL_BOT_TOKEN` — token del secondo bot Telegram (separato da OpenClaw)
+**Prerequisiti (gia nel .env):**
+- `AI_AGENT_WS_URL` — URL WebSocket TLS del gateway
+- `AI_AGENT_TOKEN` — token di autenticazione gateway
+- `JARVIS_APPROVAL_BOT_TOKEN` — token del secondo bot Telegram (separato da AI Agent)
 - `JARVIS_APPROVAL_CHAT_ID` — chat ID per ricevere le notifiche
 
-**Configurazione OpenClaw** (`~/.openclaw/config.json5`):
-```json5
-"approvals": {
-  "exec": {
-    "enabled": false  // disabilita il flow testuale nativo di OpenClaw
-  }
-}
-```
-
-**Exec Approvals Allowlist** (`~/.openclaw/exec-approvals.json`):
-```bash
-# Copia il file di default (auto-approva comandi sicuri, chiede per quelli pericolosi)
-cp /opt/jarvis/cloud/exec-approvals.json ~/.openclaw/
-```
-
-Il file configura `security: "allowlist"` + `ask: "on-miss"` con glob patterns per comandi sicuri
-(curl, bash, node, ls, cat, ecc.) e chiede approvazione Telegram per comandi pericolosi (rm, chmod, ecc.).
-
-> **Nota**: Il bot Approval usa **long-polling** (getUpdates) per ricevere i callback
-> dai bottoni inline. Non richiede URL pubblico o webhook. Verra migrato a webhook
-> quando sara configurato un DNS pubblico (jarvis-pub.mintwork.it).
-
-### STEP 9 — Nginx + SSL (certbot DNS Cloudflare)
+### STEP 8 — Nginx + SSL (certbot DNS Cloudflare)
 
 Ci sono **due configurazioni Nginx** distinte:
 
 | Nginx | Server | Scopo | Domini/Porte |
 |-------|--------|-------|--------------|
-| **A** | VPS | Proxy HTTPS pubblico per orchestratore | `jarvis.mintwork.it:443` → `localhost:5000` |
-| **B** | VPS (stesso server) | TLS termination per gateway OpenClaw API/WS + dashboard | `openclaw.mintwork.it:18789` → `ws://127.0.0.1:18789` |
-|       |     |                                                          | `openclaw.mintwork.it:443` → `http://127.0.0.1:18789` |
-
-**Prerequisiti:**
-1. Crea un **API Token** su [Cloudflare](https://dash.cloudflare.com/profile/api-tokens) con permesso `Zone:DNS:Edit`
-2. Esporta il token come variabile d'ambiente: `export CLOUDFLARE_API_TOKEN=<il-tuo-token>`
-3. Crea i **record A** su Cloudflare:
-   - `jarvis.mintwork.it` → IP Tailscale del VPS (`tailscale ip -4`)
-   - `openclaw.mintwork.it` → IP Tailscale del VPS (`tailscale ip -4`)
-
-> **Nota**: entrambi i record puntano all'IP Tailscale del VPS. Il traffico arriva via Tailscale, non da internet pubblico. Se in futuro OpenClaw viene spostato su un server separato, `openclaw.mintwork.it` dovra puntare all'IP Tailscale di quel server.
+| **A** | VPS | Proxy HTTPS pubblico per orchestratore | `jarvis.yourdomain.com:443` → `localhost:5000` |
+| **B** | VPS (stesso server) | TLS termination per gateway AI Agent API/WS + dashboard | `agent.yourdomain.com:18789` → `ws://127.0.0.1:18789` |
+|       |     |                                                          | `agent.yourdomain.com:443` → `http://127.0.0.1:18789` |
 
 ```bash
 # Esegui lo script (da root)
@@ -479,61 +307,9 @@ sudo CLOUDFLARE_API_TOKEN=<il-tuo-token> bash /opt/jarvis/cloud/scripts/setup-ng
 
 Lo script:
 - Installa Nginx + certbot + plugin Cloudflare
-- Configura i vhost:
-  - **jarvis.mintwork.it** (:443) — proxy verso orchestratore (:5000)
-  - **openclaw.mintwork.it** (:443) — proxy verso dashboard OpenClaw (loopback :18789)
-  - **openclaw.mintwork.it** (:18789 TLS) — TLS termination per API/WS gateway (loopback :18789)
+- Configura i vhost per orchestratore e AI Agent
 - Genera i certificati SSL via DNS challenge (non serve esporre porte pubbliche)
-- Configura auto-renewal con deploy hook che copia i certificati e ricarica Nginx
-
-La configurazione Nginx per il gateway OpenClaw include:
-```nginx
-# Esempio semplificato — :18789 TLS per API/WS
-server {
-    listen 100.116.99.9:18789 ssl;
-    server_name openclaw.mintwork.it;
-
-    ssl_certificate /etc/letsencrypt/live/openclaw.mintwork.it/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/openclaw.mintwork.it/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:18789;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-
-# :443 per dashboard
-server {
-    listen 100.116.99.9:443 ssl;
-    server_name openclaw.mintwork.it;
-
-    ssl_certificate /etc/letsencrypt/live/openclaw.mintwork.it/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/openclaw.mintwork.it/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:18789;
-    }
-}
-```
-
-> **Nota**: il listen su `100.116.99.9:18789` (IP Tailscale) evita conflitti con OpenClaw che ascolta su `127.0.0.1:18789`. Le connessioni esterne arrivano sull'IP Tailscale, Nginx termina TLS e proxya a loopback.
-
-**Verifica:**
-```bash
-# Orchestratore (VPS)
-curl -k https://jarvis.mintwork.it/health
-
-# Gateway OpenClaw (TLS, porta 18789)
-curl https://openclaw.mintwork.it:18789/health
-
-# Dashboard OpenClaw (TLS, porta 443)
-curl https://openclaw.mintwork.it/health
-
-# Certificato valido?
-openssl s_client -connect openclaw.mintwork.it:18789 -servername openclaw.mintwork.it < /dev/null 2>/dev/null | openssl x509 -noout -dates
-```
+- Configura auto-renewal con deploy hook
 
 ---
 
@@ -555,7 +331,7 @@ Questi richiedono riavvio del container orchestrator (`docker compose restart or
 
 ```env
 # Timeouts (secondi)
-OPENCLAW_TIMEOUT=30
+AI_AGENT_TIMEOUT=30
 TAILSCALE_TIMEOUT_REMOTE=15.0
 TAILSCALE_TIMEOUT_LOCAL=10.0
 
@@ -592,59 +368,17 @@ Per ricaricare senza riavvio:
 curl -X POST http://localhost:5000/admin/prompts/reload
 ```
 
-### OpenClaw Environment Variables (openclaw.env)
+### Speaker Interno (AtomS3R Mobile)
 
-Il servizio systemd carica variabili aggiuntive da `~/.openclaw/openclaw.env` (opzionale, creato dallo script di setup).
+Un AtomS3R con batteria puo essere configurato per usare lo speaker integrato (ES8311)
+invece di un media_player HA esterno. L'orchestrator genera il TTS con Edge TTS
+(`it-IT-ElsaNeural`), lo converte in frame Opus e li invia via WebSocket al device.
 
-```bash
-nano ~/.openclaw/openclaw.env
-```
+**Nessuna modifica al docker-compose**: il Dockerfile dell'orchestrator include gia
+`ffmpeg`, `libopus-dev` e `edge-tts` (in requirements.txt). Il flusso e interamente
+gestito dal container orchestrator esistente.
 
-| Variabile | Descrizione |
-|-----------|-------------|
-| `GOG_KEYRING_PASSWORD` | Password per il keyring gogcli |
-| `GOG_ACCOUNT` | Email dell'account GOG |
-
-Dopo aver modificato il file, riavvia OpenClaw:
-```bash
-sudo systemctl restart openclaw
-```
-
-### gogcli — Configurazione Credenziali
-
-La skill `gogcli` richiede file di credenziali nella directory `~/.config/gog/` dell'utente jarvis.
-
-**File da copiare manualmente:**
-```
-~/.config/gog/
-  ├── credentials.json     # Credenziali GOG (generato da gogcli login)
-  └── keyring/
-      └── <email>/         # Directory con i file del keyring per il tuo account
-          ├── key.json
-          └── ...
-```
-
-**Setup:**
-```bash
-# La directory viene creata dallo script di setup. Copia i file dal tuo ambiente locale:
-scp -r ~/.config/gog/credentials.json jarvis@<vps-ip>:~/.config/gog/
-scp -r ~/.config/gog/keyring/ jarvis@<vps-ip>:~/.config/gog/
-
-# Verifica
-ls -la ~/.config/gog/
-ls -la ~/.config/gog/keyring/
-```
-
-> **Nota**: Questi file contengono credenziali sensibili. Non committarli nel repository.
-
-### Dashboard OpenClaw
-
-OpenClaw espone una dashboard web accessibile su:
-
-- **Locale** (dal VPS): `http://localhost:18789`
-- **Via TLS** (da altri dispositivi sulla tailnet): `https://openclaw.mintwork.it` (porta 443)
-
-La porta 18789 su loopback NON e esposta su internet. L'accesso esterno avviene tramite Nginx TLS proxy su `openclaw.mintwork.it:443` (dashboard) e `openclaw.mintwork.it:18789` (API/WS).
+**Configurazione**: Dashboard orchestrator → Dispositivi → checkbox "Speaker Interno".
 
 ---
 
@@ -652,10 +386,10 @@ La porta 18789 su loopback NON e esposta su internet. L'accesso esterno avviene 
 
 | Servizio | Costo |
 |----------|-------|
-| Gemini 3 Pro | ~$0 (free tier generoso) |
+| Cloud LLM | ~$0 (free tier generoso) |
 | Groq Whisper | ~$0 (free tier 14k min/mese) |
 | OpenRouter Qwen 2.5 3B | ~$0.001/richiesta |
-| VPS Hetzner CX22 | ~€4/mese |
+| VPS Hetzner CX22 | ~4/mese |
 | Tailscale | Gratis (piano personal, fino a 100 nodi) |
 
 ---
@@ -667,22 +401,9 @@ La porta 18789 su loopback NON e esposta su internet. L'accesso esterno avviene 
 | 5000 | Orchestrator + Admin UI | Pubblico (dietro nginx) |
 | 8000 | ChromaDB (shared vector store) | Solo localhost (Docker, 127.0.0.1 bind) |
 | 8100 | Ontology Server (Knowledge Graph) | Solo localhost (Docker, 127.0.0.1 bind) |
-| 18789 | OpenClaw (bare-metal) | Solo localhost + Tailscale (NO Docker, NO internet) |
+| 18789 | AI Agent (bare-metal) | Solo localhost + Tailscale (NO Docker, NO internet) |
 | 18800 | Chrome CDP (headless) | Solo localhost (browser-dom plugin) |
 | 41641/udp | Tailscale NAT traversal | WAN (host-level, servizio systemd) |
-
-### Speaker Interno (AtomS3R Mobile)
-
-Un AtomS3R con batteria può essere configurato per usare lo speaker integrato (ES8311)
-invece di un media_player HA esterno. L'orchestrator genera il TTS con Edge TTS
-(`it-IT-ElsaNeural`), lo converte in frame Opus e li invia via WebSocket al device.
-
-**Nessuna modifica al docker-compose**: il Dockerfile dell'orchestrator include già
-`ffmpeg`, `libopus-dev` e `edge-tts` (in requirements.txt). Il flusso è interamente
-gestito dal container orchestrator esistente.
-
-**Configurazione**: Dashboard orchestrator → Dispositivi → checkbox "Speaker Interno".
-Quando attivo, i campi Speaker Principale e Speaker Fallback non sono necessari.
 
 ---
 
@@ -694,13 +415,10 @@ docker inspect --format='{{.State.Health.Status}}' jarvis_ontology
 curl -s http://127.0.0.1:8100/health
 docker compose -f docker-compose.cloud.yml logs --tail=20 ontology-server
 
-# Stato Chrome headless (browser-dom)
-systemctl status openclaw-chrome
-curl -s http://127.0.0.1:18800/json/version | head -3
-
-# Stato OpenClaw (systemd)
-systemctl status openclaw
-journalctl -u openclaw -f --no-pager
+# Stato AI Agent (systemd)
+# Adatta il nome del servizio al tuo agent
+systemctl status ai-agent
+journalctl -u ai-agent -f --no-pager
 
 # Stato Tailscale (host-level, systemd)
 tailscale status
@@ -718,9 +436,6 @@ curl http://localhost:5000/health/services
 
 # Risorse container Docker
 docker stats
-
-# Risorse OpenClaw (bare-metal)
-ps aux | grep openclaw
 
 # Wakeword server raggiungibile? (via Tailscale, se deployato)
 curl http://<TAILSCALE_IP_WAKEWORD>:8200/health
@@ -746,63 +461,15 @@ docker compose -f docker-compose.cloud.yml restart ontology-server
 
 # Se hai configurato ONTOLOGY_API_TOKEN, verifica che il token sia corretto
 curl -H "Authorization: Bearer <token>" http://127.0.0.1:8100/entities?limit=1
-
-# Verifica che la porta sia raggiungibile dall'orchestrator (network_mode: host)
-docker exec jarvis_orchestrator curl -s http://127.0.0.1:8100/health 2>/dev/null || \
-  curl -s http://127.0.0.1:8100/health
 ```
 
-### Chrome headless / browser-dom non funziona
-
-```bash
-# Verifica che il servizio Chrome sia attivo
-sudo systemctl status openclaw-chrome
-journalctl -u openclaw-chrome --no-pager -n 20
-
-# Verifica CDP
-curl -s http://127.0.0.1:18800/json/version
-
-# Se Chrome non risponde, riavvialo
-sudo systemctl restart openclaw-chrome
-
-# Verifica che il plugin sia caricato
-journalctl -u openclaw --no-pager -n 20 | grep browser-dom
-# Deve mostrare: [browser-dom] 8 DOM tools registered successfully.
-
-# Se il plugin non appare, verifica che sia installato
-ls -la ~/.openclaw/extensions/browser-dom/
-```
-
-### OpenClaw non parte
-
-```bash
-# Stato del servizio systemd
-systemctl status openclaw
-
-# Logs dettagliati
-journalctl -u openclaw -e --no-pager
-
-# Verifica che Node.js sia installato
-node -v  # deve essere >= 22
-
-# Verifica che openclaw sia installato globalmente
-openclaw --version
-
-# Verifica che la skill sia copiata
-ls -la ~/.openclaw/workspace/skills/jarvis-orchestrator/
-# deve mostrare: SKILL.md e skill.json
-
-# Riavvia il servizio
-sudo systemctl restart openclaw
-```
-
-### L'orchestrator non raggiunge OpenClaw
+### L'orchestrator non raggiunge AI Agent
 
 ```bash
 # Dal container orchestrator (network_mode: host, usa localhost)
 docker exec jarvis_orchestrator curl -v http://localhost:18789/health
 
-# Verifica che OpenClaw sia attivo sulla porta 18789
+# Verifica che AI Agent sia attivo sulla porta 18789
 curl http://localhost:18789/health
 ```
 
@@ -831,14 +498,12 @@ tailscale ping 100.x.x.x
 # Curl direttamente (l'orchestrator usa network_mode: host)
 curl -H "Authorization: Bearer $TOKEN" \
   http://100.x.x.x:8123/api/
-
-# Verifica che l'HA abbia Tailscale attivo e sia sulla stessa tailnet
 ```
 
 ### API timeout
 
 Le API esterne possono avere latenza variabile:
-- Aumenta `OPENCLAW_TIMEOUT` nel `.env`
+- Aumenta `AI_AGENT_TIMEOUT` nel `.env`
 - Verifica status: [status.groq.com](https://status.groq.com), [openrouter.ai](https://openrouter.ai)
 
 ### Container non parte
@@ -850,16 +515,15 @@ docker stats  # RAM esaurita?
 
 ### Memory issues
 
-Se il VPS esaurisce la RAM (lo script setup crea gia 2GB swap):
+Se il VPS esaurisce la RAM:
 ```bash
 # Verifica swap
 free -h
 
-# Aggiungi piu swap se serve
-fallocate -l 4G /swapfile2
-chmod 600 /swapfile2
-mkswap /swapfile2
-swapon /swapfile2
+# Aggiungi swap se serve
+fallocate -l 2G /swapfile
+chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
 ```
 
 ### Database corrotto
@@ -876,17 +540,15 @@ docker compose -f docker-compose.cloud.yml restart orchestrator
 
 ## Aggiornamenti
 
-OpenClaw, Tailscale e lo stack Docker si aggiornano separatamente:
+AI Agent, Tailscale e lo stack Docker si aggiornano separatamente:
 
 ```bash
 # 1. Aggiorna Tailscale (host-level)
 sudo apt update && sudo apt install -y tailscale
 tailscale status
 
-# 2. Aggiorna OpenClaw (bare-metal)
-sudo npm update -g openclaw
-sudo systemctl restart openclaw
-curl http://localhost:18789/health
+# 2. Aggiorna AI Agent (secondo la documentazione del tuo agent)
+# Riavvia il servizio dopo l'aggiornamento
 
 # 3. Aggiorna JARVIS (orchestrator + config + skill)
 cd /opt/jarvis
@@ -896,32 +558,20 @@ docker compose -f docker-compose.cloud.yml down
 docker compose -f docker-compose.cloud.yml build --no-cache
 docker compose -f docker-compose.cloud.yml up -d
 
-# 4. Se SKILL.md o skill.json sono cambiati, ricopiali per OpenClaw
-cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md ~/.openclaw/workspace/skills/jarvis-orchestrator/
-cp /opt/jarvis/jarvis-orchestrator/skill/skill.json ~/.openclaw/workspace/skills/jarvis-orchestrator/
-# NOTA: la copia sovrascrive le credenziali in skill.json — riesegui lo script:
-bash /opt/jarvis/cloud/scripts/configure-openclaw-skill.sh
-# Skill ontology (se cambiata)
-cp -r /opt/jarvis/ontology-server/skill/* ~/.openclaw/workspace/skills/ontology/
-sudo systemctl restart openclaw
+# 4. Se SKILL.md o skill.json sono cambiati, ricopiali per AI Agent
+cp /opt/jarvis/jarvis-orchestrator/skill/SKILL.md <agent-skills-dir>/jarvis-orchestrator/
+cp /opt/jarvis/jarvis-orchestrator/skill/skill.json <agent-skills-dir>/jarvis-orchestrator/
+cp -r /opt/jarvis/ontology-server/skill/* <agent-skills-dir>/ontology/
+# Riavvia AI Agent per ricaricare le skill
 
 # 5. Aggiorna wakeword-server (sul Proxmox HOST, non sul VPS)
 # pct exec <CT_ID> -- bash -c '
 #   cd /opt/jarvis-wakeword && git pull --depth 1
 #   cd wakeword-server && docker compose up -d --build
 # '
-
-# 6. Se exec-approvals.json e cambiato
-cp /opt/jarvis/cloud/exec-approvals.json ~/.openclaw/
-sudo systemctl restart openclaw
-
-# 7. Se il plugin browser-dom e cambiato
-cp -r /opt/jarvis/extensions/browser-dom/* ~/.openclaw/extensions/browser-dom/
-cd ~/.openclaw/extensions/browser-dom && npm install
-sudo systemctl restart openclaw-chrome openclaw
 ```
 
-> **Nota**: l'aggiornamento di OpenClaw non richiede rebuild Docker. L'aggiornamento Docker non tocca OpenClaw. L'aggiornamento di Tailscale non tocca ne Docker ne OpenClaw. Se cambiano solo file Python dell'orchestrator, basta rebuild Docker. Se cambia la skill definition, serve anche la copia + restart OpenClaw. Il database ontology (`graph.db`) persiste nel volume Docker `ontology_data` ed e indipendente dal rebuild. Il wakeword-server si aggiorna direttamente sul Proxmox host (non sul VPS).
+> **Nota**: l'aggiornamento di AI Agent non richiede rebuild Docker. L'aggiornamento Docker non tocca AI Agent. L'aggiornamento di Tailscale non tocca ne Docker ne AI Agent. Se cambiano solo file Python dell'orchestrator, basta rebuild Docker. Se cambia la skill definition, serve anche la copia + restart AI Agent. Il database ontology (`graph.db`) persiste nel volume Docker `ontology_data` ed e indipendente dal rebuild. Il wakeword-server si aggiorna direttamente sul Proxmox host (non sul VPS).
 
 ---
 

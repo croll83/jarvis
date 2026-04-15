@@ -34,15 +34,15 @@
          |   +---------+----------+                     |
          |   |         |          |                     |
          |   v         v          v                     |
-         | HOME     OPENCLAW    CHAT                    |
-         | CONTROL  (Brain)    (OpenClaw)                |
+         | HOME     AI AGENT   CHAT                    |
+         | CONTROL  (Brain)    (AI Agent)               |
          |   |         |          |                     |
          +---+---------+----------+---------------------+
              |         |          |
              v         v          v
      +------------+ +-------------------+  +------------------+
-     |   Home     | |   OpenClaw +      |  |  Ontology Server |
-     | Assistant  | |  Gemini 3 Pro     |  |  Knowledge Graph |
+     |   Home     | |   AI Agent +      |  |  Ontology Server |
+     | Assistant  | |  Cloud LLM        |  |  Knowledge Graph |
      | (per loc.) | |  (Brain)          |  |  (:8100)         |
      +------------+ +-------------------+  +------------------+
 
@@ -56,9 +56,11 @@
 
      +--------------------------------------------+
      |         DATA LAYER                          |
-     |  ChromaDB :8000 | PostgreSQL | MongoDB      |
-     |  (shared server | (side      | (side        |
-     |   vector store) | projects)  | projects)    |
+     |  Redis :6379    | mem0 :8200 | ChromaDB     |
+     |  (context bus,  | (long-term | :8000        |
+     |   cross-system) | behavioral)| (mem0 backend|
+     |  PostgreSQL     | MongoDB    |  only)       |
+     |  (side projects)| (side proj)|              |
      +--------------------------------------------+
 
      +--------------------------------------------+
@@ -73,16 +75,18 @@
 
 | Component | Role | Details |
 |-----------|------|---------|
-| **OpenClaw + Gemini 3 Pro** | Brain | Reasoning, web search, Telegram chat, multi-turn conversations |
+| **AI Agent (Hermes/OpenClaw/others)** | Brain | Reasoning, web search, Telegram chat, multi-turn conversations |
 | **JARVIS Orchestrator** | Skill / Executor | Voice processing, home control (single + bulk), speaker ID, security enforcement |
 | **Qwen 2.5 3B** | Pre-router + Tool calling | Local Ollama model for domotics fast path, tool calling (web_search, web_fetch, memory_search, home_status), offline fallback |
 | **Parakeet STT** | Speech-to-Text | nvidia/parakeet-tdt-0.6b-v3 on GX10 DGX Spark, multilingual auto-detection, 20x realtime |
 | **Qwen3-TTS** | Text-to-Speech | Qwen3-TTS-12Hz-1.7B on GX10, voice cloning, Italian/English voices (sofia, marco, emma, james) |
 | **Resemblyzer** | Speaker ID | Voice biometric identification (embedded in orchestrator) |
 | **Ontology Server** | Knowledge Graph | Entity/relation graph with speaker-based ACL, SQLite + FastAPI |
-| **fastembed (nomic-embed-text-v1.5)** | Embeddings | 768-dim CPU-only ONNX embeddings (Ollama-compatible API :11435) for orchestrator, ha-memory-service, and OpenClaw |
+| **fastembed (nomic-embed-text-v1.5)** | Embeddings | 768-dim CPU-only ONNX embeddings (Ollama-compatible API :11435) for orchestrator, ha-memory-service, and AI Agent |
 | **Brave Search** | Web Search Tool | Web search API used by Qwen tool calling |
-| **ChromaDB (shared server)** | Vector store | Long-term memory, semantic search, hybrid retrieval. Shared server on :8000, used by orchestrator, ha-memory-service, and ontology-bridge plugin (fallback to embedded PersistentClient if unreachable) |
+| **Redis** | Context Bus | Cross-system short-term memory (TTL 30min). Shared between orchestrator, HA memory service, and Hermes. Per-user event lists with source filtering |
+| **mem0** | Long-term Memory | Behavioral pattern storage. Nightly batch extraction from orchestrator + HA daily patterns. Self-hosted on LXC Jarvis (:8200), backed by ChromaDB |
+| **ChromaDB** | Vector store | Backend for mem0 server. Not used directly by orchestrator or HA — only via mem0 API |
 | **PostgreSQL** | Database | Side projects (relational store) |
 | **MongoDB** | Database | Side projects (document store) |
 | **Home Assistant** | Domotics core | One instance per location, connected via WebSocket |
@@ -97,12 +101,14 @@
 | `ollama` | ollama/ollama | 11434 | Yes | Qwen 2.5 3B (LLM only) |
 | `fastembed` | ./infrastructure/fastembed | 11435 | No | nomic-embed-text-v1.5 embeddings (CPU ONNX) |
 | `orchestrator` | ./jarvis-orchestrator | 5000 | No | Core FastAPI app + Resemblyzer + Admin UI (host network) |
-| `chromadb` | chromadb/chroma:0.6.3 | 127.0.0.1:8000 | No | Shared vector store (used by orchestrator, ha-memory-service, ontology-bridge) |
+| `redis` | redis:7-alpine | 6379 | No | Cross-system context bus (on LXC Jarvis) |
+| `mem0` | mem0 server | 8200 | No | Long-term behavioral memory (on LXC Jarvis) |
+| `chromadb` | chromadb/chroma:1.5.2 | 127.0.0.1:8000 | No | Backend for mem0 (on LXC Jarvis) |
 | `ontology-server` | ./ontology-server | 127.0.0.1:8100 | No | Knowledge Graph API (SQLite + ACL) |
 | `postgres` | postgres:16-alpine | 5432 | No | Relational database (side projects) |
 | `mongo` | mongo:7 | 27017 | No | Document database (side projects) |
 
-> **Note**: OpenClaw runs bare-metal on a dedicated LXC (`100.116.99.9`), not in this Docker stack.
+> **Note**: AI Agent runs on a dedicated host (`100.116.99.9`), not in this Docker stack.
 > **Note**: STT (Parakeet `:7865`) and TTS (Qwen3-TTS `:9880`) run on GX10 DGX Spark (`100.98.187.12`) as systemd services, reachable via Tailscale.
 
 ---
@@ -155,7 +161,7 @@ Each location has its own entity map, memory sidecar, and HA token stored in the
 |--------|--------|-------|
 | `jarvis.mintwork.it` | Nginx + SSL (Tailscale only) | Internal services, admin UI |
 | `jarvis-pub.mintwork.it` | Cloudflare Tunnel | Telegram webhook, health endpoint |
-| `openclaw.mintwork.it` | Nginx TLS on OpenClaw LXC (Tailscale only) | OpenClaw gateway API |
+| `your-agent-host` | Nginx TLS on AI Agent host (Tailscale only) | AI Agent gateway API |
 
 - **No port forwarding** -- all public traffic routes through Cloudflare Tunnel
 - Internal services are accessible only via Tailscale mesh network
@@ -195,18 +201,21 @@ jarvis/
 |   +-- main.py                # Routing, voice pipeline, Telegram webhook, WS operator client
 |   +-- config.py              # Service URLs, timeouts, security rules
 |   +-- database.py            # PostgreSQL: users, locations, entities, memory
-|   +-- ai_engines.py          # Pre-routing (Qwen) + OpenClaw dispatch
-|   +-- tools_api.py           # OpenClaw skill endpoints (11 REST tools incl. entity_bulk)
+|   +-- ai_engines.py          # Pre-routing (Qwen) + AI Agent dispatch
+|   +-- tools_api.py           # AI Agent skill endpoints (11 REST tools incl. entity_bulk)
 |   +-- integrations.py        # Home Assistant, Telegram, audio feedback
 |   +-- voice_recognition.py   # Resemblyzer speaker ID
 |   +-- security_levels.py     # L1-L4 enforcement, domain/channel security
-|   +-- context_builder.py     # Hybrid context (PostgreSQL + Chroma)
-|   +-- vector_store.py        # ChromaDB HttpClient (shared :8000) with embedded fallback
-|   +-- memory_jobs.py         # Scheduled summarization + fact extraction
+|   +-- context_builder.py     # Hybrid context (SQLite + Redis)
+|   +-- context_bus.py         # Redis context bus (cross-system short-term memory)
+|   +-- memory_jobs.py         # Scheduled summarization + fact extraction + mem0 behavioral push
 |   +-- multi_ha.py            # Multi-location HA manager (single + bulk ops)
 |   +-- internal_tts.py        # TTS backend (Qwen3-TTS on GX10 / Kokoro cloud)
 |   +-- admin_api.py           # Admin dashboard API
 |   +-- templates/             # Admin UI (HTML/JS)
++-- ha_memory_service/         # HA location memory (events → Redis + SQLite summaries + mem0)
+|   +-- main.py                # Event ingestion, summaries, Redis push, mem0 daily extraction
+|   +-- context_bus.py         # Redis context bus (shared module with orchestrator)
 +-- ontology-server/           # Knowledge Graph API (SQLite + FastAPI + ACL)
 |   +-- api.py                 # FastAPI endpoints (12 routes)
 |   +-- ontology.py            # Core graph logic + speaker-based ACL
@@ -218,10 +227,6 @@ jarvis/
 |   +-- gb10/                  # GX10 DGX Spark documentation
 |   +-- terraform/             # Terraform configs
 |   +-- ansible/               # Ansible playbooks
-+-- openclaw/                  # OpenClaw deployment config
-|   +-- xtts-proxy/            # TTS proxy (systemd on OpenClaw LXC, now points to Qwen3-TTS)
-|   +-- skills/                # OpenClaw skill definitions
-|   +-- extensions/            # OpenClaw extensions
 +-- wakeword-server/           # Wake word model training / serving
 +-- config/
 |   +-- router_system_prompt.txt  # Qwen router system prompt (loaded as SYSTEM_RULES)
@@ -234,11 +239,12 @@ jarvis/
 
 ## Key Design Decisions
 
-- **OpenClaw + Gemini 3 Pro as Brain**: All reasoning, web search, and conversational intelligence is handled by OpenClaw backed by Gemini 3 Pro. The OPENCLAW intent routes complex queries, uncertain domotics, and general conversation to the brain.
+- **AI Agent as Brain**: All reasoning, web search, and conversational intelligence is handled by the AI Agent (Hermes/OpenClaw/others) backed by a Cloud LLM. The AI_AGENT intent routes complex queries, uncertain domotics, and general conversation to the brain.
 - **Qwen 2.5 3B with tool calling**: Fast local pre-routing for domotics commands plus tool calling capabilities (web_search via Brave API, web_fetch, memory_search, home_status). Falls back to offline responses when cloud is unreachable.
-- **Brave Search API**: Web search tool available to both Qwen (via tool calling) and OpenClaw (via skill), providing real-time web information.
+- **Brave Search API**: Web search tool available to both Qwen (via tool calling) and the AI Agent (via skill), providing real-time web information.
 - **fastembed for all embeddings**: Single 768-dim embedding model (nomic-embed-text-v1.5 via ONNX, CPU-only) served by a dedicated container on port 11435 with Ollama-compatible API. Runs on CPU to avoid CUDA context switching with Qwen on the GPU, reducing routing latency from ~3.5s to ~0.5s.
-- **ChromaDB shared server**: Vector store runs as a dedicated container on :8000 (`chromadb/chroma:0.6.3`), shared by orchestrator, ha-memory-service, and the ontology-bridge plugin. Clients use `HttpClient` with automatic fallback to embedded `PersistentClient` if the server is unreachable.
+- **Three-layer memory**: Redis context bus for real-time cross-system context (TTL 30min, source-filtered), mem0 for long-term behavioral patterns (nightly batch extraction via Qwen), ChromaDB as mem0's vector backend only (not used directly by orchestrator or HA).
+- **Redis context bus**: Shared between orchestrator, HA memory service, and Hermes. Each system writes events tagged with its source and reads only events from other sources, preventing self-duplication. Per-user event lists (`ctx:{user_id}:events`), capped at 20, TTL 30 minutes.
 - **Parakeet STT on GX10**: nvidia/parakeet-tdt-0.6b-v3 running on GX10 DGX Spark (128 GB VRAM). Multilingual auto-detection, 20x realtime, no initial prompt needed. Replaces Whisper (deprecated) to free VRAM on Atomman for router upgrades.
 - **Qwen3-TTS on GX10**: Qwen3-TTS-12Hz-1.7B with voice cloning, Italian/English preset voices (sofia, marco, emma, james). Replaces XTTSv2 (deprecated). OpenAI-compatible API.
 - **Nginx + Cloudflare Tunnel**: Public endpoints (Telegram webhook, health) served via Cloudflare Tunnel with no port forwarding. Internal services accessible only through Tailscale mesh.

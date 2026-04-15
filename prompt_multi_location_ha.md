@@ -9,7 +9,7 @@ Estendere JARVIS per supportare **multiple istanze Home Assistant** in location 
 - JARVIS gira su un server a Napoli (WAGMI Villa)
 - Una seconda casa a Milano (Albani20) avrà il suo HA raggiungibile via Tailscale
 - Gli AtomS3R saranno in entrambe le case
-- Telegram e OpenClaw devono sapere quale HA usare
+- Telegram e AI Agent devono sapere quale HA usare
 - La configurazione HA deve essere dinamica (database, non config.py)
 
 ---
@@ -173,7 +173,7 @@ class ServiceStatus:
             "ollama_router": ServiceHealth(),
             "ollama_reasoning": ServiceHealth(),
             "whisper": ServiceHealth(),
-            "openclaw": ServiceHealth(),
+            "ai_agent": ServiceHealth(),
             # HA services aggiunti dinamicamente
         }
         self._load_ha_services()
@@ -493,7 +493,7 @@ La sezione health deve mostrare:
 │ STATO SERVIZI                                           │
 ├─────────────────────────────────────────────────────────┤
 │ ● Orchestrator    ● Ollama Router    ● Whisper         │
-│ ● Gemini          ● OpenClaw                            │
+│ ● Cloud LLM       ● AI Agent                            │
 ├─────────────────────────────────────────────────────────┤
 │ HOME ASSISTANT                                          │
 │ ● WAGMI Villa (Napoli)     45ms                        │
@@ -802,8 +802,8 @@ services:
       # HA URLs ora vengono dal database, non più da env
       # Ma manteniamo per backward compatibility / fallback
       - HASS_URL_DEFAULT=http://homeassistant:8123
-      # OpenClaw gira bare-metal su VM separata (non in Docker)
-      - OPENCLAW_URL=${OPENCLAW_URL:-http://jarvis-openclaw:18789}
+      # AI Agent gira bare-metal su VM separata (non in Docker)
+      - AI_AGENT_URL=${AI_AGENT_URL:-}
     volumes:
       - ./data:/app/data
       - ./voice_models:/app/voice_models
@@ -892,8 +892,8 @@ JARVIS supporta il controllo di **multiple abitazioni** con istanze Home Assista
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │                         ORCHESTRATOR                                 │   │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │   │
-│  │  │  Qwen 7B │  │ OpenClaw │  │ Whisper  │  │   Multi-HA       │   │   │
-│  │  │  Router  │  │ + Gemini │  │   STT    │  │   Client         │   │   │
+│  │  │  Qwen 7B │  │ AI Agent │  │ Whisper  │  │   Multi-HA       │   │   │
+│  │  │  Router  │  │+Cloud LLM│  │   STT    │  │   Client         │   │   │
 │  │  └──────────┘  └──────────┘  └──────────┘  └────────┬─────────┘   │   │
 │  │                                                      │             │   │
 │  │                              ┌───────────────────────┴──────┐      │   │
@@ -941,7 +941,7 @@ JARVIS determina automaticamente quale Home Assistant usare:
 |----------|--------|---------|
 | **Voce (AtomS3R)** | Device ID | `atoms3r_wagmi_salotto` → HA WAGMI |
 | **Telegram** | Sticky + Inline + Keyboard | "Accendi a Milano" → HA Albani |
-| **OpenClaw** | Task context | "Prenota ristorante Milano" → location Milano |
+| **AI Agent** | Task context | "Prenota ristorante Milano" → location Milano |
 
 ### Comandi Location Telegram
 

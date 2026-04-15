@@ -8,7 +8,7 @@ configuration:
     name: AI Backend
     description: >-
       "local" — Uses Ollama for summarization and embeddings (requires Ollama reachable via network).
-      "api" — Uses OpenRouter for summarization and Gemini for embeddings (cloud, no Ollama needed).
+      "api" — Uses OpenRouter for summarization and Google cloud embeddings (no Ollama needed).
   ollama_url:
     name: Ollama URL
     description: >-
@@ -32,7 +32,7 @@ configuration:
   gemini_api_key:
     name: Gemini API Key
     description: >-
-      Google Gemini API key for embeddings (https://aistudio.google.com/app/apikey).
+      Google AI API key for cloud embeddings (https://aistudio.google.com/app/apikey).
       Only used when AI Backend is "api".
   openrouter_summary_model:
     name: OpenRouter Summary Model
