@@ -14,7 +14,7 @@ All tools are REST endpoints on the JARVIS orchestrator. Call them using `exec` 
 
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/<endpoint>" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '<json_body>'
 ```
@@ -22,7 +22,7 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/<endpoint>" \
 For GET endpoints:
 ```bash
 curl -s "$JARVIS_ORCHESTRATOR_URL/api/tools/<endpoint>" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
+  -H "Authorization: Bearer $AI_AGENT_TOKEN"
 ```
 
 **IMPORTANT**: Always use `exec` with the curl commands above. Never try to invoke `jarvis-orchestrator` as a node — it is a REST API, not a paired device.
@@ -54,7 +54,7 @@ You don't need to pass `location_id` unless the user explicitly requests a diffe
 Resolve a friendly name to entity_id with live state and capabilities.
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/entity_resolve" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"friendly_name": "luce cucina"}'
 ```
@@ -64,7 +64,7 @@ Returns: `entity_id`, `domain`, `state`, `available_services[]`, `service_params
 Browse/search entities. All filters optional, combinable:
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/entity_discover" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"room": "soggiorno", "domain": "light"}'
 ```
@@ -76,7 +76,7 @@ Query states or execute actions on multiple entities in a single call. **Prefer 
 **Query mode** — get live states:
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/entity_bulk" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"mode": "query", "domain": "light"}'
 ```
@@ -84,9 +84,9 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/entity_bulk" \
 **Action mode** — execute on group:
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/entity_bulk" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"mode": "action", "domain": "light", "action": "turn_off", "room": "soggiorno", "source_channel": "openclaw_telegram"}'
+  -d '{"mode": "action", "domain": "light", "action": "turn_off", "room": "soggiorno", "source_channel": "ai_agent_telegram"}'
 ```
 
 Filters: `domain`, `room`, `zone`, `floor`, `search`, `entity_ids` (explicit list). Returns: `entities[]` with live `state` and `attributes`, plus `summary` (human-readable). L3 domains (lock, camera, alarm) are excluded from bulk actions.
@@ -95,9 +95,9 @@ Filters: `domain`, `room`, `zone`, `floor`, `search`, `entity_ids` (explicit lis
 Execute device actions. Use entity_id from resolve/discover.
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/home_control" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"entity_name": "light.cucina", "action": "turn_on", "parameters": {"brightness": 200}, "source_channel": "openclaw_telegram"}'
+  -d '{"entity_name": "light.cucina", "action": "turn_on", "parameters": {"brightness": 200}, "source_channel": "ai_agent_telegram"}'
 ```
 `source_channel` is mandatory. Security levels L1-L4 auto-enforced. L3 actions (cameras, locks) require Telegram approval.
 
@@ -105,7 +105,7 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/home_control" \
 Hybrid memory search (SQL + Vector DB). Use for past events, conversations, habits.
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/memory_query" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"user_id": "marco", "query": "quando e arrivata ada?", "context_type": "reasoning"}'
 ```
@@ -114,30 +114,30 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/memory_query" \
 User profile, current location, preferences, role.
 ```bash
 curl -s "$JARVIS_ORCHESTRATOR_URL/api/tools/user_context?user_id=marco" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
+  -H "Authorization: Bearer $AI_AGENT_TOKEN"
 ```
 
 ### locations
 List all HA locations with health status.
 ```bash
 curl -s "$JARVIS_ORCHESTRATOR_URL/api/tools/locations" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
+  -H "Authorization: Bearer $AI_AGENT_TOKEN"
 ```
 
 ### security
 Privacy mode, alarms. High-security actions.
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/security" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"action": "set_privacy_mode", "parameters": {"enabled": true}, "source_channel": "openclaw_telegram"}'
+  -d '{"action": "set_privacy_mode", "parameters": {"enabled": true}, "source_channel": "ai_agent_telegram"}'
 ```
 
 ### tts
 Speak through smart speakers.
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/tts" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"text": "Lavatrice terminata.", "speaker_entity": "media_player.echo_salotto"}'
 ```
@@ -146,9 +146,9 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/tts" \
 Log events for security/history trail.
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/audit_log" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"event_type": "home_control", "details": "Manual backup triggered", "user_id": "marco", "source": "openclaw", "severity": "info"}'
+  -d '{"event_type": "home_control", "details": "Manual backup triggered", "user_id": "marco", "source": "ai_agent", "severity": "info"}'
 ```
 
 ### media_cast
@@ -157,7 +157,7 @@ Cast media (video, immagini, pagine web) su una Samsung TV. Due modalità: URL d
 **Da URL** (per contenuti pubblici — l'URL viene passato direttamente alla TV):
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://example.com/video.mp4", "room": "soggiorno"}'
 ```
@@ -165,7 +165,7 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast" \
 **Apri pagina web nel browser Tizen** (force_browser bypassa DLNA, usa il browser della TV):
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://example.com/dashboard", "room": "soggiorno", "force_browser": true, "duration": 60}'
 ```
@@ -173,7 +173,7 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast" \
 **Upload file** (per contenuti generati localmente — uploadati su HA, poi serviti via LAN):
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast/upload" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -F "file=@/path/to/image.png" \
   -F "room=soggiorno" \
   -F "duration=30"
@@ -202,7 +202,7 @@ Comportamento:
 Ferma un cast attivo su una TV (chiude il browser/player).
 ```bash
 curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/media_cast/stop" \
-  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"tv_entity": "media_player.tv_soggiorno"}'
 ```

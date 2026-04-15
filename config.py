@@ -72,19 +72,19 @@ if WAKEWORD_SERVER_URLS_RAW:
     except Exception:
         pass
 
-# OpenClaw (AI Brain - Gemini 3 Pro)
-OPENCLAW_URL = os.getenv("OPENCLAW_URL", "https://openclaw.mintwork.it:18789")
-OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "")
-OPENCLAW_TIMEOUT = int(os.getenv("OPENCLAW_TIMEOUT", "30"))  # legacy (non-streaming fallback)
-OPENCLAW_TIMEOUT_TOTAL = int(os.getenv("OPENCLAW_TIMEOUT_TOTAL", "300"))  # Max totale streaming SSE (5 min)
-OPENCLAW_TIMEOUT_READ = int(os.getenv("OPENCLAW_TIMEOUT_READ", "90"))     # Max silenzio tra chunk SSE
+# AI Agent (AI Brain - Cloud LLM)
+AI_AGENT_URL = os.getenv("AI_AGENT_URL", "")
+AI_AGENT_TOKEN = os.getenv("AI_AGENT_TOKEN", "")
+AI_AGENT_TIMEOUT = int(os.getenv("AI_AGENT_TIMEOUT", "30"))  # legacy (non-streaming fallback)
+AI_AGENT_TIMEOUT_TOTAL = int(os.getenv("AI_AGENT_TIMEOUT_TOTAL", "300"))  # Max totale streaming SSE (5 min)
+AI_AGENT_TIMEOUT_READ = int(os.getenv("AI_AGENT_TIMEOUT_READ", "90"))     # Max silenzio tra chunk SSE
 
-# OpenClaw Gateway WebSocket (operator mode for exec approvals)
+# AI Agent Gateway WebSocket (operator mode for exec approvals)
 # Connect as operator to receive exec.approval.requested events and resolve them.
-OPENCLAW_WS_URL = os.getenv("OPENCLAW_WS_URL", "wss://openclaw.mintwork.it:18789")
-OPENCLAW_EXEC_APPROVAL_TIMEOUT = int(os.getenv("OPENCLAW_EXEC_APPROVAL_TIMEOUT", "120"))
+AI_AGENT_WS_URL = os.getenv("AI_AGENT_WS_URL", "")
+AI_AGENT_EXEC_APPROVAL_TIMEOUT = int(os.getenv("AI_AGENT_EXEC_APPROVAL_TIMEOUT", "120"))
 
-# JARVIS Approval Bot (L3 critical actions - separate from OpenClaw Telegram)
+# JARVIS Approval Bot (L3 critical actions - separate from AI Agent Telegram)
 JARVIS_APPROVAL_BOT_TOKEN = os.getenv("JARVIS_APPROVAL_BOT_TOKEN", "")
 JARVIS_APPROVAL_CHAT_ID = os.getenv("JARVIS_APPROVAL_CHAT_ID", "")
 
@@ -125,7 +125,7 @@ OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
 ROUTER_MEMORY_TURNS = 3              # Ultimi 3 turni (6 messaggi max)
 ROUTER_MEMORY_WINDOW_SECONDS = 300   # Finestra 5 minuti
 
-# REASONING (OpenClaw) — usa il sistema completo (weighted + vector + stratified)
+# REASONING (AI Agent) — usa il sistema completo (weighted + vector + stratified)
 REASONING_MEMORY_HIGH_PRIORITY = 15   # Messaggi speaker corrente
 REASONING_MEMORY_MEDIUM_PRIORITY = 5  # Messaggi altri familiari
 REASONING_MEMORY_GLOBAL = 3           # Eventi sistema
@@ -255,9 +255,9 @@ API_TIMEOUT_STT = int(os.getenv("API_TIMEOUT_STT", "30"))
 API_TIMEOUT_ROUTING = int(os.getenv("API_TIMEOUT_ROUTING", "30"))
 
 # --- Feature Flags ---
-# OpenClaw è disponibile se configurato (URL + TOKEN)
-OPENCLAW_ENABLED = bool(OPENCLAW_URL and OPENCLAW_TOKEN)
-# Gemini API diretto (per image generation, indipendente da OpenClaw)
+# AI Agent è disponibile se configurato (URL + TOKEN)
+AI_AGENT_ENABLED = bool(AI_AGENT_URL and AI_AGENT_TOKEN)
+# Gemini API diretto (per image generation, indipendente da AI Agent)
 GEMINI_ENABLED = bool(GEMINI_API_KEY)
 
 # ===========================================================================
@@ -326,7 +326,7 @@ TIMEOUTS = {
     "ha_read": int(os.getenv("TIMEOUT_HA_READ", "5")),
     "health_check": int(os.getenv("TIMEOUT_HEALTH_CHECK", "5")),
     "embedding": int(os.getenv("TIMEOUT_EMBEDDING", "30")),
-    "openclaw": int(os.getenv("TIMEOUT_OPENCLAW", "30")),
+    "ai_agent": int(os.getenv("TIMEOUT_AI_AGENT", "30")),
     "sqlite": int(os.getenv("TIMEOUT_SQLITE", "30")),
     "location_memory": int(os.getenv("TIMEOUT_LOCATION_MEMORY", "5")),
     "telegram_photo": int(os.getenv("TIMEOUT_TELEGRAM_PHOTO", "30")),

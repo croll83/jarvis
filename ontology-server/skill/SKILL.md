@@ -4,7 +4,7 @@ version: 0.1.0
 description: "REST API-based knowledge graph for structured agent memory, context filtering (ACL), and autonomous execution. Use when creating/querying entities (Person, Project, Task, Transaction, Strategy), linking related objects, enforcing constraints, or planning multi-step actions. Trigger on 'remember', 'what do I know about', 'link X to Y', 'show dependencies', entity CRUD, financial execution logging, or when checking workload/blocked tasks."
 user-invocable: true
 metadata:
-  openclaw:
+  agent:
     emoji: "🧠"
     requires:
       env: ["ONTOLOGY_URL"]
@@ -256,7 +256,7 @@ The `X-Speaker-Id` header identifies **who** is making the request. It is resolv
 | Trading agent (autonomous operations) | `jarvis-agent` | Agent Trading is a sub-agent of Jarvis |
 | Other service agents | Their registered `speaker_id` | Must have a Person entity with matching `speaker_id` |
 
-**Important:** When OpenClaw handles a Telegram session, it MUST present itself as the human user (e.g., `marco`), NOT as `jarvis-agent`. The agent identity is reserved for autonomous/background operations where no specific human initiated the request.
+**Important:** When AI Agent handles a Telegram session, it MUST present itself as the human user (e.g., `marco`), NOT as `jarvis-agent`. The agent identity is reserved for autonomous/background operations where no specific human initiated the request.
 
 ### Owner Enforcement
 

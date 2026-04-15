@@ -1,8 +1,8 @@
 """
-JARVIS Tools API — OpenClaw Skill Endpoints
+JARVIS Tools API — AI Agent Skill Endpoints
 
-REST API endpoints that OpenClaw calls as a skill.
-All endpoints are behind bearer token authentication (OPENCLAW_TOKEN).
+REST API endpoints that AI Agent calls as a skill.
+All endpoints are behind bearer token authentication (AI_AGENT_TOKEN).
 
 12 tool endpoints:
 - jarvis_home_control:   Control HA entities with L1-L4 security
@@ -31,7 +31,7 @@ from security_levels import check_security, needs_approval, SecurityLevel
 
 logger = logging.getLogger("JARVIS_TOOLS_API")
 
-router = APIRouter(prefix="/api/tools", tags=["OpenClaw Tools"])
+router = APIRouter(prefix="/api/tools", tags=["AI Agent Tools"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -63,10 +63,10 @@ def _get_admin_location() -> str:
 # AUTH
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def verify_openclaw_token(authorization: Optional[str] = Header(None)):
-    """Verify the OpenClaw bearer token."""
-    if not config.OPENCLAW_TOKEN:
-        raise HTTPException(status_code=503, detail="OpenClaw token not configured")
+async def verify_ai_agent_token(authorization: Optional[str] = Header(None)):
+    """Verify the AI Agent bearer token."""
+    if not config.AI_AGENT_TOKEN:
+        raise HTTPException(status_code=503, detail="AI Agent token not configured")
 
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header required")
@@ -75,8 +75,8 @@ async def verify_openclaw_token(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Bearer token required")
 
     token = authorization[7:]
-    if token != config.OPENCLAW_TOKEN:
-        raise HTTPException(status_code=403, detail="Invalid OpenClaw token")
+    if token != config.AI_AGENT_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid AI Agent token")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -341,7 +341,7 @@ class AuditLogRequest(BaseModel):
     event_type: str
     details: str
     user_id: Optional[str] = None
-    source: str = Field(default="openclaw")
+    source: str = Field(default="ai_agent")
     severity: str = Field(default="info", description="'info', 'warning', 'error', 'critical'")
 
 
@@ -394,7 +394,7 @@ class EntityBulkResponse(BaseModel):
 @router.post("/home_control", response_model=HomeControlResponse)
 async def tool_home_control(
     req: HomeControlRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """
     Control a Home Assistant entity with L1-L4 security check.
@@ -486,7 +486,7 @@ async def tool_home_control(
 @router.post("/speaker_id", response_model=SpeakerIdResponse)
 async def tool_speaker_id(
     req: SpeakerIdRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """Identify a speaker from audio data using Resemblyzer."""
     try:
@@ -518,7 +518,7 @@ async def tool_speaker_id(
 @router.get("/user_context", response_model=UserContextResponse)
 async def tool_get_user_context(
     user_id: str,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """Get user context: info, location, preferences."""
     try:
@@ -556,7 +556,7 @@ async def tool_get_user_context(
 @router.post("/security", response_model=SecurityActionResponse)
 async def tool_security_action(
     req: SecurityActionRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """Execute a security action (privacy mode, alarm control, etc.)."""
     try:
@@ -590,7 +590,7 @@ async def tool_security_action(
 @router.post("/memory_query", response_model=MemoryQueryResponse)
 async def tool_memory_query(
     req: MemoryQueryRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """Query user and location memory for context."""
     try:
@@ -616,7 +616,7 @@ async def tool_memory_query(
 @router.post("/entity_resolve", response_model=EntityResolveResponse)
 async def tool_entity_resolve(
     req: EntityResolveRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """Resolve a friendly name to an entity_id, with capabilities and live state."""
     try:
@@ -690,7 +690,7 @@ async def tool_entity_resolve(
 @router.post("/entity_discover", response_model=EntityDiscoveryResponse)
 async def tool_entity_discover(
     req: EntityDiscoveryRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """
     Discover entities by room, domain, floor, zone, or text search.
@@ -799,7 +799,7 @@ DOMAIN_KEY_ATTRIBUTES: Dict[str, List[str]] = {
 @router.post("/entity_bulk", response_model=EntityBulkResponse)
 async def tool_entity_bulk(
     req: EntityBulkRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """
     Bulk query or action on multiple entities.
@@ -1036,7 +1036,7 @@ async def tool_entity_bulk(
 @router.post("/tts", response_model=TtsResponse)
 async def tool_tts(
     req: TtsRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """Text-to-speech passthrough — speak via Alexa/speaker."""
     try:
@@ -1074,7 +1074,7 @@ async def tool_tts(
 
 @router.get("/locations", response_model=List[LocationInfo])
 async def tool_get_locations(
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """List all configured locations with health status."""
     try:
@@ -1111,7 +1111,7 @@ async def tool_get_locations(
 @router.post("/audit_log", response_model=AuditLogResponse)
 async def tool_audit_log(
     req: AuditLogRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """Log an event to the audit trail."""
     try:
@@ -1322,7 +1322,7 @@ def _build_action_summary(
 
 
 async def _send_approval_request(entity_id: str, action: str, source_channel: str, service_data: dict = None):
-    """Send L3 approval request via JARVIS approval bot (separate from OpenClaw)."""
+    """Send L3 approval request via JARVIS approval bot (separate from AI Agent)."""
     try:
         import uuid
         from integrations import send_telegram_approval
@@ -1467,7 +1467,7 @@ async def _execute_media_cast(
 @router.post("/media_cast", response_model=MediaCastResponse)
 async def tool_media_cast_url(
     req: MediaCastUrlRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """
     Cast media o pagina web da URL a una Samsung TV.
@@ -1561,7 +1561,7 @@ async def tool_media_cast_upload(
     Per immagini, il browser si chiude automaticamente dopo `duration` secondi.
     """
     # Auth manuale (Form + Depends non combinabili direttamente)
-    await verify_openclaw_token(authorization)
+    await verify_ai_agent_token(authorization)
 
     try:
         file_bytes = await file.read()
@@ -1585,7 +1585,7 @@ async def tool_media_cast_upload(
 @router.post("/media_cast/stop", response_model=MediaCastStopResponse)
 async def tool_media_cast_stop(
     req: MediaCastStopRequest,
-    _: None = Depends(verify_openclaw_token)
+    _: None = Depends(verify_ai_agent_token)
 ):
     """
     Ferma cast attivo su una TV. Invia KEY_EXIT e cancella il timer.

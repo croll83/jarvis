@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # Installa PyTorch CPU-only PRIMA delle altre dipendenze
-# Evita che resemblyzer/chromadb tirino dentro nvidia-cuda (~15 GB)
+# Evita che resemblyzer tiri dentro nvidia-cuda (~15 GB)
 RUN pip install --no-cache-dir \
     torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir onnxruntime && \

@@ -67,9 +67,9 @@ options:
   summary_timeout: 30
   embedding_timeout: 30
 
-  # --- ChromaDB server ---
-  chroma_host: "100.88.84.81"
-  chroma_port: 8000
+  # --- Redis context bus ---
+  # redis_url: set via REDIS_URL env var
+  # mem0_base_url: set via MEM0_BASE_URL env var
 
   skip_entity_prefixes: "update."
   skip_entity_suffixes: "_battery,_linkquality,_signal"

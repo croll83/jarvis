@@ -1,11 +1,11 @@
 # VM Workstation — Ubuntu Desktop per JARVIS
 
-VM desktop per sviluppo e controllo browser reale con OpenClaw.
-Chrome (non headless) con l'estensione browser OpenClaw supera i controlli
+VM desktop per sviluppo e controllo browser reale con AI Agent.
+Chrome (non headless) con l'estensione browser AI Agent supera i controlli
 anti-bot di Cloudflare e gestisce SPA dinamiche — impossibile con Chrome headless.
 
 **Funzioni principali:**
-- Chrome reale + estensione browser OpenClaw (controllo browser non-headless)
+- Chrome reale + estensione browser AI Agent (controllo browser non-headless)
 - IDE di sviluppo (Zed)
 - Git, Node.js (nvm), Python 3
 - Email, browsing, workspace generale
@@ -64,7 +64,7 @@ Modifica `terraform.tfvars` — abilita la workstation:
 ```hcl
 # Scegli cosa creare:
 jarvis_enabled      = false    # disabilita se non installi ancora LXC-JARVIS
-openclaw_enabled    = false    # disabilita se non installi ancora LXC-OpenClaw
+openclaw_enabled    = false    # disabilita se non installi ancora LXC-AI-Agent
 workstation_enabled = true     # <-- abilita la workstation
 
 # Configurazione workstation:
@@ -189,7 +189,7 @@ git config --global user.email "tua@email.com"
 cat ~/.ssh/id_ed25519.pub
 # Copia e incolla in GitHub > Settings > SSH keys
 
-# Apri Chrome e installa l'estensione OpenClaw browser
+# Apri Chrome e installa l'estensione AI Agent browser
 # (dal Chrome Web Store o da file .crx)
 # Configura l'estensione con l'URL del gateway:
 #   LAN: http://192.168.1.51:18789
@@ -198,7 +198,7 @@ cat ~/.ssh/id_ed25519.pub
 
 > **Nota:** Il browser reale con profilo persistente supera i controlli anti-bot
 > di Cloudflare. Per costruire un profilo pulito, naviga manualmente per qualche
-> giorno prima di attivare l'automazione OpenClaw. Risolvi i CAPTCHA
+> giorno prima di attivare l'automazione AI Agent. Risolvi i CAPTCHA
 > manualmente quando compaiono — il profilo imparer e ne vedrai sempre meno.
 
 ---
@@ -316,7 +316,7 @@ Host Proxmox (AtomMan G7 Pro)
 +-- XFCE + Remmina (schermo locale) --- KVM switch virtuale
 |
 +-- [LXC 100] LXC-JARVIS --- Ollama, Whisper, Orchestrator (GPU)
-+-- [LXC 101] LXC-OpenClaw --- Gateway OpenClaw + Chrome headless (CDP)
++-- [LXC 101] LXC-AI-Agent --- AI Agent Gateway + Chrome headless (CDP)
 +-- [LXC 210] LXC-Wakeword --- Wake word detection (CPU)
 +-- [VM  200] VM-Workstation --- Ubuntu GNOME + Chrome reale + Zed
 +-- [VM  xxx] VM-HAOS --- Home Assistant OS (opzionale)

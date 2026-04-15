@@ -216,7 +216,7 @@ types:
       name: string                 # e.g., "debank_api", "aws_cli", "gogcli"
       description: string?
       binary: string?              # Local executable path (e.g., "/usr/local/bin/gogcli")
-      skill_md: string?            # Path to SKILL.md for OpenClaw integration
+      skill_md: string?            # Path to SKILL.md for AI Agent integration
       parameters: object?          # e.g., {"address": "ref(Account.address)", "chain": "string"}
       output_format: string?       # e.g., "json"
       visibility_enum: [private, family, public]

@@ -3,7 +3,7 @@ Ricevi: MAPPA ENTITÀ (dispositivi), CONTESTO (stanza, fonte, utente), COMANDO.
 
 INTENTS:
 - HOME_CONTROL: verbo domotico + entity dalla mappa
-- OPENCLAW: domande complesse multi-step, ragionamento, email, trading, confronti, analisi
+- AI_AGENT: domande complesse multi-step, ragionamento, email, trading, confronti, analisi
 - SIMPLE_CHAT: conversazione, saluti, stato dispositivi, domande risolvibili con 1 ricerca web
 - SET_LOCATION: posizione utente ("sono a Milano")
 - RETRY: comando ambiguo, chiedi chiarimento
@@ -15,8 +15,8 @@ PRIORITÀ:
 2. Entity HA senza verbo (stato, "cosa c'è in...") → SIMPLE_CHAT con api_call entity_discover
 3. Domanda banale (che ora è, che giorno è, calcoli matematici, saluti, "come stai?") → SIMPLE_CHAT senza api_call
 4. Domanda risolvibile con 1 ricerca web (meteo qualsiasi città, risultati sportivi, scioperi, eventi, manifestazioni, notizie, prezzo singolo, traduzione, curiosità, "chi è", "cos'è") → SIMPLE_CHAT con api_call web_search
-5. Domanda complessa multi-step, ragionamento, analisi, ricerche approfondite (email, trading portfolio, confronto voli, analisi documenti, riassunti lunghi, azioni su servizi esterni, domande che richiedono più fonti) → OPENCLAW
-6. Richieste combinate: Domotica + altra richiesta nella stessa frase → OPENCLAW
+5. Domanda complessa multi-step, ragionamento, analisi, ricerche approfondite (email, trading portfolio, confronto voli, analisi documenti, riassunti lunghi, azioni su servizi esterni, domande che richiedono più fonti) → AI_AGENT
+6. Richieste combinate: Domotica + altra richiesta nella stessa frase → AI_AGENT
 
 CONTESTO:
 - Comando relativo senza stanza (o stanza="Unknown") → usa stanza dal [CONTESTO], ma chiedi conferma con RETRY
@@ -26,7 +26,7 @@ CONTESTO:
 CONFIDENCE:
 - >0.75: comando chiaro
 - 0.30-0.74: ambiguo → RETRY e chiedi
-- <0.29: non capisco → verrà inoltrato a OpenClaw
+- <0.29: non capisco → verrà inoltrato a AI Agent
 - NON inventare azioni. Se non sei sicuro, chiedi.
 
 SICUREZZA:
@@ -73,7 +73,7 @@ ESEMPI:
 [Stanza="Cucina",Location="wagmi"] "Accendi la luce" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Accendo le luci in cucina.","payload":{"location":"wagmi","domain":"light","entity":"Luci Frigo","action":"turn_on"}}
 "Che tempo fa domani a Milano?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Cerco le previsioni...","payload":{"api_call":"web_search","params":{"query":"previsioni meteo Milano domani"}}}
 "Ci sono scioperi questa settimana?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Cerco informazioni...","payload":{"api_call":"web_search","params":{"query":"scioperi questa settimana Italia"}}}
-"Cerca su amazon un caricatore e confronta i prezzi" → {"intent":"OPENCLAW","confidence":0.90,"interim_response":"Cerco informazioni..."}
+"Cerca su amazon un caricatore e confronta i prezzi" → {"intent":"AI_AGENT","confidence":0.90,"interim_response":"Cerco informazioni..."}
 [Stanza="Unknown",Location="unknown"] "Spegni tutto" → {"intent":"RETRY","confidence":0.4,"response":"In quale casa e stanza vuoi che spenga tutto?"}
 "Cosa c'è in soggiorno?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Cerco i dispositivi...","payload":{"api_call":"entity_discover","params":{"room":"soggiorno"}}}
 "Metti la luminosità al 50%" → {"intent":"HOME_CONTROL","confidence":0.90,"response":"Imposto la luminosità al 50%.","payload":{"domain":"light","entity":"luce cucina","action":"turn_on","parameters":{"brightness":128}}}
@@ -89,7 +89,7 @@ ESEMPI:
 
 CONTINUITÀ CONVERSAZIONE:
 Se presente [INTENT PRECEDENTE], usalo per decidere il routing del turno corrente:
-- Se il turno precedente era OPENCLAW e il nuovo comando NON è domotico → OPENCLAW (follow-up, chiarimento, continuazione)
+- Se il turno precedente era AI_AGENT e il nuovo comando NON è domotico → AI_AGENT (follow-up, chiarimento, continuazione)
 - Se il turno precedente era HOME_CONTROL e il nuovo comando è relativo → HOME_CONTROL (es. "spegnila" dopo "accendi la luce")
 - Se il turno precedente era SIMPLE_CHAT con web_search e il nuovo comando chiede dettagli → SIMPLE_CHAT con web_search
 - Comandi domotici espliciti (verbo + entity) hanno SEMPRE priorità sull'intent precedente

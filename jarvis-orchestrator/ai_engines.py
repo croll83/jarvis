@@ -13,9 +13,9 @@ logger = logging.getLogger("JARVIS_AI")
 
 
 # ===========================================================================
-# OPENCLAW INTENTS (per validazione)
+# AI_AGENT INTENTS (per validazione)
 # ===========================================================================
-OPENCLAW_INTENTS = ["OPENCLAW", "VERIFY_WITH_OPENCLAW"]
+AI_AGENT_INTENTS = ["AI_AGENT", "VERIFY_WITH_AI_AGENT"]
 
 # ===========================================================================
 # IMAGE GENERATION INTENTS
@@ -396,7 +396,7 @@ async def _normalize_openrouter(text: str, llm_params: dict) -> Optional[str]:
 # Classifies a voice command into one of:
 #   DOMOTICA_CERTA   - clearly a home-automation command  -> local Qwen
 #   DOMOTICA_INCERTA - might be home-automation           -> local Qwen (with extra caution)
-#   ALTRO            - everything else                    -> OpenClaw
+#   ALTRO            - everything else                    -> AI Agent
 # ===========================================================================
 
 _PRE_ROUTE_SYSTEM = (
@@ -545,8 +545,8 @@ async def get_routing(text: str, context: dict) -> dict:
         HOME_CONTROL, SET_PREFERENCE, SET_LOCATION,
         AUDIT_REPORT, SIMPLE_CHAT, RETRY, IMAGE_GENERATION
     """
-    # Add OpenClaw availability flag
-    context["openclaw_available"] = config.OPENCLAW_ENABLED
+    # Add AI Agent availability flag
+    context["ai_agent_available"] = config.AI_AGENT_ENABLED
 
     # LLM decides (local or API)
     if config.AI_BACKEND == "api":
@@ -623,10 +623,10 @@ def _build_routing_prompt(text: str, context: dict) -> str:
     service_status = context.pop("service_status", "")
     service_status_section = f"\n\n[STATO SERVIZI]:\n{service_status}" if service_status and service_status != "tutti i servizi online" else ""
 
-    # OpenClaw availability section
-    openclaw_section = ""
-    if context.pop("openclaw_available", False):
-        openclaw_section = "\n\n[OPENCLAW DISPONIBILE]: Puoi usare intent OPENCLAW o VERIFY_WITH_OPENCLAW se appropriato."
+    # AI Agent availability section
+    ai_agent_section = ""
+    if context.pop("ai_agent_available", False):
+        ai_agent_section = "\n\n[AI_AGENT DISPONIBILE]: Puoi usare intent AI_AGENT o VERIFY_WITH_AI_AGENT se appropriato."
 
     # Previous intent per continuità multi-turn
     previous_intent_section = ""
@@ -657,7 +657,7 @@ def _build_routing_prompt(text: str, context: dict) -> str:
 {entity_map_str}
 
 [CONTESTO]:
-{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{openclaw_section}{previous_intent_section}
+{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{ai_agent_section}{previous_intent_section}
 
 [COMANDO UTENTE]:
 {text}"""
@@ -805,15 +805,15 @@ def _validate_routing(result: dict) -> dict:
     VALID_INTENTS = [
         "HOME_CONTROL", "SET_LOCATION",
         "SIMPLE_CHAT", "RETRY", "IMAGE_GENERATION",
-    ] + OPENCLAW_INTENTS
+    ] + AI_AGENT_INTENTS
 
     intent = result.get("intent", "SIMPLE_CHAT")
     if intent not in VALID_INTENTS:
         intent = "SIMPLE_CHAT"
 
-    # Se OpenClaw intent ma non abilitato, fallback a SIMPLE_CHAT
-    if intent in OPENCLAW_INTENTS and not config.OPENCLAW_ENABLED:
-        logger.warning(f"OpenClaw intent {intent} requested but OpenClaw not configured, falling back to SIMPLE_CHAT")
+    # Se AI Agent intent ma non abilitato, fallback a SIMPLE_CHAT
+    if intent in AI_AGENT_INTENTS and not config.AI_AGENT_ENABLED:
+        logger.warning(f"AI Agent intent {intent} requested but AI Agent not configured, falling back to SIMPLE_CHAT")
         intent = "SIMPLE_CHAT"
 
     # Se IMAGE_GENERATION ma Gemini non abilitato, fallback
@@ -857,7 +857,7 @@ async def get_quick_response(
     - AI_BACKEND=api: OpenRouter (Qwen API) → Gemini fallback (no tools)
     - AI_BACKEND=local: Ollama (Qwen locale) con 4 tool:
         web_search, web_fetch, memory_search, home_status
-    Questo è il fallback quando OpenClaw è down, quindi NON usa OpenClaw.
+    Questo è il fallback quando AI Agent è down, quindi NON usa AI Agent.
     """
     system_prompt = load_prompt(
         "quick_response_system",
@@ -948,9 +948,9 @@ async def _quick_response_openrouter(text: str, system_prompt: str, llm_params: 
                 return None
 
 
-def is_openclaw_intent(intent: str) -> bool:
-    """Verifica se l'intent richiede OpenClaw."""
-    return intent in OPENCLAW_INTENTS
+def is_ai_agent_intent(intent: str) -> bool:
+    """Verifica se l'intent richiede AI Agent."""
+    return intent in AI_AGENT_INTENTS
 
 
 # ===========================================================================

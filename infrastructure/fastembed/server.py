@@ -17,7 +17,7 @@
 # Usato da:
 #   - Orchestrator (vector_store.py) — formato Ollama
 #   - ha_memory_service (main.py)    — formato Ollama
-#   - OpenClaw (memorySearch)        — formato OpenAI
+#   - AI Agent (memorySearch)         — formato OpenAI
 # =============================================================================
 
 import os
@@ -100,7 +100,7 @@ def embed(req: EmbedRequest):
 @app.post("/v1/embeddings")
 def openai_embeddings(req: OpenAIEmbeddingsRequest):
     """OpenAI-compatible embedding endpoint.
-    Used by: OpenClaw (memorySearch, provider=openai, baseUrl=http://host:11435/v1).
+    Used by: AI Agent (memorySearch, provider=openai, baseUrl=http://host:11435/v1).
     """
     texts = req.input if isinstance(req.input, list) else [req.input or ""]
     texts = [t if t.strip() else " " for t in texts]

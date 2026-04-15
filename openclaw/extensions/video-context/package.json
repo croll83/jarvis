@@ -1,9 +1,0 @@
-{
-  "name": "@openclaw/video-context",
-  "version": "1.0.0",
-  "description": "Context injection plugin for the video-producer agent",
-  "type": "module",
-  "openclaw": {
-    "extensions": ["./index.ts"]
-  }
-}

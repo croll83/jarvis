@@ -1,7 +1,7 @@
 """
 JARVIS Vector Store
 - ChromaDB per retrieval semantico
-- Embedding via Ollama (nomic-embed-text) in locale, Gemini in cloud
+- Embedding via Ollama (nomic-embed-text) in locale, Cloud API in cloud
 - Hybrid search con recency boost
 """
 
@@ -43,7 +43,7 @@ MAX_RESULTS_DEFAULT = config.MAX_VECTOR_RESULTS_DEFAULT
 # EMBEDDING FUNCTIONS
 # ===========================================================================
 # AI_BACKEND=local → OllamaEmbeddingFunction (nomic-embed-text, fastembed CPU)
-# AI_BACKEND=api   → GeminiEmbeddingFunction (gemini-embedding-001, cloud)
+# AI_BACKEND=api   → CloudEmbeddingFunction (gemini-embedding-001, cloud)
 # ===========================================================================
 
 EMBEDDING_DIM = 768  # Dimensione comune a entrambi i provider
@@ -116,8 +116,8 @@ class OllamaEmbeddingFunction:
         return self([text])
 
 
-class GeminiEmbeddingFunction:
-    """Embedding via Gemini API (gemini-embedding-001).
+class CloudEmbeddingFunction:
+    """Embedding via Cloud API (gemini-embedding-001).
     Usato quando AI_BACKEND=api. Stessa dimensionalita (768) di nomic-embed-text.
     """
 
@@ -165,37 +165,37 @@ class GeminiEmbeddingFunction:
                     if isinstance(embedding_obj, dict):
                         emb = embedding_obj.get("values")
                     else:
-                        logger.error(f"Gemini embedding unexpected structure: type={type(embedding_obj).__name__}, response={str(data)[:300]}")
+                        logger.error(f"Cloud embedding unexpected structure: type={type(embedding_obj).__name__}, response={str(data)[:300]}")
                         emb = None
                     # Guard: ensure embedding is a list of floats with correct dimension
                     if emb is None:
-                        logger.error(f"Gemini embedding missing 'values', using zero-vector. Keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
+                        logger.error(f"Cloud embedding missing 'values', using zero-vector. Keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
                         emb = [0.0] * EMBEDDING_DIM
                     elif isinstance(emb, (int, float)):
-                        logger.error(f"Gemini embedding returned scalar ({type(emb).__name__}={emb}), using zero-vector")
+                        logger.error(f"Cloud embedding returned scalar ({type(emb).__name__}={emb}), using zero-vector")
                         emb = [0.0] * EMBEDDING_DIM
                     elif not isinstance(emb, list):
-                        logger.error(f"Gemini embedding returned {type(emb).__name__}, using zero-vector")
+                        logger.error(f"Cloud embedding returned {type(emb).__name__}, using zero-vector")
                         emb = [0.0] * EMBEDDING_DIM
                     elif len(emb) == 0:
-                        logger.error(f"Gemini embedding returned empty list, using zero-vector")
+                        logger.error(f"Cloud embedding returned empty list, using zero-vector")
                         emb = [0.0] * EMBEDDING_DIM
                     elif not all(isinstance(v, (int, float)) for v in emb[:5]):
-                        logger.error(f"Gemini embedding contains non-numeric values: {emb[:5]}, using zero-vector")
+                        logger.error(f"Cloud embedding contains non-numeric values: {emb[:5]}, using zero-vector")
                         emb = [0.0] * EMBEDDING_DIM
                     embeddings.append(emb)
                 else:
-                    logger.error(f"Gemini embedding error {response.status_code}: {response.text[:200]}")
+                    logger.error(f"Cloud embedding error {response.status_code}: {response.text[:200]}")
                     embeddings.append([0.0] * EMBEDDING_DIM)
             except Exception as e:
-                logger.error(f"Gemini embedding exception: {e}")
+                logger.error(f"Cloud embedding exception: {e}")
                 embeddings.append([0.0] * EMBEDDING_DIM)
 
         # Final safety: ensure every element is List[float] with correct dim
         safe_embeddings = []
         for i, emb in enumerate(embeddings):
             if not isinstance(emb, list) or len(emb) != EMBEDDING_DIM:
-                logger.error(f"Gemini embedding[{i}] final guard: type={type(emb).__name__}, "
+                logger.error(f"Cloud embedding[{i}] final guard: type={type(emb).__name__}, "
                              f"len={len(emb) if isinstance(emb, list) else 'N/A'}, replacing with zero-vector")
                 safe_embeddings.append([0.0] * EMBEDDING_DIM)
             else:
@@ -222,8 +222,8 @@ class GeminiEmbeddingFunction:
 def get_embedding_function():
     """Factory: seleziona embedding function in base a AI_BACKEND."""
     if config.AI_BACKEND == "api":
-        logger.info("🌐 Using Gemini embeddings (cloud mode)")
-        return GeminiEmbeddingFunction()
+        logger.info("🌐 Using Cloud embeddings (cloud mode)")
+        return CloudEmbeddingFunction()
     else:
         logger.info("🖥️ Using Ollama embeddings (local mode)")
         return OllamaEmbeddingFunction()

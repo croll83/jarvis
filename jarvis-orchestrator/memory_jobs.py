@@ -1,7 +1,8 @@
 """
 JARVIS Memory Jobs
 - Summarization oraria/giornaliera per utenti
-- Estrazione fatti long-term
+- Estrazione fatti long-term → mem0
+- Estrazione abitudini comportamentali → mem0
 """
 
 import asyncio
@@ -11,6 +12,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+import httpx
+
 from database import (
     _get_conn,
     save_user_hourly_summary,
@@ -19,11 +22,18 @@ from database import (
     cleanup_old_user_memory
 )
 from ai_engines import call_qwen_summary
-from vector_store import user_vector_store
+from context_bus import speaker_to_user_id
 from prompts import load_prompt
 import config
 
 logger = logging.getLogger("JARVIS_MEMORY")
+
+# ===========================================================================
+# CONFIG
+# ===========================================================================
+
+MEM0_BASE_URL = config.MEM0_BASE_URL
+MEM0_ADD_TIMEOUT = 120.0
 
 # ===========================================================================
 # PROMPTS (loaded from external .txt files)
@@ -31,6 +41,26 @@ logger = logging.getLogger("JARVIS_MEMORY")
 
 USER_HOURLY_SUMMARY_PROMPT = load_prompt("user_hourly_summary")
 USER_DAILY_SUMMARY_PROMPT = load_prompt("user_daily_summary")
+
+# Prompt per estrazione abitudini comportamentali
+BEHAVIORAL_EXTRACTION_PROMPT = """Analizza le interazioni vocali delle ultime 24 ore di questo utente.
+Estrai SOLO informazioni utili per la memoria a lungo termine:
+
+- Abitudini ricorrenti (orari, routine, preferenze quotidiane)
+- Preferenze esplicite o implicite (temperatura, luci, dispositivi preferiti)
+- Pattern comportamentali (es: ogni mattina accende X, la sera fa Y)
+- Informazioni nuove su persone, luoghi, contesti menzionati
+- Comandi che rivelano interessi o bisogni
+
+NON estrarre: comandi singoli non ricorrenti, azioni banali, stati temporanei,
+cose gia' note dalle sessioni precedenti.
+
+Interazioni giornaliere:
+{interactions}
+
+Rispondi con una lista di fatti in italiano, uno per riga. Se non ci sono
+fatti rilevanti, rispondi con "NESSUNO".
+"""
 
 
 # ===========================================================================
@@ -166,7 +196,7 @@ async def _process_user_daily(user_id: int, start_time: float, date: str):
             data.get("anomalies", [])
         )
 
-        # Estrai fatti long-term
+        # Estrai fatti long-term (SQLite only, no ChromaDB)
         for fact in data.get("new_facts", []):
             save_user_longterm_fact(user_id, fact, "extracted", "daily_summary")
 
@@ -176,6 +206,96 @@ async def _process_user_daily(user_id: int, start_time: float, date: str):
         logger.error(f"User {user_id} daily summary JSON parse failed: {e}")
     except Exception as e:
         logger.error(f"User {user_id} daily summary failed: {e}")
+
+
+# ===========================================================================
+# MEM0 BEHAVIORAL EXTRACTION (nightly batch)
+# ===========================================================================
+
+async def run_mem0_behavioral_extraction():
+    """
+    Estrae abitudini comportamentali dalle interazioni vocali giornaliere
+    e le invia a mem0 per la long-term memory.
+    Gira di notte insieme al daily summary.
+    """
+    conn = _get_conn()
+    c = conn.cursor()
+
+    yesterday_start = time.time() - 86400
+
+    # Recupera tutti i messaggi user delle ultime 24h, raggruppati per speaker
+    c.execute('''
+        SELECT speaker_id, speaker_name, role, content, source, timestamp
+        FROM chat_memory
+        WHERE timestamp > ? AND speaker_id IS NOT NULL
+        ORDER BY speaker_id, timestamp ASC
+    ''', (yesterday_start,))
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        logger.info("No voice interactions in last 24h, skipping behavioral extraction")
+        return
+
+    # Raggruppa per speaker
+    by_speaker = {}
+    for row in rows:
+        sid = row['speaker_id']
+        if sid not in by_speaker:
+            by_speaker[sid] = {
+                'speaker_name': row['speaker_name'],
+                'messages': []
+            }
+        by_speaker[sid]['messages'].append(row)
+
+    for speaker_id, data in by_speaker.items():
+        await _extract_and_push_to_mem0(speaker_id, data)
+
+
+async def _extract_and_push_to_mem0(speaker_id: int, data: dict):
+    """Estrai pattern comportamentali e invia a mem0."""
+    messages = data['messages']
+    speaker_name = data['speaker_name']
+    mem0_user_id = speaker_to_user_id(speaker_id, speaker_name)
+
+    # Formatta interazioni per il prompt
+    interactions = []
+    for msg in messages:
+        ts = datetime.fromtimestamp(msg['timestamp']).strftime('%H:%M')
+        role = msg['role']
+        src = msg['source'] or 'voice'
+        interactions.append(f"[{ts}] ({src}) {role}: {msg['content'][:300]}")
+
+    interactions_text = "\n".join(interactions)
+    prompt = BEHAVIORAL_EXTRACTION_PROMPT.format(interactions=interactions_text)
+
+    try:
+        response = await call_qwen_summary(prompt, max_tokens=500)
+
+        if not response or "NESSUNO" in response.upper():
+            logger.info(f"Speaker {speaker_id} ({speaker_name}): no behavioral facts extracted")
+            return
+
+        # Manda a mem0
+        facts_text = response.strip()
+        try:
+            async with httpx.AsyncClient(timeout=MEM0_ADD_TIMEOUT) as client:
+                resp = await client.post(
+                    f"{MEM0_BASE_URL}/add",
+                    json={"text": facts_text, "user_id": mem0_user_id},
+                )
+                resp.raise_for_status()
+                result = resp.json()
+                added = len(result.get("results", []))
+                logger.info(
+                    f"Speaker {speaker_id} ({speaker_name}) → mem0 user '{mem0_user_id}': "
+                    f"{added} facts extracted from {len(messages)} interactions"
+                )
+        except Exception as e:
+            logger.error(f"mem0 push failed for speaker {speaker_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"Behavioral extraction failed for speaker {speaker_id}: {e}")
 
 
 # ===========================================================================
@@ -200,17 +320,17 @@ async def memory_scheduler():
                 logger.info("Running hourly user memory summary...")
                 await run_user_hourly_summary()
 
-            # Daily summary all'ora configurata
+            # Daily summary + behavioral extraction all'ora configurata
             if now.hour == config.MEMORY_DAILY_TRIGGER_HOUR and now.minute == 0:
                 logger.info("Running daily user memory summary...")
                 await run_user_daily_summary()
 
+                # Estrai abitudini comportamentali → mem0
+                logger.info("Running behavioral extraction → mem0...")
+                await run_mem0_behavioral_extraction()
+
                 # Cleanup vecchi dati SQL
                 cleanup_old_user_memory()
-
-                # Cleanup vecchi vettori
-                logger.info("Cleaning old vectors...")
-                user_vector_store.cleanup_old_vectors(max_age_days=config.MEMORY_VECTOR_CLEANUP_DAYS)
 
         except Exception as e:
             logger.error(f"Memory scheduler error: {e}")

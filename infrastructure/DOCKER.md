@@ -99,9 +99,9 @@ Host (LXC-JARVIS)
 L'orchestrator raggiunge i servizi su `localhost`:
 - `http://localhost:11434` per Ollama
 - `http://localhost:9000` per Whisper
-- `https://openclaw.mintwork.it:18789` per OpenClaw (LXC separato, TLS, via Tailscale MagicDNS)
+- `https://your-agent-host:18789` per AI Agent (LXC separato, TLS, via Tailscale MagicDNS)
 
-> **Nota**: OpenClaw gira bare-metal su un **LXC separato** (non in Docker).
+> **Nota**: AI Agent gira bare-metal su un **LXC separato** (non in Docker).
 > Tailscale gira **host-level** (non in Docker) — l'orchestrator vede l'interfaccia Tailscale direttamente.
 
 > **Build custom**: `jarvis_whisper` e `jarvis_xtts` usano immagini custom con Dockerfile

@@ -8,7 +8,7 @@ JARVIS Web Tools — Tool calling per Qwen 2.5 3B via Ollama
   4. home_status — Stato dei dispositivi domotici da Home Assistant
 
 Usato da:
-  - get_quick_response() quando OpenClaw e' down (fallback locale)
+  - get_quick_response() quando AI Agent e' down (fallback locale)
   - Cronjob autonomi che girano su Qwen locale
   - Qualsiasi flusso che necessiti di tool calling locale
 """

@@ -28,9 +28,9 @@ This migration introduces:
 ### HA Memory Service (`/opt/jarvis/ha_memory_service/`)
 - `main.py` — `PersistentClient` → `HttpClient` (with fallback); added `CHROMA_HOST`, `CHROMA_PORT` env vars
 
-### OpenClaw Plugin (`/opt/jarvis/openclaw/extensions/ontology-bridge/`)
+### AI Agent Plugin (`extensions/ontology-bridge/`)
 - `index.ts` — Rewritten v2.0: keyword match + ChromaDB semantic search + orchestrator recent messages
-- `openclaw.plugin.json` — Updated config schema (added `chromaUrl`, `orchestratorUrl`, `embeddingUrl`, `recentMessagesCount`)
+- Plugin config — Updated config schema (added `chromaUrl`, `orchestratorUrl`, `embeddingUrl`, `recentMessagesCount`)
 - `package.json` — Version bump to 2.0.0
 
 ## Deployment Steps
@@ -83,8 +83,8 @@ curl -s http://localhost:5000/api/recent_turns?max_turns=1
 docker logs jarvis_core 2>&1 | grep "previous_intent\|INTENT PRECEDENTE"
 ```
 
-### Step 6: Update OpenClaw plugin config
-Add to `~/.openclaw/openclaw.json` under `plugins.entries.ontology-bridge.config`:
+### Step 6: Update AI Agent plugin config
+Add to the AI Agent config under `plugins.entries.ontology-bridge.config`:
 ```json
 {
   "chromaUrl": "http://127.0.0.1:8000",

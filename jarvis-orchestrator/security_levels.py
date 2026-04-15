@@ -68,16 +68,16 @@ DEFAULT_DOMAIN_LEVELS: Dict[str, SecurityLevel] = {
 # ═══════════════════════════════════════════════════════════════════════════════
 # Each channel has a maximum security level it can execute.
 # Voice (Resemblyzer-certified) is fully trusted.
-# OpenClaw Telegram is L2 (L3 requires JARVIS approval bot).
+# AI Agent Telegram is L2 (L3 requires JARVIS approval bot).
 # Email/unknown sources are always blocked.
 
 DEFAULT_CHANNEL_PERMISSIONS: Dict[str, SecurityLevel] = {
     "voice": SecurityLevel.L3_PROTECTED,  # Resemblyzer verified — fully trusted
     "telegram": SecurityLevel.L3_PROTECTED,  # Direct JARVIS bot — trusted (owner only)
-    "openclaw_telegram": SecurityLevel.L2_SENSITIVE,  # Telegram via OpenClaw
-    "openclaw_whatsapp": SecurityLevel.L2_SENSITIVE,  # Whatsapp via OpenClaw
-    "openclaw_app": SecurityLevel.L3_PROTECTED,  # Mac/desktop app — configurable as trusted
-    "api_tools": SecurityLevel.L2_SENSITIVE,  # Direct API tool calls from OpenClaw
+    "ai_agent_telegram": SecurityLevel.L2_SENSITIVE,  # Telegram via AI Agent
+    "ai_agent_whatsapp": SecurityLevel.L2_SENSITIVE,  # Whatsapp via AI Agent
+    "ai_agent_app": SecurityLevel.L3_PROTECTED,  # Mac/desktop app — configurable as trusted
+    "api_tools": SecurityLevel.L2_SENSITIVE,  # Direct API tool calls from AI Agent
     "email": SecurityLevel.L4_BLOCKED,  # Always blocked for home control
     "unknown": SecurityLevel.L4_BLOCKED,  # Unknown sources — blocked
 }
@@ -116,7 +116,7 @@ def get_channel_permission(
     Get the maximum security level a channel can execute.
 
     Args:
-        channel: Source channel (e.g., "voice", "openclaw_telegram", "email")
+        channel: Source channel (e.g., "voice", "ai_agent_telegram", "email")
         db_overrides: Optional dict of channel→level from database
 
     Returns:
@@ -263,9 +263,9 @@ def _channel_description(channel: str) -> str:
     """Human-readable channel descriptions."""
     descriptions = {
         "voice": "Comandi vocali (certificati da Resemblyzer) — completamente trusted",
-        "openclaw_telegram": "Telegram via OpenClaw — trusted per L1-L2",
-        "openclaw_app": "App Mac/desktop OpenClaw — configurabile come trusted",
-        "api_tools": "Chiamate API dirette da OpenClaw — L1-L2",
+        "ai_agent_telegram": "Telegram via AI Agent — trusted per L1-L2",
+        "ai_agent_app": "App Mac/desktop AI Agent — configurabile come trusted",
+        "api_tools": "Chiamate API dirette da AI Agent — L1-L2",
         "email": "Email — sempre bloccato per controllo domotica",
         "unknown": "Fonte sconosciuta — sempre bloccato",
     }

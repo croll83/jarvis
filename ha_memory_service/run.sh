@@ -48,7 +48,7 @@ if [ -z "${HA_TOKEN}" ]; then
 fi
 
 if [ "${AI_BACKEND}" = "api" ]; then
-    log "INFO" "Mode: Cloud (OpenRouter + Gemini embeddings)"
+    log "INFO" "Mode: Cloud (OpenRouter + cloud embeddings)"
 else
     log "INFO" "Mode: Local (Ollama at ${OLLAMA_URL})"
 fi

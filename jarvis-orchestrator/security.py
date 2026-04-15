@@ -178,8 +178,8 @@ def should_require_approval(domain: str, action: str, source: str) -> bool:
     if source in config.VOICE_SOURCES:
         return False
     
-    # Telegram via OpenClaw — check critical domains
-    if source == "Telegram" or source == "openclaw":
+    # Telegram via AI Agent — check critical domains
+    if source == "Telegram" or source == "ai_agent":
         if domain in config.CRITICAL_DOMAINS:
             return True
         # Auto-approve safe actions

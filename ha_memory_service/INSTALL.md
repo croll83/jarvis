@@ -1,6 +1,6 @@
 # HA Memory Service — Guida Installazione
 
-Servizio memory per JARVIS. Ingerisce eventi HA via WebSocket, genera summary con LLM, e offre ricerca semantica via ChromaDB.
+Servizio memory per JARVIS. Ingerisce eventi HA via WebSocket, genera summary con LLM, pubblica contesto real-time su Redis e estrae pattern long-term su mem0.
 
 **1 istanza per location HA.**
 
@@ -82,7 +82,7 @@ ollama_url: http://100.x.x.x:11434
 4. Rimuovi le API keys (opzionale)
 5. **Save** > **Restart**
 
-I summary storici in SQLite persistono. I vettori ChromaDB si purgano naturalmente in 7 giorni.
+I summary storici in SQLite persistono.
 
 ---
 
@@ -145,6 +145,8 @@ docker run -d \
   -e LOCATION_ID=wagmi \
   -e HA_URL=http://192.168.1.100:8123 \
   -e HA_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOi... \
+  -e REDIS_URL=redis://your_redis_host:6379/0 \
+  -e MEM0_BASE_URL=http://your_mem0_host:8200 \
   -e OPENROUTER_API_KEY=sk-or-v1-xxx \
   -e GEMINI_API_KEY=AIzaSyxxx \
   -v ha_memory_wagmi:/data \
@@ -160,6 +162,8 @@ docker run -d \
   -e LOCATION_ID=wagmi \
   -e HA_URL=http://192.168.1.100:8123 \
   -e HA_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOi... \
+  -e REDIS_URL=redis://your_redis_host:6379/0 \
+  -e MEM0_BASE_URL=http://your_mem0_host:8200 \
   -e OLLAMA_URL=http://100.x.x.x:11434 \
   -v ha_memory_wagmi:/data \
   -p 8100:8100 \
@@ -179,15 +183,15 @@ docker run -d \
                          |
     ┌────────────────────┼────────────────────┐
     │                    │                    │
-  MILANO              NAPOLI               VPS (temp)
+  MILANO              NAPOLI               VPS
   Proxmox             Proxmox
-  ├─ HAOS VM          ├─ Orchestrator      ├─ Orchestrator
-  │  ├─ HA Core       ├─ Ollama            └─ (no Ollama)
-  │  ├─ ha_memory     └─ ...
-  │  │  (addon)
-  │  └─ Tailscale
-  │     (addon)
-  │
+  ├─ HAOS VM          ├─ LXC Jarvis        ├─ LXC Openclaw
+  │  ├─ HA Core       │  ├─ Orchestrator   │  ├─ Hermes
+  │  ├─ ha_memory     │  ├─ Redis :6379    │  └─ (Tailscale)
+  │  │  (addon)       │  ├─ mem0 :8200     │
+  │  └─ Tailscale     │  ├─ ChromaDB :8000 │
+  │     (addon)       │  └─ Ollama         │
+  │                   │                    │
   └─ 2ms latency      ~50ms Starlink       Cloud
 ```
 
@@ -196,9 +200,10 @@ docker run -d \
 | Percorso | Latency | Note |
 |----------|---------|------|
 | ha_memory -> HA (addon) | <1ms | Stesso container network |
+| ha_memory -> Redis (LXC Jarvis) | ~50ms | Tailscale, real-time push |
+| ha_memory -> mem0 (LXC Jarvis) | ~50ms | Tailscale, solo nightly batch |
 | ha_memory -> Ollama (Napoli) | ~50ms | Tailscale, solo ogni ora |
 | ha_memory -> OpenRouter | ~100-200ms | Solo in API mode |
-| ha_memory -> Gemini embeddings | ~100-200ms | Solo in API mode |
 
 ---
 

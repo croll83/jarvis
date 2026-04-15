@@ -8,13 +8,13 @@
 #   Se si usa XTTS remoto, il container kokoro-tts non serve — non avviarlo.
 #   Se si usa Kokoro: docker compose --profile kokoro up -d
 #
-# NOTA: OpenClaw gira bare-metal (non in Docker) sulla stessa macchina.
+# NOTA: AI Agent gira bare-metal (non in Docker) sulla stessa macchina.
 # NOTA: Tailscale gira host-level (non in Docker) per connettere HA remoti,
-#       OpenClaw e la dashboard alla tailnet.
+#       AI Agent e la dashboard alla tailnet.
 #
 # Prerequisiti host-level (vedi cloud/README.md):
 #   - Tailscale installato e connesso (tailscale up --hostname=jarvis-cloud)
-#   - OpenClaw installato e attivo (systemctl start openclaw)
+#   - AI Agent installato e attivo (vedi documentazione AI Agent)
 # =============================================================================
 
 services:
@@ -39,7 +39,7 @@ services:
           memory: 1G
 
   # ---------------------------------------------------------------------------
-  # Orchestrator - JARVIS Core (OpenClaw Skill)
+  # Orchestrator - JARVIS Core (AI Agent Skill)
   # ---------------------------------------------------------------------------
   orchestrator:
     build:
@@ -54,11 +54,14 @@ services:
     env_file: .env
     environment:
       - AI_BACKEND=api
-      # OpenClaw gira bare-metal — TLS via Let's Encrypt
-      - OPENCLAW_URL=${OPENCLAW_URL:-https://openclaw.mintwork.it:18789}
-      - OPENCLAW_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      # AI Agent gira bare-metal — TLS via Let's Encrypt
+      - AI_AGENT_URL=${AI_AGENT_URL:-}
+      - AI_AGENT_TOKEN=${AI_AGENT_TOKEN:-}
       # Gateway WS for exec approval operator (same host/port, wss:// scheme)
-      - OPENCLAW_WS_URL=${OPENCLAW_WS_URL:-wss://openclaw.mintwork.it:18789}
+      - AI_AGENT_WS_URL=${AI_AGENT_WS_URL:-}
+      # Memory: Redis context bus + mem0 long-term
+      - REDIS_URL=${REDIS_URL:-redis://localhost:6379/0}
+      - MEM0_BASE_URL=${MEM0_BASE_URL:-http://localhost:8200}
       # TTS — configurato via .env (TTS_ENGINE, XTTS_URL o KOKORO_TTS_URL)
       # Default: XTTS su LXC-JARVIS remoto via Tailscale
       - TTS_ENGINE=${TTS_ENGINE:-xtts}
@@ -84,7 +87,7 @@ services:
   # ACL basata su X-Speaker-Id: filtra entita per visibilita (private/family/public).
   # Raggiungibile da:
   #   - Orchestrator: http://127.0.0.1:8100 (network_mode: host)
-  #   - OpenClaw (bare-metal): http://127.0.0.1:8100 (porta esposta su localhost)
+  #   - AI Agent (bare-metal): http://127.0.0.1:8100 (porta esposta su localhost)
   #   - Dashboard (Tailscale): http://<tailscale-ip>:8100/dashboard (smartphone)
   # ---------------------------------------------------------------------------
   ontology-server:
@@ -114,8 +117,29 @@ services:
           memory: 256M
 
   # ---------------------------------------------------------------------------
-  # ChromaDB - Shared Vector Store (CPU-only)
-  # Condiviso tra orchestrator, HA memory service e OpenClaw
+  # Redis — Short-term cross-system context bus
+  # Per-user event lists with TTL 30min, source filtering
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: jarvis_redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # ChromaDB — Vector store backend per mem0
   # ---------------------------------------------------------------------------
   chromadb:
     image: chromadb/chroma:0.6.3
@@ -123,7 +147,7 @@ services:
     volumes:
       - chroma_data:/chroma/chroma
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE
@@ -138,6 +162,38 @@ services:
         limits:
           memory: 512M
 
+  # ---------------------------------------------------------------------------
+  # Mem0 — Long-term behavioral memory (FastAPI wrapper)
+  # Backed by ChromaDB (vectors) + Kuzu (graph) + fastembed (embeddings)
+  # ---------------------------------------------------------------------------
+  mem0-server:
+    build:
+      context: ../mem0-server
+      dockerfile: Dockerfile
+    container_name: jarvis_mem0
+    ports:
+      - "127.0.0.1:8200:8200"
+    environment:
+      - CHROMA_HOST=jarvis_chromadb
+      - CHROMA_PORT=8000
+    volumes:
+      - mem0_data:/app/data
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
 volumes:
+  redis_data:
   chroma_data:
+  mem0_data:
   ontology_data:
