@@ -176,32 +176,6 @@ services:
     # restart gestito da jarvis.sh
 
   # ===========================================================================
-  # ONTOLOGY SERVER - Knowledge Graph API (SQLite + FastAPI + ACL)
-  # Single source of truth per l'intero ecosistema di agent.
-  # ACL basata su X-Speaker-Id: filtra entita per visibilita (private/family/public).
-  # Raggiungibile da:
-  #   - Orchestrator: http://127.0.0.1:8100 (network_mode: host)
-  #   - AI Agent (bare-metal): http://127.0.0.1:8100 (porta esposta su localhost)
-  # ===========================================================================
-  ontology-server:
-    build: ./ontology-server
-    container_name: jarvis_ontology
-    volumes:
-      - ontology_data:/app/data               # Persistent SQLite graph.db
-    ports:
-      - "127.0.0.1:8100:8100"
-    environment:
-      - ONTOLOGY_DB_PATH=/app/data/graph.db
-      - ONTOLOGY_SCHEMA_PATH=/app/schema.yaml
-      - ONTOLOGY_API_TOKEN=${ONTOLOGY_API_TOKEN:-}
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    # restart gestito da jarvis.sh
-
-  # ===========================================================================
   # SECURITY (Frigate + DoubleTake)
   # =============================================================================
   # Frigate e DoubleTake sono stati spostati in security/docker-compose.security.yml
@@ -269,4 +243,3 @@ volumes:
   fastembed_cache:
   postgres_data:
   mongo_data:
-  ontology_data:
