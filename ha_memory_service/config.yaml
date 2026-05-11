@@ -2,7 +2,8 @@
 # JARVIS HA Memory Service — Home Assistant Add-on
 # =============================================================================
 # Ingerisce eventi HA via WebSocket, genera summary con LLM,
-# offre ricerca semantica via ChromaDB per l'orchestrator JARVIS.
+# offre API SQL (hot/warm/cold/longterm) per l'orchestrator JARVIS.
+# La ricerca semantica e' delegata a mem0-stack (esterno).
 # =============================================================================
 
 name: "JARVIS HA Memory"
@@ -40,7 +41,7 @@ hassio_role: default
 # Auth API — per validare token se servisse
 auth_api: false
 
-# Volume persistente per SQLite + ChromaDB
+# Volume persistente per SQLite
 map:
   - addon_config:rw
 
@@ -51,21 +52,17 @@ options:
   location_id: "wagmi"
   ai_backend: "api"
 
-  # --- Local mode (Ollama + fastembed) ---
+  # --- Local mode (Ollama) ---
   ollama_url: "http://100.x.x.x:11434"
-  embedding_url: "http://100.x.x.x:11435"
-  embedding_model: "nomic-embed-text"
   summary_model: "qwen2.5:3b-32k"
 
-  # --- API mode (OpenRouter + Gemini) ---
+  # --- API mode (OpenRouter) ---
   openrouter_api_key: ""
-  gemini_api_key: ""
   openrouter_summary_model: "qwen/qwen-2.5-7b-instruct"
 
   # --- Tuning ---
   summary_temperature: 0.3
   summary_timeout: 30
-  embedding_timeout: 30
 
   # --- Redis context bus ---
   # redis_url: set via REDIS_URL env var
@@ -83,21 +80,15 @@ schema:
 
   # Local mode
   ollama_url: str
-  embedding_url: str
-  embedding_model: str
   summary_model: str
 
   # API mode
   openrouter_api_key: password
-  gemini_api_key: password
   openrouter_summary_model: str
 
   # Tuning
   summary_temperature: float
   summary_timeout: int
-  embedding_timeout: int
-  chroma_host: str
-  chroma_port: int
   skip_entity_prefixes: str
   skip_entity_suffixes: str
 

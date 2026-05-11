@@ -382,33 +382,9 @@ STT_NORMALIZE_ENABLED = os.getenv("STT_NORMALIZE_ENABLED", "false").lower() == "
 # Keywords cache TTL
 KEYWORDS_CACHE_TTL = int(os.getenv("KEYWORDS_CACHE_TTL", "300"))
 
-# ===========================================================================
-# VECTOR / CONTEXT THRESHOLDS
-# ===========================================================================
-VECTOR_SCORE_MIN_MESSAGES = float(os.getenv("VECTOR_SCORE_MIN_MESSAGES", "0.3"))
-VECTOR_SCORE_MIN_FACTS = float(os.getenv("VECTOR_SCORE_MIN_FACTS", "0.4"))
-VECTOR_RETENTION_DAYS = int(os.getenv("VECTOR_RETENTION_DAYS", "7"))
-MAX_VECTOR_RESULTS_DEFAULT = int(os.getenv("MAX_VECTOR_RESULTS_DEFAULT", "30"))
-VECTOR_METADATA_TRUNCATE = int(os.getenv("VECTOR_METADATA_TRUNCATE", "500"))
-VECTOR_RECENCY_DECAY = float(os.getenv("VECTOR_RECENCY_DECAY", "0.05"))
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
-CHROMA_PATH = os.getenv("CHROMA_PATH", "./data/chroma")  # Legacy fallback (PersistentClient)
-CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
-CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
-
-# Context builder search limits
-CONTEXT_SEARCH_LIMITS = {
-    "routing": {
-        "n_messages": int(os.getenv("CTX_ROUTING_N_MESSAGES", "20")),
-        "n_facts": int(os.getenv("CTX_ROUTING_N_FACTS", "10")),
-        "n_location_results": int(os.getenv("CTX_ROUTING_N_LOCATION", "15")),
-    },
-    "reasoning": {
-        "n_messages": int(os.getenv("CTX_REASONING_N_MESSAGES", "50")),
-        "n_facts": int(os.getenv("CTX_REASONING_N_FACTS", "30")),
-        "n_location_results": int(os.getenv("CTX_REASONING_N_LOCATION", "30")),
-    },
-}
+# NOTE: I parametri VECTOR_*/CHROMA_*/CONTEXT_SEARCH_LIMITS sono stati
+# rimossi insieme al vector store locale. La memoria semantica e' su
+# mem0-stack (consumer plugin Hermes), che ha il suo proprio tuning.
 
 # ===========================================================================
 # LOCATION MEMORY LIMITS
@@ -420,9 +396,6 @@ LOCATION_MEMORY_DEFAULTS = {
     "max_tokens_per_location": int(os.getenv("LOC_MEM_MAX_TOKENS", "500")),
     "max_longterm_facts": int(os.getenv("LOC_MEM_MAX_FACTS", "5")),
     "max_hot_events": int(os.getenv("LOC_MEM_MAX_HOT_EVENTS", "10")),
-    "n_results": int(os.getenv("LOC_MEM_N_RESULTS", "30")),
-    "n_results_per_location": int(os.getenv("LOC_MEM_N_PER_LOCATION", "20")),
-    "min_final_score": float(os.getenv("LOC_MEM_MIN_SCORE", "0.3")),
 }
 
 # ===========================================================================
@@ -458,7 +431,6 @@ MEMORY_MIN_MESSAGES_FOR_SUMMARY = int(os.getenv("MEMORY_MIN_MESSAGES", "2"))
 MEMORY_CONTENT_TRUNCATE = int(os.getenv("MEMORY_CONTENT_TRUNCATE", "200"))
 MEMORY_HOURLY_TRIGGER_MINUTE = int(os.getenv("MEMORY_HOURLY_MINUTE", "5"))
 MEMORY_DAILY_TRIGGER_HOUR = int(os.getenv("MEMORY_DAILY_HOUR", "3"))
-MEMORY_VECTOR_CLEANUP_DAYS = int(os.getenv("MEMORY_VECTOR_CLEANUP_DAYS", "7"))
 
 # ===========================================================================
 # PROACTIVE MONITORING THRESHOLDS (candidati per global_preferences)

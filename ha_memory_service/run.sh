@@ -58,13 +58,11 @@ fi
 # ===========================================================================
 DATA_DIR="/data"
 export DB_PATH="${DATA_DIR}/ha_memory.db"
-export CHROMA_PATH="${DATA_DIR}/chroma"
 export SERVICE_PORT=8100
 
 mkdir -p "${DATA_DIR}"
 
 log "INFO" "DB: ${DB_PATH}"
-log "INFO" "ChromaDB: ${CHROMA_PATH}"
 log "INFO" "Port: ${SERVICE_PORT}"
 
 # ===========================================================================

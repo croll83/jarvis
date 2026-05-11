@@ -188,8 +188,8 @@ docker run -d \
   ├─ HAOS VM          ├─ LXC Jarvis        ├─ LXC Openclaw
   │  ├─ HA Core       │  ├─ Orchestrator   │  ├─ Hermes
   │  ├─ ha_memory     │  ├─ Redis :6379    │  └─ (Tailscale)
-  │  │  (addon)       │  ├─ mem0 :8200     │
-  │  └─ Tailscale     │  ├─ ChromaDB :8000 │
+  │  │  (addon)       │  ├─ mem0-stack     │
+  │  └─ Tailscale     │  │  (repo separato)│
   │     (addon)       │  └─ Ollama         │
   │                   │                    │
   └─ 2ms latency      ~50ms Starlink       Cloud

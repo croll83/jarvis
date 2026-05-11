@@ -213,65 +213,11 @@ services:
   # ===========================================================================
 
   # ===========================================================================
-  # CHROMADB — vector store backend per mem0
+  # MEM0-STACK (vector + graph + LLM router) — MOVED to separate repo
   # ===========================================================================
-  chromadb:
-    image: chromadb/chroma:1.5.2
-    container_name: jarvis_chromadb
-    volumes:
-      - chroma_data:/chroma/chroma
-    ports:
-      - "8000:8000"
-    environment:
-      - IS_PERSISTENT=TRUE
-      - ANONYMIZED_TELEMETRY=FALSE
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    # restart gestito da jarvis.sh
-
-  # ===========================================================================
-  # MEM0 — Long-term behavioral memory (FastAPI wrapper)
-  # Backed by ChromaDB (vectors) + Kuzu (graph) + fastembed (embeddings)
-  # Used by orchestrator and ha-memory-service for long-term memory
-  # ===========================================================================
-  mem0-server:
-    build: ./mem0-server
-    container_name: jarvis_mem0
-    ports:
-      - "8200:8200"
-    environment:
-      - CHROMA_HOST=jarvis_chromadb
-      - CHROMA_PORT=8000
-      - EMBEDDING_URL=http://localhost:11435
-      - OLLAMA_URL=http://localhost:11434
-      # ── LLM routing ─────────────────────────────────────────────
-      # USE_ANTHROPIC=1 → fact extraction via Haiku, graph via Sonnet
-      # (proxied through in-house Anthropic-compatible router).
-      # USE_ANTHROPIC=0 → fallback to local llama.cpp.
-      - USE_ANTHROPIC=${MEM0_USE_ANTHROPIC:-1}
-      - ANTHROPIC_BASE_URL=${MEM0_ANTHROPIC_BASE_URL:-http://100.116.99.9:18801}
-      - ANTHROPIC_API_KEY=${MEM0_ANTHROPIC_API_KEY:-dummy}
-      - ANTHROPIC_LLM_MODEL=${MEM0_ANTHROPIC_LLM_MODEL:-claude-haiku-4-5}
-      - ANTHROPIC_GRAPH_MODEL=${MEM0_ANTHROPIC_GRAPH_MODEL:-claude-sonnet-4-5}
-      # Local LLM fallback (used when USE_ANTHROPIC=0)
-      - LLM_URL=${MEM0_LLM_URL:-http://100.98.187.12:30000/v1}
-      - LLM_MODEL=${MEM0_LLM_MODEL:-dark-opus}
-      - GRAPH_LLM_URL=${MEM0_GRAPH_LLM_URL:-http://100.98.187.12:30000/v1}
-      - GRAPH_LLM_MODEL=${MEM0_GRAPH_LLM_MODEL:-dark-opus}
-    volumes:
-      - mem0_data:/app/data    # Kuzu graph store
-    depends_on:
-      chromadb:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    # restart gestito da jarvis.sh
+  # ChromaDB e mem0-server NON sono piu' in questo compose.
+  # Vivono nel repo croll83/mem0-stack (deploy indipendente).
+  # L'orchestrator e ha-memory-service li consumano via MEM0_BASE_URL.
 
   # ===========================================================================
   # DATABASES - Side Projects
@@ -321,8 +267,6 @@ services:
 volumes:
   ollama_storage:
   fastembed_cache:
-  chroma_data:
-  mem0_data:
   postgres_data:
   mongo_data:
   ontology_data:

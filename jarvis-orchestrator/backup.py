@@ -1,8 +1,11 @@
 """
 JARVIS Backup & Restore Module
-- Backup completo: SQLite DB + ChromaDB + Voice Models
+- Backup completo: SQLite DB + Voice Models
 - Validazione archivio prima del restore
 - Safety backup automatico prima del ripristino
+
+NOTA: i dati vector (ChromaDB) sono ora gestiti da mem0-stack (esterno),
+che ha la propria strategia di persistenza/backup.
 """
 
 import os
@@ -22,7 +25,8 @@ from database import DB_PATH
 logger = logging.getLogger("JARVIS_BACKUP")
 
 # Paths dei componenti da includere nel backup
-CHROMA_PATH = Path(config.CHROMA_PATH)
+# NOTA: i dati vector (ChromaDB) sono ora gestiti da mem0-stack che ha la sua
+# strategia di persistenza/backup. Qui resta solo SQLite + voice models.
 VOICE_MODELS_DIR = Path(config.VOICE_MODELS_DIR)
 BACKUP_VERSION = "1.0"
 
@@ -75,7 +79,6 @@ def create_backup(output_path: Optional[str] = None) -> Dict[str, Any]:
 
     Include:
     - SQLite database (backup API nativa, sicura durante scritture)
-    - ChromaDB directory (vector store)
     - Voice Models directory (modelli speaker)
     - metadata.json (versione, timestamp, manifest)
 
@@ -115,23 +118,7 @@ def create_backup(output_path: Optional[str] = None) -> Dict[str, Any]:
             components["database"] = {"status": "missing", "error": f"{DB_PATH} not found"}
             logger.warning(f"Database non trovato: {DB_PATH}")
 
-        # 2. ChromaDB - copia directory
-        if CHROMA_PATH.exists() and CHROMA_PATH.is_dir():
-            chroma_backup = staging_dir / "chroma"
-            shutil.copytree(str(CHROMA_PATH), str(chroma_backup))
-            chroma_size = _get_dir_size(chroma_backup)
-            components["chromadb"] = {
-                "status": "ok",
-                "directory": "chroma/",
-                "size_bytes": chroma_size,
-                "file_count": sum(1 for _ in chroma_backup.rglob("*") if _.is_file())
-            }
-            logger.info(f"ChromaDB backup completato: {chroma_size} bytes")
-        else:
-            components["chromadb"] = {"status": "missing", "error": f"{CHROMA_PATH} not found"}
-            logger.warning(f"ChromaDB non trovato: {CHROMA_PATH}")
-
-        # 3. Voice Models - copia directory
+        # 2. Voice Models - copia directory
         if VOICE_MODELS_DIR.exists() and VOICE_MODELS_DIR.is_dir():
             voice_backup = staging_dir / "voice_models"
             shutil.copytree(str(VOICE_MODELS_DIR), str(voice_backup))
@@ -147,7 +134,7 @@ def create_backup(output_path: Optional[str] = None) -> Dict[str, Any]:
             components["voice_models"] = {"status": "missing", "error": f"{VOICE_MODELS_DIR} not found"}
             logger.info(f"Voice models non trovato (opzionale): {VOICE_MODELS_DIR}")
 
-        # 4. Metadata
+        # 3. Metadata
         metadata = {
             "version": BACKUP_VERSION,
             "timestamp": time.time(),
@@ -158,7 +145,7 @@ def create_backup(output_path: Optional[str] = None) -> Dict[str, Any]:
         metadata_path = staging_dir / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
 
-        # 5. Crea archivio tar.gz
+        # 4. Crea archivio tar.gz
         with tarfile.open(str(archive_path), "w:gz") as tar:
             for item in staging_dir.iterdir():
                 tar.add(str(item), arcname=item.name)
@@ -245,11 +232,6 @@ def validate_backup(archive_path: str) -> Dict[str, Any]:
                 except Exception as e:
                     errors.append(f"jarvis_state.db non leggibile: {e}")
 
-            # Verifica ChromaDB (opzionale ma consigliato)
-            has_chroma = any(m.startswith("chroma/") for m in members)
-            if not has_chroma:
-                warnings.append("ChromaDB non incluso nel backup (i vettori andranno persi)")
-
             # Verifica Voice Models (opzionale)
             has_voice = any(m.startswith("voice_models/") for m in members)
             if not has_voice:
@@ -282,7 +264,7 @@ def restore_backup(
     1. Valida l'archivio
     2. Crea safety backup dello stato corrente
     3. Ferma task in background (stop_callback)
-    4. Estrae e sovrascrive: DB, ChromaDB, Voice Models
+    4. Estrae e sovrascrive: DB, Voice Models
     5. Riavvia servizi (restart_callback)
 
     Returns:
@@ -351,18 +333,7 @@ def restore_backup(
         else:
             errors.append("jarvis_state.db non trovato nell'archivio estratto")
 
-        # 4b. Ripristina ChromaDB
-        restored_chroma = extract_dir / "chroma"
-        if restored_chroma.exists() and restored_chroma.is_dir():
-            if CHROMA_PATH.exists():
-                shutil.rmtree(str(CHROMA_PATH))
-            shutil.copytree(str(restored_chroma), str(CHROMA_PATH))
-            steps_completed.append("chromadb_restored")
-            logger.info("ChromaDB ripristinato")
-        else:
-            steps_completed.append("chromadb_skipped_not_in_backup")
-
-        # 4c. Ripristina Voice Models
+        # 4b. Ripristina Voice Models
         restored_voice = extract_dir / "voice_models"
         if restored_voice.exists() and restored_voice.is_dir():
             if VOICE_MODELS_DIR.exists():
@@ -416,11 +387,6 @@ def get_backup_info() -> Dict[str, Any]:
             "size_bytes": DB_PATH.stat().st_size if DB_PATH.exists() else 0,
             "tables": _get_db_tables(),
             "table_counts": _get_table_counts()
-        },
-        "chromadb": {
-            "exists": CHROMA_PATH.exists() and CHROMA_PATH.is_dir(),
-            "size_bytes": _get_dir_size(CHROMA_PATH),
-            "path": str(CHROMA_PATH)
         },
         "voice_models": {
             "exists": VOICE_MODELS_DIR.exists() and VOICE_MODELS_DIR.is_dir(),

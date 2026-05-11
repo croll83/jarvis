@@ -68,7 +68,6 @@ from location_memory import load_memory_services_from_db
 # build_full_context/build_reasoning_context restano in context_builder.py
 # per AI Agent reasoning e tools_api — qui non servono più per routing
 from proactive import proactive_check_loop
-from vector_store import init_vector_store
 from ws_audio_handler import (
     init_vad, get_active_session_count, get_persistent_connection_count,
     trigger_device_listen, get_connected_devices,
@@ -769,9 +768,6 @@ async def lifespan(app: FastAPI):
 
     # Inizializza security manager (richiede DB pronto)
     security = SecurityManager()
-
-    # Inizializza vector store
-    init_vector_store()
 
     # Avvia task periodici (salva riferimenti forti per evitare GC)
     def _keep(t):

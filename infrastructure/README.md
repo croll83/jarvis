@@ -48,10 +48,9 @@ HA remoti e il LXC AI Agent.
 |  |                                                                 | |
 |  |  fastembed:11435 (CPU, no GPU)                                  | |
 |  |  nomic-embed-text-v1.5 ONNX — Ollama-compat API                | |
-|  |  chromadb:8000 (127.0.0.1 only)                                | |
-|  |  Vector store backend — chromadb/chroma                         | |
-|  |  mem0-server:8200 (long-term behavioral memory)                 | |
-|  |  ChromaDB + Kuzu graph + fastembed                              | |
+|  |  (mem0-stack — vector + graph + LLM router —                    | |
+|  |   vive in repo separato croll83/mem0-stack;                     | |
+|  |   consumato via MEM0_BASE_URL)                                  | |
 |  |  orchestrator:5000 (network_mode: host)                        | |
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
@@ -179,9 +178,9 @@ systemd -> tailscaled.service -> ai-agent-chrome.service (Chrome CDP :18800)
 ```
 1. tailscaled      -> host-level service, si connette alla tailnet
 2. ollama          -> diventa healthy (modelli caricati)
-   chromadb        -> started (vector store :8000)
-   mem0-server     -> aspetta chromadb, poi parte (long-term memory :8200)
-3. orchestrator    -> aspetta ollama + chromadb, poi parte (network_mode: host)
+   (mem0-stack    -> vive in repo separato croll83/mem0-stack;
+                     deploy indipendente — consumato via MEM0_BASE_URL)
+3. orchestrator    -> aspetta ollama, poi parte (network_mode: host)
                       vede Tailscale direttamente, raggiunge GX10 + AI Agent
                       STT (Parakeet :7865) e TTS (Qwen3-TTS :9880) su GX10
 4. nginx           -> started (TLS per jarvis.mintwork.it)
@@ -206,8 +205,7 @@ systemd -> tailscaled.service -> ai-agent-chrome.service (Chrome CDP :18800)
 | **Parakeet STT** | GX10 DGX Spark | `parakeet-stt.service` (systemd) | - | - | ~5.1 GB | STT multilingue (nvidia/parakeet-tdt-0.6b-v3) |
 | **Qwen3-TTS** | GX10 DGX Spark | `qwen3-tts.service` (systemd) | - | - | ~4.4 GB | TTS voice cloning IT/EN (Qwen3-TTS-12Hz-1.7B) |
 | **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
-| **ChromaDB** | LXC-JARVIS | `jarvis_chromadb` (Docker, 127.0.0.1:8000) | 0.5 | 512 MB | - | Vector store backend per mem0 |
-| **mem0-server** | LXC-JARVIS | `jarvis_mem0` (Docker, :8200) | 0.5 | 512 MB | - | Long-term behavioral memory (ChromaDB + Kuzu graph) |
+| **mem0-stack** | esterno | repo `croll83/mem0-stack` | - | - | - | Long-term semantic + procedural memory (vector + graph + LLM router). Consumato via `MEM0_BASE_URL` |
 | **Ontology Server** | LXC-JARVIS | `jarvis_ontology` (Docker, 127.0.0.1:8100) | 0.5 | 256 MB | - | Knowledge Graph API + ACL |
 | **PostgreSQL** | LXC-JARVIS | `jarvis_postgres` (Docker) | 0.5 | 512 MB | - | Database side projects |
 | **MongoDB** | LXC-JARVIS | `jarvis_mongo` (Docker) | 0.5 | 512 MB | - | Database side projects |
@@ -682,8 +680,7 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | — | Qwen3-TTS (GX10 :9880) | HTTP | Via Tailscale |
 | 11434 | Ollama API (LLM) | HTTP | Interno |
 | 11435 | fastembed API (embeddings) | HTTP | Interno / Tailscale |
-| 8000 | ChromaDB (vector store backend) | HTTP | Interno (127.0.0.1) |
-| 8200 | mem0-server (long-term memory) | HTTP | Interno |
+| 8200 | mem0-stack API (esterno; vedi repo `croll83/mem0-stack`) | HTTP | configurabile via MEM0_BASE_URL |
 | 5432 | PostgreSQL | TCP | Interno |
 | 27017 | MongoDB | TCP | Interno |
 | 80 | Nginx HTTP (redirect + health) | HTTP | LAN / Tailscale |
