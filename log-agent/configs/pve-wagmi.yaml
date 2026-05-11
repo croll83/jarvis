@@ -1,6 +1,5 @@
 host_id: pve-wagmi
 collector_url: http://100.88.84.81:5000/api/admin/logs/ingest
-# auth_token: from LOG_AGENT_TOKEN env var
 
 batch_interval: 5.0
 batch_size: 50
@@ -9,40 +8,32 @@ sources:
   - name: pvedaemon
     type: journalctl
     target: pvedaemon
-    level_filter: WARN
 
   - name: pveproxy
     type: journalctl
     target: pveproxy
-    level_filter: WARN
 
   - name: pvestatd
     type: journalctl
     target: pvestatd
-    level_filter: WARN
 
   - name: pve-firewall
     type: journalctl
     target: pve-firewall
-    level_filter: WARN
 
   - name: nvidia-persistenced
     type: journalctl
     target: nvidia-persistenced
-    level_filter: WARN
 
   - name: nvidia-powerd
     type: journalctl
     target: nvidia-powerd
-    level_filter: WARN
 
   - name: zfs-zed
     type: journalctl
     target: zfs-zed
-    level_filter: WARN
 
   - name: kernel
     type: journalctl
     target: ""
     extra_args: ["-k"]
-    level_filter: WARN

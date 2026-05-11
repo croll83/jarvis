@@ -296,15 +296,14 @@ async def pull_haos_logs_once(
                     continue
 
                 level = _parse_haos_level(line)
-                if _haos_level_gte(level, HAOS_MIN_LEVEL):
-                    entries.append({
-                        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-                        "host": f"haos-{name}",
-                        "service": f"ha-{endpoint_tag}",
-                        "level": level,
-                        "msg": line,
-                        "src": "haos-api",
-                    })
+                entries.append({
+                    "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                    "host": f"haos-{name}",
+                    "service": f"ha-{endpoint_tag}",
+                    "level": level,
+                    "msg": line,
+                    "src": "haos-api",
+                })
 
             # If we never found prev_last, all lines are new (first run or log rotated)
             if not new_start and not prev_last:
@@ -316,8 +315,6 @@ async def pull_haos_logs_once(
                     if not line.strip():
                         continue
                     level = _parse_haos_level(line)
-                    if not _haos_level_gte(level, HAOS_MIN_LEVEL):
-                        continue
                     entries.append({
                         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                         "host": f"haos-{name}",
