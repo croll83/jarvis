@@ -2178,22 +2178,15 @@ async def get_memory_stats() -> Dict[str, Any]:
     c = conn.cursor()
 
     # === CHROMADB STATS ===
-    chromadb_stats = {"status": "unavailable", "user_messages_count": 0, "user_facts_count": 0, "total_vectors": 0}
-    try:
-        from vector_store import user_vector_store, COLLECTION_USER_MESSAGES, COLLECTION_USER_FACTS
-        if user_vector_store._initialized:
-            msg_col = user_vector_store.collections.get(COLLECTION_USER_MESSAGES)
-            fact_col = user_vector_store.collections.get(COLLECTION_USER_FACTS)
-            msg_count = msg_col.count() if msg_col else 0
-            fact_count = fact_col.count() if fact_col else 0
-            chromadb_stats = {
-                "status": "online",
-                "user_messages_count": msg_count,
-                "user_facts_count": fact_count,
-                "total_vectors": msg_count + fact_count
-            }
-    except Exception as e:
-        chromadb_stats = {"status": "error", "error": str(e), "user_messages_count": 0, "user_facts_count": 0, "total_vectors": 0}
+    # Lo storage vettoriale (memoria semantica + ReasoningBank) e' ora servito
+    # da mem0-stack. Per le statistiche live consultare la dashboard plugin
+    # mem0-selfhosted del Hermes Agent o l'endpoint mem0 /jobs/stats.
+    chromadb_stats = {
+        "status": "moved_to_mem0_stack",
+        "user_messages_count": 0,
+        "user_facts_count": 0,
+        "total_vectors": 0,
+    }
 
     # === SQL MEMORY STATS ===
     c.execute("SELECT COUNT(*) as cnt FROM user_memory_hourly")
@@ -2259,7 +2252,6 @@ async def get_memory_stats() -> Dict[str, Any]:
         "chat_memory_max_age_hours": config.CHAT_MEMORY_MAX_AGE / 3600,
         "hourly_max_age_hours": config.COMPACTOR_HOURLY_MAX_AGE_HOURS,
         "daily_max_age_days": config.COMPACTOR_DAILY_MAX_AGE_DAYS,
-        "vector_retention_days": config.VECTOR_RETENTION_DAYS,
         "scheduler_hourly_minute": config.MEMORY_HOURLY_TRIGGER_MINUTE,
         "scheduler_daily_hour": config.MEMORY_DAILY_TRIGGER_HOUR
     }

@@ -240,40 +240,35 @@ def _html_to_text(html: str) -> str:
 
 
 async def execute_memory_search(query: str, user_id: int = None) -> str:
-    """Cerca nella memoria semantica (conversazioni + fatti utente)."""
+    """Cerca nella memoria semantica via mem0-stack (MEM0_BASE_URL/search)."""
     try:
-        from vector_store import search_user_context
+        import aiohttp
+        import config
 
         if user_id is None:
             user_id = 1  # Default user
 
-        results = search_user_context(query, user_id, n_messages=10, n_facts=5)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{config.MEM0_BASE_URL}/search",
+                json={"query": query, "user_id": str(user_id), "limit": 10},
+                timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS.get("mem0", 10))
+            ) as resp:
+                if resp.status != 200:
+                    logger.error(f"mem0 search error: {resp.status}")
+                    return f"Errore nella ricerca in memoria (HTTP {resp.status})."
+                data = await resp.json()
 
-        output_parts = []
+        items = data.get("results") or data.get("memories") or []
+        if not items:
+            return f"Nessun ricordo trovato per '{query}'."
 
-        # Messaggi rilevanti
-        messages = results.get("messages", [])
-        if messages:
-            output_parts.append("Conversazioni rilevanti:")
-            for msg in messages[:5]:
-                meta = msg.get("metadata", {})
-                speaker = meta.get("speaker_name", "?")
-                content = meta.get("content", msg.get("content", ""))
-                score = msg.get("final_score", msg.get("similarity", 0))
-                output_parts.append(f"  - [{speaker}] {content} (rilevanza: {score:.2f})")
-
-        # Fatti utente
-        facts = results.get("facts", [])
-        if facts:
-            output_parts.append("\nFatti noti sull'utente:")
-            for fact in facts[:5]:
-                content = fact.get("content", "")
-                score = fact.get("score", fact.get("similarity", 0))
-                output_parts.append(f"  - {content} (rilevanza: {score:.2f})")
-
-        if output_parts:
-            return "\n".join(output_parts)
-        return f"Nessun ricordo trovato per '{query}'."
+        output_parts = ["Ricordi rilevanti:"]
+        for item in items[:10]:
+            text = item.get("memory") or item.get("content") or item.get("text", "")
+            score = item.get("score") or item.get("similarity") or 0
+            output_parts.append(f"  - {text} (rilevanza: {score:.2f})")
+        return "\n".join(output_parts)
 
     except Exception as e:
         logger.error(f"Memory search error: {e}")

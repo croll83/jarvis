@@ -56,11 +56,12 @@
 
      +--------------------------------------------+
      |         DATA LAYER                          |
-     |  Redis :6379    | mem0 :8200 | ChromaDB     |
-     |  (context bus,  | (long-term | :8000        |
-     |   cross-system) | behavioral)| (mem0 backend|
-     |  PostgreSQL     | MongoDB    |  only)       |
-     |  (side projects)| (side proj)|              |
+     |  Redis :6379    | mem0-stack (esterno)      |
+     |  (context bus,  | (long-term semantic +     |
+     |   cross-system) |  procedural; vedi         |
+     |                 |  croll83/mem0-stack)      |
+     |  PostgreSQL     | MongoDB                   |
+     |  (side projects)| (side projects)           |
      +--------------------------------------------+
 
      +--------------------------------------------+
@@ -85,8 +86,7 @@
 | **fastembed (nomic-embed-text-v1.5)** | Embeddings | 768-dim CPU-only ONNX embeddings (Ollama-compatible API :11435) for orchestrator, ha-memory-service, and AI Agent |
 | **Brave Search** | Web Search Tool | Web search API used by Qwen tool calling |
 | **Redis** | Context Bus | Cross-system short-term memory (TTL 30min). Shared between orchestrator, HA memory service, and Hermes. Per-user event lists with source filtering |
-| **mem0** | Long-term Memory | Behavioral pattern storage. Nightly batch extraction from orchestrator + HA daily patterns. Self-hosted on LXC Jarvis (:8200), backed by ChromaDB |
-| **ChromaDB** | Vector store | Backend for mem0 server. Not used directly by orchestrator or HA — only via mem0 API |
+| **mem0-stack** (esterno) | Long-term semantic + procedural memory | Servizio esterno (vedi repo `croll83/mem0-stack`). Espone API HTTP `/search`, `/add`, `/memories/*`, `/reasoning_bank/*`. Consumato via `MEM0_BASE_URL` |
 | **PostgreSQL** | Database | Side projects (relational store) |
 | **MongoDB** | Database | Side projects (document store) |
 | **Home Assistant** | Domotics core | One instance per location, connected via WebSocket |
@@ -102,8 +102,6 @@
 | `fastembed` | ./infrastructure/fastembed | 11435 | No | nomic-embed-text-v1.5 embeddings (CPU ONNX) |
 | `orchestrator` | ./jarvis-orchestrator | 5000 | No | Core FastAPI app + Resemblyzer + Admin UI (host network) |
 | `redis` | redis:7-alpine | 6379 | No | Cross-system context bus (on LXC Jarvis) |
-| `mem0` | mem0 server | 8200 | No | Long-term behavioral memory (on LXC Jarvis) |
-| `chromadb` | chromadb/chroma:1.5.2 | 127.0.0.1:8000 | No | Backend for mem0 (on LXC Jarvis) |
 | `ontology-server` | ./ontology-server | 127.0.0.1:8100 | No | Knowledge Graph API (SQLite + ACL) |
 | `postgres` | postgres:16-alpine | 5432 | No | Relational database (side projects) |
 | `mongo` | mongo:7 | 27017 | No | Document database (side projects) |
@@ -243,7 +241,7 @@ jarvis/
 - **Qwen 2.5 3B with tool calling**: Fast local pre-routing for domotics commands plus tool calling capabilities (web_search via Brave API, web_fetch, memory_search, home_status). Falls back to offline responses when cloud is unreachable.
 - **Brave Search API**: Web search tool available to both Qwen (via tool calling) and the AI Agent (via skill), providing real-time web information.
 - **fastembed for all embeddings**: Single 768-dim embedding model (nomic-embed-text-v1.5 via ONNX, CPU-only) served by a dedicated container on port 11435 with Ollama-compatible API. Runs on CPU to avoid CUDA context switching with Qwen on the GPU, reducing routing latency from ~3.5s to ~0.5s.
-- **Three-layer memory**: Redis context bus for real-time cross-system context (TTL 30min, source-filtered), mem0 for long-term behavioral patterns (nightly batch extraction via Qwen), ChromaDB as mem0's vector backend only (not used directly by orchestrator or HA).
+- **Two-layer memory**: Redis context bus for real-time cross-system context (TTL 30min, source-filtered), and **mem0-stack** (external service, repo `croll83/mem0-stack`) for long-term semantic + procedural memory. The stack provides its own vector + graph + LLM router stack — consumers in jarvis (orchestrator, ha-memory-service) only need `MEM0_BASE_URL`.
 - **Redis context bus**: Shared between orchestrator, HA memory service, and Hermes. Each system writes events tagged with its source and reads only events from other sources, preventing self-duplication. Per-user event lists (`ctx:{user_id}:events`), capped at 20, TTL 30 minutes.
 - **Parakeet STT on GX10**: nvidia/parakeet-tdt-0.6b-v3 running on GX10 DGX Spark (128 GB VRAM). Multilingual auto-detection, 20x realtime, no initial prompt needed. Replaces Whisper (deprecated) to free VRAM on Atomman for router upgrades.
 - **Qwen3-TTS on GX10**: Qwen3-TTS-12Hz-1.7B with voice cloning, Italian/English preset voices (sofia, marco, emma, james). Replaces XTTSv2 (deprecated). OpenAI-compatible API.

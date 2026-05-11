@@ -197,9 +197,10 @@ cmd_start() {
     echo ""
 
     # ── Fase 3: Servizi non-GPU ───────────────────────────────────────────
-    log "═══ Fase 3: ChromaDB + Orchestrator + DB + Ontology ═══"
-    dc up -d chromadb orchestrator postgres mongo adminer
-    wait_for "http://localhost:8000/api/v1/heartbeat" "ChromaDB" 60
+    # NOTA: chromadb e mem0-server NON sono piu' qui — vivono nel repo
+    # croll83/mem0-stack (deploy separato). L'orchestrator li usa via MEM0_BASE_URL.
+    log "═══ Fase 3: Orchestrator + DB + Ontology ═══"
+    dc up -d orchestrator postgres mongo adminer
     wait_for "http://localhost:5000/health" "Orchestrator" 60
     echo ""
 

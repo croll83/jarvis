@@ -17,14 +17,6 @@ sources:
     type: docker
     target: jarvis_fastembed
 
-  - name: mem0
-    type: docker
-    target: jarvis_mem0
-
-  - name: chromadb
-    type: docker
-    target: jarvis_chromadb
-
   - name: postgres
     type: docker
     target: jarvis_postgres

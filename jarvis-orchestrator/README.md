@@ -461,8 +461,8 @@ pending_actions (action_id, payload, requester_id, source_channel, security_leve
 
 -- ===== EXTERNAL MEMORY =====
 -- Redis: ctx:{user_id}:events (short-term cross-system, TTL 30min, max 20)
--- mem0:  long-term behavioral (user: marco/ada/shared, via nightly batch)
--- ChromaDB: backend di mem0 (non usato direttamente)
+-- mem0-stack (esterno): long-term semantic + procedural memory
+--   Repo: croll83/mem0-stack — consumato via MEM0_BASE_URL (HTTP /search, /add, ...)
 ```
 
 ---

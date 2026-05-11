@@ -1,7 +1,7 @@
 """
-JARVIS Context Builder - Hybrid Version
-- Combina SQLite (strutturato) + ChromaDB (semantico)
-- Recency boost per risultati vector
+JARVIS Context Builder
+- SQLite (strutturato) per memoria utente strutturata
+- Memoria semantica/procedurale tramite mem0-stack (MEM0_BASE_URL) lato consumer
 - Budget token gestito per routing vs reasoning
 """
 
@@ -15,7 +15,6 @@ from database import (
     get_location,
     get_user_location
 )
-from vector_store import search_user_context, user_vector_store
 from location_memory import (
     get_all_locations_memory,
     format_locations_memory_for_llm
@@ -23,85 +22,6 @@ from location_memory import (
 import config
 
 logger = logging.getLogger("JARVIS_CONTEXT")
-
-# ===========================================================================
-# VECTOR CONTEXT FORMATTING
-# ===========================================================================
-
-def format_vector_messages_for_llm(
-    messages: List[Dict[str, Any]],
-    max_tokens: int = 500,
-    user_name: str = "User"
-) -> str:
-    """
-    Formatta messaggi da vector search per il prompt.
-    Include solo i piu' rilevanti (per final_score).
-    """
-    if not messages:
-        return ""
-
-    lines = [f"\n[Conversazioni rilevanti con {user_name}]"]
-    tokens_used = 0
-
-    for msg in messages:
-        meta = msg.get('metadata', {})
-        content = meta.get('content', msg.get('content', ''))[:200]
-        speaker = meta.get('speaker_name', user_name)
-        score = msg.get('final_score', msg.get('similarity', 0))
-
-        # Skip low relevance
-        if score < config.VECTOR_SCORE_MIN_MESSAGES:
-            continue
-
-        line = f"- {speaker}: {content}"
-        est_tokens = len(line) // 4
-
-        if tokens_used + est_tokens > max_tokens:
-            break
-
-        lines.append(line)
-        tokens_used += est_tokens
-
-    if len(lines) == 1:  # Solo header
-        return ""
-
-    return "\n".join(lines)
-
-
-def format_vector_facts_for_llm(
-    facts: List[Dict[str, Any]],
-    max_tokens: int = 300,
-    user_name: str = "User"
-) -> str:
-    """
-    Formatta fatti da vector search per il prompt.
-    """
-    if not facts:
-        return ""
-
-    lines = [f"\n[Informazioni rilevanti su {user_name}]"]
-    tokens_used = 0
-
-    for fact in facts:
-        content = fact.get('content', '')
-        score = fact.get('similarity', 0)
-
-        if score < config.VECTOR_SCORE_MIN_FACTS:
-            continue
-
-        line = f"- {content}"
-        est_tokens = len(line) // 4
-
-        if tokens_used + est_tokens > max_tokens:
-            break
-
-        lines.append(line)
-        tokens_used += est_tokens
-
-    if len(lines) == 1:
-        return ""
-
-    return "\n".join(lines)
 
 
 # ===========================================================================
@@ -156,38 +76,9 @@ async def build_full_context(
             parts.append(sql_context)
     _sql_user_ms = (time.time() - _t) * 1000
 
-    # ===== 2. USER MEMORY - VECTOR (semantic) =====
-    _t = time.time()
-    if user_id and query:
-        try:
-            vector_results = search_user_context(
-                query=query,
-                user_id=user_id,
-                n_messages=config.CONTEXT_SEARCH_LIMITS[context_type]["n_messages"],
-                n_facts=config.CONTEXT_SEARCH_LIMITS[context_type]["n_facts"]
-            )
-
-            # Format messaggi rilevanti
-            msg_context = format_vector_messages_for_llm(
-                vector_results.get("messages", []),
-                max_tokens=budget["user_memory_vector"] // 2,
-                user_name=user_name
-            )
-            if msg_context.strip():
-                parts.append(msg_context)
-
-            # Format fatti rilevanti
-            fact_context = format_vector_facts_for_llm(
-                vector_results.get("facts", []),
-                max_tokens=budget["user_memory_vector"] // 2,
-                user_name=user_name
-            )
-            if fact_context.strip():
-                parts.append(fact_context)
-
-        except Exception as e:
-            logger.warning(f"Vector search failed, using SQL only: {e}")
-    _vector_user_ms = (time.time() - _t) * 1000
+    # NOTE: Semantica utente (messaggi/fatti) ora gestita da mem0-stack via
+    # consumer plugin (hermes-plugin/mem0-selfhosted) e dal tool LLM
+    # memory_search → MEM0_BASE_URL/search. Nessuna chiamata in-process qui.
 
     # ===== 3. LOCATION MEMORY - SQL (structured) =====
     _t = time.time()
@@ -213,38 +104,14 @@ async def build_full_context(
         logger.warning(f"Location memory fetch failed: {e}")
     _loc_sql_ms = (time.time() - _t) * 1000
 
-    # ===== 4. LOCATION MEMORY - VECTOR (semantic) =====
-    _t = time.time()
-    if query and location_ids:
-        try:
-            from location_memory import (
-                search_all_locations_events,
-                format_location_vector_results_for_llm
-            )
-
-            location_vector_results = await search_all_locations_events(
-                query=query,
-                location_ids=location_ids if isinstance(location_ids, list) else [location_ids] if location_ids else None,
-                n_results_per_location=config.CONTEXT_SEARCH_LIMITS[context_type]["n_location_results"]
-            )
-
-            if location_vector_results:
-                location_vector_context = format_location_vector_results_for_llm(
-                    location_vector_results,
-                    max_tokens=budget["location_memory"] // 2
-                )
-                if location_vector_context.strip():
-                    parts.append(location_vector_context)
-
-        except Exception as e:
-            logger.warning(f"Location vector search failed: {e}")
-    _loc_vector_ms = (time.time() - _t) * 1000
+    # NOTE: Semantica eventi-location era servita da ha_memory_service vector
+    # store ora rimosso. La memoria utente cross-location e' gestita da
+    # mem0-stack (semantic + graph + RB). Nessun fallback locale qui.
 
     _total_ms = (time.time() - _t0) * 1000
     logger.info(
         f"build_full_context timing ({context_type}): total={_total_ms:.0f}ms | "
-        f"sql_user={_sql_user_ms:.0f}ms vector_user={_vector_user_ms:.0f}ms "
-        f"loc_sql={_loc_sql_ms:.0f}ms loc_vector={_loc_vector_ms:.0f}ms"
+        f"sql_user={_sql_user_ms:.0f}ms loc_sql={_loc_sql_ms:.0f}ms"
     )
 
     return "\n\n".join(parts)

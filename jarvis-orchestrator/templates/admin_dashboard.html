@@ -1393,12 +1393,12 @@
                         <div>
                             <h4 style="margin: 0 0 0.5rem 0; color: var(--text);">Backup Completo</h4>
                             <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 0.75rem 0;">
-                                Esporta database, ChromaDB e voice models in un archivio .tar.gz
+                                Esporta database SQLite e voice models in un archivio .tar.gz
+                                (la memoria semantica e' gestita da mem0-stack esterno)
                             </p>
                             <div id="backupInfo" style="margin-bottom: 0.75rem;">
                                 <div style="display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.8rem; color: var(--text-secondary);">
                                     <span id="backupDbSize">DB: --</span>
-                                    <span id="backupChromaSize">ChromaDB: --</span>
                                     <span id="backupVoiceSize">Voice: --</span>
                                     <span id="backupTotalSize"><strong>Totale: --</strong></span>
                                 </div>
@@ -3344,7 +3344,6 @@
                 const res = await fetch('/api/admin/backup/info');
                 const info = await res.json();
                 document.getElementById('backupDbSize').textContent = 'DB: ' + formatBytes(info.database.size_bytes);
-                document.getElementById('backupChromaSize').textContent = 'ChromaDB: ' + (info.chromadb.exists ? formatBytes(info.chromadb.size_bytes) : 'N/A');
                 document.getElementById('backupVoiceSize').textContent = 'Voice: ' + (info.voice_models.exists ? formatBytes(info.voice_models.size_bytes) : 'N/A');
                 document.getElementById('backupTotalSize').innerHTML = '<strong>Totale stimato: ' + formatBytes(info.total_estimated_bytes) + '</strong>';
             } catch (e) { console.error('Backup info load failed:', e); }
@@ -3432,7 +3431,7 @@
 
         async function executeRestore() {
             if (!restoreFile) return;
-            if (!confirm('ATTENZIONE: Il ripristino sovrascriverà database, ChromaDB e voice models correnti.\n\nViene creato automaticamente un safety backup.\n\nContinuare?')) return;
+            if (!confirm('ATTENZIONE: Il ripristino sovrascriverà database e voice models correnti.\n\nViene creato automaticamente un safety backup.\n\nContinuare?')) return;
 
             const btn = document.getElementById('btnRestore');
             const progress = document.getElementById('restoreProgress');
@@ -5075,15 +5074,14 @@
                 const res = await fetch('/api/admin/memory-stats');
                 const data = await res.json();
 
-                // Overview cards
-                const chroma = data.chromadb;
+                // Overview cards (memoria semantica e' su mem0-stack)
                 const sql = data.sql_memory;
                 document.getElementById('memoryOverview').innerHTML = `
                     <div class="metric-card">
-                        <div class="metric-value">${chroma.total_vectors}</div>
-                        <div class="metric-label">ChromaDB Vectors</div>
+                        <div class="metric-value">mem0-stack</div>
+                        <div class="metric-label">Semantic Memory</div>
                         <div style="font-size:0.75rem;opacity:0.6;margin-top:0.25rem">
-                            ${chroma.user_messages_count} msgs + ${chroma.user_facts_count} facts
+                            Vedi dashboard Hermes &rarr; tab Memory
                         </div>
                     </div>
                     <div class="metric-card">

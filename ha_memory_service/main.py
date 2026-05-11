@@ -2,9 +2,11 @@
 JARVIS HA Memory Service
 - Event ingestion da Home Assistant via WebSocket
 - Summarization con Qwen (locale via Ollama o cloud via OpenRouter)
-- Embedding con nomic-embed-text (locale) o cloud/Google (cloud)
-- Vector search con ChromaDB per retrieval semantico
-- API per orchestrator
+- API per orchestrator (riassunti SQL + sintesi event-driven)
+
+NOTA: lo strato semantico (vector search) e' stato spostato in mem0-stack
+(croll83/mem0-stack). Eventi memorabili emergono nel sistema mem0 tramite
+l'orchestrator/hermes-plugin, non piu' qui dentro.
 """
 
 import os
@@ -21,9 +23,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-import chromadb
-from chromadb.config import Settings
-
 # ===========================================================================
 # CONFIG
 # ===========================================================================
@@ -35,39 +34,28 @@ HA_TOKEN = os.getenv("HA_TOKEN", "")
 # AI Backend: "local" (Ollama) or "api" (OpenRouter + cloud embeddings)
 AI_BACKEND = os.getenv("AI_BACKEND", "local")
 
-# --- Local mode (Ollama for LLM, fastembed for embeddings) ---
+# --- Local mode (Ollama for LLM) ---
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-EMBEDDING_URL = os.getenv("EMBEDDING_URL", OLLAMA_URL)  # fastembed CPU (default: fallback a Ollama)
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen2.5:3b")
 
-# --- API mode (OpenRouter for summarization, cloud/Google for embeddings) ---
+# --- API mode (OpenRouter for summarization) ---
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "https://jarvis.yourdomain.com")
 OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "JARVIS HA Memory")
 OPENROUTER_SUMMARY_MODEL = os.getenv("OPENROUTER_SUMMARY_MODEL", "qwen/qwen-2.5-7b-instruct")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
 
 # --- Common ---
 SUMMARY_TEMPERATURE = float(os.getenv("SUMMARY_TEMPERATURE", "0.3"))
 SUMMARY_TIMEOUT = int(os.getenv("SUMMARY_TIMEOUT", "30"))
-EMBEDDING_TIMEOUT = int(os.getenv("EMBEDDING_TIMEOUT", "30"))
 DB_PATH = os.getenv("DB_PATH", "/data/ha_memory.db")
-CHROMA_PATH = os.getenv("CHROMA_PATH", "/data/chroma")  # Legacy fallback
-CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
-CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8100"))
 WS_RETRY_DELAY = int(os.getenv("WS_RETRY_DELAY", "30"))
 WS_RECONNECT_DELAY = int(os.getenv("WS_RECONNECT_DELAY", "10"))
 SCHEDULER_INITIAL_DELAY = int(os.getenv("SCHEDULER_INITIAL_DELAY", "30"))
 SCHEDULER_INTERVAL = int(os.getenv("SCHEDULER_INTERVAL", "60"))
-COLLECTION_LOCATION_EVENTS = "location_events"
 SKIP_ENTITY_PREFIXES = os.getenv("SKIP_ENTITY_PREFIXES", "update.").split(",")
 SKIP_ENTITY_SUFFIXES = os.getenv("SKIP_ENTITY_SUFFIXES", "_battery,_linkquality,_signal").split(",")
-
-EMBEDDING_DIM = 768  # Comune a nomic-embed-text e cloud/Google embedding (con output_dimensionality)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("HA_MEMORY")
@@ -140,248 +128,6 @@ def init_db():
     conn.commit()
     conn.close()
     logger.info(f"Database initialized at {DB_PATH}")
-
-
-# ===========================================================================
-# EMBEDDING FUNCTIONS
-# ===========================================================================
-# AI_BACKEND=local → OllamaEmbeddingFunction (nomic-embed-text, fastembed CPU)
-# AI_BACKEND=api   → CloudEmbeddingFunction (gemini-embedding-001)
-# ===========================================================================
-
-class OllamaEmbeddingFunction:
-    """Embedding via fastembed server (Ollama-compatible API, CPU-only ONNX)."""
-
-    def __init__(self, model: str = EMBEDDING_MODEL, url: str = EMBEDDING_URL):
-        self.model = model
-        self.url = f"{url.rstrip('/')}/api/embeddings"
-
-    def name(self) -> str:
-        return f"ollama-{self.model}"
-
-    def __call__(self, input: list) -> list:
-        import requests
-        embeddings = []
-        for text in input:
-            try:
-                response = requests.post(
-                    self.url,
-                    json={"model": self.model, "prompt": text},
-                    timeout=EMBEDDING_TIMEOUT
-                )
-                if response.status_code == 200:
-                    embeddings.append(response.json()["embedding"])
-                else:
-                    logger.error(f"Ollama embedding error: {response.status_code}")
-                    embeddings.append([0.0] * EMBEDDING_DIM)
-            except Exception as e:
-                logger.error(f"Ollama embedding exception: {e}")
-                embeddings.append([0.0] * EMBEDDING_DIM)
-        return embeddings
-
-
-class CloudEmbeddingFunction:
-    """Embedding via cloud/Google API (gemini-embedding-001).
-    Stessa dimensionalita (768) di nomic-embed-text.
-    """
-
-    def __init__(self):
-        self.api_key = GEMINI_API_KEY
-        if not self.api_key:
-            raise ValueError("GEMINI_API_KEY required for cloud embeddings (AI_BACKEND=api)")
-
-    def name(self) -> str:
-        return "gemini-embedding-001"
-
-    def __call__(self, input: list) -> list:
-        import requests
-        embeddings = []
-        for text in input:
-            try:
-                response = requests.post(
-                    GEMINI_EMBED_URL,
-                    headers={
-                        "Content-Type": "application/json",
-                        "x-goog-api-key": self.api_key,
-                    },
-                    json={
-                        "content": {"parts": [{"text": text}]},
-                        "output_dimensionality": EMBEDDING_DIM,
-                    },
-                    timeout=EMBEDDING_TIMEOUT,
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    embeddings.append(data["embedding"]["values"])
-                else:
-                    logger.error(f"Cloud embedding error {response.status_code}: {response.text[:200]}")
-                    embeddings.append([0.0] * EMBEDDING_DIM)
-            except Exception as e:
-                logger.error(f"Cloud embedding exception: {e}")
-                embeddings.append([0.0] * EMBEDDING_DIM)
-        return embeddings
-
-
-def get_embedding_function():
-    """Factory: seleziona embedding function in base a AI_BACKEND."""
-    if AI_BACKEND == "api":
-        logger.info("Using cloud embeddings (cloud mode)")
-        return CloudEmbeddingFunction()
-    else:
-        logger.info("Using Ollama embeddings (local mode)")
-        return OllamaEmbeddingFunction()
-
-
-# ===========================================================================
-# VECTOR STORE (Location Events)
-# ===========================================================================
-
-class LocationVectorStore:
-    """Vector store per eventi location."""
-
-    def __init__(self):
-        self.client = None
-        self.collection = None
-        self._initialized = False
-
-    def initialize(self):
-        if self._initialized:
-            return
-
-        try:
-            self.client = chromadb.HttpClient(
-                host=CHROMA_HOST,
-                port=CHROMA_PORT,
-                settings=Settings(anonymized_telemetry=False)
-            )
-            self.client.heartbeat()
-            logger.info(f"Connected to ChromaDB server at {CHROMA_HOST}:{CHROMA_PORT}")
-        except Exception as e:
-            logger.warning(f"ChromaDB server unreachable ({CHROMA_HOST}:{CHROMA_PORT}): {e}")
-            logger.warning(f"Falling back to PersistentClient at {CHROMA_PATH}")
-            self.client = chromadb.PersistentClient(
-                path=CHROMA_PATH,
-                settings=Settings(anonymized_telemetry=False)
-            )
-
-        self.embedding_fn = get_embedding_function()
-
-        # Collection WITHOUT embedding_function — ChromaDB 0.6.x HttpClient
-        # can't serialize custom embedding functions (KeyError '_type').
-        # We compute embeddings manually in add/query methods instead.
-        self.collection = self.client.get_or_create_collection(
-            name=f"{COLLECTION_LOCATION_EVENTS}_{LOCATION_ID}",
-            metadata={"hnsw:space": "cosine"}
-        )
-
-        self._initialized = True
-        logger.info(f"Location vector store initialized for {LOCATION_ID}")
-
-    def add_event(
-        self,
-        entity_id: str,
-        old_state: str,
-        new_state: str,
-        timestamp: float
-    ):
-        """Aggiunge evento al vector store."""
-        if not self._initialized:
-            self.initialize()
-
-        doc_id = f"evt_{LOCATION_ID}_{int(timestamp * 1000)}"
-
-        # Testo descrittivo per embedding
-        text = f"{entity_id} changed from {old_state} to {new_state}"
-
-        try:
-            embeddings = self.embedding_fn([text])
-            self.collection.add(
-                documents=[text],
-                embeddings=embeddings,
-                metadatas=[{
-                    "entity_id": entity_id,
-                    "old_state": old_state or "",
-                    "new_state": new_state or "",
-                    "timestamp": timestamp,
-                    "location_id": LOCATION_ID
-                }],
-                ids=[doc_id]
-            )
-        except Exception as e:
-            if "already exists" not in str(e).lower():
-                logger.error(f"Vector add error: {e}")
-
-    def search_events(
-        self,
-        query: str,
-        n_results: int = 30,
-        min_timestamp: float = None
-    ) -> list:
-        """Cerca eventi semanticamente simili."""
-        if not self._initialized:
-            self.initialize()
-
-        if min_timestamp is None:
-            min_timestamp = time.time() - (7 * 86400)  # 7 giorni
-
-        try:
-            query_embeddings = self.embedding_fn([query])
-            results = self.collection.query(
-                query_embeddings=query_embeddings,
-                n_results=n_results,
-                where={"timestamp": {"$gte": min_timestamp}},
-                include=["documents", "metadatas", "distances"]
-            )
-
-            # Format con recency boost
-            formatted = []
-            now = time.time()
-
-            docs = results['documents'][0] if results['documents'] else []
-            metas = results['metadatas'][0] if results['metadatas'] else []
-            distances = results['distances'][0] if results['distances'] else []
-
-            for doc, meta, dist in zip(docs, metas, distances):
-                similarity = 1 - dist
-                age_hours = (now - meta.get('timestamp', now)) / 3600
-                recency = 1 / (1 + age_hours * 0.05)
-
-                formatted.append({
-                    "content": doc,
-                    "metadata": meta,
-                    "similarity": similarity,
-                    "recency": recency,
-                    "final_score": similarity * recency
-                })
-
-            formatted.sort(key=lambda x: x['final_score'], reverse=True)
-            return formatted
-
-        except Exception as e:
-            logger.error(f"Vector search error: {e}")
-            return []
-
-    def cleanup_old(self, max_age_days: int = 7):
-        """Rimuove vettori vecchi."""
-        if not self._initialized:
-            return
-
-        cutoff = time.time() - (max_age_days * 86400)
-
-        try:
-            old = self.collection.get(
-                where={"timestamp": {"$lt": cutoff}},
-                include=[]
-            )
-            if old and old.get('ids'):
-                self.collection.delete(ids=old['ids'])
-                logger.info(f"Cleaned {len(old['ids'])} old event vectors")
-        except Exception as e:
-            logger.error(f"Vector cleanup error: {e}")
-
-
-# Istanza globale
-location_vector_store = LocationVectorStore()
 
 
 # ===========================================================================
@@ -745,12 +491,12 @@ async def scheduler():
 async def lifespan(app: FastAPI):
     # Log backend mode
     if AI_BACKEND == "api":
-        logger.info(f"AI Backend: cloud (OpenRouter: {OPENROUTER_SUMMARY_MODEL}, Cloud embeddings)")
+        logger.info(f"AI Backend: cloud (OpenRouter: {OPENROUTER_SUMMARY_MODEL})")
     else:
-        logger.info(f"AI Backend: local (Ollama: {SUMMARY_MODEL}, {EMBEDDING_MODEL})")
+        logger.info(f"AI Backend: local (Ollama: {SUMMARY_MODEL})")
 
     init_db()
-    # ChromaDB vector store removed — using Redis context bus + mem0 for memory
+    # Memoria semantica/procedurale gestita da mem0-stack (esterno).
     asyncio.create_task(subscribe_ha_events())
     asyncio.create_task(scheduler())
     yield
@@ -818,37 +564,6 @@ async def get_location_memory_endpoint(
         cold=cold,
         longterm=longterm,
         token_estimate=total_chars // 4
-    )
-
-
-class VectorSearchRequest(BaseModel):
-    query: str
-    n_results: int = 30
-    min_timestamp: Optional[float] = None
-
-
-class VectorSearchResponse(BaseModel):
-    location_id: str
-    results: List[Dict[str, Any]]
-    count: int
-
-
-@app.post("/memory/search", response_model=VectorSearchResponse)
-async def search_location_memory(request: VectorSearchRequest):
-    """
-    Ricerca semantica negli eventi location.
-    Usato dall'orchestrator per query tipo "quando ho lasciato aperto X?"
-    """
-    results = location_vector_store.search_events(
-        query=request.query,
-        n_results=request.n_results,
-        min_timestamp=request.min_timestamp
-    )
-
-    return VectorSearchResponse(
-        location_id=LOCATION_ID,
-        results=results,
-        count=len(results)
     )
 
 
