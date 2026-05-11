@@ -101,15 +101,6 @@ curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/home_control" \
 ```
 `source_channel` is mandatory. Security levels L1-L4 auto-enforced. L3 actions (cameras, locks) require Telegram approval.
 
-### memory_query
-Hybrid memory search (SQL + Vector DB). Use for past events, conversations, habits.
-```bash
-curl -s -X POST "$JARVIS_ORCHESTRATOR_URL/api/tools/memory_query" \
-  -H "Authorization: Bearer $AI_AGENT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": "marco", "query": "quando e arrivata ada?", "context_type": "reasoning"}'
-```
-
 ### user_context
 User profile, current location, preferences, role.
 ```bash

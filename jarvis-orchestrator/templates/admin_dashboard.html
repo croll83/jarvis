@@ -1646,14 +1646,11 @@
                         <thead>
                             <tr>
                                 <th>Utente</th>
-                                <th>Chat Msgs</th>
-                                <th>Hourly</th>
-                                <th>Daily</th>
-                                <th>Long-term Facts</th>
+                                <th>Chat Msgs (HOT)</th>
                             </tr>
                         </thead>
                         <tbody id="memoryUserBody">
-                            <tr><td colspan="5">Caricamento...</td></tr>
+                            <tr><td colspan="2">Caricamento...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -5079,39 +5076,25 @@
                 document.getElementById('memoryOverview').innerHTML = `
                     <div class="metric-card">
                         <div class="metric-value">mem0-stack</div>
-                        <div class="metric-label">Semantic Memory</div>
+                        <div class="metric-label">Semantic + Long-term</div>
                         <div style="font-size:0.75rem;opacity:0.6;margin-top:0.25rem">
                             Vedi dashboard Hermes &rarr; tab Memory
                         </div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-value">${sql.hourly_summaries + sql.daily_summaries}</div>
-                        <div class="metric-label">SQL Summaries</div>
-                        <div style="font-size:0.75rem;opacity:0.6;margin-top:0.25rem">
-                            ${sql.hourly_summaries} hourly + ${sql.daily_summaries} daily
-                        </div>
-                    </div>
-                    <div class="metric-card">
                         <div class="metric-value">${sql.chat_messages_total}</div>
-                        <div class="metric-label">Chat Messages</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-value">${sql.longterm_facts}</div>
-                        <div class="metric-label">Long-term Facts</div>
+                        <div class="metric-label">Chat Messages (HOT)</div>
                     </div>`;
 
-                // Per-user table
+                // Per-user table (solo chat history HOT)
                 const userBody = document.getElementById('memoryUserBody');
                 if (!data.per_user_memory.length) {
-                    userBody.innerHTML = '<tr><td colspan="5" style="text-align:center;opacity:0.6;">Nessun utente</td></tr>';
+                    userBody.innerHTML = '<tr><td colspan="2" style="text-align:center;opacity:0.6;">Nessun utente</td></tr>';
                 } else {
                     userBody.innerHTML = data.per_user_memory.map(u => `
                         <tr>
                             <td><strong>${u.name}</strong></td>
                             <td>${u.chat_count}</td>
-                            <td>${u.hourly_count}</td>
-                            <td>${u.daily_count}</td>
-                            <td>${u.longterm_count}</td>
                         </tr>
                     `).join('');
                 }
@@ -5124,12 +5107,9 @@
                 } else {
                     haGrid.innerHTML = haEntries.map(([locId, info]) => {
                         const statusIcon = info.status === 'online' ? '<span style="color:var(--success)">&#9679;</span>' : '<span style="color:var(--error)">&#9679;</span>';
-                        const details = info.status === 'online' && info.warm_summaries !== undefined ?
+                        const details = info.status === 'online' && info.hot_events !== undefined ?
                             `<div style="font-size:0.8rem;margin-top:0.5rem;">
                                 <div>Hot events: ${info.hot_events || 0}</div>
-                                <div>Warm: ${info.warm_summaries || 0}</div>
-                                <div>Cold: ${info.cold_summaries || 0}</div>
-                                <div>Long-term: ${info.longterm_facts || 0}</div>
                             </div>` : '';
                         return `<div class="metric-card">
                             <div class="metric-label" style="margin-bottom:0.5rem;">${statusIcon} ${locId}</div>
@@ -5144,11 +5124,8 @@
                 document.getElementById('retentionInfo').innerHTML = `
                     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0.75rem;">
                         <div><strong>Chat Memory:</strong> ${ret.chat_memory_max_age_hours}h</div>
-                        <div><strong>Hourly Summaries:</strong> ${ret.hourly_max_age_hours}h</div>
-                        <div><strong>Daily Summaries:</strong> ${ret.daily_max_age_days} giorni</div>
-                        <div><strong>Vector Store:</strong> ${ret.vector_retention_days} giorni</div>
-                        <div><strong>Compaction oraria:</strong> :${String(ret.scheduler_hourly_minute).padStart(2,'0')}</div>
-                        <div><strong>Compaction giornaliera:</strong> ${ret.scheduler_daily_hour}:00</div>
+                        <div><strong>Habit extraction:</strong> daily @ ${ret.scheduler_daily_hour}:00</div>
+                        <div><strong>Habit lookback:</strong> ${ret.habit_lookback_days} giorni</div>
                     </div>`;
 
             } catch (e) {

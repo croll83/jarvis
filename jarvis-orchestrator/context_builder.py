@@ -53,17 +53,15 @@ async def build_full_context(
     parts = []
     _t0 = time.time()
 
-    # ===== 1. USER MEMORY - SQL (structured) =====
+    # ===== 1. USER MEMORY - SQL HOT only (chat_memory raw recente) =====
+    # Layer WARM/COLD/LONGTERM rimossi: long-term semantic facts vivono in mem0-stack.
     _t = time.time()
     if user_id:
+        # Almeno 5 turni (10 messaggi) anche per routing; reasoning ne prende di piu'.
+        max_messages = 10 if context_type == "routing" else 20
         user_memory_sql = get_user_memory_context(
             user_id=user_id,
-            include_hot=True,
-            include_warm=context_type == "reasoning",
-            include_cold=context_type == "reasoning",
-            include_longterm=True,
-            warm_hours=config.REASONING_WARM_HOURS if context_type == "reasoning" else config.ROUTING_WARM_HOURS,
-            cold_days=config.REASONING_COLD_DAYS if context_type == "reasoning" else config.ROUTING_COLD_DAYS
+            max_messages=max_messages,
         )
 
         sql_context = format_user_memory_for_llm(

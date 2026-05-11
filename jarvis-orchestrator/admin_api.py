@@ -2177,36 +2177,22 @@ async def get_memory_stats() -> Dict[str, Any]:
     conn = _get_conn()
     c = conn.cursor()
 
-    # === CHROMADB STATS ===
-    # Lo storage vettoriale (memoria semantica + ReasoningBank) e' ora servito
-    # da mem0-stack. Per le statistiche live consultare la dashboard plugin
-    # mem0-selfhosted del Hermes Agent o l'endpoint mem0 /jobs/stats.
+    # === MEM0 STATS ===
+    # Lo storage vettoriale e' servito da mem0-stack (repo separato).
+    # Per stats live: dashboard plugin mem0-selfhosted di Hermes,
+    # oppure MEM0_BASE_URL + /jobs/stats.
     chromadb_stats = {
-        "status": "moved_to_mem0_stack",
-        "user_messages_count": 0,
-        "user_facts_count": 0,
-        "total_vectors": 0,
+        "status": "external_mem0_stack",
+        "base_url": config.MEM0_BASE_URL,
     }
 
-    # === SQL MEMORY STATS ===
-    c.execute("SELECT COUNT(*) as cnt FROM user_memory_hourly")
-    hourly_count = c.fetchone()["cnt"]
-
-    c.execute("SELECT COUNT(*) as cnt FROM user_memory_daily")
-    daily_count = c.fetchone()["cnt"]
-
-    c.execute("SELECT COUNT(*) as cnt FROM user_memory_longterm")
-    longterm_count = c.fetchone()["cnt"]
-
+    # === SQL MEMORY STATS (HOT only: chat_memory) ===
     c.execute("SELECT COUNT(*) as cnt FROM chat_memory")
     chat_total = c.fetchone()["cnt"]
 
-    # === PER-USER MEMORY BREAKDOWN ===
+    # === PER-USER MEMORY BREAKDOWN (HOT chat history per utente) ===
     c.execute("""
         SELECT u.id, u.name,
-            (SELECT COUNT(*) FROM user_memory_hourly WHERE user_id = u.id) as hourly_count,
-            (SELECT COUNT(*) FROM user_memory_daily WHERE user_id = u.id) as daily_count,
-            (SELECT COUNT(*) FROM user_memory_longterm WHERE user_id = u.id) as longterm_count,
             (SELECT COUNT(*) FROM chat_memory WHERE speaker_id = u.id) as chat_count
         FROM users u
         ORDER BY u.name
@@ -2250,18 +2236,13 @@ async def get_memory_stats() -> Dict[str, Any]:
     # === RETENTION INFO ===
     retention = {
         "chat_memory_max_age_hours": config.CHAT_MEMORY_MAX_AGE / 3600,
-        "hourly_max_age_hours": config.COMPACTOR_HOURLY_MAX_AGE_HOURS,
-        "daily_max_age_days": config.COMPACTOR_DAILY_MAX_AGE_DAYS,
-        "scheduler_hourly_minute": config.MEMORY_HOURLY_TRIGGER_MINUTE,
-        "scheduler_daily_hour": config.MEMORY_DAILY_TRIGGER_HOUR
+        "scheduler_daily_hour": config.MEMORY_DAILY_TRIGGER_HOUR,
+        "habit_lookback_days": config.HABIT_LOOKBACK_DAYS,
     }
 
     return {
-        "chromadb": chromadb_stats,
+        "mem0": chromadb_stats,  # placeholder: vedi dashboard mem0-stack per stats live
         "sql_memory": {
-            "hourly_summaries": hourly_count,
-            "daily_summaries": daily_count,
-            "longterm_facts": longterm_count,
             "chat_messages_total": chat_total
         },
         "per_user_memory": per_user_memory,

@@ -239,19 +239,33 @@ def _html_to_text(html: str) -> str:
     return text.strip()
 
 
-async def execute_memory_search(query: str, user_id: int = None) -> str:
-    """Cerca nella memoria semantica via mem0-stack (MEM0_BASE_URL/search)."""
+async def execute_memory_search(query: str, user_id=None) -> str:
+    """Cerca nella memoria semantica via mem0-stack.
+
+    Usa /search_contextual?summarize=false (no LLM re-ranker, ~110ms).
+    SECURITY: user_id puo' essere str (mem0 namespace: marco|ada|shared) o int
+    (speaker_id legacy che viene mappato via speaker_to_user_id). Mai default
+    a un utente specifico: chi non e' identificato finisce in 'shared'.
+    """
     try:
         import aiohttp
         import config
+        from context_bus import speaker_to_user_id
 
+        # Normalize user_id → mem0 namespace string
         if user_id is None:
-            user_id = 1  # Default user
+            mem0_user = "shared"
+        elif isinstance(user_id, int):
+            mem0_user = speaker_to_user_id(user_id)
+        elif isinstance(user_id, str) and user_id.isdigit():
+            mem0_user = speaker_to_user_id(int(user_id))
+        else:
+            mem0_user = str(user_id)
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{config.MEM0_BASE_URL}/search",
-                json={"query": query, "user_id": str(user_id), "limit": 10},
+                f"{config.MEM0_BASE_URL}/search_contextual?summarize=false",
+                json={"query": query, "user_id": mem0_user, "limit": 10},
                 timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS.get("mem0", 10))
             ) as resp:
                 if resp.status != 200:

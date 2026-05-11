@@ -56,10 +56,19 @@
 
      +--------------------------------------------+
      |         DATA LAYER                          |
-     |  Redis :6379    | mem0-stack (esterno)      |
-     |  (context bus,  | (long-term semantic +     |
-     |   cross-system) |  procedural; vedi         |
-     |                 |  croll83/mem0-stack)      |
+     |                                             |
+     |  L1 HOT      SQLite chat_memory             |
+     |              (raw + meta JSON: route,       |
+     |               ha_entity_id, ha_action,...)  |
+     |                                             |
+     |  L2 SHORT    Redis :6379 (context bus,      |
+     |              cross-system, TTL 30m)         |
+     |                                             |
+     |  L3 LONG     mem0-stack (esterno)           |
+     |              MEM0_BASE_URL                  |
+     |              croll83/mem0-stack             |
+     |              ↑ popolato da habit_extraction |
+     |                                             |
      |  PostgreSQL     | MongoDB                   |
      |  (side projects)| (side projects)           |
      +--------------------------------------------+
@@ -85,8 +94,9 @@
 | **Ontology Server** | Knowledge Graph | Entity/relation graph with speaker-based ACL, SQLite + FastAPI |
 | **fastembed (nomic-embed-text-v1.5)** | Embeddings | 768-dim CPU-only ONNX embeddings (Ollama-compatible API :11435) for orchestrator, ha-memory-service, and AI Agent |
 | **Brave Search** | Web Search Tool | Web search API used by Qwen tool calling |
-| **Redis** | Context Bus | Cross-system short-term memory (TTL 30min). Shared between orchestrator, HA memory service, and Hermes. Per-user event lists with source filtering |
-| **mem0-stack** (esterno) | Long-term semantic + procedural memory | Servizio esterno (vedi repo `croll83/mem0-stack`). Espone API HTTP `/search`, `/add`, `/memories/*`, `/reasoning_bank/*`. Consumato via `MEM0_BASE_URL` |
+| **SQLite `chat_memory`** | L1 HOT memory (in orchestrator) | Raw rows with `meta` JSON (route, payload, ha_entity_id, ha_action, ha_params, ha_status). Source for the nightly habit-extraction job |
+| **Redis** | L2 Context Bus | Cross-system short-term memory (TTL 30min). Shared between orchestrator, HA memory service, and Hermes. Per-user event lists with source filtering |
+| **mem0-stack** (esterno) | L3 Long-term semantic + procedural memory | Servizio esterno (repo `croll83/mem0-stack`). API HTTP `/search`, `/search_contextual`, `/add`, `/memories/*`, `/reasoning_bank/*`. Consumato via `MEM0_BASE_URL`. Popolato dal job notturno `habit_extraction` (ibrido SQL + LLM, `agent_id=jarvis-habit-extractor`) |
 | **PostgreSQL** | Database | Side projects (relational store) |
 | **MongoDB** | Database | Side projects (document store) |
 | **Home Assistant** | Domotics core | One instance per location, connected via WebSocket |
@@ -206,7 +216,8 @@ jarvis/
 |   +-- security_levels.py     # L1-L4 enforcement, domain/channel security
 |   +-- context_builder.py     # Hybrid context (SQLite + Redis)
 |   +-- context_bus.py         # Redis context bus (cross-system short-term memory)
-|   +-- memory_jobs.py         # Scheduled summarization + fact extraction + mem0 behavioral push
+|   +-- memory_jobs.py         # Daily scheduler: habit_extraction → mem0 + chat_memory HOT cleanup
+|   +-- habit_extraction.py    # Hybrid SQL (HOME_CONTROL aggregation) + LLM (preference/topic) → mem0
 |   +-- multi_ha.py            # Multi-location HA manager (single + bulk ops)
 |   +-- internal_tts.py        # TTS backend (Qwen3-TTS on GX10 / Kokoro cloud)
 |   +-- admin_api.py           # Admin dashboard API
@@ -241,7 +252,10 @@ jarvis/
 - **Qwen 2.5 3B with tool calling**: Fast local pre-routing for domotics commands plus tool calling capabilities (web_search via Brave API, web_fetch, memory_search, home_status). Falls back to offline responses when cloud is unreachable.
 - **Brave Search API**: Web search tool available to both Qwen (via tool calling) and the AI Agent (via skill), providing real-time web information.
 - **fastembed for all embeddings**: Single 768-dim embedding model (nomic-embed-text-v1.5 via ONNX, CPU-only) served by a dedicated container on port 11435 with Ollama-compatible API. Runs on CPU to avoid CUDA context switching with Qwen on the GPU, reducing routing latency from ~3.5s to ~0.5s.
-- **Two-layer memory**: Redis context bus for real-time cross-system context (TTL 30min, source-filtered), and **mem0-stack** (external service, repo `croll83/mem0-stack`) for long-term semantic + procedural memory. The stack provides its own vector + graph + LLM router stack — consumers in jarvis (orchestrator, ha-memory-service) only need `MEM0_BASE_URL`.
+- **Three-layer memory (decoupled)**:
+  1. **L1 HOT — SQLite `chat_memory`** in the orchestrator (raw, last ~30 min). Each row carries a `meta` JSON column with the routing decision (`route`, `confidence`, `payload`) and, for `HOME_CONTROL`, the HA outcome (`ha_entity_id`, `ha_action`, `ha_params`, `ha_status`, …). No more hourly/daily SQL summaries — those layers were removed.
+  2. **L2 Short-term — Redis context bus** (`ctx:{user_id}:events`, TTL 30 min, capped 20, source-filtered) shared between orchestrator, `ha_memory_service`, and Hermes.
+  3. **L3 Long-term — mem0-stack** (external, repo `croll83/mem0-stack`, accessed via `MEM0_BASE_URL`). Populated by the nightly `habit_extraction` job, which uses a **hybrid SQL + LLM** pipeline: deterministic SQL aggregation over `chat_memory.meta` for domotics habits (entity + action + time window + value), Qwen LLM only for preferences/topics on non-HOME_CONTROL messages. Records are tagged `agent_id=jarvis-habit-extractor` for filtering in the Hermes mem0 dashboard.
 - **Redis context bus**: Shared between orchestrator, HA memory service, and Hermes. Each system writes events tagged with its source and reads only events from other sources, preventing self-duplication. Per-user event lists (`ctx:{user_id}:events`), capped at 20, TTL 30 minutes.
 - **Parakeet STT on GX10**: nvidia/parakeet-tdt-0.6b-v3 running on GX10 DGX Spark (128 GB VRAM). Multilingual auto-detection, 20x realtime, no initial prompt needed. Replaces Whisper (deprecated) to free VRAM on Atomman for router upgrades.
 - **Qwen3-TTS on GX10**: Qwen3-TTS-12Hz-1.7B with voice cloning, Italian/English preset voices (sofia, marco, emma, james). Replaces XTTSv2 (deprecated). OpenAI-compatible API.

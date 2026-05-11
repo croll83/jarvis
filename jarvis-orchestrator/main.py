@@ -23,7 +23,7 @@ import uvicorn
 import config
 from database import (
     init_db, smart_cache, log_event,
-    save_chat_message, get_recent_turns, format_recent_turns_for_llm,
+    save_chat_message, update_chat_meta, get_recent_turns, format_recent_turns_for_llm,
     save_action, get_action, delete_action, cleanup_old_actions,
     set_user_preference, get_user_preference, set_global_preference, get_global_preference,
     get_audit_summary, save_telegram_stream,
@@ -4175,7 +4175,7 @@ async def process_jarvis_logic(text: str, context: dict):
 
     # 4. SALVA INPUT
     _t = time.time()
-    save_chat_message("user", text, source, speaker_id, speaker_name)
+    user_chat_id = save_chat_message("user", text, source, speaker_id, speaker_name)
     _save_ms = (time.time() - _t) * 1000
 
     # 5. ROUTING (con memoria ridotta per velocità)
@@ -4218,6 +4218,17 @@ async def process_jarvis_logic(text: str, context: dict):
     intent = router_data.get("intent")
     conf = router_data.get("confidence", 0)
     interim_text = router_data.get("interim_response", "Hmm... ci penso...")
+
+    # Arricchisce la riga utente con il routing per il job notturno di habit extraction.
+    # Campi domotica-specifici (entity_id/ha_status) saranno aggiunti dopo l'esecuzione HA.
+    try:
+        update_chat_meta(user_chat_id, {
+            "route": intent,
+            "confidence": round(float(conf), 3) if conf is not None else None,
+            "payload": router_data.get("payload", {}),
+        })
+    except Exception as _e:
+        logger.debug(f"update_chat_meta(routing) failed: {_e}")
 
     # Salva intent per continuità multi-turn
     if speaker_id and intent:
@@ -4593,6 +4604,33 @@ async def process_jarvis_logic(text: str, context: dict):
                 log_detail = f"[{target_location}] {mapped_action} su {entity_desc} ({entity_id})" + (f" params={clean_params}" if clean_params else "")
 
             admin_metrics.record_hass((time.time() - hass_start) * 1000)
+
+            # Arricchisce la riga utente con l'outcome HA per il job notturno di habit extraction.
+            try:
+                if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
+                    ha_meta = {
+                        "ha_mode": "bulk",
+                        "ha_entity_ids": list(target["entity_ids"]),
+                        "ha_action": action,
+                        "ha_params": _normalize_ha_params(ha_params) or {},
+                        "ha_status": "ok" if success else ("partial" if total_ok else "error"),
+                        "ha_error": err,
+                        "ha_location": target_location,
+                    }
+                else:
+                    ha_meta = {
+                        "ha_mode": "single",
+                        "ha_entity_id": entity_id,
+                        "ha_domain": eid_domain,
+                        "ha_action": mapped_action,
+                        "ha_params": clean_params or {},
+                        "ha_status": "ok" if success else "error",
+                        "ha_error": err,
+                        "ha_location": target_location,
+                    }
+                update_chat_meta(user_chat_id, ha_meta)
+            except Exception as _e:
+                logger.debug(f"update_chat_meta(home_control) failed: {_e}")
 
             if success:
                 action_verb = {
