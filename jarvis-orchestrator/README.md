@@ -36,11 +36,12 @@ Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 
 │  │ Qwen 3B  │    │ (Tailscale) │   │ (N locations) │        │
 │  └──────────┘    └──────────────┘   └──────────────┘        │
 │                                                               │
-│  ┌──────────────┐  ┌──────────────┐                          │
-│  │ Redis :6379  │  │ mem0 :8200   │                          │
-│  │ Context Bus  │  │ Long-term    │                          │
-│  │ (short-term) │  │ (behavioral) │                          │
-│  └──────────────┘  └──────────────┘                          │
+│  ┌──────────────┐  ┌────────────────────┐                    │
+│  │ Redis :6379  │  │ mem0-stack (ext.)  │                    │
+│  │ Context Bus  │  │ MEM0_BASE_URL      │                    │
+│  │ (short-term) │  │ semantic+procedural│                    │
+│  │              │  │ croll83/mem0-stack │                    │
+│  └──────────────┘  └────────────────────┘                    │
 │                                                               │
 │  JARVIS Approval Bot — Telegram bot separato per conferme L3 │
 │  (locks, alarm, cameras) — canale isolato da AI Agent        │
@@ -148,7 +149,6 @@ AI Agent ──▶ jarvis_home_control (L3 action)
 | 2 | `/api/tools/speaker_id` | POST | Identifica speaker da audio via Resemblyzer |
 | 3 | `/api/tools/user_context` | GET | Profilo utente, location attiva, preferenze |
 | 4 | `/api/tools/security` | POST | Azioni sicurezza (privacy mode, allarme) |
-| 5 | `/api/tools/memory_query` | POST | Query memoria stratificata (SQL + vector) |
 | 6 | `/api/tools/entity_resolve` | POST | Risolvi friendly name -> entity_id HA |
 | 7 | `/api/tools/entity_discover` | POST | Scopri entita per stanza, zona, piano, dominio |
 | 8 | `/api/tools/entity_bulk` | POST | **Query/azione bulk** su gruppi di entita (room/zone/floor/domain) |
@@ -177,28 +177,108 @@ Filtri combinabili: `domain`, `room`, `zone`, `floor`, `search`, `entity_ids`. S
 
 ## Sistema di Memoria
 
-Architettura a 3 layer: SQLite locale, Redis cross-system, mem0 long-term.
+Architettura a 3 layer **disaccoppiati**, ciascuno con un compito ben preciso:
 
-### Layer 1: SQLite (locale, stratificata)
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  L1  HOT       SQLite locale  chat_memory  (raw, 30 min)        │
+│      └─ ogni riga porta meta JSON: route, payload,              │
+│         ha_entity_id, ha_action, ha_params, ha_status, ...      │
+│                                                                  │
+│  L2  SHORT-TERM Redis ctx:{user_id}:events  (max 20, TTL 30m)   │
+│      └─ context bus cross-system (orchestrator / Hermes /       │
+│         ha_memory_service); ognuno tagga `source`               │
+│                                                                  │
+│  L3  LONG-TERM  mem0-stack (esterno, croll83/mem0-stack)        │
+│      └─ semantic + procedural + reasoning_bank;                 │
+│         popolato dal job notturno `habit_extraction`            │
+│         (ibrido SQL + LLM) con `agent_id=jarvis-habit-extractor`│
+└─────────────────────────────────────────────────────────────────┘
+```
 
-| Strato | Retention | Contenuto | Creazione |
-|--------|-----------|-----------|-----------|
-| **HOT** | 30 minuti | Messaggi raw (role, content, speaker) | Real-time |
-| **WARM** | 24 ore | Summary orario via LLM | Job ogni ora |
-| **COLD** | 7 giorni | Summary giornaliero via LLM | Job alle 03:00 |
-| **LONG-TERM** | Permanente | Fatti estratti (solo SQLite) | Job alle 03:00 |
+> I vecchi layer **WARM / COLD / LONG-TERM SQL** (summary orari/giornalieri + fatti estratti locali) sono stati **rimossi**: la memoria semantica long-term vive ora solo in mem0-stack. L'orchestrator non gira più job di summary orari/giornalieri.
 
-### Layer 2: Redis Context Bus (cross-system, short-term)
+### Layer 1 — SQLite HOT con meta strutturato
 
-Redis condiviso tra orchestrator, HA memory service e Hermes (URL in `REDIS_URL` env var).
+Tabella `chat_memory` (retention `CHAT_MEMORY_MAX_AGE_HOURS`, default 24h ma usata come HOT-only — gli ultimi ~30 min per il routing/reasoning):
+
+| Colonna | Tipo | Note |
+|---------|------|------|
+| `id`, `timestamp`, `role`, `content` | base | riga raw |
+| `source`, `speaker_id`, `speaker_name` | base | provenienza + speaker biometrico |
+| `meta` | JSON nullable | arricchimento per habit extraction (vedi sotto) |
+
+Schema di `meta` per le righe utente (popolato live durante `/process_input` in `main.py`):
+
+```jsonc
+{
+  "route": "HOME_CONTROL" | "SIMPLE_CHAT" | "AI_AGENT" | ...,
+  "confidence": 0.93,
+  "payload": { ... },                  // router_data.payload (entity, action ipotizzati)
+
+  // Solo per route=HOME_CONTROL, aggiunto dopo l'esecuzione HA:
+  "ha_mode": "single" | "bulk",
+  "ha_entity_id": "light.salotto",     // (single)
+  "ha_entity_ids": ["...", "..."],     // (bulk)
+  "ha_domain": "light",
+  "ha_action": "turn_on",
+  "ha_params": {"brightness": 200},
+  "ha_status": "ok" | "partial" | "error",
+  "ha_error": null,
+  "ha_location": "casa"
+}
+```
+
+API in `database.py`:
+- `save_chat_message(role, content, source, speaker_id, speaker_name, meta=None) -> int` — ritorna `chat_id`
+- `update_chat_meta(chat_id, patch)` — shallow merge sul JSON esistente
+
+Indice `idx_chat_memory_speaker_ts(speaker_id, timestamp)` per le aggregazioni del job notturno.
+
+### Layer 2 — Redis Context Bus
+
+Redis condiviso tra orchestrator, `ha_memory_service` e Hermes (`REDIS_URL` env).
 
 - Ogni sistema scrive eventi con il proprio `source` tag e legge solo eventi da ALTRI sistemi (no auto-duplicazione)
 - Struttura: `ctx:{user_id}:events` → lista JSON cappata (max 20 eventi, TTL 30 min)
 - L'orchestrator legge max 3-5 eventi recenti per arricchire il contesto delle risposte
 
-### Layer 3: mem0 (long-term, behavioral)
+### Layer 3 — mem0-stack: habit extraction ibrida (SQL + LLM)
 
-Job notturno (`run_mem0_behavioral_extraction`) estrae abitudini comportamentali dalle interazioni vocali giornaliere (via Qwen) e le invia a mem0 (URL in `MEM0_BASE_URL` env var). Segregazione per utente tramite `SPEAKER_USER_MAP`.
+Job notturno `habit_extraction.run_habit_extraction_job` (schedulato da `memory_jobs.memory_scheduler` all'ora `MEMORY_DAILY_TRIGGER_HOUR`).
+
+Per ogni utente mappato in `SPEAKER_USER_MAP` (es. `1:marco,2:ada`):
+
+1. **Domotica → SQL deterministica.** Query con `json_extract(meta, '$.route') = 'HOME_CONTROL'`, GROUP BY `(ha_entity_id, ha_action)`:
+   - filtra `count >= HABIT_MIN_OCCURRENCES`, `span_days >= HABIT_MIN_SPAN_DAYS`
+   - finestra oraria: mode delle ore di esecuzione (>=60% delle occorrenze)
+   - frequenza: `daily / weekday / weekend / weekly / sporadic` derivata da `count/span` + distribuzione weekday
+   - valore più frequente da `ha_params` (`temperature`, `brightness`, `position`, …)
+   - confidence = `0.55 + 0.4 * density + bonus_consistenza_finestra` (max 0.99)
+   - descrizione natural-language **deterministica** (no LLM)
+2. **Preferenze / topic → LLM (Qwen).** Solo sui messaggi `route != HOME_CONTROL` (o legacy senza `meta`), prompt scoped a `kind ∈ {preference, topic}`.
+3. **Upsert su mem0** (`MEM0_BASE_URL`):
+   - match per `(entity, action)` o `kind + descrizione`
+   - se non esiste → `POST /add` (`agent_id=jarvis-habit-extractor`, `metadata.type=habit`, content prefisso `[Habit] …`)
+   - se esiste **con drift** (frequency change / time-window shift > `HABIT_DRIFT_THRESHOLD` / value change) → `PUT /memories/{id}` con `version + 1`
+   - altrimenti refresh di `last_seen` e `sample_size`
+
+I record sono filtrabili nella **dashboard mem0 su Hermes** via `agent_id=jarvis-habit-extractor` e distinguibili dalle memorie conversazionali (che hanno altro `agent_id`).
+
+Env rilevanti (`config.py`):
+
+```
+HABIT_LOOKBACK_DAYS       = 30        # finestra di analisi
+HABIT_MIN_OCCURRENCES     = 5         # eventi minimi per essere habit
+HABIT_MIN_SPAN_DAYS       = 14        # span minimo del pattern
+HABIT_CONFIDENCE_FLOOR    = 0.4       # taglio
+HABIT_DRIFT_THRESHOLD     = 0.05      # ~72 min sulla finestra HH:MM
+MEMORY_DAILY_TRIGGER_HOUR = 3         # ora del job
+```
+
+### Sicurezza: memory_search lato Qwen tool calling
+
+Il tool `memory_search` esposto al router Qwen (vedi `web_tools.execute_memory_search`) usa di default `user_id="shared"` se lo speaker non è autenticato, ed effettua mapping `speaker_id → user_id mem0` tramite `speaker_to_user_id()` (`SPEAKER_USER_MAP`). **Non c'è più fallback a `user_id=1` (=marco)**, eliminando il rischio di memory-leak cross-utente. Endpoint usato: `POST {MEM0_BASE_URL}/search_contextual?summarize=false` (~110ms, senza re-ranker LLM).
 
 ### Previous Intent Tracking
 
@@ -413,7 +493,7 @@ Accessibile via `http://jarvis:5000/admin` (richiede login).
 | **Audit Log** | Log eventi con filtri categoria/speaker |
 | **Dispositivi** | Device failures, voice devices (AtomS3R), configurazione speaker interno |
 | **Cache** | Query cache, statistiche hit/miss |
-| **Memory** | Stats SQL summaries, per-user breakdown, mem0 search, HA Memory |
+| **Memory** | Chat HOT count (totale + per-utente), info mem0-stack esterno, retention chat + habit extraction config |
 | **Access Log** | HTTP access log, auth attempts, anomaly detection |
 
 SSE real-time updates con fallback a polling. Dark/light theme.
@@ -439,10 +519,12 @@ voice_devices (device_id, friendly_name, location_id, output_speaker, fallback_s
 device_failures (entity_id, count, last_error, timestamp)
 
 -- ===== MEMORIA =====
-chat_memory (id, timestamp, role, content, source, speaker_id, speaker_name)
-user_memory_hourly (id, user_id, hour_start, summary, message_count)
-user_memory_daily (id, user_id, date, summary, hourly_count, message_count)
-user_memory_longterm (id, user_id, fact, category, confidence, source, ...)
+chat_memory (id, timestamp, role, content, source, speaker_id, speaker_name, meta)
+  -- HOT only (retention CHAT_MEMORY_MAX_AGE)
+  -- meta JSON: {route, confidence, payload, ha_entity_id, ha_action, ha_params, ha_status, ...}
+  -- index: idx_chat_memory_speaker_ts(speaker_id, timestamp)
+-- Long-term semantic memory: mem0-stack (MEM0_BASE_URL), popolata da habit_extraction
+-- (job notturno ibrido SQL + LLM, agent_id=jarvis-habit-extractor)
 query_cache (query_hash, query_text, response, hit_count, last_used, auto_learned)
 query_frequency (query_normalized, count, last_response, response_consistent)
 

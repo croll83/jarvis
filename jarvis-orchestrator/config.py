@@ -124,9 +124,9 @@ OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
 # ===========================================================================
 # ROUTING (Qwen 3B) — ultimi N turni entro finestra temporale.
 # Semplice e veloce: pura SQLite, zero embedding, zero HTTP.
-# 3 turni in 15 min coprono coreference e continuità multi-turn
+# 5 turni in 15 min coprono coreference e continuità multi-turn
 # (es. "accendi X" → "spegnila", follow-up AI Agent).
-ROUTER_MEMORY_TURNS = 3              # Ultimi 3 turni (6 messaggi max)
+ROUTER_MEMORY_TURNS = 5              # Ultimi 5 turni (10 messaggi max)
 ROUTER_MEMORY_WINDOW_SECONDS = 900   # Finestra 15 minuti
 
 # REASONING (AI Agent) — usa il sistema completo (weighted + vector + stratified)
@@ -141,31 +141,18 @@ MEMORY_WINDOW_SECONDS = 3600          # 1 ora di default
 # STRATIFIED MEMORY (hot/warm/cold/longterm)
 # ===========================================================================
 # User memory - finestre temporali per COMPACTOR (cleanup/purge jobs)
-COMPACTOR_HOT_MINUTES = 30               # Messaggi raw recenti
-COMPACTOR_WARM_HOURS = 24                # Summaries orari
-COMPACTOR_COLD_DAYS = 7                  # Summaries giornalieri
-COMPACTOR_HOURLY_MAX_AGE_HOURS = 48      # Pulizia summaries orari
-COMPACTOR_DAILY_MAX_AGE_DAYS = 30        # Pulizia summaries giornalieri
+COMPACTOR_HOT_MINUTES = 30               # Messaggi raw recenti (HOT only)
 
-# User memory - finestre temporali per REASONING (context builder retrieval)
-# Queste sono by design più ampie delle finestre compactor
-REASONING_WARM_HOURS = 48                # Finestra warm per reasoning
-REASONING_COLD_DAYS = 14                 # Finestra cold per reasoning
-ROUTING_WARM_HOURS = 24                  # Finestra warm per routing
-ROUTING_COLD_DAYS = 7                    # Finestra cold per routing
-
-# Budget token per context builder (routing vs reasoning)
-# Usati da context_builder.py per allocare contesto SQL + Vector
+# Budget token per context builder (routing vs reasoning).
+# Solo HOT (chat_memory raw) + location memory: long-term in mem0-stack.
 CONTEXT_BUDGETS = {
     "routing": {
         "user_memory_sql": int(os.getenv("CTX_ROUTING_USER_SQL", "300")),
-        "user_memory_vector": int(os.getenv("CTX_ROUTING_USER_VECTOR", "200")),
         "location_memory": int(os.getenv("CTX_ROUTING_LOCATION", "300")),
         "total_target": int(os.getenv("CTX_ROUTING_TOTAL", "900")),
     },
     "reasoning": {
         "user_memory_sql": int(os.getenv("CTX_REASONING_USER_SQL", "800")),
-        "user_memory_vector": int(os.getenv("CTX_REASONING_USER_VECTOR", "600")),
         "location_memory": int(os.getenv("CTX_REASONING_LOCATION", "800")),
         "total_target": int(os.getenv("CTX_REASONING_TOTAL", "5000")),
     },
@@ -427,10 +414,14 @@ TTS_MIN_DURATION = float(os.getenv("TTS_MIN_DURATION", "3.0"))
 FOLLOWUP_TRIGGER_BUFFER_S = float(os.getenv("FOLLOWUP_TRIGGER_BUFFER_S", "0.5"))
 
 # Memory jobs
-MEMORY_MIN_MESSAGES_FOR_SUMMARY = int(os.getenv("MEMORY_MIN_MESSAGES", "2"))
-MEMORY_CONTENT_TRUNCATE = int(os.getenv("MEMORY_CONTENT_TRUNCATE", "200"))
-MEMORY_HOURLY_TRIGGER_MINUTE = int(os.getenv("MEMORY_HOURLY_MINUTE", "5"))
 MEMORY_DAILY_TRIGGER_HOUR = int(os.getenv("MEMORY_DAILY_HOUR", "3"))
+
+# Habit extraction (orchestrator -> mem0, vedi habit_extraction.py)
+HABIT_LOOKBACK_DAYS = int(os.getenv("HABIT_LOOKBACK_DAYS", "30"))
+HABIT_MIN_OCCURRENCES = int(os.getenv("HABIT_MIN_OCCURRENCES", "5"))
+HABIT_MIN_SPAN_DAYS = int(os.getenv("HABIT_MIN_SPAN_DAYS", "14"))
+HABIT_CONFIDENCE_FLOOR = float(os.getenv("HABIT_CONFIDENCE_FLOOR", "0.4"))
+HABIT_DRIFT_THRESHOLD = float(os.getenv("HABIT_DRIFT_THRESHOLD", "0.05"))  # 0.05 di 24h ~= 72 min
 
 # ===========================================================================
 # PROACTIVE MONITORING THRESHOLDS (candidati per global_preferences)

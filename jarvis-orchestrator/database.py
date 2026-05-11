@@ -183,8 +183,18 @@ def init_db():
         content TEXT,
         source TEXT,
         speaker_id INTEGER REFERENCES users(id),
-        speaker_name TEXT
+        speaker_name TEXT,
+        meta TEXT  -- JSON: {route, entity_id, action, params, ha_status, ...} per habit extraction
     )''')
+
+    # Migration: aggiungi colonna meta (idempotente per DB esistenti)
+    try:
+        c.execute("ALTER TABLE chat_memory ADD COLUMN meta TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Index su (role, timestamp) per habit_extraction aggregation
+    c.execute("CREATE INDEX IF NOT EXISTS idx_chat_memory_speaker_ts ON chat_memory(speaker_id, timestamp)")
     
     # 6. TELEGRAM STREAMING
     c.execute('''CREATE TABLE IF NOT EXISTS telegram_streams (
@@ -1316,16 +1326,28 @@ def save_chat_message(
     content: str,
     source: str,
     speaker_id: Optional[int] = None,
-    speaker_name: Optional[str] = None
-):
-    """Salva un messaggio nella memoria conversazionale."""
+    speaker_name: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Salva un messaggio nella memoria conversazionale.
+
+    Args:
+        meta: optional dict serialized to JSON in chat_memory.meta
+              (es. {"route": "HOME_CONTROL", "entity_id": "...", "ha_status": "ok"}).
+
+    Returns:
+        ID della riga inserita (chat_memory.id) per eventuali update successivi.
+    """
     conn = _get_conn()
     c = conn.cursor()
     timestamp = time.time()
+    meta_json = json.dumps(meta, ensure_ascii=False) if meta else None
     c.execute(
-        "INSERT INTO chat_memory (timestamp, role, content, source, speaker_id, speaker_name) VALUES (?, ?, ?, ?, ?, ?)",
-        (timestamp, role, content, source, speaker_id, speaker_name)
+        "INSERT INTO chat_memory (timestamp, role, content, source, speaker_id, speaker_name, meta) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (timestamp, role, content, source, speaker_id, speaker_name, meta_json),
     )
+    chat_id = c.lastrowid
     conn.commit()
     conn.close()
 
@@ -1341,6 +1363,37 @@ def save_chat_message(
         )
     except Exception as e:
         logging.getLogger("JARVIS").debug(f"Context bus push failed: {e}")
+
+    return chat_id
+
+
+def update_chat_meta(chat_id: int, patch: Dict[str, Any]):
+    """Merge `patch` into chat_memory.meta JSON for row `chat_id`.
+
+    Idempotent: se meta è NULL viene creato, altrimenti i campi vengono
+    sovrascritti (shallow merge). Usato per arricchire una riga utente con
+    info di routing/tool result dopo che la decisione è stata presa.
+    """
+    if not patch:
+        return
+    conn = _get_conn()
+    c = conn.cursor()
+    c.execute("SELECT meta FROM chat_memory WHERE id = ?", (chat_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return
+    try:
+        existing = json.loads(row["meta"]) if row["meta"] else {}
+    except (json.JSONDecodeError, TypeError):
+        existing = {}
+    existing.update(patch)
+    c.execute(
+        "UPDATE chat_memory SET meta = ? WHERE id = ?",
+        (json.dumps(existing, ensure_ascii=False), chat_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_weighted_context(
@@ -3580,88 +3633,31 @@ def get_voice_device_stats() -> Dict[str, Any]:
 
 def get_user_memory_context(
     user_id: int,
-    include_hot: bool = True,
-    include_warm: bool = True,
-    include_cold: bool = True,
-    include_longterm: bool = True,
     hot_minutes: int = 30,
-    warm_hours: int = 24,
-    cold_days: int = 7
+    max_messages: int = 20,
 ) -> Dict[str, Any]:
     """
-    Recupera memoria stratificata per un utente.
-    Estende get_weighted_context() con i layer warm/cold/longterm.
+    Recupera HOT memory (messaggi raw recenti) per un utente.
+
+    Layer WARM/COLD/LONGTERM SQL sono stati rimossi: la memoria semantica
+    e fattuale long-term e' gestita da mem0-stack.
     """
     conn = _get_conn()
     c = conn.cursor()
 
-    result = {
-        "hot": [],
-        "warm": [],
-        "cold": [],
-        "longterm": [],
-        "token_estimate": 0
-    }
-
-    now = time.time()
-
-    # HOT: messaggi raw recenti (ultimi 30 min di chat_memory)
-    if include_hot:
-        cutoff = now - (hot_minutes * 60)
-        c.execute('''
-            SELECT role, content, speaker_name, timestamp
-            FROM chat_memory
-            WHERE timestamp > ? AND speaker_id = ?
-            ORDER BY timestamp DESC
-            LIMIT 20
-        ''', (cutoff, user_id))
-        result["hot"] = [dict(row) for row in c.fetchall()]
-
-    # WARM: summaries orari (ultime 24h)
-    if include_warm:
-        cutoff = now - (warm_hours * 3600)
-        c.execute('''
-            SELECT hour_start, summary, message_count
-            FROM user_memory_hourly
-            WHERE user_id = ? AND hour_start > ?
-            ORDER BY hour_start DESC
-        ''', (user_id, cutoff))
-        result["warm"] = [dict(row) for row in c.fetchall()]
-
-    # COLD: summaries giornalieri (ultimi 7 giorni)
-    if include_cold:
-        c.execute('''
-            SELECT date, summary, patterns_json
-            FROM user_memory_daily
-            WHERE user_id = ?
-            ORDER BY date DESC
-            LIMIT ?
-        ''', (user_id, cold_days))
-        result["cold"] = [dict(row) for row in c.fetchall()]
-
-    # LONGTERM: fatti permanenti
-    if include_longterm:
-        c.execute('''
-            SELECT fact, category, confidence
-            FROM user_memory_longterm
-            WHERE user_id = ?
-              AND (expires_at IS NULL OR expires_at > ?)
-            ORDER BY confidence DESC, updated_at DESC
-            LIMIT 20
-        ''', (user_id, now))
-        result["longterm"] = [dict(row) for row in c.fetchall()]
-
+    cutoff = time.time() - (hot_minutes * 60)
+    c.execute('''
+        SELECT role, content, speaker_name, timestamp
+        FROM chat_memory
+        WHERE timestamp > ? AND speaker_id = ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+    ''', (cutoff, user_id, max_messages))
+    hot = [dict(row) for row in c.fetchall()]
     conn.close()
 
-    # Stima token (rough: 1 token ~ 4 chars)
-    total_chars = sum(
-        len(str(m.get("content", m.get("summary", m.get("fact", "")))))
-        for layer in result.values() if isinstance(layer, list)
-        for m in layer
-    )
-    result["token_estimate"] = total_chars // 4
-
-    return result
+    total_chars = sum(len(str(m.get("content", ""))) for m in hot)
+    return {"hot": hot, "token_estimate": total_chars // 4}
 
 
 def format_user_memory_for_llm(
@@ -3669,10 +3665,7 @@ def format_user_memory_for_llm(
     user_name: str,
     max_tokens: int = 2000
 ) -> str:
-    """
-    Formatta la memoria utente per il prompt.
-    Rispetta il budget token, prioritizzando hot > longterm > warm > cold.
-    """
+    """Formatta la HOT memory utente per il prompt. Budget token-aware."""
     lines = []
     tokens_used = 0
 
@@ -3685,132 +3678,20 @@ def format_user_memory_for_llm(
             return True
         return False
 
-    # LONGTERM prima (sempre utile, compatto)
-    if memory["longterm"]:
-        add_if_budget(f"\n[Informazioni su {user_name}]")
-        for fact in memory["longterm"]:
-            if not add_if_budget(f"- {fact['fact']}"):
-                break
-
-    # HOT (conversazione recente)
-    if memory["hot"]:
+    hot = memory.get("hot") or []
+    if hot:
         add_if_budget(f"\n[Conversazione recente con {user_name}]")
-        for msg in reversed(memory["hot"][-10:]):
+        # hot e' DESC (piu' recente prima): inverti per ordine cronologico
+        for msg in reversed(hot):
             prefix = user_name if msg['role'] == 'user' else 'Jarvis'
             if not add_if_budget(f"- {prefix}: {msg['content'][:200]}"):
-                break
-
-    # WARM (se c'e' budget)
-    if memory["warm"] and tokens_used < max_tokens * 0.7:
-        add_if_budget(f"\n[Attivita' ultime ore]")
-        for summary in memory["warm"][:3]:
-            if not add_if_budget(f"- {summary['summary'][:150]}"):
-                break
-
-    # COLD (se c'e' ancora budget)
-    if memory["cold"] and tokens_used < max_tokens * 0.9:
-        add_if_budget(f"\n[Pattern recenti]")
-        for day in memory["cold"][:2]:
-            if not add_if_budget(f"- {day['date']}: {day['summary'][:100]}"):
                 break
 
     return "\n".join(lines)
 
 
-def save_user_hourly_summary(
-    user_id: int,
-    hour_start: float,
-    hour_end: float,
-    summary: str,
-    message_count: int
-):
-    """Salva summary orario per utente."""
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO user_memory_hourly (user_id, hour_start, hour_end, summary, message_count)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, hour_start, hour_end, summary, message_count))
-    conn.commit()
-    conn.close()
-
-
-def save_user_daily_summary(
-    user_id: int,
-    date: str,
-    summary: str,
-    patterns: dict,
-    anomalies: list
-):
-    """Salva summary giornaliero per utente."""
-    conn = _get_conn()
-    c = conn.cursor()
-    c.execute('''
-        INSERT OR REPLACE INTO user_memory_daily (user_id, date, summary, patterns_json, anomalies_json)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, date, summary, json.dumps(patterns), json.dumps(anomalies)))
-    conn.commit()
-    conn.close()
-
-
-def save_user_longterm_fact(
-    user_id: int,
-    fact: str,
-    category: str = "extracted",
-    source: str = "auto",
-    confidence: float = 0.8
-):
-    """Salva fatto long-term per utente."""
-    conn = _get_conn()
-    c = conn.cursor()
-
-    # Check se esiste gia' un fatto identico
-    c.execute('''
-        SELECT id FROM user_memory_longterm
-        WHERE user_id = ? AND fact = ?
-    ''', (user_id, fact))
-
-    if c.fetchone():
-        # Aggiorna timestamp
-        c.execute('''
-            UPDATE user_memory_longterm SET updated_at = ?
-            WHERE user_id = ? AND fact = ?
-        ''', (time.time(), user_id, fact))
-    else:
-        # Inserisci nuovo
-        c.execute('''
-            INSERT INTO user_memory_longterm (user_id, fact, category, source, confidence)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, fact, category, source, confidence))
-
-    conn.commit()
-    conn.close()
-
-    # Facts go to mem0 via nightly batch job (memory_jobs.py)
-    # No more direct ChromaDB writes
-
-
-def cleanup_old_user_memory(
-    hourly_max_age_hours: int = 48,
-    daily_max_age_days: int = 30
-):
-    """Pulisce memoria utente vecchia."""
-    conn = _get_conn()
-    c = conn.cursor()
-
-    now = time.time()
-
-    # Cleanup hourly > 48h
-    cutoff_hourly = now - (hourly_max_age_hours * 3600)
-    c.execute('DELETE FROM user_memory_hourly WHERE hour_start < ?', (cutoff_hourly,))
-
-    # Cleanup daily > 30 giorni
-    from datetime import datetime, timedelta
-    cutoff_date = (datetime.now() - timedelta(days=daily_max_age_days)).strftime("%Y-%m-%d")
-    c.execute('DELETE FROM user_memory_daily WHERE date < ?', (cutoff_date,))
-
-    conn.commit()
-    conn.close()
+# Layer SQL warm/cold/longterm rimossi: long-term facts vivono in mem0-stack.
+# Vedi habit_extraction.py per il job che li popola.
 
 
 # ===========================================================================

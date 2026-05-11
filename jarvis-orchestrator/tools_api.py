@@ -9,7 +9,6 @@ All endpoints are behind bearer token authentication (AI_AGENT_TOKEN).
 - jarvis_speaker_id:     Identify speaker from audio
 - jarvis_get_user_context: Get user info + location + preferences
 - jarvis_security:       Set privacy mode, security actions
-- jarvis_memory_query:   Query user/location memory
 - jarvis_entity_resolve: Resolve friendly name → entity_id
 - jarvis_tts:            Text-to-speech passthrough
 - jarvis_get_locations:  List all locations with health status
@@ -135,18 +134,6 @@ class SecurityActionRequest(BaseModel):
 class SecurityActionResponse(BaseModel):
     success: bool
     message: str
-
-
-class MemoryQueryRequest(BaseModel):
-    user_id: Optional[str] = None
-    location_id: Optional[str] = None
-    query: Optional[str] = Field(default=None, description="Natural language query for vector search")
-    context_type: str = Field(default="routing", description="'routing' (compact) or 'reasoning' (full)")
-
-
-class MemoryQueryResponse(BaseModel):
-    context: str
-    sources: Dict[str, Any] = {}
 
 
 class EntityResolveRequest(BaseModel):
@@ -585,32 +572,6 @@ async def tool_security_action(
     except Exception as e:
         logger.error(f"security action error: {e}")
         return SecurityActionResponse(success=False, message=str(e))
-
-
-@router.post("/memory_query", response_model=MemoryQueryResponse)
-async def tool_memory_query(
-    req: MemoryQueryRequest,
-    _: None = Depends(verify_ai_agent_token)
-):
-    """Query user and location memory for context."""
-    try:
-        from context_builder import build_full_context
-
-        context_result = build_full_context(
-            user_id=req.user_id,
-            location_id=req.location_id,
-            query=req.query,
-            context_type=req.context_type,
-        )
-
-        return MemoryQueryResponse(
-            context=context_result.get("context", ""),
-            sources=context_result.get("sources", {}),
-        )
-
-    except Exception as e:
-        logger.error(f"memory_query error: {e}")
-        return MemoryQueryResponse(context="", sources={"error": str(e)})
 
 
 @router.post("/entity_resolve", response_model=EntityResolveResponse)
