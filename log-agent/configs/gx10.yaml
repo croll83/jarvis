@@ -1,0 +1,36 @@
+host_id: gx10
+collector_url: http://100.88.84.81:5000/api/admin/logs/ingest
+
+batch_interval: 2.0
+batch_size: 100
+
+sources:
+  - name: parakeet-stt
+    type: journalctl
+    target: parakeet-stt
+    level_filter: WARN
+
+  - name: qwen3-tts
+    type: journalctl
+    target: qwen3-tts
+    level_filter: WARN
+
+  - name: comfyui
+    type: journalctl
+    target: comfyui
+    level_filter: WARN
+
+  - name: comfyui-dashboard
+    type: journalctl
+    target: comfyui-dashboard
+    level_filter: WARN
+
+  - name: ace-step
+    type: journalctl
+    target: ace-step
+    level_filter: WARN
+
+  - name: nginx
+    type: journalctl
+    target: nginx
+    level_filter: WARN

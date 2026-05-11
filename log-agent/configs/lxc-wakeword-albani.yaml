@@ -1,0 +1,11 @@
+host_id: lxc-wakeword-albani
+collector_url: http://100.88.84.81:5000/api/admin/logs/ingest
+# auth_token: from LOG_AGENT_TOKEN env var
+
+batch_interval: 5.0
+batch_size: 50
+
+sources:
+  - name: wakeword-server
+    type: docker
+    target: jarvis_wakeword

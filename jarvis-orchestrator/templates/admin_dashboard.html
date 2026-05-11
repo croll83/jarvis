@@ -501,6 +501,25 @@
         .badge-error { background: var(--error-bg); color: var(--error); }
         .badge-info { background: rgba(59,130,246,0.1); color: var(--info); }
 
+        /* Chip toggles (log filters) */
+        .chip {
+            display: inline-block;
+            padding: 2px 8px;
+            font-size: 0.75rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .chip:hover { border-color: var(--accent); color: var(--accent); }
+        .chip-active {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+
         /* ============================================
            SETUP PROGRESS
            ============================================ */
@@ -1169,6 +1188,7 @@
             <button class="nav-tab" data-page="cache">Cache</button>
             <button class="nav-tab" data-page="memory">Memory</button>
             <button class="nav-tab" data-page="access-log">Access Log</button>
+            <button class="nav-tab" data-page="logs">Logs <span id="logErrorBadge" class="badge badge-error" style="display:none;margin-left:4px;font-size:0.7rem;padding:1px 5px;border-radius:8px;background:var(--error);color:#fff;">0</span></button>
         </div>
 
         <div class="nav-controls">
@@ -1761,6 +1781,87 @@
                 </div>
             </div>
         </div>
+
+        <!-- LOGS PAGE -->
+        <div id="page-logs" class="page">
+            <h2 class="page-title">System Logs</h2>
+
+            <!-- Stats -->
+            <div class="grid-4" id="logStats">
+                <div class="metric-card">
+                    <div class="metric-value" id="logStatTotal">-</div>
+                    <div class="metric-label">Totale</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="logStatErrors" style="color:var(--error)">-</div>
+                    <div class="metric-label">Errori (72h)</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="logStatWarns" style="color:var(--warning)">-</div>
+                    <div class="metric-label">Warning (72h)</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="logStatHosts">-</div>
+                    <div class="metric-label">Host attivi</div>
+                </div>
+            </div>
+
+            <!-- Filters -->
+            <div class="card" style="margin-top: 1rem;">
+                <div class="card-header">
+                    <span class="card-title">Filtri</span>
+                    <div style="display:flex;gap:0.5rem;align-items:center;">
+                        <label style="font-size:0.8rem;display:flex;align-items:center;gap:4px;cursor:pointer;">
+                            <input type="checkbox" id="logLiveMode" checked onchange="toggleLogLive()">
+                            Live
+                        </label>
+                        <button class="btn-secondary btn-sm" onclick="resetLogFilters()">Reset</button>
+                        <button class="btn-danger btn-sm" onclick="clearAllLogs()">Svuota</button>
+                    </div>
+                </div>
+                <div class="filters" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:end;">
+                    <div>
+                        <label style="font-size:0.8rem;display:block;margin-bottom:0.25rem;">Host</label>
+                        <div id="logHostChips" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
+                    </div>
+                    <div>
+                        <label style="font-size:0.8rem;display:block;margin-bottom:0.25rem;">Servizio</label>
+                        <div id="logServiceChips" style="display:flex;flex-wrap:wrap;gap:4px;max-width:500px;"></div>
+                    </div>
+                    <div>
+                        <label style="font-size:0.8rem;display:block;margin-bottom:0.25rem;">Livello min.</label>
+                        <select id="logLevelFilter" onchange="loadLogEntries()" style="padding:0.35rem 0.5rem;font-size:0.85rem;">
+                            <option value="">Tutti</option>
+                            <option value="DEBUG">DEBUG</option>
+                            <option value="INFO" selected>INFO</option>
+                            <option value="WARN">WARN</option>
+                            <option value="ERROR">ERROR</option>
+                            <option value="FATAL">FATAL</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="font-size:0.8rem;display:block;margin-bottom:0.25rem;">Cerca</label>
+                        <input type="text" id="logSearchText" placeholder="testo nel messaggio..." style="padding:0.35rem 0.5rem;font-size:0.85rem;width:200px;" onkeydown="if(event.key==='Enter')loadLogEntries()">
+                    </div>
+                    <button class="btn-primary btn-sm" onclick="loadLogEntries()">Filtra</button>
+                </div>
+            </div>
+
+            <!-- Log Stream -->
+            <div class="card" style="margin-top: 1rem;">
+                <div class="card-header">
+                    <span class="card-title">Log Stream</span>
+                    <span id="logEntryCount" style="font-size:0.8rem;opacity:0.7;"></span>
+                </div>
+                <div id="logStreamContainer" style="max-height:600px;overflow-y:auto;font-family:monospace;font-size:0.78rem;line-height:1.5;background:var(--bg-primary);border-radius:8px;padding:0.5rem;" onscroll="handleLogScroll()">
+                    <div id="logStreamBody" style="white-space:pre-wrap;word-break:break-all;">Caricamento...</div>
+                </div>
+                <div style="margin-top:0.5rem;display:flex;justify-content:space-between;align-items:center;">
+                    <span id="logScrollStatus" style="font-size:0.75rem;opacity:0.6;"></span>
+                    <button class="btn-secondary btn-sm" onclick="scrollLogToBottom()" id="logScrollBtn" style="display:none;">Torna in fondo</button>
+                </div>
+            </div>
+        </div>
     </main>
 
     <!-- MODALS -->
@@ -2296,7 +2397,8 @@
                 devices: loadDeviceFailures,
                 cache: loadCache,
                 memory: loadMemoryStats,
-                'access-log': loadAccessLog
+                'access-log': loadAccessLog,
+                'logs': loadLogs
             };
             if (loaders[page]) loaders[page]();
         }
@@ -5173,6 +5275,245 @@
                 console.error('Errore auth attempts:', e);
             }
         }
+        // ============================================
+        // LOGS — System Log Viewer
+        // ============================================
+        let logSSE = null;
+        let logAutoScroll = true;
+        let logSelectedHosts = new Set();
+        let logSelectedServices = new Set();
+        let logLiveErrors = 0;
+
+        const LOG_LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'];
+        const LOG_LEVEL_COLORS = {
+            DEBUG: 'opacity:0.5',
+            INFO: 'color:var(--text-primary)',
+            WARN: 'color:var(--warning)',
+            ERROR: 'color:var(--error);font-weight:600',
+            FATAL: 'color:var(--error);font-weight:700;text-decoration:underline',
+        };
+
+        async function loadLogs() {
+            await Promise.all([loadLogSources(), loadLogStats(), loadLogEntries()]);
+            startLogStream();
+        }
+
+        async function loadLogSources() {
+            try {
+                const resp = await fetch('/api/admin/logs/sources', {credentials: 'include'});
+                const data = await resp.json();
+
+                // Host chips
+                const hostDiv = document.getElementById('logHostChips');
+                hostDiv.innerHTML = (data.hosts || []).map(h =>
+                    `<button class="chip ${logSelectedHosts.has(h)?'chip-active':''}" onclick="toggleLogChip('host','${h}',this)">${h}</button>`
+                ).join('');
+
+                // Service chips
+                const svcDiv = document.getElementById('logServiceChips');
+                const services = [...new Set((data.services || []).map(s => s.service))].sort();
+                svcDiv.innerHTML = services.map(s =>
+                    `<button class="chip ${logSelectedServices.has(s)?'chip-active':''}" onclick="toggleLogChip('service','${s}',this)">${s}</button>`
+                ).join('');
+            } catch (e) {
+                console.error('Error loading log sources:', e);
+            }
+        }
+
+        async function loadLogStats() {
+            try {
+                const resp = await fetch('/api/admin/logs/stats', {credentials: 'include'});
+                const data = await resp.json();
+                document.getElementById('logStatTotal').textContent = (data.total || 0).toLocaleString();
+                document.getElementById('logStatErrors').textContent = (data.by_level?.ERROR || 0) + (data.by_level?.FATAL || 0);
+                document.getElementById('logStatWarns').textContent = data.by_level?.WARN || 0;
+                document.getElementById('logStatHosts').textContent = Object.keys(data.by_host || {}).length;
+            } catch (e) {
+                console.error('Error loading log stats:', e);
+            }
+        }
+
+        function buildLogQueryParams() {
+            const params = new URLSearchParams();
+            if (logSelectedHosts.size) params.set('host', [...logSelectedHosts].join(','));
+            if (logSelectedServices.size) params.set('service', [...logSelectedServices].join(','));
+
+            const levelSel = document.getElementById('logLevelFilter').value;
+            if (levelSel) {
+                const idx = LOG_LEVELS.indexOf(levelSel);
+                const levels = LOG_LEVELS.slice(idx);
+                params.set('level', levels.join(','));
+            }
+
+            const search = document.getElementById('logSearchText').value.trim();
+            if (search) params.set('search', search);
+
+            params.set('limit', '500');
+            return params;
+        }
+
+        async function loadLogEntries() {
+            try {
+                const params = buildLogQueryParams();
+                const resp = await fetch(`/api/admin/logs?${params}`, {credentials: 'include'});
+                const data = await resp.json();
+                const container = document.getElementById('logStreamBody');
+                const logs = (data.logs || []).reverse(); // oldest first
+
+                document.getElementById('logEntryCount').textContent = `${logs.length} righe`;
+
+                if (!logs.length) {
+                    container.innerHTML = '<span style="opacity:0.5">Nessun log trovato con i filtri selezionati.</span>';
+                    return;
+                }
+
+                container.innerHTML = logs.map(formatLogLine).join('\n');
+                if (logAutoScroll) scrollLogToBottom();
+            } catch (e) {
+                console.error('Error loading logs:', e);
+            }
+        }
+
+        function formatLogLine(entry) {
+            const ts = entry.ts ? entry.ts.substring(11, 23) : '';
+            const style = LOG_LEVEL_COLORS[entry.level] || '';
+            const lvl = (entry.level || 'INFO').padEnd(5);
+            const host = (entry.host || '').padEnd(16);
+            const svc = (entry.service || '').padEnd(20);
+            const msg = escapeHtml(entry.msg || '');
+            return `<span style="${style}">${ts} ${lvl} <span style="color:var(--accent)">${host}</span> <span style="opacity:0.7">${svc}</span> ${msg}</span>`;
+        }
+
+        function escapeHtml(text) {
+            const d = document.createElement('div');
+            d.textContent = text;
+            return d.innerHTML;
+        }
+
+        function toggleLogChip(type, value, btn) {
+            const set = type === 'host' ? logSelectedHosts : logSelectedServices;
+            if (set.has(value)) { set.delete(value); btn.classList.remove('chip-active'); }
+            else { set.add(value); btn.classList.add('chip-active'); }
+            loadLogEntries();
+        }
+
+        function resetLogFilters() {
+            logSelectedHosts.clear();
+            logSelectedServices.clear();
+            document.getElementById('logLevelFilter').value = 'INFO';
+            document.getElementById('logSearchText').value = '';
+            loadLogSources();
+            loadLogEntries();
+        }
+
+        async function clearAllLogs() {
+            if (!confirm('Svuotare tutti i log?')) return;
+            await fetch('/api/admin/logs', {method: 'DELETE', credentials: 'include'});
+            loadLogs();
+        }
+
+        // --- Live Streaming ---
+        function startLogStream() {
+            if (!document.getElementById('logLiveMode').checked) return;
+            stopLogStream();
+
+            logSSE = new EventSource('/api/admin/logs/stream');
+
+            logSSE.addEventListener('log_entry', (e) => {
+                const entry = JSON.parse(e.data);
+
+                // Apply client-side filters
+                if (logSelectedHosts.size && !logSelectedHosts.has(entry.host)) return;
+                if (logSelectedServices.size && !logSelectedServices.has(entry.service)) return;
+                const levelSel = document.getElementById('logLevelFilter').value;
+                if (levelSel) {
+                    const minIdx = LOG_LEVELS.indexOf(levelSel);
+                    const entryIdx = LOG_LEVELS.indexOf(entry.level);
+                    if (entryIdx < minIdx) return;
+                }
+                const search = document.getElementById('logSearchText').value.trim().toLowerCase();
+                if (search && !(entry.msg || '').toLowerCase().includes(search)) return;
+
+                appendLogLine(entry);
+
+                // Error badge counter
+                if (entry.level === 'ERROR' || entry.level === 'FATAL') {
+                    logLiveErrors++;
+                    const badge = document.getElementById('logErrorBadge');
+                    if (badge && currentPage !== 'logs') {
+                        badge.textContent = logLiveErrors > 99 ? '99+' : logLiveErrors;
+                        badge.style.display = 'inline';
+                    }
+                }
+            });
+
+            logSSE.addEventListener('connected', () => {
+                document.getElementById('logScrollStatus').textContent = 'Live stream connesso';
+            });
+
+            logSSE.onerror = () => {
+                document.getElementById('logScrollStatus').textContent = 'Stream disconnesso, riconnessione...';
+                setTimeout(() => {
+                    if (document.getElementById('logLiveMode')?.checked && currentPage === 'logs') {
+                        startLogStream();
+                    }
+                }, 5000);
+            };
+        }
+
+        function stopLogStream() {
+            if (logSSE) { logSSE.close(); logSSE = null; }
+        }
+
+        function toggleLogLive() {
+            if (document.getElementById('logLiveMode').checked) startLogStream();
+            else stopLogStream();
+        }
+
+        function appendLogLine(entry) {
+            const body = document.getElementById('logStreamBody');
+            const line = document.createElement('div');
+            line.innerHTML = formatLogLine(entry);
+
+            body.appendChild(line);
+
+            // Cap at 2000 lines
+            while (body.children.length > 2000) body.removeChild(body.firstChild);
+
+            if (logAutoScroll) scrollLogToBottom();
+        }
+
+        function scrollLogToBottom() {
+            const container = document.getElementById('logStreamContainer');
+            container.scrollTop = container.scrollHeight;
+            logAutoScroll = true;
+            document.getElementById('logScrollBtn').style.display = 'none';
+            document.getElementById('logScrollStatus').textContent = logSSE ? 'Live stream connesso' : '';
+        }
+
+        function handleLogScroll() {
+            const container = document.getElementById('logStreamContainer');
+            const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+            logAutoScroll = atBottom;
+            document.getElementById('logScrollBtn').style.display = atBottom ? 'none' : 'inline-block';
+            if (!atBottom) {
+                document.getElementById('logScrollStatus').textContent = 'Auto-scroll in pausa (scorri in fondo per riprendere)';
+            }
+        }
+
+        // Clear error badge when switching to logs page
+        const origSwitchPage = switchPage;
+        switchPage = function(page) {
+            origSwitchPage(page);
+            if (page === 'logs') {
+                logLiveErrors = 0;
+                const badge = document.getElementById('logErrorBadge');
+                if (badge) badge.style.display = 'none';
+            }
+            // Stop log stream when leaving logs page
+            if (page !== 'logs') stopLogStream();
+        };
+
     </script>
 </body>
 </html>

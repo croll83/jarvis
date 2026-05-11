@@ -56,6 +56,7 @@ from tools_api import router as tools_router
 from voice_recognition import voice_recognizer, get_speaker_context
 from user_api import router as user_router, web_router
 from admin_api import router as admin_router, metrics as admin_metrics
+from log_collector import router as log_router, init_log_db, haos_log_puller, log_prune_task
 from auth_api import router as auth_router
 from device_api import router as device_router, get_device_speaker_config
 from speaker_suppress import suppress_speaker, restore_speaker, get_suppressed_speakers
@@ -798,6 +799,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Silero VAD init failed (WS audio disabled): {e}")
 
+    # Log collector
+    init_log_db()
+    _keep(asyncio.create_task(haos_log_puller()))
+    _keep(asyncio.create_task(log_prune_task()))
+
     # Live session timeout monitor
     _keep(asyncio.create_task(live_session_monitor()))
 
@@ -851,6 +857,7 @@ app.include_router(auth_router)
 app.include_router(device_router)
 app.include_router(image_router)
 app.include_router(tools_router)
+app.include_router(log_router)
 
 
 # ===========================================================================
