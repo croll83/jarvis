@@ -6,6 +6,7 @@ v2: adds /add_raw (bypass mem0 pipeline), /search_contextual (with 7B summary),
 """
 
 import os
+import sys
 import logging
 import sqlite3
 import threading
@@ -14,12 +15,19 @@ import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from typing import Dict, List, Optional, Union
+
+import anthropic
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, List
 from openai import OpenAI
+from pydantic import BaseModel
+
 from mem0 import Memory
+from mem0.configs.llms.anthropic import AnthropicConfig
+from mem0.configs.llms.base import BaseLlmConfig
+from mem0.llms.anthropic import AnthropicLLM
+from mem0.utils.factory import LlmFactory
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mem0-server")
@@ -29,24 +37,51 @@ CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 EMBED_URL = os.getenv("EMBED_URL", "http://127.0.0.1:11435/v1")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 EMBED_DIMS = int(os.getenv("EMBED_DIMS", "768"))
+KUZU_PATH = os.getenv("KUZU_PATH", "/data/kuzu/db")
+
+# Local LLM (fallback): self-hosted llama.cpp / OpenAI-compatible
 LLM_URL = os.getenv("LLM_URL", "http://127.0.0.1:30000/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5-7b")
 GRAPH_LLM_URL = os.getenv("GRAPH_LLM_URL", "http://127.0.0.1:30000/v1")
 GRAPH_LLM_MODEL = os.getenv("GRAPH_LLM_MODEL", "qwen2.5-7b")
-KUZU_PATH = os.getenv("KUZU_PATH", "/data/kuzu/db")
+
+# Anthropic-compatible optimizer (preferred — see PatchedAnthropicLLM below)
+# USE_ANTHROPIC=1 routes fact-extraction (Haiku) and graph (Sonnet) via the
+# in-house Anthropic-compatible proxy at ANTHROPIC_BASE_URL.
+# USE_ANTHROPIC=0 keeps the legacy local-LLM path as fallback.
+USE_ANTHROPIC = os.getenv("USE_ANTHROPIC", "0") == "1"
+ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "http://100.116.99.9:18801")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "dummy")
+ANTHROPIC_LLM_MODEL = os.getenv("ANTHROPIC_LLM_MODEL", "claude-haiku-4-5")
+ANTHROPIC_GRAPH_MODEL = os.getenv("ANTHROPIC_GRAPH_MODEL", "claude-sonnet-4-5")
 
 # ─── Custom Italian prompts ───────────────────────────────────────────────
 
 CUSTOM_FACT_EXTRACTION_PROMPT = (
     "Sei un organizzatore di informazioni personali. Il tuo compito è estrarre "
-    "fatti rilevanti dalle conversazioni e organizzarli in informazioni distinte e gestibili.\n\n"
-    "Tipi di informazioni da ricordare:\n"
+    "SOLO fatti dichiarativi STABILI sulla persona, dalle conversazioni.\n\n"
+    "Tipi di informazioni da ricordare (DICHIARATIVE, STABILI):\n"
     "1. Preferenze personali: gusti, interessi, hobby, cibi preferiti, attività\n"
     "2. Dettagli personali importanti: nomi, relazioni familiari, date importanti\n"
-    "3. Piani e intenzioni: eventi futuri, viaggi, obiettivi, appuntamenti\n"
-    "4. Informazioni professionali: lavoro, progetti, competenze\n"
-    "5. Informazioni su salute e benessere: dieta, sport, routine\n"
-    "6. Dettagli vari: film, libri, brand, luoghi preferiti\n\n"
+    "3. Piani e intenzioni di vita: eventi futuri pianificati, viaggi, obiettivi, appuntamenti\n"
+    "4. Informazioni professionali: lavoro, ruolo, progetti a lungo termine, competenze\n"
+    "5. Informazioni su salute e benessere: condizioni, dieta abituale, sport praticato, routine\n"
+    "6. Dettagli vari: film/libri/brand/luoghi preferiti, opinioni stabili\n\n"
+    "NON ESTRARRE MAI (questi NON sono fatti dichiarativi):\n"
+    "- **Stato mutabile/volatile**: prezzi correnti, PnL, saldi, quotazioni, valori di mercato, "
+    "stato attuale di un task, conteggi, percentuali momentanee, meteo, posizione attuale\n"
+    "- **Procedurale / how-to**: istruzioni, configurazioni, comandi, prompt, regole di sistema, "
+    "preferenze su 'come' fare le cose (es. 'usa sempre X', 'preferisce risposte brevi') — "
+    "queste finiscono nel sistema procedurale (ReasoningBank), non qui\n"
+    "- **Configurazione tecnica**: IP, porte, path, credenziali, nomi di servizio, modelli LLM, "
+    "versioni software, parametri di tuning\n"
+    "- **Cronaca della conversazione**: ciò che è stato detto, fatto o eseguito durante la chat "
+    "(es. 'ha chiesto di X', 'l'agente ha eseguito Y', 'ha letto il file Z')\n"
+    "- **Risultati transitori di tool/agent**: output di comandi, log, risposte API, errori\n"
+    "- **Meta-info sulla sessione**: orari, durate, conteggi messaggi, stato della chat\n\n"
+    "Il SOGGETTO del fatto deve essere SEMPRE chiaro e identificabile (l'utente o una persona "
+    "menzionata per nome). Se il soggetto è ambiguo (es. 'lui', 'quello', riferimento a un agente "
+    "o sistema), NON estrarre.\n\n"
     "Esempi:\n\n"
     "Input: Ciao, come va?\nOutput: {\"facts\": []}\n\n"
     "Input: Domani devo andare a Napoli in treno.\n"
@@ -55,13 +90,22 @@ CUSTOM_FACT_EXTRACTION_PROMPT = (
     "Output: {\"facts\": [\"Ha una sorella di nome Martina\", \"Martina insegna danza a Modena\"]}\n\n"
     "Input: Mi piace la pizza margherita ma Ada preferisce quella con le verdure.\n"
     "Output: {\"facts\": [\"Gli piace la pizza margherita\", \"Ada preferisce la pizza con le verdure\"]}\n\n"
+    "Input: Da ora in poi rispondi sempre in inglese e usa il modello dark-opus.\n"
+    "Output: {\"facts\": []}  # procedurale/config — non dichiarativo\n\n"
+    "Input: Il PnL di oggi è +320€, BTC a 67000.\n"
+    "Output: {\"facts\": []}  # stato volatile — non dichiarativo\n\n"
+    "Input: Ho appena fatto deploy di mem0 su GX10 con dark-opus.\n"
+    "Output: {\"facts\": []}  # cronaca + config tecnica — non dichiarativo\n\n"
+    "Input: Faccio trading su BTC come hobby da 5 anni.\n"
+    "Output: {\"facts\": [\"Fa trading su BTC come hobby da 5 anni\"]}  # fatto stabile sulla persona\n\n"
     "Restituisci i fatti in formato JSON come mostrato sopra.\n\n"
     "Regole:\n"
     "- La data di oggi è {current_date}.\n"
     "- Non restituire nulla dagli esempi forniti sopra.\n"
-    "- Se non trovi informazioni rilevanti, restituisci una lista vuota.\n"
-    "- Estrai fatti dai messaggi dell'utente E dell'assistente.\n"
-    "- I fatti devono essere in italiano, concisi e in terza persona.\n"
+    "- Se non trovi informazioni dichiarative stabili, restituisci una lista vuota — "
+    "preferisci sempre estrarre MENO che estrarre rumore.\n"
+    "- Estrai fatti dai messaggi dell'utente E dell'assistente, ma SOLO se descrivono la persona.\n"
+    "- I fatti devono essere in italiano, concisi, in terza persona, con soggetto esplicito.\n"
     "- La risposta DEVE essere in formato JSON con chiave \"facts\" e valore lista di stringhe."
 ).replace("{current_date}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
@@ -101,28 +145,159 @@ CUSTOM_GRAPH_PROMPT = (
     "attraverso il user_id fornito."
 )
 
-config = {
-    "llm": {
+# ─── PatchedAnthropicLLM ──────────────────────────────────────────────────
+# mem0's built-in AnthropicLLM (mem0/llms/anthropic.py) has two limitations
+# blocking our self-hosted setup:
+#   1. No base_url support (hardcodes api.anthropic.com).
+#   2. generate_response returns response.content[0].text (raw text) —
+#      tool_calls are silently dropped, breaking graph_memory which expects
+#      {"tool_calls": [{"name", "arguments"}]}.
+#
+# This subclass fixes both:
+#   - __init__ recreates self.client with base_url from config.
+#   - generate_response converts OpenAI-style tools → Anthropic input_schema,
+#     parses content blocks (text + tool_use), returns the dict shape mem0
+#     expects (mirrors mem0.llms.openai.OpenAILLM._parse_response).
+#
+# Registered into LlmFactory as provider "anthropic_proxied".
+class PatchedAnthropicLLM(AnthropicLLM):
+    def __init__(self, config: Optional[Union[BaseLlmConfig, AnthropicConfig, Dict]] = None):
+        super().__init__(config)
+        base_url = getattr(self.config, "anthropic_base_url", None)
+        if base_url:
+            self.client = anthropic.Anthropic(api_key=self.config.api_key or "dummy", base_url=base_url)
+
+    @staticmethod
+    def _convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
+        """OpenAI tool format → Anthropic tool format."""
+        converted = []
+        for t in tools:
+            fn = t.get("function", t)
+            converted.append({
+                "name": fn["name"],
+                "description": fn.get("description", ""),
+                "input_schema": fn.get("parameters") or fn.get("input_schema") or {},
+            })
+        return converted
+
+    def generate_response(
+        self,
+        messages: List[Dict[str, str]],
+        response_format=None,
+        tools: Optional[List[Dict]] = None,
+        tool_choice: str = "auto",
+        **kwargs,
+    ):
+        # Anthropic API requires system message as a separate parameter
+        system_message = ""
+        filtered_messages = []
+        for m in messages:
+            if m["role"] == "system":
+                system_message = m["content"]
+            else:
+                filtered_messages.append(m)
+
+        params = {
+            "model": self.config.model,
+            "messages": filtered_messages,
+            "max_tokens": self.config.max_tokens or 4096,
+            "temperature": self.config.temperature,
+        }
+        if system_message:
+            params["system"] = system_message
+        if tools:
+            params["tools"] = self._convert_tools_to_anthropic(tools)
+            # Anthropic expects {"type": "auto"|"any"|"tool"} as dict
+            if isinstance(tool_choice, str):
+                params["tool_choice"] = {"type": tool_choice}
+            elif isinstance(tool_choice, dict):
+                params["tool_choice"] = tool_choice
+
+        response = self.client.messages.create(**params)
+
+        if not tools:
+            # Return plain text (concat all text blocks)
+            return "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
+
+        # tools=True path: return mem0's expected dict shape
+        processed: Dict = {"content": None, "tool_calls": []}
+        text_parts = []
+        for block in response.content:
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                text_parts.append(block.text)
+            elif btype == "tool_use":
+                # Anthropic returns `input` already as a dict; mem0 expects `arguments` as dict
+                processed["tool_calls"].append({"name": block.name, "arguments": block.input})
+        if text_parts:
+            processed["content"] = "".join(text_parts)
+        return processed
+
+
+# Register the patched provider in mem0's LlmFactory.
+# We alias the current module under a stable name so importlib.import_module
+# inside LlmFactory.load_class can resolve "_mem0_patched.PatchedAnthropicLLM".
+sys.modules["_mem0_patched"] = sys.modules[__name__]
+LlmFactory.provider_to_class["anthropic_proxied"] = (
+    "_mem0_patched.PatchedAnthropicLLM",
+    AnthropicConfig,
+)
+
+# ─── Config (Anthropic proxy if enabled, else local LLM fallback) ─────────
+
+if USE_ANTHROPIC:
+    llm_block = {
+        "provider": "anthropic_proxied",
+        "config": {
+            "model": ANTHROPIC_LLM_MODEL,
+            "api_key": ANTHROPIC_API_KEY,
+            "anthropic_base_url": ANTHROPIC_BASE_URL,
+            "temperature": 0.1,
+            "max_tokens": 4096,
+        },
+    }
+    graph_llm_block = {
+        "provider": "anthropic_proxied",
+        "config": {
+            "model": ANTHROPIC_GRAPH_MODEL,
+            "api_key": ANTHROPIC_API_KEY,
+            "anthropic_base_url": ANTHROPIC_BASE_URL,
+            "temperature": 0.1,
+            "max_tokens": 4096,
+        },
+    }
+    logger.info(
+        "LLM routing: ANTHROPIC proxy at %s (fact=%s, graph=%s)",
+        ANTHROPIC_BASE_URL, ANTHROPIC_LLM_MODEL, ANTHROPIC_GRAPH_MODEL,
+    )
+else:
+    llm_block = {
         "provider": "openai",
         "config": {
             "model": LLM_MODEL,
             "openai_base_url": LLM_URL,
             "api_key": "***",
             "temperature": 0.1,
-        }
-    },
+        },
+    }
+    graph_llm_block = {
+        "provider": "openai",
+        "config": {
+            "model": GRAPH_LLM_MODEL,
+            "openai_base_url": GRAPH_LLM_URL,
+            "api_key": "***",
+            "temperature": 0.1,
+        },
+    }
+    logger.info("LLM routing: LOCAL fallback (fact=%s @ %s, graph=%s @ %s)",
+                LLM_MODEL, LLM_URL, GRAPH_LLM_MODEL, GRAPH_LLM_URL)
+
+config = {
+    "llm": llm_block,
     "graph_store": {
         "provider": "kuzu",
         "config": {"db": KUZU_PATH},
-        "llm": {
-            "provider": "openai",
-            "config": {
-                "model": GRAPH_LLM_MODEL,
-                "openai_base_url": GRAPH_LLM_URL,
-                "api_key": "***",
-                "temperature": 0.1,
-            }
-        },
+        "llm": graph_llm_block,
         "custom_prompt": CUSTOM_GRAPH_PROMPT,
     },
     "vector_store": {
