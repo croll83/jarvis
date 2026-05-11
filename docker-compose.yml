@@ -247,6 +247,20 @@ services:
       - CHROMA_PORT=8000
       - EMBEDDING_URL=http://localhost:11435
       - OLLAMA_URL=http://localhost:11434
+      # ── LLM routing ─────────────────────────────────────────────
+      # USE_ANTHROPIC=1 → fact extraction via Haiku, graph via Sonnet
+      # (proxied through in-house Anthropic-compatible router).
+      # USE_ANTHROPIC=0 → fallback to local llama.cpp.
+      - USE_ANTHROPIC=${MEM0_USE_ANTHROPIC:-1}
+      - ANTHROPIC_BASE_URL=${MEM0_ANTHROPIC_BASE_URL:-http://100.116.99.9:18801}
+      - ANTHROPIC_API_KEY=${MEM0_ANTHROPIC_API_KEY:-dummy}
+      - ANTHROPIC_LLM_MODEL=${MEM0_ANTHROPIC_LLM_MODEL:-claude-haiku-4-5}
+      - ANTHROPIC_GRAPH_MODEL=${MEM0_ANTHROPIC_GRAPH_MODEL:-claude-sonnet-4-5}
+      # Local LLM fallback (used when USE_ANTHROPIC=0)
+      - LLM_URL=${MEM0_LLM_URL:-http://100.98.187.12:30000/v1}
+      - LLM_MODEL=${MEM0_LLM_MODEL:-dark-opus}
+      - GRAPH_LLM_URL=${MEM0_GRAPH_LLM_URL:-http://100.98.187.12:30000/v1}
+      - GRAPH_LLM_MODEL=${MEM0_GRAPH_LLM_MODEL:-dark-opus}
     volumes:
       - mem0_data:/app/data    # Kuzu graph store
     depends_on:

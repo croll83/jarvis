@@ -8,7 +8,8 @@ RUN pip install --no-cache-dir \
     rank-bm25 \
     chromadb-client \
     fastapi \
-    uvicorn[standard]
+    uvicorn[standard] \
+    anthropic
 
 COPY server.py .
 
