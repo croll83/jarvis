@@ -1,0 +1,21 @@
+host_id: vm-workstation
+collector_url: http://100.88.84.81:5000/api/admin/logs/ingest
+
+batch_interval: 2.0
+batch_size: 100
+
+sources:
+  - name: companion
+    type: journalctl-user
+    target: the-companion
+    level_filter: WARN
+
+  - name: tor
+    type: journalctl
+    target: tor@default
+    level_filter: WARN
+
+  - name: privoxy
+    type: journalctl
+    target: privoxy
+    level_filter: WARN

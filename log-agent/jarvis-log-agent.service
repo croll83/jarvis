@@ -1,0 +1,18 @@
+[Unit]
+Description=JARVIS Log Agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/jarvis/log-agent
+ExecStart=/usr/bin/python3 /opt/jarvis/log-agent/agent.py /opt/jarvis/log-agent/config.yaml
+Environment=LOG_AGENT_TOKEN=changeme
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

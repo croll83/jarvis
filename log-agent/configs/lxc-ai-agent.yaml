@@ -1,0 +1,46 @@
+host_id: lxc-ai-agent
+collector_url: http://100.88.84.81:5000/api/admin/logs/ingest
+
+batch_interval: 2.0
+batch_size: 100
+
+sources:
+  - name: hermes-marco
+    type: journalctl-user
+    target: hermes-gateway-hermes-marco
+    level_filter: WARN
+
+  - name: hermes-ada
+    type: journalctl-user
+    target: hermes-gateway-hermes-ada
+    level_filter: WARN
+
+  - name: hermes-dark
+    type: journalctl-user
+    target: hermes-gateway-hermes-dark
+    level_filter: WARN
+
+  - name: hermes-shared
+    type: journalctl-user
+    target: hermes-gateway-hermes-shared
+    level_filter: WARN
+
+  - name: hermes-billing-proxy
+    type: journalctl-user
+    target: hermes-billing-proxy
+    level_filter: WARN
+
+  - name: wireproxy-mullvad
+    type: journalctl-user
+    target: wireproxy-mullvad
+    level_filter: WARN
+
+  - name: nginx
+    type: file
+    target: /var/log/nginx/error.log
+    level_filter: WARN
+
+  - name: ontology-server
+    type: docker
+    target: jarvis_ontology
+    level_filter: WARN

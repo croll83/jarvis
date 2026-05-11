@@ -1,0 +1,16 @@
+[Unit]
+Description=JARVIS Log Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/log-agent/agent.py %h/log-agent/config.yaml
+Environment=LOG_AGENT_TOKEN=46300db8c20ae9254533279dcd01aeafa6501a3003316523f0b6f727fd0b6c6c
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
