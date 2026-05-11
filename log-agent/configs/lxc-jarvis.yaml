@@ -8,44 +8,35 @@ sources:
   - name: orchestrator
     type: docker
     target: jarvis_core
-    level_filter: WARN
 
   - name: llama-router
     type: journalctl
     target: llama-router
-    level_filter: WARN
 
   - name: fastembed
     type: docker
     target: jarvis_fastembed
-    level_filter: WARN
 
   - name: mem0
     type: docker
     target: jarvis_mem0
-    level_filter: WARN
 
   - name: chromadb
     type: docker
     target: jarvis_chromadb
-    level_filter: WARN
 
   - name: postgres
     type: docker
     target: jarvis_postgres
-    level_filter: WARN
 
   - name: mongodb
     type: docker
     target: jarvis_mongo
-    level_filter: WARN
 
   - name: redis
     type: docker
     target: jarvis_redis
-    level_filter: WARN
 
   - name: nginx
     type: file
     target: /var/log/nginx/jarvis.error.log
-    level_filter: WARN

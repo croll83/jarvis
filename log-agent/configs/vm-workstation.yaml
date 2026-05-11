@@ -8,14 +8,11 @@ sources:
   - name: companion
     type: journalctl-user
     target: the-companion
-    level_filter: WARN
 
   - name: tor
     type: journalctl
     target: tor@default
-    level_filter: WARN
 
   - name: privoxy
     type: journalctl
     target: privoxy
-    level_filter: WARN

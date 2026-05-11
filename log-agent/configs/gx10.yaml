@@ -8,29 +8,23 @@ sources:
   - name: parakeet-stt
     type: journalctl
     target: parakeet-stt
-    level_filter: WARN
 
   - name: qwen3-tts
     type: journalctl
     target: qwen3-tts
-    level_filter: WARN
 
   - name: comfyui
     type: journalctl
     target: comfyui
-    level_filter: WARN
 
   - name: comfyui-dashboard
     type: journalctl
     target: comfyui-dashboard
-    level_filter: WARN
 
   - name: ace-step
     type: journalctl
     target: ace-step
-    level_filter: WARN
 
   - name: nginx
     type: journalctl
     target: nginx
-    level_filter: WARN

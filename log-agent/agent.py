@@ -89,7 +89,7 @@ class SourceConfig:
     # journalctl: unit name(s) or empty for all
     # file: path to file
     target: str
-    level_filter: str = "DEBUG"  # minimum level to forward
+    level_filter: str = "INFO"  # minimum level to forward
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -234,8 +234,6 @@ class TailProcess:
                 continue
 
             level = parse_level(line)
-            if not level_gte(level, self.source.level_filter):
-                continue
 
             entry = LogEntry(
                 ts=now_iso(),
