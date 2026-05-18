@@ -442,9 +442,19 @@ async def run_daily_summary():
                     facts_text += "\n".join(f"- {k}: {v}" for k, v in patterns.items()) + "\n"
                 if new_facts:
                     facts_text += "\n".join(f"- {f}" for f in new_facts)
+                # location metadata = this add-on's LOCATION_ID. Keeps facts
+                # cross-house (user_id=shared) ma permette filtering per
+                # location lato consumer (behavioral analysis per casa).
                 resp = httpx.post(
                     f"{mem0_url}/add",
-                    json={"text": facts_text, "user_id": "shared"},
+                    json={
+                        "text": facts_text,
+                        "user_id": "shared",
+                        "metadata": {
+                            "source": "ha_memory_service",
+                            "location": LOCATION_ID,
+                        },
+                    },
                     timeout=120.0,
                 )
                 resp.raise_for_status()
