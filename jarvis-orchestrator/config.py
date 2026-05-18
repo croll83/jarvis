@@ -96,11 +96,13 @@ TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 # ===========================================================================
 # ROUTER ENGINE & MODEL
 # ===========================================================================
-# ROUTER_ENGINE: "ollama" (legacy) o "llamacpp" (llama-server OpenAI-compatible)
-# Se "llamacpp", ROUTER_URL punta al llama-server (es. http://localhost:30000)
-ROUTER_ENGINE = os.getenv("ROUTER_ENGINE", "ollama")
-ROUTER_URL = os.getenv("ROUTER_URL", OLLAMA_URL)  # Base URL del router LLM
-ROUTER_MODEL = os.getenv("ROUTER_MODEL", "qwen2.5:3b")
+# Production setup: llama-server (binary llama-cpp-tq) on atomman :30000,
+# serving qwen2.5_7b-q6_K.gguf with alias "model" — see systemd unit
+# `llama-router.service`. Default values reflect production.
+# Override via env per ambiente locale dev (es. Ollama-only laptop).
+ROUTER_ENGINE = os.getenv("ROUTER_ENGINE", "llamacpp")
+ROUTER_URL = os.getenv("ROUTER_URL", "http://localhost:30000")  # llama-server OpenAI-compatible
+ROUTER_MODEL = os.getenv("ROUTER_MODEL", "model")  # alias del llama-server (Qwen 2.5 7B Q6_K)
 
 # Skip pre-route (3-way classifier) e vai diretto al routing completo.
 # Elimina 1 chiamata LLM → meno latenza, routing unificato.

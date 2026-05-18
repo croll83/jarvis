@@ -317,6 +317,20 @@ def _aggregate_home_control_habits(
 
         weekdays_list = sorted(weekdays_hist.keys())
 
+        # Location attribution per behavioral analysis cross-house:
+        # ha_location e' gia' letta da chat_memory.meta. Estraiamo la
+        # location DOMINANTE per questo (entity_id, action) e l'elenco
+        # delle locations osservate. Il fact rimane visibile a tutti gli
+        # agenti (cross-house by design) ma con metadata che permette
+        # query/filtering tipo "abitudini di Marco a Napoli".
+        location_counter: Counter = Counter()
+        for e in evs:
+            loc = e.get("location")
+            if loc:
+                location_counter[loc] += 1
+        location_dominant = location_counter.most_common(1)[0][0] if location_counter else None
+        locations_seen = sorted(location_counter.keys())
+
         domain = evs[-1].get("domain") or (entity_id.split(".", 1)[0] if "." in entity_id else None)
         description = _build_domotica_description(
             user_name=user_name,
@@ -339,6 +353,8 @@ def _aggregate_home_control_habits(
             "confidence": round(confidence, 3),
             "sample_size": count,
             "description": description,
+            "location": location_dominant,
+            "locations_seen": locations_seen,
         })
 
     return habits
@@ -385,6 +401,8 @@ async def _mem0_add_habit(user_id: str, habit: Dict[str, Any]) -> Optional[str]:
         "weekdays": habit.get("weekdays"),
         "confidence": habit.get("confidence"),
         "sample_size": habit.get("sample_size"),
+        "location": habit.get("location"),                 # dominante (wagmi|albani20|None)
+        "locations_seen": habit.get("locations_seen"),     # tutte le location osservate
         "last_seen": datetime.now().strftime("%Y-%m-%d"),
         "version": 1,
     }
@@ -421,6 +439,8 @@ async def _mem0_update_habit(memory_id: str, user_id: str, habit: Dict[str, Any]
         "weekdays": habit.get("weekdays"),
         "confidence": habit.get("confidence"),
         "sample_size": habit.get("sample_size"),
+        "location": habit.get("location"),                 # dominante (wagmi|albani20|None)
+        "locations_seen": habit.get("locations_seen"),     # tutte le location osservate
         "last_seen": datetime.now().strftime("%Y-%m-%d"),
         "version": prev_version + 1,
     }
