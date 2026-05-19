@@ -653,11 +653,16 @@ def _build_routing_prompt(text: str, context: dict) -> str:
     user_id = context.get("speaker_id")
     entity_map_str = _get_entity_map_for_prompt(location_id, user_id=user_id)
 
+    # Estrai "memory" (conversazione recente) FUORI dal JSON contesto:
+    # Qwen 3B/7B la perde dentro il blob JSON. Va come sezione markdown dedicata.
+    memory_str = context.pop("memory", "") or ""
+    memory_section = f"\n\n{memory_str}" if memory_str.strip() else ""
+
     full_prompt = f"""[MAPPA ENTITÀ]:
 {entity_map_str}
 
 [CONTESTO]:
-{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{ai_agent_section}{previous_intent_section}
+{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{ai_agent_section}{previous_intent_section}{memory_section}
 
 [COMANDO UTENTE]:
 {text}"""
