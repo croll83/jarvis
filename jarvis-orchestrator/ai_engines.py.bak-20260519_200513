@@ -620,12 +620,12 @@ async def _get_routing_openrouter(text: str, context: dict) -> dict:
 def _build_routing_prompt(text: str, context: dict) -> str:
     """Costruisce il prompt per il routing (usato sia da Ollama che OpenRouter)."""
     # Estrai service_status se presente
-    service_status = context.get("service_status", "")
+    service_status = context.pop("service_status", "")
     service_status_section = f"\n\n[STATO SERVIZI]:\n{service_status}" if service_status and service_status != "tutti i servizi online" else ""
 
     # AI Agent availability section
     ai_agent_section = ""
-    if context.get("ai_agent_available", False):
+    if context.pop("ai_agent_available", False):
         ai_agent_section = "\n\n[AI_AGENT DISPONIBILE]: Puoi usare intent AI_AGENT o VERIFY_WITH_AI_AGENT se appropriato."
 
     # Previous intent per continuità multi-turn
