@@ -84,12 +84,16 @@ logger = logging.getLogger("JARVIS_MAIN")
 # Filtro per nascondere le richieste frequenti dall'access log di uvicorn
 # (device_status polling ogni 2s, heartbeat ogni 5min — inquinano il log)
 class _QuietDevicePollingFilter(logging.Filter):
-    _QUIET_PATHS = ("/device_status", "/heartbeat", "/room_temperature/", "/ws/audio", "/speaker/volume_change")
+    _QUIET_PATHS = ("/device_status", "/heartbeat", "/room_temperature/", "/ws/audio", "/speaker/volume_change", "/api/admin/logs")
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
         return not any(p in msg for p in self._QUIET_PATHS)
 
 logging.getLogger("uvicorn.access").addFilter(_QuietDevicePollingFilter())
+
+# Silenzia client HTTP verbosi (httpx logga ogni request a INFO — pull HAOS spamma)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Tracking stato "speaking" per room (per notificare voice devices)
 # Struttura: {"salotto": {"speaking": True, "started_at": timestamp, "device_id": "..."}}
