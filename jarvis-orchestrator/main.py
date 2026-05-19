@@ -4418,25 +4418,6 @@ async def process_jarvis_logic(text: str, context: dict):
             target_location, domain, entity, room_hint, user_text=text
         )
 
-        # ── COREFERENCE FALLBACK: pronome/clarify dopo HOME_CONTROL recente ──
-        # Es. "spegni la tv" → "ora accendila" → resolver vede solo "accendila",
-        # trova N candidati ambigui. Se il turno precedente era HOME_CONTROL
-        # con entity specifica, riusa quella (gli stessi entity_ids).
-        if target["mode"] == "clarify" and prev_intent and prev_intent.get("intent") == "HOME_CONTROL":
-            prev_payload = prev_intent.get("payload", {}) or {}
-            prev_entity = prev_payload.get("entity")
-            if prev_entity and prev_entity not in ("luce", "luci", "la", "lo", "le", "gli", None):
-                logger.info(
-                    f"HOME_CONTROL coreference: ambiguous '{entity}' → "
-                    f"reusing previous entity '{prev_entity}'"
-                )
-                retry_target = _resolve_home_control_target(
-                    target_location, domain, prev_entity, room_hint, user_text=prev_entity
-                )
-                if retry_target["mode"] in ("single", "bulk"):
-                    target = retry_target
-                    target["match_type"] = f"coreference:{retry_target.get('match_type','?')}"
-
         # ── CLARIFICATION: ambiguous entity → ask user to specify ──
         if target["mode"] == "clarify":
             names_list = ", ".join(target.get("entity_names", [])[:6])
