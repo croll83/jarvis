@@ -11,6 +11,7 @@ import re
 import uuid
 import logging
 from datetime import datetime
+import zoneinfo
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Dict, Optional, List, Tuple
@@ -2006,7 +2007,8 @@ async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
         f"[VOICE_SESSION]\n"
         f"hint: {hint or 'unknown'}\n"
         f"source: {source or 'unknown'}\n"
-        f"speaker: {speaker_payload}"
+        f"speaker: {speaker_payload}\n"
+        f"datetime: {datetime.now(zoneinfo.ZoneInfo('Europe/Rome')).strftime('%Y-%m-%d %H:%M %Z')}"
     )
 
     # Add location/room context if available
