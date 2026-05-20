@@ -33,6 +33,14 @@ sources:
     type: file
     target: /var/log/nginx/error.log
 
-  - name: ontology-server
-    type: docker
-    target: jarvis_ontology
+  - name: wa-bridge
+    type: journalctl-user
+    target: wa-bridge
+
+  - name: wa-router
+    type: journalctl-user
+    target: wa-router
+
+  - name: tor
+    type: journalctl
+    target: tor@default
