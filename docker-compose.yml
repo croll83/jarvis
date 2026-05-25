@@ -135,6 +135,7 @@ services:
       - ./config:/app/config:ro             # Entity map, system prompt (sotto git)
     env_file: .env
     environment:
+      - ROUTER_DUMP_PROMPT=1
       - AI_BACKEND=${AI_BACKEND:-local}
       - OLLAMA_URL=http://localhost:11434
       - EMBEDDING_URL=http://localhost:11435   # fastembed (CPU, ONNX) — no GPU context switch
