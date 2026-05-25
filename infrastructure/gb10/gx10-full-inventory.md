@@ -14,29 +14,36 @@ type: reference
 
 ---
 
-## 1. LLM Inference — llama.cpp + TurboQuant
+## 1. LLM Inference — llama.cpp stock + MTP (dark-jarvis)
 
-**Cosa**: Server LLM per inferenza locale con KV cache compressa TurboQuant
-**Modello**: Qwen3.5-35B-A3B MoE Q6_K GGUF (abliterated, Claude-Opus finetune)
-**Performance**: ~55 tok/s, 29.6 GiB VRAM, 262K context, KV cache 1.44 GiB
+**Cosa**: Server LLM heavy per inferenza locale con speculative decode MTP nativo
+**Modello**: Qwopus3.6-27B-v2 Abliterated + MTP NVFP4 (testo NVFP4 + MTP head BF16, ctx 262K)
+**Performance**: 13-26 t/s decode (workload-dependent), 700-880 t/s prefill, MTP acceptance 45-90%
+**VRAM**: 30 GiB stabile (model + KV + MTP draft + scratch + cache-ram lazy 16 GiB)
 
 **Installazione**:
-- Fork: `spiritbuun/llama-cpp-turboquant-cuda` (branch `feature/turboquant-kv-cache`)
-- Sorgente: `/home/jarvis/llama-cpp-tq/`
-- Compilato con: `cmake -DGGML_CUDA=ON -DGGML_CUDA_FA=ON -DGGML_CUDA_FA_ALL_QUANTS=ON -DCMAKE_CUDA_ARCHITECTURES=native`
-- Docker image: `llama-tq:v1` (278 MB)
+- Repo: `ggml-org/llama.cpp` upstream stock (no fork). Build snapshot 2026-05-25.
+- Sorgente: `/home/jarvis/llama-cpp-stock/`
+- Build: `cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="120;121" -DGGML_CUDA_FA_ALL_QUANTS=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build --target llama-server llama-quantize llama-cli -j$(nproc)`
+- Modello GGUF: `/home/jarvis/qwopus36-v2-mtp-abl-nvfp4/Qwopus3.6-v2-Abl-MTP-NVFP4.gguf` (19 GB)
+- mmproj: `/home/jarvis/qwopus36-v2-mtp-abl-nvfp4/mmproj-Qwopus3.6-v2-Abl-MTP-F16.gguf` (885 MB)
 
-**Avvio/Spegnimento**:
+**Avvio/Spegnimento (systemd)**:
 ```bash
-# Parte automaticamente al boot (docker --restart unless-stopped)
-docker start llama-tq      # avvia
-docker stop llama-tq        # ferma
-docker logs llama-tq        # log
+sudo systemctl start  dark-jarvis     # avvia
+sudo systemctl stop   dark-jarvis     # ferma
+sudo systemctl status dark-jarvis     # stato
+tail -F /var/log/dark-jarvis.log      # log
 ```
 
 **Servizio esposto**: `http://100.98.187.12:30000/v1` (API OpenAI-compatible)
-- Model alias: `dark-opus`
-- OpenClaw provider: "vllm" (nome legacy, backend è llama.cpp)
+- Model aliases: `dark-jarvis`, `dark-opus`
+- Spec decode: `--spec-type draft-mtp --spec-draft-n-max 5`
+- KV: `q8_0/q8_0`, 131k context × 2 slot
+- Cache RAM 16 GiB lazy prefix cache
+
+**Stack legacy (DEPRECATO 2026-05-25)**:
+- Fork `croll83/llama.cpp-dgx` (v5) + `llama-cpp-tq` (TurboQuant) + `--dflash --dflash-draft` → archiviati. Vedi [[local-llm-heavy]] §2.1 per dettagli e ragioni. Path: `/home/jarvis/llama-cpp-v5/` (binari conservati ma servizio non attivo).
 
 ---
 
