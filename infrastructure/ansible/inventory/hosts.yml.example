@@ -44,3 +44,13 @@ workstation:
       ansible_host: 192.168.1.60     # <-- IP VM Workstation
       ansible_user: jarvis
       ansible_become: true
+
+# Gruppo per il GB10 DGX Spark (heavy LLM remoto, sede separata via Tailscale)
+# Ospita: parakeet-stt, qwen3-tts, dark-jarvis (llama.cpp stock + MTP), comfyui, ace-step
+# Setup gestito dal playbook gb10.yml (build llama-cpp-stock + dark-jarvis.service)
+gb10:
+  hosts:
+    gx10-3b82:
+      ansible_host: 100.98.187.12    # <-- Tailscale IP (sede remota)
+      ansible_user: jarvis
+      ansible_become: true

@@ -1,0 +1,240 @@
+---
+# =============================================================================
+# JARVIS — GB10 (DGX Spark) Heavy LLM
+# =============================================================================
+# Provisions the dark-jarvis.service on a NVIDIA GB10 (Blackwell SM 12.1).
+# Builds llama.cpp upstream stock + installs systemd unit serving Qwopus3.6
+# v2 abliterated NVFP4 + MTP draft.
+#
+# Usage:
+#   ansible-playbook playbooks/gb10.yml -i inventory/hosts.yml --limit gb10
+#
+# Tags:
+#   build      Build / update llama.cpp stock from upstream
+#   service    Install/refresh systemd unit + cmdline wrapper
+#   start      Enable + start dark-jarvis.service
+#
+# Variables (override in group_vars/gb10.yml or via -e):
+#   gb10_llama_repo            "https://github.com/ggml-org/llama.cpp"
+#   gb10_llama_dir             "/home/jarvis/llama-cpp-stock"
+#   gb10_llama_cuda_archs      "120;121"
+#   gb10_llama_build_jobs      "$(nproc)"
+#   gb10_model_dir             "/home/jarvis/qwopus36-v2-mtp-abl-nvfp4"
+#   gb10_model_gguf            "Qwopus3.6-v2-Abl-MTP-NVFP4.gguf"
+#   gb10_mmproj_gguf           "mmproj-Qwopus3.6-v2-Abl-MTP-F16.gguf"
+#   gb10_chat_template         "/home/jarvis/qwopus36-v2-bf16/chat_template.jinja"
+#   gb10_service_dir           "/home/jarvis/dark-jarvis-server"
+#   gb10_port                  30000
+#   gb10_ctx                   262144
+#   gb10_n_parallel            2
+#   gb10_spec_draft_n_max      5
+#   gb10_cache_ram_mib         16384
+#   gb10_aliases               ["dark-jarvis", "dark-opus"]
+
+- name: "GB10 — Dark Jarvis heavy LLM (llama.cpp stock + MTP)"
+  hosts: gb10
+  become: false
+  gather_facts: true
+  tags: [gb10]
+
+  vars:
+    gb10_llama_repo: "https://github.com/ggml-org/llama.cpp"
+    gb10_llama_dir: "/home/jarvis/llama-cpp-stock"
+    gb10_llama_cuda_archs: "120;121"
+    gb10_llama_build_jobs: "{{ ansible_processor_vcpus | default(8) }}"
+    gb10_model_dir: "/home/jarvis/qwopus36-v2-mtp-abl-nvfp4"
+    gb10_model_gguf: "Qwopus3.6-v2-Abl-MTP-NVFP4.gguf"
+    gb10_mmproj_gguf: "mmproj-Qwopus3.6-v2-Abl-MTP-F16.gguf"
+    gb10_chat_template: "/home/jarvis/qwopus36-v2-bf16/chat_template.jinja"
+    gb10_service_dir: "/home/jarvis/dark-jarvis-server"
+    gb10_port: 30000
+    gb10_ctx: 262144
+    gb10_n_parallel: 2
+    gb10_spec_draft_n_max: 5
+    gb10_cache_ram_mib: 16384
+    gb10_aliases:
+      - dark-jarvis
+      - dark-opus
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # Build llama.cpp stock from upstream
+    # -------------------------------------------------------------------------
+    - name: "Ensure CUDA in PATH (build prereq)"
+      ansible.builtin.shell: |
+        which nvcc && nvcc --version | grep release
+      register: nvcc_check
+      changed_when: false
+      failed_when: nvcc_check.rc != 0
+      environment:
+        PATH: "/usr/local/cuda/bin:{{ ansible_env.PATH }}"
+      tags: [build]
+
+    - name: "Clone/update llama.cpp stock (upstream)"
+      ansible.builtin.git:
+        repo: "{{ gb10_llama_repo }}"
+        dest: "{{ gb10_llama_dir }}"
+        version: master
+        force: false
+        update: yes
+      register: llama_clone
+      tags: [build]
+
+    - name: "Configure llama.cpp build"
+      ansible.builtin.shell: |
+        cmake -B build \
+          -DGGML_CUDA=ON \
+          -DCMAKE_CUDA_ARCHITECTURES="{{ gb10_llama_cuda_archs }}" \
+          -DGGML_CUDA_FA_ALL_QUANTS=ON \
+          -DCMAKE_BUILD_TYPE=Release
+      args:
+        chdir: "{{ gb10_llama_dir }}"
+        creates: "{{ gb10_llama_dir }}/build/CMakeCache.txt"
+      environment:
+        PATH: "/usr/local/cuda/bin:{{ ansible_env.PATH }}"
+      tags: [build]
+
+    - name: "Build llama.cpp targets (llama-server, llama-quantize, llama-cli)"
+      ansible.builtin.shell: |
+        cmake --build build --target llama-server llama-quantize llama-cli -j{{ gb10_llama_build_jobs }}
+      args:
+        chdir: "{{ gb10_llama_dir }}"
+      environment:
+        PATH: "/usr/local/cuda/bin:{{ ansible_env.PATH }}"
+      when: llama_clone.changed
+      tags: [build]
+
+    - name: "Verify llama-server binary"
+      ansible.builtin.stat:
+        path: "{{ gb10_llama_dir }}/build/bin/llama-server"
+      register: llama_bin
+      failed_when: not llama_bin.stat.exists
+      tags: [build]
+
+    # -------------------------------------------------------------------------
+    # Service wrapper (cmdline + run.sh) on solid path
+    # -------------------------------------------------------------------------
+    - name: "Create dark-jarvis service directory"
+      ansible.builtin.file:
+        path: "{{ gb10_service_dir }}"
+        state: directory
+        owner: jarvis
+        group: jarvis
+        mode: "0755"
+      tags: [service]
+
+    - name: "Template cmdline.txt"
+      ansible.builtin.copy:
+        dest: "{{ gb10_service_dir }}/cmdline.txt"
+        owner: jarvis
+        group: jarvis
+        mode: "0644"
+        content: |
+          {{ gb10_llama_dir }}/build/bin/llama-server -m {{ gb10_model_dir }}/{{ gb10_model_gguf }} --mmproj {{ gb10_model_dir }}/{{ gb10_mmproj_gguf }} --spec-type draft-mtp --spec-draft-n-max {{ gb10_spec_draft_n_max }} --host 0.0.0.0 --port {{ gb10_port }} -c {{ gb10_ctx }} -np {{ gb10_n_parallel }} -ngl 99 -ctk q8_0 -ctv q8_0 --slot-prompt-similarity 0.5 --cache-reuse 256 --cache-ram {{ gb10_cache_ram_mib }} -bs --jinja --chat-template-file {{ gb10_chat_template }} --no-prefill-assistant --reasoning off {% for a in gb10_aliases %}--alias {{ a }} {% endfor %}--no-webui --no-warmup
+      notify: restart dark-jarvis
+      tags: [service]
+
+    - name: "Install run.sh wrapper"
+      ansible.builtin.copy:
+        dest: "{{ gb10_service_dir }}/run.sh"
+        owner: jarvis
+        group: jarvis
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # dark-jarvis llama-server runtime wrapper
+          # Managed by Ansible (gb10.yml). Edit cmdline.txt to tune flags.
+          set -e
+          cd "$(dirname "$0")"
+          exec $(cat cmdline.txt)
+      notify: restart dark-jarvis
+      tags: [service]
+
+    # -------------------------------------------------------------------------
+    # systemd unit
+    # -------------------------------------------------------------------------
+    - name: "Ensure /var/log/dark-jarvis.log exists"
+      become: true
+      ansible.builtin.file:
+        path: /var/log/dark-jarvis.log
+        state: touch
+        owner: jarvis
+        group: jarvis
+        mode: "0644"
+      tags: [service]
+
+    - name: "Install dark-jarvis.service unit"
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/dark-jarvis.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Dark Jarvis LLM (llama.cpp stock + NVFP4 + MTP draft)
+          Documentation=https://github.com/croll83/jarvis/tree/main/infrastructure/gb10
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          ExecStart={{ gb10_service_dir }}/run.sh
+          WorkingDirectory={{ gb10_service_dir }}
+          User=jarvis
+          Group=jarvis
+          Restart=always
+          RestartSec=10
+          KillMode=mixed
+          TimeoutStopSec=30
+          Environment=HOME=/home/jarvis
+          Environment=PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          LimitNOFILE=65536
+          LimitMEMLOCK=infinity
+          StandardOutput=append:/var/log/dark-jarvis.log
+          StandardError=append:/var/log/dark-jarvis.log
+
+          [Install]
+          WantedBy=default.target
+      notify: restart dark-jarvis
+      tags: [service]
+
+    - name: "systemd daemon-reload"
+      become: true
+      ansible.builtin.systemd:
+        daemon_reload: yes
+      tags: [service]
+
+    - name: "Enable + start dark-jarvis.service"
+      become: true
+      ansible.builtin.systemd:
+        name: dark-jarvis.service
+        enabled: yes
+        state: started
+      tags: [start, service]
+
+    # -------------------------------------------------------------------------
+    # Health check
+    # -------------------------------------------------------------------------
+    - name: "Wait for /health (up to 2 min)"
+      ansible.builtin.uri:
+        url: "http://localhost:{{ gb10_port }}/health"
+        status_code: 200
+      register: dj_health
+      retries: 24
+      delay: 5
+      until: dj_health.status == 200
+      tags: [start, service]
+
+    - name: "Service ready"
+      ansible.builtin.debug:
+        msg: "dark-jarvis.service is healthy on http://{{ ansible_default_ipv4.address }}:{{ gb10_port }} — model `{{ gb10_aliases[0] }}` (aliases: {{ gb10_aliases | join(', ') }})"
+      tags: [start, service]
+
+  handlers:
+    - name: restart dark-jarvis
+      become: true
+      ansible.builtin.systemd:
+        name: dark-jarvis.service
+        state: restarted
