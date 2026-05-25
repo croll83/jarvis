@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Optional
 
@@ -673,6 +674,8 @@ def _build_routing_prompt(text: str, context: dict) -> str:
     total_chars = sys_chars + len(full_prompt)
     est_tokens = total_chars // 4
     logger.info(f"Router prompt: {total_chars} chars (~{est_tokens} tok) | system={sys_chars} map={map_chars} user_prompt={len(full_prompt) - map_chars}")
+    if os.environ.get("ROUTER_DUMP_PROMPT") == "1":
+        logger.info(f"=== FULL ROUTER PROMPT ===\n{full_prompt}\n=== END ROUTER PROMPT ===")
 
     return full_prompt
 
