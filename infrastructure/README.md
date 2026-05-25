@@ -204,6 +204,7 @@ systemd -> tailscaled.service -> ai-agent-chrome.service (Chrome CDP :18800)
 | **fastembed** | LXC-JARVIS | `jarvis_fastembed` (Docker, CPU) | 0.5 | 300 MB | - | nomic-embed-text-v1.5 ONNX embeddings (Ollama-compat :11435) |
 | **Parakeet STT** | GX10 DGX Spark | `parakeet-stt.service` (systemd) | - | - | ~5.1 GB | STT multilingue (nvidia/parakeet-tdt-0.6b-v3) |
 | **Qwen3-TTS** | GX10 DGX Spark | `qwen3-tts.service` (systemd) | - | - | ~4.4 GB | TTS voice cloning IT/EN (Qwen3-TTS-12Hz-1.7B) |
+| **Dark Jarvis (heavy LLM)** | GX10 DGX Spark | `dark-jarvis.service` (systemd) | - | - | ~30 GB | Qwopus3.6-27B-Abl-MTP-NVFP4 + MTP spec decode su `:30000` (`dark-jarvis`/`dark-opus`). Setup: [`gb10/dark-jarvis.md`](gb10/dark-jarvis.md) |
 | **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
 | **mem0-stack** | esterno | repo `croll83/mem0-stack` | - | - | - | Long-term semantic + procedural memory (vector + graph + LLM router). Consumato via `MEM0_BASE_URL` |
 | **Ontology Server** | LXC-JARVIS | `jarvis_ontology` (Docker, 127.0.0.1:8100) | 0.5 | 256 MB | - | Knowledge Graph API + ACL |

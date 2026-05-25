@@ -1,12 +1,19 @@
-# Ollama — Riferimento Modelli e Troubleshooting
+# Ollama — Router LLM lightweight (Qwen 2.5 3B)
 
+> **AMBITO:** Questo file documenta **solo** il router LLM lightweight su atomman
+> (Qwen 2.5 3B, intent classification). Per l'**heavy LLM** Qwopus3.6-27B su GB10
+> vedi [`gb10/dark-jarvis.md`](gb10/dark-jarvis.md).
+>
 > **NOTA:** L'installazione di Ollama e il download dei modelli sono gestiti
 > automaticamente da Ansible (`jarvis.yml` + `setup.sh`). Questo file serve come
 > riferimento per la configurazione avanzata e il troubleshooting.
 
-Server LLM locale per JARVIS. Esegue **Qwen 2.5 3B** (routing e pre-routing)
-su GPU NVIDIA. Gli embeddings sono gestiti da **fastembed** (container separato,
-CPU-only, porta 11435) — vedi `infrastructure/fastembed/` e `docker-compose.yml`.
+Server LLM locale per JARVIS — **routing + pre-routing soltanto**. Esegue
+**Qwen 2.5 3B** su GPU NVIDIA. Per reasoning agentic profondo l'AI Agent delega
+al heavy LLM su GB10 (Qwopus3.6-27B-Abl-MTP-NVFP4, vedi `gb10/dark-jarvis.md`).
+
+Gli embeddings sono gestiti da **fastembed** (container separato, CPU-only,
+porta 11435) — vedi `infrastructure/fastembed/` e `docker-compose.yml`.
 
 > **Modello attuale:** `qwen2.5:3b` — `qwen3.5:4b` e' disponibile come upgrade
 > futuro se il budget VRAM lo consente.
