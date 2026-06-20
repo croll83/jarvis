@@ -3911,6 +3911,37 @@ def _resolve_home_control_target(
             # Multiple entities in room: ambiguous → ask clarification
             return _make_clarify_result(discovered, f"room_hint:'{room_hint}'")
 
+    # ── C-bis. FALLBACK SEMANTICO: nessun match testuale → ranking embedding ──
+    # Risolve nomi che il match SQL su room/area non trova (es. "Tapparella Salotto"
+    # → cover.tapparella_veranda_salotto). Per le AZIONI è conservativo: agisce solo
+    # se il match è NETTO; se è ambiguo chiede conferma invece di agire a caso.
+    try:
+        import semantic_discovery
+        _hits = semantic_discovery.search_sync(location_id, entity_name, domain=domain, top_k=4)
+        _strong = [h for h in _hits if h.get("score", 0) >= 0.6]
+        if _strong:
+            _top = _strong[0]
+            _margin = _top["score"] - (_strong[1]["score"] if len(_strong) > 1 else 0.0)
+            if len(_strong) == 1 or _margin >= 0.04:
+                logger.info(
+                    f"Entity resolution [semantic]: '{entity_name}' (domain={domain}) → "
+                    f"{_top['entity_id']} (score {_top['score']:.2f}, margin {_margin:.2f})"
+                )
+                return {
+                    "mode": "single",
+                    "entity_ids": [_top["entity_id"]],
+                    "description": _top.get("entity_name") or entity_name,
+                    "match_type": "semantic",
+                }
+            # Ambiguo: candidati troppo vicini → chiedi quale
+            _cands = [
+                {"entity_id": h["entity_id"], "entity_name": h.get("entity_name"), "room": h.get("room")}
+                for h in _strong[:3]
+            ]
+            return _make_clarify_result(_cands, f"semantic:'{entity_name}'")
+    except Exception as _e:
+        logger.debug(f"semantic action resolution failed: {_e}")
+
     # ── D. FALLBACK SINTETICO (backwards compatible) ──
     fallback_id = f"{domain}.{entity_name.lower().replace(' ', '_')}"
     logger.warning(f"Entity resolution: no match for '{entity_name}' (user_text='{user_text}'), fallback → {fallback_id}")
@@ -4022,7 +4053,16 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
 
         scope = params.get("room") or params.get("zone") or params.get("floor") or "tutta la casa"
 
-        if domain in ("sensor", "binary_sensor"):
+        # Value-style answer when the result set is sensors (or a measured quantity
+        # was asked). The router frequently omits `domain`, so decide from the actual
+        # discovered entities instead of trusting params.domain (else sensors get
+        # wrongly summarised as on/off).
+        _disc_domains = {e.get("domain") for e in discovered}
+        _is_value_query = bool(params.get("device_class")) or (
+            bool(_disc_domains) and _disc_domains <= {"sensor", "binary_sensor"}
+        )
+
+        if _is_value_query:
             parts = []
             for ent in discovered:
                 live = states.get(ent["entity_id"], {})
@@ -4031,7 +4071,7 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
                 state = live.get("state", "sconosciuto")
                 val = f"{ent['friendly_name']}: {state}{' ' + unit if unit else ''}"
                 parts.append(val)
-            return f"Ho trovato {len(discovered)} {domain_label} in {scope}: " + ", ".join(parts[:15])
+            return f"Valori in {scope}: " + ", ".join(parts[:15])
 
         on_states = {"on", "heat", "cool", "auto", "open", "playing"}
         on_items = []
