@@ -60,6 +60,8 @@ _DEVICE_CLASS_HINTS = [
     ("luminos", "illuminance"), ("lux", "illuminance"),
     ("pression", "pressure"),
     ("batteri", "battery"),
+    ("moviment", "motion"), ("presenza", "occupancy"),
+    ("porta", "door"), ("finestra", "window"), ("apertura", "opening"),
 ]
 
 
@@ -114,6 +116,11 @@ def _doc_for(row: dict, device_class: str = "") -> str:
         parts.append(device_class)
     if row.get("device_name"):
         parts.append(f"dispositivo {row['device_name']}")
+    # entity_id tokens: often encode room/name not present in the friendly_name
+    # (e.g. cover.tapparella_veranda_salotto → "salotto" is only here)
+    eid = row.get("entity_id") or ""
+    if eid:
+        parts.append(eid.split(".", 1)[-1].replace("_", " "))
     return " | ".join(p for p in parts if p)
 
 
@@ -283,7 +290,7 @@ def invalidate(location_id: Optional[str] = None):
         _INDEX.clear()
 
 
-async def search(
+def search_sync(
     location_id: str,
     query: str,
     room: Optional[str] = None,
@@ -314,19 +321,33 @@ async def search(
     sims = idx["vecs"] @ qv[0]  # cosine (vectors are normalized)
 
     items = idx["items"]
-    mask = np.ones(len(items), dtype=bool)
+    n = len(items)
+
+    # Hard filters: domain + device_class (reliable). Room is SOFT: applied only if
+    # it leaves results, because the router often misfills it with a zone/location.
+    base = np.ones(n, dtype=bool)
     if domain:
-        mask &= np.array([it.get("entity_type") == domain for it in items])
+        base &= np.array([it.get("entity_type") == domain for it in items])
     if device_class:
-        mask &= np.array([it.get("device_class") == device_class for it in items])
+        base &= np.array([it.get("device_class") == device_class for it in items])
+
+    mask = base
     if room:
         rl = room.lower()
-        mask &= np.array(
-            [rl in (it.get("room") or "").lower() or rl in (it.get("area") or "").lower() for it in items]
-        )
-    # Relax filters rather than return nothing (semantic rank still orders well)
+        # Match room/area only (NOT the floor/zone): the router tends to drop a
+        # floor name like "Piano Giorno" here for room-less devices (heat pump,
+        # meter), which would otherwise wrongly filter out the right entity.
+        room_m = base & np.array([
+            rl in (it.get("room") or "").lower()
+            or rl in (it.get("area") or "").lower()
+            for it in items
+        ])
+        if room_m.any():
+            mask = room_m
+
+    # Last resort: if hard filters emptied everything, fall back to pure semantic rank
     if not mask.any():
-        mask = np.ones(len(items), dtype=bool)
+        mask = np.ones(n, dtype=bool)
 
     out = []
     for i in np.argsort(-sims):
@@ -338,3 +359,16 @@ async def search(
         if len(out) >= top_k:
             break
     return out
+
+
+async def search(
+    location_id: str,
+    query: str,
+    room: Optional[str] = None,
+    domain: Optional[str] = None,
+    device_class: Optional[str] = None,
+    top_k: int = 8,
+) -> List[dict]:
+    """Async wrapper around search_sync (the core has no awaits)."""
+    return search_sync(location_id, query, room=room, domain=domain,
+                       device_class=device_class, top_k=top_k)
