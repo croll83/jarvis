@@ -3937,57 +3937,76 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
         params = payload.get("params", {})
         target_location = params.get("location_id") or location or get_default_location_id()
 
-        # Build DB query to find matching entities
-        conn = _get_conn()
-        c = conn.cursor()
-        query = """
-            SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
-            FROM entity_maps
-            WHERE location_id = ? AND entity_id IS NOT NULL
-              AND COALESCE(visible, 1) = 1
-        """
-        q_params: list = [target_location]
-
-        if params.get("domain"):
-            query += " AND entity_type = ?"
-            q_params.append(params["domain"])
-
-        if params.get("room"):
-            # Qwen spesso mette zone/piani nel campo room — cerca in room, area e zone
-            _room_val = params["room"]
-            query += " AND (LOWER(room) LIKE LOWER(?) OR LOWER(area) LIKE LOWER(?) OR LOWER(zone) LIKE LOWER(?))"
-            q_params.extend([f"%{_room_val}%", f"%{_room_val}%", f"%{_room_val}%"])
-
-        if params.get("zone"):
-            query += " AND (LOWER(area) LIKE LOWER(?) OR LOWER(zone) LIKE LOWER(?))"
-            q_params.extend([f"%{params['zone']}%", f"%{params['zone']}%"])
-
-        if params.get("floor"):
-            query += " AND LOWER(zone) LIKE LOWER(?)"
-            q_params.append(f"%{params['floor']}%")
-
-        if params.get("search"):
-            query += " AND (LOWER(entity_name) LIKE LOWER(?) OR LOWER(entity_id) LIKE LOWER(?))"
-            q_params.append(f"%{params['search']}%")
-            q_params.append(f"%{params['search']}%")
-
-        query += " ORDER BY room, entity_type, entity_name LIMIT 200"
-        c.execute(query, q_params)
-        rows = c.fetchall()
-        conn.close()
-
-        if not rows:
-            return "Non ho trovato dispositivi corrispondenti."
-
-        # Collect entity_ids and fetch live states from HA
+        # Semantic resolution for free-text searches (handles language/synonyms,
+        # e.g. "temperatura" -> "...temperature"); falls back to the SQL map query.
         discovered = []
-        for row in rows:
-            discovered.append({
-                "entity_id": row["entity_id"],
-                "friendly_name": row["entity_name"],
-                "domain": row["entity_type"],
-                "room": row["room"],
-            })
+        if params.get("search"):
+            try:
+                import semantic_discovery
+                _dc = params.get("device_class") or semantic_discovery.device_class_hint(params["search"])
+                _hits = await semantic_discovery.search(
+                    target_location, params["search"],
+                    room=params.get("room"), domain=params.get("domain"),
+                    device_class=_dc, top_k=8,
+                )
+                discovered = [
+                    {"entity_id": h["entity_id"], "friendly_name": h["entity_name"],
+                     "domain": h["entity_type"], "room": h.get("room")}
+                    for h in _hits
+                ]
+            except Exception as _e:
+                logger.debug(f"semantic state-query failed, SQL fallback: {_e}")
+
+        if not discovered:
+            # Build DB query to find matching entities (SQL map fallback)
+            conn = _get_conn()
+            c = conn.cursor()
+            query = """
+                SELECT entity_id, entity_name, entity_type, room, device_name, area, zone
+                FROM entity_maps
+                WHERE location_id = ? AND entity_id IS NOT NULL
+                  AND COALESCE(visible, 1) = 1
+            """
+            q_params: list = [target_location]
+
+            if params.get("domain"):
+                query += " AND entity_type = ?"
+                q_params.append(params["domain"])
+
+            if params.get("room"):
+                # Qwen spesso mette zone/piani nel campo room — cerca in room, area e zone
+                _room_val = params["room"]
+                query += " AND (LOWER(room) LIKE LOWER(?) OR LOWER(area) LIKE LOWER(?) OR LOWER(zone) LIKE LOWER(?))"
+                q_params.extend([f"%{_room_val}%", f"%{_room_val}%", f"%{_room_val}%"])
+
+            if params.get("zone"):
+                query += " AND (LOWER(area) LIKE LOWER(?) OR LOWER(zone) LIKE LOWER(?))"
+                q_params.extend([f"%{params['zone']}%", f"%{params['zone']}%"])
+
+            if params.get("floor"):
+                query += " AND LOWER(zone) LIKE LOWER(?)"
+                q_params.append(f"%{params['floor']}%")
+
+            if params.get("search"):
+                query += " AND (LOWER(entity_name) LIKE LOWER(?) OR LOWER(entity_id) LIKE LOWER(?))"
+                q_params.append(f"%{params['search']}%")
+                q_params.append(f"%{params['search']}%")
+
+            query += " ORDER BY room, entity_type, entity_name LIMIT 200"
+            c.execute(query, q_params)
+            rows = c.fetchall()
+            conn.close()
+
+            for row in rows:
+                discovered.append({
+                    "entity_id": row["entity_id"],
+                    "friendly_name": row["entity_name"],
+                    "domain": row["entity_type"],
+                    "room": row["room"],
+                })
+
+        if not discovered:
+            return "Non ho trovato dispositivi corrispondenti."
 
         entity_ids = [e["entity_id"] for e in discovered]
         states = await multi_ha.get_states_bulk(target_location, entity_ids)
