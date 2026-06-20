@@ -279,7 +279,8 @@ class EntityDiscoveryRequest(BaseModel):
     zone: Optional[str] = Field(default=None, description="Filter by zone (e.g., 'Zona Giorno', 'Zona Notte')")
     floor: Optional[str] = Field(default=None, description="Filter by floor/piano (e.g., 'Piano 1')")
     domain: Optional[str] = Field(default=None, description="Filter by entity domain (e.g., 'camera', 'light', 'media_player')")
-    search: Optional[str] = Field(default=None, description="Free text search in entity names (e.g., 'cam', 'temperatura')")
+    device_class: Optional[str] = Field(default=None, description="Filter by sensor device_class (e.g., 'temperature', 'humidity', 'power'). Disambiguates among many sensors in a room.")
+    search: Optional[str] = Field(default=None, description="Free text / natural-language query (e.g., 'temperatura salotto', 'mandata pompa'). Matched semantically, so language and synonyms are handled.")
     limit: int = Field(default=50, description="Max results")
     include_hidden: bool = Field(default=False, description="Include hidden entities (visible=0). Default: only visible.")
 
@@ -293,6 +294,8 @@ class EntityDiscoveryItem(BaseModel):
     area: Optional[str] = None
     zone: Optional[str] = None
     state: Optional[str] = None
+    device_class: Optional[str] = None
+    score: Optional[float] = None
     available_services: Optional[List[str]] = None
 
 
@@ -666,6 +669,50 @@ async def tool_entity_discover(
         from database import _get_conn
 
         location_id = req.location_id or _get_admin_location()
+
+        # --- Semantic path: free-text search -> embedding top-k (handles language,
+        #     synonyms, non-mnemonic names). Falls back to SQL on miss/failure. ---
+        if req.search:
+            try:
+                import semantic_discovery
+                dc = req.device_class or semantic_discovery.device_class_hint(req.search)
+                hits = await semantic_discovery.search(
+                    location_id, req.search,
+                    room=req.room, domain=req.domain, device_class=dc,
+                    top_k=min(req.limit, 12),
+                )
+            except Exception as e:
+                logger.warning(f"semantic discovery failed, fallback to SQL: {e}")
+                hits = []
+            if hits:
+                entities = []
+                rooms_set, domains_set = set(), set()
+                for h in hits:
+                    dom = h.get("entity_type")
+                    caps = DOMAIN_SERVICES.get(dom, {})
+                    entities.append(EntityDiscoveryItem(
+                        entity_id=h.get("entity_id") or "",
+                        friendly_name=h.get("entity_name") or "",
+                        domain=dom,
+                        room=h.get("room"),
+                        device_name=h.get("device_name"),
+                        area=h.get("area"),
+                        zone=h.get("zone"),
+                        device_class=h.get("device_class") or None,
+                        score=round(h.get("score", 0.0), 4),
+                        available_services=caps.get("services") if caps.get("services") else None,
+                    ))
+                    if h.get("room"):
+                        rooms_set.add(h["room"])
+                    if dom:
+                        domains_set.add(dom)
+                return EntityDiscoveryResponse(
+                    location_id=location_id,
+                    count=len(entities),
+                    entities=entities,
+                    rooms_found=sorted(rooms_set),
+                    domains_found=sorted(domains_set),
+                )
 
         conn = _get_conn()
         c = conn.cursor()

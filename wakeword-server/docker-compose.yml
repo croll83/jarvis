@@ -10,6 +10,7 @@ services:
       - WAKEWORD_MODEL=${WAKEWORD_MODEL:-hey_jarvis}
       - WAKEWORD_THRESHOLD=${WAKEWORD_THRESHOLD:-0.5}
       - MULTIROOM_COOLDOWN_S=${MULTIROOM_COOLDOWN_S:-5}
+      - LOCATION_ID=${LOCATION_ID:-}
     volumes:
       - wakeword_data:/app/data
     restart: unless-stopped
