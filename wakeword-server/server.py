@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from config import (
     DEVICE_API_TOKEN, OPUS_SAMPLE_RATE, OPUS_CHANNELS,
-    OPUS_FRAME_SAMPLES, WAKEWORD_THRESHOLD, ORCHESTRATOR_URL,
+    OPUS_FRAME_SAMPLES, WAKEWORD_THRESHOLD, ORCHESTRATOR_URL, LOCATION_ID,
 )
 from wakeword import DeviceWakeWordEngine
 from multiroom import MultiroomCooldown
@@ -475,8 +475,14 @@ async def list_devices():
 # Bearer tokens never leave the LAN + Tailscale encrypted tunnel.
 # ---------------------------------------------------------------------------
 
-async def _proxy_request(request: Request, path: str) -> JSONResponse:
-    """Forward an HTTP request to the orchestrator and return the response."""
+async def _proxy_request(request: Request, path: str,
+                         extra_query: Optional[Dict[str, str]] = None) -> JSONResponse:
+    """Forward an HTTP request to the orchestrator and return the response.
+
+    extra_query: params injected into the forwarded query string unless the
+    device already provided them (lets a single-home wakeword-server scope
+    requests, e.g. location_id, that the firmware does not send).
+    """
     if not _http_client:
         return JSONResponse(
             status_code=503,
@@ -489,8 +495,14 @@ async def _proxy_request(request: Request, path: str) -> JSONResponse:
     if not _check_token(token):
         return JSONResponse(status_code=401, content={"error": "Unauthorized"})
 
-    # Build target URL preserving query string
-    query_string = str(request.url.query)
+    # Build target URL preserving query string, injecting extra_query defaults
+    from urllib.parse import urlencode, parse_qs
+    params = {k: v[0] for k, v in parse_qs(str(request.url.query)).items()}
+    if extra_query:
+        for k, v in extra_query.items():
+            if v and k not in params:
+                params[k] = v
+    query_string = urlencode(params)
     target_url = f"{path}?{query_string}" if query_string else path
 
     # Read body for POST/PUT/PATCH
@@ -541,8 +553,16 @@ async def proxy_heartbeat(request: Request):
 
 @app.get("/room_temperature/{room:path}")
 async def proxy_room_temperature(room: str, request: Request):
-    """Proxy room temperature fetch to orchestrator."""
-    return await _proxy_request(request, f"/room_temperature/{room}")
+    """Proxy room temperature fetch to orchestrator.
+
+    Inject this home's location_id (firmware does not send it) so the
+    orchestrator scopes the lookup to the right home instead of returning
+    the first location's weather fallback.
+    """
+    return await _proxy_request(
+        request, f"/room_temperature/{room}",
+        extra_query={"location_id": LOCATION_ID},
+    )
 
 
 @app.get("/device_status")

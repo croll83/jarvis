@@ -41,6 +41,13 @@ WAKEWORD_THRESHOLD = float(os.getenv("WAKEWORD_THRESHOLD", "0.5"))
 # --- Multi-room ---
 MULTIROOM_COOLDOWN_S = int(os.getenv("MULTIROOM_COOLDOWN_S", "5"))
 
+# --- Location ---
+# This wakeword-server serves a single home/LAN. The firmware does NOT send
+# location_id on management calls (e.g. /room_temperature), so the orchestrator
+# would otherwise search all locations and return the wrong home's data.
+# When set, it is injected into proxied management requests that need it.
+LOCATION_ID = os.getenv("LOCATION_ID", "")
+
 # --- Opus ---
 OPUS_SAMPLE_RATE = 16000
 OPUS_CHANNELS = 1

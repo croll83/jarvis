@@ -782,6 +782,8 @@ async def lifespan(app: FastAPI):
     _keep(asyncio.create_task(periodic_cleanup()))
     _keep(asyncio.create_task(warmup_models()))
     _keep(asyncio.create_task(periodic_health_check()))
+    _keep(asyncio.create_task(_warm_semantic_indices()))
+    _keep(asyncio.create_task(_semantic_refresh_loop()))
 
     # Carica memory services e avvia scheduler memoria
     load_memory_services_from_db()
@@ -975,6 +977,38 @@ async def warmup_models():
         logger.info("✅ Router model ready")
     except Exception as e:
         logger.warning(f"Model warmup failed: {e}")
+
+
+async def _warm_semantic_indices():
+    """Pre-build the semantic discovery index for every enabled location in the
+    background, so the first user query never pays the cold embed cost."""
+    try:
+        await asyncio.sleep(8)  # let the embedder/DB settle after boot
+        import semantic_discovery
+        from database import get_all_locations
+        for loc in get_all_locations(enabled_only=True):
+            await semantic_discovery.warm(loc.id)
+    except Exception as e:
+        logger.warning(f"Semantic index warm failed: {e}")
+
+
+async def _semantic_refresh_loop():
+    """Hourly background refresh of the semantic index for every enabled location.
+
+    Incremental: re-embeds only entities whose descriptor changed, so a run with
+    no entity changes is ~free. Keeps the index in sync with HA without ever
+    blocking a user query."""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # ogni ora
+            import semantic_discovery
+            from database import get_all_locations
+            for loc in get_all_locations(enabled_only=True):
+                await semantic_discovery.warm(loc.id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Semantic index periodic refresh failed: {e}")
 
 
 async def periodic_health_check():
@@ -2522,6 +2556,38 @@ _TEMP_WEATHER_CACHE_TTL = 3600     # 1 ora
 _temp_entity_cache: Dict[str, dict] = {}
 _TEMP_ENTITY_CACHE_TTL = 86400     # 24 ore
 
+# Room-temperature sensors WHITELIST:
+# /room_temperature reads HA's raw /api/states (NOT the entity map), so it sees
+# ALL device_class=temperature entities — meters (~55°C), heat-pump probes, pool,
+# setpoints, outdoor. Guessing what to EXCLUDE is fragile: a new device/meter
+# tomorrow would silently pollute room readings. Instead we explicitly ALLOW only
+# known room-temperature sensor families. Unrelated devices are ignored by default;
+# to support a new room-sensor family, add its pattern below.
+_ROOM_TEMP_PATTERNS = (
+    re.compile(r"^sensor\.setecna_.*_zone_\d+_temperature$"),  # Setecna per-zone room temp
+)
+_TEMP_ROOM_MIN_C = 0.0
+_TEMP_ROOM_MAX_C = 50.0
+
+
+def _room_temp_value(entity_id: str, state_val) -> Optional[float]:
+    """Return the temp (°C) if entity is a WHITELISTED room sensor, else None.
+
+    Only sensors matching _ROOM_TEMP_PATTERNS count as room temperature, so
+    name-matching and whole-house averaging never pick up equipment/setpoint
+    sensors — and adding new unrelated devices can't break it.
+    """
+    eid = entity_id.lower()
+    if not any(p.match(eid) for p in _ROOM_TEMP_PATTERNS):
+        return None
+    try:
+        t = float(state_val)
+    except (ValueError, TypeError):
+        return None
+    if not (_TEMP_ROOM_MIN_C <= t <= _TEMP_ROOM_MAX_C):
+        return None
+    return t
+
 
 @app.get("/room_temperature/{room}")
 async def get_room_temperature(room: str, location_id: str = None):
@@ -2613,11 +2679,8 @@ async def get_room_temperature(room: str, location_id: str = None):
             if not all_states:
                 continue
 
-            # --- STRATEGIA 1: Cerca sensore temperatura con nome che matcha la stanza ---
-            best_match = None
-            best_score = 0
-            best_entity_id = None
-
+            # Raccogli i sensori-STANZA in whitelist (solo zone Setecna, non meter/impianto)
+            room_sensors = []  # (entity_id, friendly_lower, temp, unit)
             for entity_id, state_data in all_states.items():
                 if not entity_id.startswith("sensor."):
                     continue
@@ -2634,9 +2697,21 @@ async def get_room_temperature(room: str, location_id: str = None):
                 if device_class != "temperature" and uom not in ("°C", "°F", "C", "F"):
                     continue
 
-                # Controlla match nel nome entity o friendly_name
-                eid_lower = entity_id.lower()
+                # Solo sensori-stanza in whitelist (zone Setecna); scarta il resto
+                temp = _room_temp_value(entity_id, state_val)
+                if temp is None:
+                    continue
+
                 friendly = attrs.get("friendly_name", "").lower()
+                room_sensors.append((entity_id, friendly, temp, uom if uom else "°C"))
+
+            # --- STRATEGIA 1: sensore-stanza il cui nome matcha la stanza richiesta ---
+            best_match = None
+            best_score = 0
+            best_entity_id = None
+
+            for entity_id, friendly, temp, unit in room_sensors:
+                eid_lower = entity_id.lower()
 
                 score = 0
                 if room_lower in eid_lower:
@@ -2651,16 +2726,13 @@ async def get_room_temperature(room: str, location_id: str = None):
                 if score > best_score:
                     best_score = score
                     best_entity_id = entity_id
-                    try:
-                        best_match = {
-                            "temperature": float(state_val),
-                            "unit": uom if uom else "°C",
-                            "entity_id": entity_id,
-                            "source": "sensor",
-                            "location_id": loc_id
-                        }
-                    except (ValueError, TypeError):
-                        pass
+                    best_match = {
+                        "temperature": temp,
+                        "unit": unit,
+                        "entity_id": entity_id,
+                        "source": "sensor",
+                        "location_id": loc_id
+                    }
 
             if best_match:
                 # Cache entity resolution (24h) — valore letto live ogni volta
@@ -2672,7 +2744,21 @@ async def get_room_temperature(room: str, location_id: str = None):
                 logger.info(f"Temperature for '{room}': {best_match['temperature']}{best_match['unit']} from {best_match['entity_id']} (entity resolved, cached 24h)")
                 return best_match
 
-            # --- STRATEGIA 2: Fallback su weather entity ---
+            # --- STRATEGIA 2: device mobile/generico (es. "Casa" portatile) → MEDIA stanze ---
+            # Nessun match esatto ma esistono sensori-stanza reali: ritorna la media.
+            if room_sensors:
+                avg = round(sum(t for _, _, t, _ in room_sensors) / len(room_sensors), 1)
+                logger.info(f"Temperature for '{room}': avg {avg}°C over {len(room_sensors)} room sensors in '{loc_id}'")
+                return {
+                    "temperature": avg,
+                    "unit": "°C",
+                    "entity_id": "__average__",
+                    "source": "average",
+                    "location_id": loc_id,
+                    "sensor_count": len(room_sensors),
+                }
+
+            # --- STRATEGIA 3: nessun sensore-stanza → fallback meteo (es. albani20) ---
             for entity_id, state_data in all_states.items():
                 if not entity_id.startswith("weather."):
                     continue
