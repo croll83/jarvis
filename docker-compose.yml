@@ -93,6 +93,7 @@ services:
   fastembed:
     build: ./infrastructure/fastembed
     container_name: jarvis_fastembed
+    restart: unless-stopped
     ports:
       - "11435:11435"
     volumes:
@@ -126,6 +127,7 @@ services:
   orchestrator:
     build: ./jarvis-orchestrator
     container_name: jarvis_core
+    restart: unless-stopped
       #depends_on:
       #ollama:
       #  condition: service_healthy
@@ -200,6 +202,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: jarvis_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-jarvis}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -218,6 +221,7 @@ services:
   mongo:
     image: mongo:7
     container_name: jarvis_mongo
+    restart: unless-stopped
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-jarvis}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
@@ -234,6 +238,7 @@ services:
   adminer:
     image: adminer:latest
     container_name: jarvis_adminer
+    restart: unless-stopped
     ports:
       - "8080:8080"
     profiles:

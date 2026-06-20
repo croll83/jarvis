@@ -15,6 +15,7 @@ WORKDIR /app
 # Installa dipendenze di sistema (per websockets, audio, resemblyzer)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    curl \
     g++ \
     python3-dev \
     libsndfile1 \
