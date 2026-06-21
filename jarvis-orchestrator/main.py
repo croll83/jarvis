@@ -4128,6 +4128,29 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
         return None
 
 
+async def _phrase_ha_data(user_text: str, ha_data: str, context: dict,
+                          speaker_id=None, location: str = None) -> str:
+    """Turn structured HA data into a natural, spoken Italian answer.
+
+    The entity executors return a compact technical string ("Salotto temperature:
+    27.4 °C"); read verbatim it sounds like JSON. This rephrases it like a voice
+    assistant would, picking the value relevant to the question.
+    """
+    try:
+        phrased = await get_quick_response(
+            f"L'utente ha chiesto: \"{user_text}\"\n\n"
+            f"Dati attuali da Home Assistant:\n{ha_data}\n\n"
+            f"Rispondi in italiano in modo naturale, breve e parlato, basandoti SOLO su "
+            f"questi dati. NON elencare in formato tecnico o JSON, niente nomi di entità "
+            f"grezzi. Se ci sono più valori scegli quello pertinente alla domanda.",
+            context, user_id=speaker_id, location_id=location, enable_tools=False,
+        )
+        return phrased or ha_data
+    except Exception as e:
+        logger.debug(f"_phrase_ha_data failed, using raw: {e}")
+        return ha_data
+
+
 async def _execute_entity_status(payload: dict, location: str, context: dict) -> str | None:
     """
     Restituisce stato dettagliato + attributi + capacità di un'entità specifica.
@@ -4990,14 +5013,15 @@ async def process_jarvis_logic(text: str, context: dict):
         # di un'entità specifica, promuovi a entity_status
         if api_call == "entity_discover":
             _params = payload.get("params", {})
-            _has_entity = bool(_params.get("entity") or _params.get("search"))
+            # Auto-upgrade SOLO per domande su parametri/configurazione di un'entità
+            # specifica — NON per la semplice presenza di `search`, altrimenti OGNI
+            # domanda di stato finirebbe sul path entity_status (non-semantico).
             _status_keywords = {"parametr", "impostazion", "configurar", "configurazion",
-                                "capacità", "luminosità", "che può fare", "cosa può fare"}
+                                "che può fare", "cosa può fare"}
             _text_lower = text.lower()
-            if _has_entity or any(kw in _text_lower for kw in _status_keywords):
-                # Cerca di risolvere il nome entità dal testo se non c'è nei params
+            if any(kw in _text_lower for kw in _status_keywords):
                 if not _params.get("entity"):
-                    _params["entity"] = _params.pop("search", "") or ""
+                    _params["entity"] = _params.get("search", "") or ""
                 api_call = "entity_status"
                 payload["api_call"] = "entity_status"
                 logger.info(f"SIMPLE_CHAT: auto-upgraded entity_discover → entity_status (params={_params})")
@@ -5007,14 +5031,17 @@ async def process_jarvis_logic(text: str, context: dict):
             logger.info(f"SIMPLE_CHAT: executing entity_status with params={payload.get('params', {})}")
             status_response = await _execute_entity_status(payload, location, context)
             if status_response:
-                response = status_response
+                response = await _phrase_ha_data(text, status_response, context, speaker_id, location)
             else:
                 response = router_data.get("response") or await get_quick_response(text, context)
         elif api_call in ("entity_discover", "entity_bulk"):
             logger.info(f"SIMPLE_CHAT multi-turn: executing {api_call} with params={payload.get('params', {})}")
             query_response = await _execute_entity_query(payload, location, context)
-            if query_response:
-                response = query_response
+            if query_response and not query_response.startswith("Non ho trovato"):
+                # Frasizza i dati HA in una risposta naturale parlata (no "json")
+                response = await _phrase_ha_data(text, query_response, context, speaker_id, location)
+            elif query_response:
+                response = query_response  # messaggio "non trovato", letto così com'è
             else:
                 # Query failed, use router's interim response or quick response
                 response = router_data.get("response")
