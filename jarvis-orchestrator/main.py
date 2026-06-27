@@ -4076,6 +4076,33 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
             bool(_disc_domains) and _disc_domains <= {"sensor", "binary_sensor"}
         )
 
+        # Power aggregation for a zone: "quanto consuma la depandance" → sum the
+        # device-level power sensors in scope (skip meters/totals/estimates to avoid
+        # double-counting). Honest framing: "dei dispositivi", "circa".
+        _agg = any(w in _utext for w in ("quanto consum", "consumo", "consumi",
+                                         "totale", "complessiv", "quanto sta consumando"))
+        _scope_name = params.get("room") or params.get("zone") or params.get("floor")
+        if (_agg and params.get("device_class") == "power" and _scope_name
+                and _scope_name.lower() not in ("casa", "wagmi", "tutta la casa")):
+            _tot = 0.0
+            _contrib = []
+            for ent in discovered:
+                _eid = ent["entity_id"].lower()
+                if any(x in _eid for x in ("meter_principale", "casa_potenza", "_meter_",
+                                           "potenza_totale_stimata", "standby")):
+                    continue
+                try:
+                    _w = float(states.get(ent["entity_id"], {}).get("state"))
+                except (ValueError, TypeError):
+                    continue
+                _tot += _w
+                _contrib.append((ent["friendly_name"], _w))
+            if _contrib:
+                _contrib.sort(key=lambda x: -x[1])
+                _top = ", ".join(f"{n}: {round(w)} W" for n, w in _contrib[:3])
+                return (f"Consumo dei dispositivi in {_scope_name}: circa {round(_tot)} W "
+                        f"totali (principali: {_top}).")
+
         if _is_value_query:
             parts = []
             for ent in discovered:
