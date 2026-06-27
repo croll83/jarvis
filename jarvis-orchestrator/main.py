@@ -3968,6 +3968,17 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
         params = payload.get("params", {})
         target_location = params.get("location_id") or location or get_default_location_id()
 
+        # Temporal energy query (oggi/ieri/consumato) → historical comparison from
+        # the meter, NOT the live state (which can't answer "vs ieri").
+        _utext = (context.get("_user_text") or "").lower()
+        if (any(w in _utext for w in ("ieri", "oggi", "stamattina", "consumato",
+                                      "rispetto a", "confronta", "l'altro ieri"))
+                and ("consum" in _utext or "energia" in _utext or "kwh" in _utext
+                     or params.get("device_class") in ("energy", "power"))):
+            _hist = await _execute_history_compare(target_location, context)
+            if _hist:
+                return _hist
+
         # Semantic resolution for free-text searches (handles language/synonyms,
         # e.g. "temperatura" -> "...temperature"); falls back to the SQL map query.
         discovered = []
@@ -4158,6 +4169,64 @@ async def _phrase_ha_data(user_text: str, ha_data: str, context: dict,
     except Exception as e:
         logger.debug(f"_phrase_ha_data failed, using raw: {e}")
         return ha_data
+
+
+# Main electricity meter energy sensor (cumulative kWh, total_increasing) per location.
+_ENERGY_METER = {"wagmi": "sensor.impianti_meter_principale_casa_energia"}
+
+
+async def _execute_history_compare(location: str, context: dict) -> str | None:
+    """Today-so-far vs yesterday electricity consumption from the main meter.
+
+    The meter energy sensor is total_increasing (never resets), so a day's kWh =
+    value(end of day) - value(start of day). We read the value at each local
+    midnight boundary via /api/history plus the current value. Returns None if the
+    history isn't available (the phrasing guardrail then says so, never invents).
+    """
+    from datetime import datetime, timedelta, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Europe/Rome")
+    except Exception:
+        tz = timezone(timedelta(hours=2))  # CEST fallback (estate)
+
+    eid = _ENERGY_METER.get(location)
+    if not eid:
+        return None
+    now_local = datetime.now(tz)
+    today0 = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    yest0 = today0 - timedelta(days=1)
+
+    def _iso(dt):
+        return dt.astimezone(timezone.utc).isoformat()
+
+    async def _val_at(dt):
+        pts = await multi_ha.get_history(location, eid, _iso(dt), _iso(dt + timedelta(minutes=30)))
+        for p in pts:
+            try:
+                return float(p["state"])
+            except (ValueError, TypeError):
+                continue
+        return None
+
+    try:
+        v_yest = await _val_at(yest0)
+        v_today = await _val_at(today0)
+        st = await multi_ha.get_state(location, eid)
+        cur = float(st["state"]) if st and str(st.get("state")) not in ("None", "unknown", "unavailable") else None
+    except Exception as e:
+        logger.debug(f"history compare failed: {e}")
+        return None
+
+    if cur is None or v_today is None or v_yest is None:
+        return None
+
+    today_kwh = max(0.0, cur - v_today)
+    yest_kwh = max(0.0, v_today - v_yest)
+    delta = today_kwh - yest_kwh
+    trend = "in linea con" if abs(delta) < 0.5 else ("più di" if delta > 0 else "meno di")
+    return (f"Consumo elettrico casa — oggi finora: {today_kwh:.1f} kWh; "
+            f"ieri (intera giornata): {yest_kwh:.1f} kWh. Oggi {trend} ieri.")
 
 
 async def _execute_entity_status(payload: dict, location: str, context: dict) -> str | None:

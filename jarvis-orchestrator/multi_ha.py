@@ -202,6 +202,38 @@ class HomeAssistantClient:
             logger.error(f"[{self.location_id}] get_state({entity_id}) error: {e}")
             return None
 
+    async def get_history(self, entity_id: str, start_iso: str, end_iso: str = None) -> List[dict]:
+        """Fetch state history for one entity via GET /api/history/period.
+
+        Returns a flat list of {"state": str, "when": str} points (oldest first).
+        """
+        if not self.hass_token:
+            return []
+        url = f"{self.hass_url}/api/history/period/{start_iso}"
+        params = {"filter_entity_id": entity_id, "minimal_response": "true", "no_attributes": "true"}
+        if end_iso:
+            params["end_time"] = end_iso
+        headers = {"Authorization": f"Bearer {self.hass_token}"}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, params=params,
+                                       timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[{self.location_id}] history {entity_id} -> {resp.status}")
+                        return []
+                    data = await resp.json()
+        except Exception as e:
+            logger.error(f"[{self.location_id}] get_history({entity_id}) error: {e}")
+            return []
+        if not data or not isinstance(data, list) or not data[0]:
+            return []
+        out = []
+        for p in data[0]:
+            st = p.get("state")
+            if st is not None:
+                out.append({"state": st, "when": p.get("last_changed") or p.get("last_updated")})
+        return out
+
     async def get_states_bulk(self, entity_ids: List[str] = None) -> Dict[str, dict]:
         """
         Fetch all entity states from HA via GET /api/states in a single call.
@@ -408,6 +440,15 @@ class MultiHomeAssistant:
         if not client:
             return None
         return await client.get_state(entity_id)
+
+    async def get_history(self, location_id: str, entity_id: str,
+                          start_iso: str, end_iso: str = None) -> List[dict]:
+        """Fetch state history for one entity on a location."""
+        self.ensure_loaded()
+        client = self.clients.get(location_id)
+        if not client:
+            return []
+        return await client.get_history(entity_id, start_iso, end_iso)
 
     async def get_states_bulk(self, location_id: str,
                               entity_ids: List[str] = None) -> Dict[str, dict]:
