@@ -3977,7 +3977,10 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
                 _dc = params.get("device_class") or semantic_discovery.device_class_hint(params["search"])
                 _hits = await semantic_discovery.search(
                     target_location, params["search"],
-                    room=params.get("room"), domain=params.get("domain"),
+                    # NB: the router's `domain` is unreliable for device/info queries
+                    # ("pompa di calore" -> wrongly domain=climate, excluding the
+                    # heat-pump sensors). search + device_class are the solid signals.
+                    room=params.get("room"), domain=None,
                     device_class=_dc, top_k=8,
                 )
                 discovered = [
@@ -4142,7 +4145,9 @@ async def _phrase_ha_data(user_text: str, ha_data: str, context: dict,
             f"Dati attuali da Home Assistant:\n{ha_data}\n\n"
             f"Rispondi in italiano in modo naturale, breve e parlato, basandoti SOLO su "
             f"questi dati. NON elencare in formato tecnico o JSON, niente nomi di entità "
-            f"grezzi. Se ci sono più valori scegli quello pertinente alla domanda.",
+            f"grezzi. Se ci sono più valori scegli quello pertinente alla domanda. "
+            f"Usa le unità di misura ESATTE come nei dati (W = watt, kW = kilowatt, "
+            f"°C = gradi, % = percento); non inventare o convertire unità.",
             context, user_id=speaker_id, location_id=location, enable_tools=False,
         )
         return phrased or ha_data
