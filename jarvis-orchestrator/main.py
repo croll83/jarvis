@@ -4147,7 +4147,11 @@ async def _phrase_ha_data(user_text: str, ha_data: str, context: dict,
             f"questi dati. NON elencare in formato tecnico o JSON, niente nomi di entità "
             f"grezzi. Se ci sono più valori scegli quello pertinente alla domanda. "
             f"Usa le unità di misura ESATTE come nei dati (W = watt, kW = kilowatt, "
-            f"°C = gradi, % = percento); non inventare o convertire unità.",
+            f"°C = gradi, % = percento); non inventare o convertire unità. "
+            f"REGOLA CRITICA: usa ESCLUSIVAMENTE i valori presenti nei dati qui sopra. "
+            f"Se i dati NON contengono quanto chiesto (es. uno storico, un confronto con "
+            f"ieri/il passato, un valore non presente), DILLO che non hai quel dato — "
+            f"NON inventare MAI numeri, date o valori non presenti.",
             context, user_id=speaker_id, location_id=location, enable_tools=False,
         )
         return phrased or ha_data
@@ -4650,6 +4654,33 @@ async def process_jarvis_logic(text: str, context: dict):
             return
         else:
             hass_start = time.time()
+
+            # ── COVER "PREFERITO" (Cherubini): premi il button per-tapparella ──
+            # Il router manda set_cover_position con position non-numerica ("preferita")
+            # o il testo dice "preferito"; la posizione preferita è esposta come
+            # button.<cover>_livello_predefinito (componente cherubini_meta).
+            _fav_pos = ha_params.get("position")
+            _is_cover_fav = (
+                (domain_raw == "cover" or (not domain_raw and target["entity_ids"]
+                    and all(e.startswith("cover.") for e in target["entity_ids"])))
+                and ("preferit" in _text_lower
+                     or (_fav_pos is not None and not str(_fav_pos).strip().isdigit()))
+            )
+            if _is_cover_fav:
+                _cover_ids = [e for e in target["entity_ids"] if e.startswith("cover.")]
+                _preset_btns = [e.replace("cover.", "button.") + "_livello_predefinito" for e in _cover_ids]
+                _ok, _msg = await multi_ha.call_service(
+                    target_location, "button", "press", {"entity_id": _preset_btns}
+                )
+                logger.info(f"Cover favourite: pressed {len(_preset_btns)} preset buttons ok={_ok}")
+                _n = len(_preset_btns)
+                response = (
+                    f"Ho messo {'la tapparella' if _n == 1 else f'le {_n} tapparelle'} alla posizione preferita."
+                    if _ok else "Non sono riuscito a impostare la posizione preferita."
+                )
+                save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+                await deliver_final_response(response, context, sound_type="positive" if _ok else "negative")
+                return
 
             # Helper: mappa action generico → action specifico per dominio
             def _map_action_for_domain(base_action: str, entity_domain: str) -> str:
