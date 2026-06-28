@@ -58,6 +58,16 @@ Se il COMANDO contiene pronomi ("la", "lo", "le", "quella", "quello") o riferime
 per risolvere l'entity/oggetto del riferimento PRIMA di emettere il payload.
 NON passare mai pronomi come entity al resolver — risolvi sempre al nome completo del turno
 precedente (es. "TV Soggiorno", "ultima email", "appuntamento di domani").
+
+FOLLOW-UP A SOGGETTO IMPLICITO (cruciale): se il COMANDO è una domanda di approfondimento
+SENZA soggetto esplicito (es. "e il setpoint?", "qual è il setpoint richiesto?", "e di notte?",
+"invece l'umidità?", "e in percentuale?"), EREDITA dal turno precedente la STANZA e la
+GRANDEZZA/dispositivo e mettili nei params (room + search/device_class). Esempi:
+[Recente: "umidità in camera" → "64%"] "qual è il setpoint richiesto?" →
+  {"intent":"SIMPLE_CHAT","payload":{"api_call":"entity_discover","params":{"room":"camera","search":"setpoint umidità","device_class":"humidity"}}}
+[Recente: "temperatura in salotto"] "e l'umidità?" →
+  {"intent":"SIMPLE_CHAT","payload":{"api_call":"entity_discover","params":{"room":"salotto","search":"umidità","device_class":"humidity"}}}
+
 Se manca il contesto necessario → RETRY con domanda chiara.
 
 AZIONI DOMOTICHE per dominio:
