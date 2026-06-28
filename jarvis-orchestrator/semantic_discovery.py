@@ -171,14 +171,30 @@ async def _rebuild(location_id: str):
 
     # device_class live da HA (1 bulk fetch, best-effort)
     dc_map: Dict[str, str] = {}
+    states: Dict[str, dict] = {}
     try:
-        states = await multi_ha.get_states_bulk(location_id)
-        for eid, st in (states or {}).items():
+        states = await multi_ha.get_states_bulk(location_id) or {}
+        for eid, st in states.items():
             dc = (st.get("attributes") or {}).get("device_class")
             if dc:
                 dc_map[eid] = dc
     except Exception as e:
         logger.debug(f"device_class enrich failed for {location_id}: {e}")
+
+    # Supplement with number.* setpoints/targets — the entity_maps sync excludes the
+    # `number` domain, but users ask about setpoints ("setpoint umidità camera").
+    _existing_ids = {r["entity_id"] for r in rows}
+    for _eid, _st in states.items():
+        if not _eid.startswith("number.") or _eid in _existing_ids:
+            continue
+        _attrs = _st.get("attributes") or {}
+        _fname = _attrs.get("friendly_name") or _eid
+        _dc = _attrs.get("device_class") or ""
+        if not (_dc or any(k in _eid.lower() or k in _fname.lower()
+                           for k in ("setpoint", "target", "soglia"))):
+            continue
+        rows.append({"entity_id": _eid, "entity_name": _fname, "entity_type": "number",
+                     "room": "", "area": "", "zone": "", "device_name": ""})
 
     vec_cache = _VEC_CACHE.get(location_id) or _load_disk(location_id)
     items: List[dict] = []
@@ -337,8 +353,11 @@ def search_sync(
         # Match room/area only (NOT the floor/zone): the router tends to drop a
         # floor name like "Piano Giorno" here for room-less devices (heat pump,
         # meter), which would otherwise wrongly filter out the right entity.
+        # Room-agnostic entities (no room/area, e.g. number setpoints) are NOT
+        # excluded — semantic rank decides among them.
         room_m = base & np.array([
-            rl in (it.get("room") or "").lower()
+            (not ((it.get("room") or "") or (it.get("area") or "")))
+            or rl in (it.get("room") or "").lower()
             or rl in (it.get("area") or "").lower()
             for it in items
         ])
