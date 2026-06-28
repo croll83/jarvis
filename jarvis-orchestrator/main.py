@@ -3719,6 +3719,18 @@ def _resolve_home_control_target(
                     f"qwen_entity='{entity_name}', discovered={disc_names}"
                 )
 
+                # PLURALE → BULK (precede il narrowing): "spegni (le) luci giardino",
+                # "tutte le tapparelle" ecc. devono agire su TUTTE le entità della zona,
+                # non sulla singola che il router potrebbe aver indovinato (es. "Perimetrali").
+                _plural_words = {
+                    "luci", "lampade", "faretti", "tapparelle", "tende", "prese",
+                    "climatizzatori", "termostati", "interruttori", "tutte", "tutti", "tutto",
+                }
+                _ut_words = set(re.sub(r"[,.\!\?\;\:\-']", " ", user_text.lower()).split())
+                if _ut_words & _plural_words:
+                    logger.info(f"Entity resolution [plural_bulk]: '{extracted}' → {len(discovered)} entities")
+                    return _make_bulk_result(discovered, f"plural:'{extracted}'")
+
                 # Parole generiche da escludere dal keyword matching
                 _generic = {
                     "luce", "luci", "lampada", "lampade", "led", "la", "le", "il", "i",
