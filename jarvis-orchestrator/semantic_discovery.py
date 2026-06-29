@@ -59,7 +59,7 @@ _DEVICE_CLASS_HINTS = [
     ("co2", "carbon_dioxide"),
     ("luminos", "illuminance"), ("lux", "illuminance"),
     ("pression", "pressure"),
-    ("batteri", "battery"),
+    ("batteri", "battery"), ("caric", "battery"),
     ("moviment", "motion"), ("presenza", "occupancy"),
     ("porta", "door"), ("finestra", "window"), ("apertura", "opening"),
 ]
@@ -338,6 +338,21 @@ def search_sync(
 
     items = idx["items"]
     n = len(items)
+
+    # Setpoint de-prioritisation: "temperatura salotto" wants the READING, not the
+    # temperature setpoint. Unless the query explicitly asks for a setpoint/target,
+    # penalise setpoint/target entities so live readings win.
+    _ql = query.lower()
+    if not any(w in _ql for w in ("setpoint", "impostat", "target", "richiest", "soglia")):
+        # `number.*` entities are settable setpoints/targets/config — a reading query
+        # ("temperatura salotto", "mandata pompa") wants the sensor, not these.
+        _sp = np.array(
+            [it.get("entity_type") == "number"
+             or "setpoint" in it["entity_id"].lower() or "target" in it["entity_id"].lower()
+             for it in items],
+            dtype=np.float32,
+        )
+        sims = sims - 0.15 * _sp
 
     # Hard filters: domain + device_class (reliable). Room is SOFT: applied only if
     # it leaves results, because the router often misfills it with a zone/location.
