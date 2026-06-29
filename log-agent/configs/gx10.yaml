@@ -9,9 +9,9 @@ sources:
     type: journalctl
     target: parakeet-stt
 
-  - name: qwen3-tts
+  - name: cosyvoice3-tts
     type: journalctl
-    target: qwen3-tts
+    target: cosyvoice3-tts
 
   - name: comfyui
     type: journalctl

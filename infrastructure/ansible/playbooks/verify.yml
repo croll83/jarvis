@@ -72,12 +72,12 @@
       failed_when: false
       when: deploy_type == "lxc_gpu" and ai_backend == "local"
 
-    - name: Check Qwen3-TTS health (GX10)
+    - name: Check CosyVoice3 TTS health (GX10)
       ansible.builtin.uri:
         url: "http://100.98.187.12:9880/health"
         method: GET
         timeout: 10
-      register: qwen3tts_check
+      register: cosyvoice3_check
       failed_when: false
       when: deploy_type == "lxc_gpu" and ai_backend == "local"
 
@@ -179,7 +179,7 @@
           SERVIZI AI (solo deploy locale):
             Ollama:          {{ 'OK' if (ollama_check.status | default(0)) == 200 else ('N/A (cloud)' if ai_backend == 'api' else 'FAIL') }}
             Parakeet STT:    {{ 'OK' if (parakeet_check.status | default(0)) == 200 else ('N/A (cloud)' if ai_backend == 'api' else 'FAIL (GX10)') }}
-            Qwen3-TTS:       {{ 'OK' if (qwen3tts_check.status | default(0)) == 200 else ('N/A (cloud)' if ai_backend == 'api' else 'FAIL (GX10)') }}
+            CosyVoice3 TTS:  {{ 'OK' if (cosyvoice3_check.status | default(0)) == 200 else ('N/A (cloud)' if ai_backend == 'api' else 'FAIL (GX10)') }}
           {% if deploy_type == 'lxc_gpu' and ai_backend == 'local' %}
 
           MODELLI AI:

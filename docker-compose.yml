@@ -12,8 +12,8 @@
 #
 # AUDIO SERVICES (su GX10 DGX Spark via Tailscale):
 # - Parakeet STT (nvidia/parakeet-tdt-0.6b-v3): STT multilingue, ~5.1 GiB VRAM, :7865
-# - Qwen3-TTS (Qwen3-TTS-12Hz-1.7B): TTS con voice cloning, ~4.4 GiB VRAM, :9880
-# Nota: Whisper e XTTSv2 DEPRECATI — rimossi dallo stack Atomman per liberare VRAM
+# - CosyVoice3 (Fun-CosyVoice3-0.5B): TTS zero-shot voice cloning, ~3.6 GiB VRAM, :9880
+# Nota: Whisper, XTTSv2, Qwen3-TTS DEPRECATI
 #
 # VRAM BUDGET Atomman (RTX 5070 Laptop 8 GB, GPU dedicata — no display):
 #   Ollama Qwen 2.5 3B Q4_K_M (weights+KV): ~2.6 GB  (misurato @ ctx=32768, 37/37 GPU)
@@ -33,7 +33,7 @@
 # Installazione: curl -fsSL https://tailscale.com/install.sh | sh
 #
 # NOTA SU GX10 (NVIDIA DGX Spark):
-# STT (Parakeet :7865) e TTS (Qwen3-TTS :9880) girano sul GX10 (100.98.187.12)
+# STT (Parakeet :7865) e TTS (CosyVoice3 :9880) girano sul GX10 (100.98.187.12)
 # come servizi systemd. L'orchestrator li raggiunge via Tailscale.
 # Vedi infrastructure/gb10/gx10-full-inventory.md per dettagli.
 #
@@ -109,8 +109,8 @@ services:
   # SPEECH-TO-TEXT & TTS — Ora su GX10 DGX Spark (via Tailscale)
   # ===========================================================================
   # STT: Parakeet (nvidia/parakeet-tdt-0.6b-v3) su GX10 :7865
-  # TTS: Qwen3-TTS (Qwen3-TTS-12Hz-1.7B) su GX10 :9880
-  # Whisper e XTTSv2 DEPRECATI — Dockerfile mantenuti in *-deprecated/
+  # TTS: CosyVoice3 (Fun-CosyVoice3-0.5B) su GX10 :9880
+  # Whisper, XTTSv2, Qwen3-TTS DEPRECATI — Dockerfile/script preservati
   # Questo libera ~3.6 GB VRAM sull'Atomman per upgrade router (100K ctx)
   #
   # ===========================================================================
@@ -157,10 +157,10 @@ services:
       # JARVIS Approval Bot (L3 critical actions - separate from AI Agent Telegram)
       - JARVIS_APPROVAL_BOT_TOKEN=${JARVIS_APPROVAL_BOT_TOKEN:-}
       - JARVIS_APPROVAL_CHAT_ID=${JARVIS_APPROVAL_CHAT_ID:-}
-      # TTS (Qwen3-TTS su GX10 via Tailscale)
-      - TTS_ENGINE=qwen3tts
-      - QWEN3_TTS_URL=http://100.98.187.12:9880
-      - QWEN3_TTS_VOICE=${QWEN3_TTS_VOICE:-sofia}
+      # TTS (CosyVoice3 su GX10 via Tailscale)
+      - TTS_ENGINE=cosyvoice3
+      - COSYVOICE3_TTS_URL=http://100.98.187.12:9880
+      - COSYVOICE3_TTS_VOICE=${COSYVOICE3_TTS_VOICE:-sofia}
       # Qwen tool calling (Brave Search)
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
       - ROUTER_ENGINE=${ROUTER_ENGINE:-ollama}

@@ -69,9 +69,8 @@
       when: deploy_type == "lxc" or ai_backend == "api"
 
     # -----------------------------------------------------------------
-    # NOTA: Voice cloning WAV files per Qwen3-TTS sono gestiti direttamente
-    # sul GX10 DGX Spark (/home/jarvis/qwen3-tts-voices/).
-    # Le voci preconfigurate (sofia, marco, emma, james) non richiedono WAV.
+    # NOTA: CosyVoice3 usa zero-shot voice cloning da reference audio
+    # gestito direttamente sul GX10 (default_it_f.wav nella dir modello).
     # -----------------------------------------------------------------
 
     # -----------------------------------------------------------------
@@ -248,7 +247,7 @@
           {% if deploy_type == 'lxc_gpu' and ai_backend == 'local' %}
             - Ollama API:              http://localhost:11434
             - Parakeet STT (GX10):     http://100.98.187.12:7865
-            - Qwen3-TTS (GX10):       http://100.98.187.12:9880
+            - CosyVoice3 TTS (GX10):  http://100.98.187.12:9880
           {% endif %}
 
           Prossimi passi manuali:

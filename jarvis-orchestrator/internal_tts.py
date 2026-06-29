@@ -1,10 +1,11 @@
 """
-Internal TTS Engine — Qwen3-TTS/XTTSv2/Kokoro + Opus streaming per speaker interno voice devices.
+Internal TTS Engine — CosyVoice3/Kokoro + Opus streaming per speaker interno voice devices.
 
-Supporta tre engine TTS selezionabili via TTS_ENGINE in config:
-  - "qwen3tts" (Qwen3-TTS su GX10, GPU ~4.4 GiB): deploy locale, voice cloning, voci IT/EN
-  - "xtts"     (XTTSv2 Coqui, DEPRECATO):          ex deploy locale Atomman
-  - "kokoro"   (Kokoro-82M, CPU/GPU ~0.5 GB):       deploy cloud / VPS
+Supporta engine TTS selezionabili via TTS_ENGINE in config:
+  - "cosyvoice3" (CosyVoice3-0.5B su GX10, GPU ~3.6 GiB): deploy locale, zero-shot voice cloning
+  - "kokoro"     (Kokoro-82M, CPU/GPU ~0.5 GB):             deploy cloud / VPS
+  - "qwen3tts"   (alias per cosyvoice3, backward compat)
+  - "xtts"       (XTTSv2 Coqui, DEPRECATO)
 
 La generazione audio e la riproduzione si sovrappongono: i primi frame Opus
 vengono inviati al device mentre il resto dell'audio e ancora in generazione.
@@ -389,11 +390,11 @@ async def _preprocess_tts_text_llm(text: str) -> str:
 
 def _build_tts_request(engine: str, text: str, stream: bool = False) -> tuple:
     """Costruisce URL e payload per il TTS engine selezionato."""
-    if engine == "qwen3tts":
-        url = f"{_cfg.QWEN3_TTS_URL}/v1/audio/speech"
+    if engine in ("cosyvoice3", "qwen3tts"):
+        url = f"{_cfg.COSYVOICE3_TTS_URL}/v1/audio/speech"
         payload = {
-            "model": "qwen3-tts",
-            "voice": _cfg.QWEN3_TTS_VOICE,
+            "model": "cosyvoice3",
+            "voice": _cfg.COSYVOICE3_TTS_VOICE,
             "input": text,
             "response_format": "pcm",
         }
@@ -443,7 +444,7 @@ async def generate_tts_audio(text: str) -> Optional[bytes]:
             logger.error(f"TTS ({engine}): nessun audio per '{text[:50]}...'")
             return None
 
-        # XTTS restituisce WAV, Qwen3-TTS e Kokoro restituiscono PCM raw
+        # XTTS restituisce WAV, CosyVoice3 e Kokoro restituiscono PCM raw
         pcm_24k = _strip_wav_header(raw_data) if engine == "xtts" else raw_data
 
         pcm_data = _resample_24k_to_16k(pcm_24k)
@@ -485,7 +486,7 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
     Opus vengono inviati al device mentre il resto dell'audio e ancora in
     generazione sul server TTS. Riduce il time-to-first-audio.
 
-    Supporta Qwen3-TTS (GX10), XTTSv2 (deprecato) e Kokoro (cloud) tramite TTS_ENGINE config.
+    Supporta CosyVoice3 (GX10), XTTSv2 (deprecato) e Kokoro (cloud) tramite TTS_ENGINE config.
 
     Returns:
         (success: bool, duration_seconds: float)

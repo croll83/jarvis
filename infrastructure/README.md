@@ -54,7 +54,7 @@ HA remoti e il LXC AI Agent.
 |  |  orchestrator:5000 (network_mode: host)                        | |
 |  |  FastAPI + Admin UI                                             | |
 |  |  Speaker ID (Resemblyzer)                                       | |
-|  |  Internal TTS (Qwen3-TTS@GX10 + Opus streaming per AtomS3R)   | |
+|  |  Internal TTS (CosyVoice3-0.5B@GX10 + Opus streaming per AtomS3R)| |
 |  |  SQLite + Redis (context bus) + mem0 (long-term)               | |
 |  |                                                                 | |
 |  |  ontology-server:8100 (127.0.0.1 only)                         | |
@@ -68,7 +68,7 @@ HA remoti e il LXC AI Agent.
 |  +-- Qwen 2.5 3B Q4_K_M (weights+KV) . ~2.6 GB (@ ctx=32768)     |
 |  +-- TOTALE ........................... ~2.6 GB / 8.15 GB VRAM     |
 |  +-- LIBERI ........................... ~5.5 GB (per router upgrade)|
-|  Nota: STT (Parakeet) e TTS (Qwen3-TTS) su GX10 — zero VRAM locale|
+|  Nota: STT (Parakeet) e TTS (CosyVoice3) su GX10 — zero VRAM locale|
 |  Nota: Embeddings su fastembed CPU (:11435) — zero VRAM             |
 +---------------------------------------------------------------------+
 
@@ -182,7 +182,7 @@ systemd -> tailscaled.service -> ai-agent-chrome.service (Chrome CDP :18800)
                      deploy indipendente — consumato via MEM0_BASE_URL)
 3. orchestrator    -> aspetta ollama, poi parte (network_mode: host)
                       vede Tailscale direttamente, raggiunge GX10 + AI Agent
-                      STT (Parakeet :7865) e TTS (Qwen3-TTS :9880) su GX10
+                      STT (Parakeet :7865) e TTS (CosyVoice3 :9880) su GX10
 4. nginx           -> started (TLS per jarvis.mintwork.it)
 5. cloudflared     -> started (tunnel per jarvis-pub.mintwork.it)
 ```
@@ -203,7 +203,7 @@ systemd -> tailscaled.service -> ai-agent-chrome.service (Chrome CDP :18800)
 | **Ollama** | LXC-JARVIS | `jarvis_ollama` (Docker, `--gpus all`) | - | - | ~2.5 GB | Qwen 2.5 3B routing + tool calling (ctx=32768) — solo LLM |
 | **fastembed** | LXC-JARVIS | `jarvis_fastembed` (Docker, CPU) | 0.5 | 300 MB | - | nomic-embed-text-v1.5 ONNX embeddings (Ollama-compat :11435) |
 | **Parakeet STT** | GX10 DGX Spark | `parakeet-stt.service` (systemd) | - | - | ~5.1 GB | STT multilingue (nvidia/parakeet-tdt-0.6b-v3) |
-| **Qwen3-TTS** | GX10 DGX Spark | `qwen3-tts.service` (systemd) | - | - | ~4.4 GB | TTS voice cloning IT/EN (Qwen3-TTS-12Hz-1.7B) |
+| **CosyVoice3** | GX10 DGX Spark | `cosyvoice3-tts.service` (systemd) | - | - | ~3.6 GB | TTS zero-shot voice cloning (Fun-CosyVoice3-0.5B, IT num2words) |
 | **Dark Jarvis (heavy LLM)** | GX10 DGX Spark | `dark-jarvis.service` (systemd) | - | - | ~30 GB | Qwopus3.6-27B-Abl-MTP-NVFP4 + MTP spec decode su `:30000` (`dark-jarvis`/`dark-opus`). Setup: [`gb10/dark-jarvis.md`](gb10/dark-jarvis.md) |
 | **Orchestrator** | LXC-JARVIS | `jarvis_core` (`network_mode: host`) | 1-2 | 2 GB | - | FastAPI, HA control, memory, security |
 | **mem0-stack** | esterno | repo `croll83/mem0-stack` | - | - | - | Long-term semantic + procedural memory (vector + graph + LLM router). Consumato via `MEM0_BASE_URL` |
@@ -214,7 +214,7 @@ systemd -> tailscaled.service -> ai-agent-chrome.service (Chrome CDP :18800)
 | **Cloudflared** | LXC-JARVIS | `cloudflared` (systemd) | 0.1 | 64 MB | - | Tunnel per jarvis-pub.mintwork.it |
 | **AI Agent** | LXC-AI-Agent (bare-metal) | `ai-agent.service` (systemd) | 0.5 | 512 MB | - | Cloud LLM brain (API cloud) |
 | **Chrome Headless** | LXC-AI-Agent (bare-metal) | `ai-agent-chrome.service` (systemd) | 0.5 | <=1 GB | - | Browser automation via CDP :18800 |
-| **TTS Proxy** | LXC-AI-Agent (bare-metal) | `xtts-proxy.service` (systemd) | 0.1 | 64 MB | - | Proxy TTS per AI Agent → Qwen3-TTS@GX10 (:8891) |
+| **TTS Proxy** | LXC-AI-Agent (bare-metal) | `xtts-proxy.service` (systemd) | 0.1 | 64 MB | - | Proxy TTS per AI Agent → CosyVoice3@GX10 (:8891) |
 | **Wakeword Server** | LXC-Wakeword (1/casa) | `jarvis_wakeword` (Docker) | 1 | 2 GB | - | openWakeWord detection + relay :8200 |
 | **Workstation** | VM-Workstation (opz.) | KVM VM (Ubuntu + XFCE) | 6 | 12 GB | - | Chrome reale + AI Agent ext + IDE + dev |
 | **HAOS** | VM-HAOS (opz.) | KVM VM | 2 | 8 GB | - | Home Assistant OS + MASS + add-ons |
@@ -227,9 +227,9 @@ Quando "Speaker Interno" è attivo per un device, il TTS viene generato dall'orc
 via XTTSv2 (locale) o Kokoro (cloud) e inviato come frame Opus via WebSocket direttamente
 allo speaker integrato del device (ES8311 DAC + NS4150B amp).
 
-**Flusso (locale — Qwen3-TTS su GX10):**
+**Flusso (locale — CosyVoice3 su GX10):**
 ```
-AI Response → Qwen3-TTS@GX10 (PCM 24kHz streaming) → resample 16kHz → Opus encode → WS binary → Device speaker
+AI Response → CosyVoice3@GX10 (PCM 24kHz streaming) → resample 16kHz → Opus encode → WS binary → Device speaker
 ```
 
 **Flusso (cloud):**
@@ -243,8 +243,9 @@ di frame Opus binari via WebSocket (opcode 0x02 in `jarvis_ws_audio.c`).
 **Configurazione**: Dashboard orchestrator → Dispositivi → checkbox "Speaker Interno".
 Quando attivo, i campi Speaker Principale e Speaker Fallback vengono ignorati.
 
-**Voice**: Qwen3-TTS ha voci preconfigurate (sofia, marco, emma, james) + voice cloning.
-Configurabile via `QWEN3_TTS_VOICE` (default: `sofia`).
+**Voice**: CosyVoice3 usa zero-shot voice cloning da audio di riferimento (`default_it_f.wav`).
+Configurabile via `COSYVOICE3_TTS_VOICE` (default: `sofia`).
+Il server include normalizzazione testo italiana (num2words) per numeri, unità, orari.
 
 ---
 
@@ -559,9 +560,9 @@ MEMORY_DAILY_HOUR=3
 # STT/TTS (su GX10 via Tailscale)
 STT_URL=http://100.98.187.12:7865
 STT_ENGINE=parakeet
-TTS_ENGINE=qwen3tts
-QWEN3_TTS_URL=http://100.98.187.12:9880
-QWEN3_TTS_VOICE=sofia
+TTS_ENGINE=cosyvoice3
+COSYVOICE3_TTS_URL=http://100.98.187.12:9880
+COSYVOICE3_TTS_VOICE=sofia
 
 # Proactive monitoring
 PROACTIVE_DOOR_OPEN_MINUTES=30
@@ -601,7 +602,7 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-AI-Agent senza aprir
 | **Napoli (Wagmi)** | Host-level nel LXC-JARVIS | Gateway VPN per lo stack | `jarvis-wagmi` |
 | **LXC-AI-Agent** | Host-level nel LXC dedicato | Espone AI Agent sulla tailnet | `jarvis-ai-agent` |
 | **LXC-Wakeword** | Host-level nel LXC wakeword | Orchestrator → push config, trigger_listen | `jarvis-wakeword-<casa>` |
-| **GX10 DGX Spark** | Host-level (Ubuntu) | Parakeet STT, Qwen3-TTS, ACE-Step, ComfyUI | `gx10-dgx` |
+| **GX10 DGX Spark** | Host-level (Ubuntu) | Parakeet STT, CosyVoice3, ACE-Step, ComfyUI | `gx10-dgx` |
 | **Milano (Albani)** | Add-on HAOS o host-level | Espone HA sulla tailnet | `ha-albani` |
 
 ### Schema di rete
@@ -631,7 +632,7 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-AI-Agent senza aprir
 |   | Tailscale (host)  |           | Home Assistant    |        |
 |   |                   |           | Zigbee/Z-Wave     |        |
 |   | Parakeet STT:7865 |           | Automazioni       |        |
-|   | Qwen3-TTS  :9880  |           +-------------------+        |
+|   | CosyVoice3  :9880  |           +-------------------+        |
 |   | ACE-Step   :8760  |                                        |
 |   | ComfyUI    :8188  |                                        |
 |   +-------------------+                                        |
@@ -678,7 +679,7 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 |------------|----------|------------|---------|
 | 5000 | Orchestrator + Admin UI | HTTP | LAN / Tailscale |
 | — | Parakeet STT (GX10 :7865) | HTTP | Via Tailscale |
-| — | Qwen3-TTS (GX10 :9880) | HTTP | Via Tailscale |
+| — | CosyVoice3 (GX10 :9880) | HTTP | Via Tailscale |
 | 11434 | Ollama API (LLM) | HTTP | Interno |
 | 11435 | fastembed API (embeddings) | HTTP | Interno / Tailscale |
 | 8200 | mem0-stack API (esterno; vedi repo `croll83/mem0-stack`) | HTTP | configurabile via MEM0_BASE_URL |

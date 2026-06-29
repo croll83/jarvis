@@ -6,11 +6,11 @@ type: reference
 
 # GX10 DGX Spark — Inventario Completo
 
-**Hardware**: NVIDIA DGX Spark (GB10), 128 GB VRAM, ARM64, CUDA 13.2, Driver 580.142
+**Hardware**: NVIDIA DGX Spark (GB10), 128 GB VRAM, ARM64, CUDA 13.2, Driver 595.71
 **Hostname**: gx10-3b82
 **IP**: 192.168.1.67 (LAN), 100.98.187.12 (Tailscale)
 **OS**: Ubuntu 24.04 Noble
-**Ultimo aggiornamento**: 2026-03-31
+**Ultimo aggiornamento**: 2026-06-29
 
 ---
 
@@ -90,40 +90,52 @@ docker run -d --name vllm --gpus all --network host \
 
 ---
 
-## 3. Qwen3-TTS (Text-to-Speech)
+## 3. CosyVoice3 TTS (Text-to-Speech) — ATTIVO
 
-**Cosa**: Server TTS con voice cloning, voci italiane e inglesi
-**Modello**: Qwen/Qwen3-TTS-12Hz-1.7B (CustomVoice + Base per cloning)
-**VRAM**: ~4.4 GiB
+**Cosa**: Server TTS con zero-shot voice cloning e normalizzazione testo italiana
+**Modello**: Fun-CosyVoice3-0.5B (Alibaba, Apache 2.0)
+**VRAM**: ~3.6 GiB
+**RTF**: ~0.6x (più veloce del real-time)
 
 **Installazione**:
-- Script: `/home/jarvis/qwen3-tts-server.py` (13.7 KB)
-- Venv: `/home/jarvis/qwen3-tts-env/`
-- Voci: `/home/jarvis/qwen3-tts-voices/` (eric, jarvis, male_warm)
-- Service: `/etc/systemd/system/qwen3-tts.service`
+- Script: `/home/jarvis/cosyvoice3-tts-server.py`
+- Venv: `/home/jarvis/cosyvoice3-env/`
+- Modello: `/home/jarvis/cosyvoice3/pretrained_models/Fun-CosyVoice3-0.5B/`
+- Reference audio: `default_it_f.wav` (nella dir modello)
+- Service: `/etc/systemd/system/cosyvoice3-tts.service`
+- Sorgente repo: `/home/jarvis/sviluppo/jarvis/infrastructure/scripts/cosyvoice3-tts-server.py`
 
-**Voci preconfigurate**:
-- `sofia` (IT, femminile, espressiva)
-- `marco` (IT, maschile, warm)
-- `emma` (EN, femminile)
-- `james` (EN, maschile)
-- Clone: `eric`, `jarvis`, `male_warm`
+**Caratteristiche**:
+- Zero-shot voice cloning da audio di riferimento (no preset speakers)
+- Normalizzazione testo italiana server-side (num2words: numeri, unità, orari)
+- Speaker default: `it_female` (voce italiana femminile, clonata da ref audio)
+- Tutti i nomi voce (sofia, marco, ecc.) mappano allo stesso speaker default
 
 **Avvio/Spegnimento**:
 ```bash
-sudo systemctl start qwen3-tts    # avvia
-sudo systemctl stop qwen3-tts     # ferma
-sudo systemctl status qwen3-tts   # stato
-journalctl -u qwen3-tts -f        # log
+sudo systemctl start cosyvoice3-tts    # avvia
+sudo systemctl stop cosyvoice3-tts     # ferma
+sudo systemctl status cosyvoice3-tts   # stato
+journalctl -u cosyvoice3-tts -f        # log
 ```
 
 **Servizio esposto**: `http://100.98.187.12:9880`
-- `POST /v1/audio/speech` — API OpenAI-compatible
-- `POST /tts` — TTS nativo con CustomVoice
-- `POST /tts/clone` — Voice cloning
+- `POST /v1/audio/speech` — API OpenAI-compatible (drop-in)
 - `GET /tts/voices` — Lista voci
 - `GET /health` — Health check
-- OpenClaw si connette direttamente via Tailscale
+
+### 3b. Qwen3-TTS (DEPRECATO — disabilitato, file preservati)
+
+**Modello**: Qwen3-TTS-12Hz-1.7B (CustomVoice + Base)
+**Stato**: `qwen3-tts.service` disabilitato dal 2026-06-28
+**Motivo**: Scarsa pronuncia numeri/unità in italiano (wetext non ha regole IT)
+
+**File preservati** (per eventuale rollback):
+- Script: `/home/jarvis/qwen3-tts-server.py`
+- Venv: `/home/jarvis/qwen3-tts-env/`
+- Service: `/etc/systemd/system/qwen3-tts.service` (disabled)
+
+**Rollback**: `sudo systemctl disable --now cosyvoice3-tts && sudo systemctl enable --now qwen3-tts`
 
 ---
 
@@ -326,8 +338,8 @@ sudo systemctl stop comfyui
 | `liveportrait` | `build_liveportrait` | LivePortrait (driving video + portrait → animated portrait) |
 | `hallo4` | `build_hallo4` | Hallo4 (audio + portrait → talking head video) |
 | **Audio** | | |
-| `tts` | `build_tts` | Text-to-Speech (proxy a Qwen3-TTS server :9880) |
-| `clone` | `build_clone` | Voice cloning (proxy a Qwen3-TTS server :9880/tts/clone) |
+| `tts` | `build_tts` | Text-to-Speech (proxy a CosyVoice3 server :9880) |
+| `clone` | `build_clone` | Voice cloning (proxy a CosyVoice3 server :9880/tts/clone) |
 | `stt` | `build_stt` | Speech-to-Text (proxy a Parakeet server :7865) |
 | `music` | `build_music` | Music generation (proxy a ACE-Step server :9000) |
 
@@ -516,7 +528,7 @@ Certificati SSL self-signed. WebSocket support su tutti i siti.
 | 8188 | ComfyUI | ✅ systemd |
 | 8189 | ComfyUI Dashboard | ✅ systemd |
 | 9000 | ACE-Step Music | ✅ systemd |
-| 9880 | Qwen3-TTS | ✅ systemd |
+| 9880 | CosyVoice3 TTS | ✅ systemd |
 | 11000 | DGX Dashboard | ✅ systemd |
 | 30000 | llama.cpp TQ (LLM) | ✅ docker restart |
 
@@ -528,10 +540,10 @@ Certificati SSL self-signed. WebSocket support su tutti i siti.
 |----------|------|
 | llama.cpp TQ (MoE 35B Q6_K) | ~29.6 GiB |
 | Parakeet STT | ~5.1 GiB |
-| Qwen3-TTS | ~4.4 GiB |
+| CosyVoice3 TTS | ~3.6 GiB |
 | ComfyUI (idle) | ~0.2 GiB |
 | Sistema (Xorg + GNOME) | ~0.1 GiB |
-| **Totale** | **~39.4 GiB** |
+| **Totale** | **~38.6 GiB** |
 
 ---
 

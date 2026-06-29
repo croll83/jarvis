@@ -48,9 +48,9 @@
 
      +--------------------------------------------+
      |    GX10 DGX Spark (via Tailscale)           |
-     |  Parakeet STT :7865  | Qwen3-TTS :9880     |
-     |  (nvidia/parakeet-   | (voice cloning,      |
-     |   tdt-0.6b-v3)       |  IT/EN voices)       |
+     |  Parakeet STT :7865  | CosyVoice3 :9880    |
+     |  (nvidia/parakeet-   | (0.5B, zero-shot     |
+     |   tdt-0.6b-v3)       |  voice cloning, IT)  |
      |  Brave Search (web tool)                    |
      +--------------------------------------------+
 
@@ -89,7 +89,7 @@
 | **JARVIS Orchestrator** | Skill / Executor | Voice processing, home control (single + bulk), speaker ID, security enforcement |
 | **Qwen 2.5 3B** | Pre-router + Tool calling | Local Ollama model for domotics fast path, tool calling (web_search, web_fetch, memory_search, home_status), offline fallback |
 | **Parakeet STT** | Speech-to-Text | nvidia/parakeet-tdt-0.6b-v3 on GX10 DGX Spark, multilingual auto-detection, 20x realtime |
-| **Qwen3-TTS** | Text-to-Speech | Qwen3-TTS-12Hz-1.7B on GX10, voice cloning, Italian/English voices (sofia, marco, emma, james) |
+| **CosyVoice3** | Text-to-Speech | Fun-CosyVoice3-0.5B on GX10, zero-shot voice cloning, Italian text normalization via num2words |
 | **Resemblyzer** | Speaker ID | Voice biometric identification (embedded in orchestrator) |
 | **Ontology Server** | Knowledge Graph | Entity/relation graph with speaker-based ACL, SQLite + FastAPI |
 | **fastembed (nomic-embed-text-v1.5)** | Embeddings | 768-dim CPU-only ONNX embeddings (Ollama-compatible API :11435) for orchestrator, ha-memory-service, and AI Agent |
@@ -110,14 +110,14 @@
 |---------|---------------|------|-----|---------|
 | `ollama` | ollama/ollama | 11434 | Yes | Qwen 2.5 3B (LLM only) |
 | `fastembed` | ./infrastructure/fastembed | 11435 | No | nomic-embed-text-v1.5 embeddings (CPU ONNX) |
-| `orchestrator` | ./jarvis-orchestrator | 5000 | No | Core FastAPI app + Resemblyzer + Admin UI (host network) |
+| `orchestrator` | ./jarvis-orchestrator | 5000 | No | Core FastAPI app + Resemblyzer + Admin UI (host network, TTS via CosyVoice3@GX10) |
 | `redis` | redis:7-alpine | 6379 | No | Cross-system context bus (on LXC Jarvis) |
 | `ontology-server` | ./ontology-server | 127.0.0.1:8100 | No | Knowledge Graph API (SQLite + ACL) |
 | `postgres` | postgres:16-alpine | 5432 | No | Relational database (side projects) |
 | `mongo` | mongo:7 | 27017 | No | Document database (side projects) |
 
 > **Note**: AI Agent runs on a dedicated host (`100.116.99.9`), not in this Docker stack.
-> **Note**: STT (Parakeet `:7865`) and TTS (Qwen3-TTS `:9880`) run on GX10 DGX Spark (`100.98.187.12`) as systemd services, reachable via Tailscale.
+> **Note**: STT (Parakeet `:7865`) and TTS (CosyVoice3 `:9880`) run on GX10 DGX Spark (`100.98.187.12`) as systemd services, reachable via Tailscale.
 
 ---
 
@@ -219,7 +219,7 @@ jarvis/
 |   +-- memory_jobs.py         # Daily scheduler: habit_extraction → mem0 + chat_memory HOT cleanup
 |   +-- habit_extraction.py    # Hybrid SQL (HOME_CONTROL aggregation) + LLM (preference/topic) → mem0
 |   +-- multi_ha.py            # Multi-location HA manager (single + bulk ops)
-|   +-- internal_tts.py        # TTS backend (Qwen3-TTS on GX10 / Kokoro cloud)
+|   +-- internal_tts.py        # TTS backend (CosyVoice3 on GX10 / Kokoro cloud)
 |   +-- admin_api.py           # Admin dashboard API
 |   +-- templates/             # Admin UI (HTML/JS)
 +-- ha_memory_service/         # HA location memory (events → Redis + SQLite summaries + mem0)
@@ -258,7 +258,7 @@ jarvis/
   3. **L3 Long-term — mem0-stack** (external, repo `croll83/mem0-stack`, accessed via `MEM0_BASE_URL`). Populated by the nightly `habit_extraction` job, which uses a **hybrid SQL + LLM** pipeline: deterministic SQL aggregation over `chat_memory.meta` for domotics habits (entity + action + time window + value), Qwen LLM only for preferences/topics on non-HOME_CONTROL messages. Records are tagged `agent_id=jarvis-habit-extractor` for filtering in the Hermes mem0 dashboard.
 - **Redis context bus**: Shared between orchestrator, HA memory service, and Hermes. Each system writes events tagged with its source and reads only events from other sources, preventing self-duplication. Per-user event lists (`ctx:{user_id}:events`), capped at 20, TTL 30 minutes.
 - **Parakeet STT on GX10**: nvidia/parakeet-tdt-0.6b-v3 running on GX10 DGX Spark (128 GB VRAM). Multilingual auto-detection, 20x realtime, no initial prompt needed. Replaces Whisper (deprecated) to free VRAM on Atomman for router upgrades.
-- **Qwen3-TTS on GX10**: Qwen3-TTS-12Hz-1.7B with voice cloning, Italian/English preset voices (sofia, marco, emma, james). Replaces XTTSv2 (deprecated). OpenAI-compatible API.
+- **CosyVoice3 on GX10**: Fun-CosyVoice3-0.5B with zero-shot voice cloning from reference audio. Server-side Italian text normalization (num2words) for correct number/unit pronunciation. Replaces Qwen3-TTS (deprecated). OpenAI-compatible API, ~0.6x RTF, ~3.6 GiB VRAM.
 - **Nginx + Cloudflare Tunnel**: Public endpoints (Telegram webhook, health) served via Cloudflare Tunnel with no port forwarding. Internal services accessible only through Tailscale mesh.
 - **Speaker biometrics**: Resemblyzer runs inside the orchestrator process -- no separate container needed.
 - **Ontology Server**: Centralized knowledge graph with speaker-based ACL, serving as the single source of truth for entities and relations across the agent ecosystem.
