@@ -152,7 +152,7 @@ AI Agent ──▶ jarvis_home_control (L3 action)
 | 6 | `/api/tools/entity_resolve` | POST | Risolvi friendly name -> entity_id HA |
 | 7 | `/api/tools/entity_discover` | POST | Scopri entita per stanza, zona, piano, dominio |
 | 8 | `/api/tools/entity_bulk` | POST | **Query/azione bulk** su gruppi di entita (room/zone/floor/domain) |
-| 9 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker o speaker interno AtomS3R (Qwen3-TTS/Kokoro) |
+| 9 | `/api/tools/tts` | POST | Text-to-speech via Alexa/smart speaker o speaker interno AtomS3R (CosyVoice3/Kokoro) |
 | 10 | `/api/tools/locations` | GET | Lista location con stato health HA |
 | 11 | `/api/tools/audit_log` | POST | Registra evento nel trail di audit |
 | 12 | `/api/recent_turns` | GET | Ultimi N turni conversazione (`?max_turns=N`) — usato dal plugin ontology-bridge |
@@ -306,7 +306,7 @@ da un media_player Home Assistant (Alexa/Echo).
 ```
 AI Response text
   ↓
-TTS Engine (Qwen3-TTS su GX10 / Kokoro cloud) → PCM 24kHz streaming
+TTS Engine (CosyVoice3 su GX10 / Kokoro cloud) → PCM 24kHz streaming
   ↓
 scipy resample → PCM 16kHz mono int16
   ↓
@@ -324,7 +324,7 @@ Server invia tts_done → Device: BUSY → IDLE
 Dalla dashboard admin (tab Voice Devices), attivare il checkbox **Speaker Interno (mobile)**.
 Quando attivato:
 - L'output speaker HA diventa opzionale (non necessario)
-- Le risposte TTS vengono generate server-side (Qwen3-TTS su GX10 o Kokoro cloud, in base a `TTS_ENGINE`)
+- Le risposte TTS vengono generate server-side (CosyVoice3 su GX10 o Kokoro cloud, in base a `TTS_ENGINE`)
 - L'audio viene codificato in frame Opus e inviato al device via WebSocket
 - Il firmware decodifica e riproduce direttamente (nessuna modifica firmware richiesta)
 - Speaker suppress HA non viene attivato (non necessario)
@@ -332,14 +332,14 @@ Quando attivato:
 
 ### Dipendenze
 
-- `qwen3-tts` service su GX10 (Qwen3-TTS-12Hz-1.7B, porta 9880) — via Tailscale
+- `cosyvoice3-tts` service su GX10 (Fun-CosyVoice3-0.5B, porta 9880) — via Tailscale
 - `kokoro-tts` container (Kokoro-FastAPI, porta 8890) — deploy cloud CPU
 - `opuslib` (Python, gia presente)
 - `scipy` (Python, gia presente — resample 24kHz → 16kHz)
 
 ### Modulo
 
-`internal_tts.py` — chiama Qwen3-TTS o Kokoro via HTTP (selezionabile via `TTS_ENGINE`), resampla PCM 24→16kHz, codifica Opus, invia frame via `ws_audio_handler.send_tts_frame()`.
+`internal_tts.py` — chiama CosyVoice3 o Kokoro via HTTP (selezionabile via `TTS_ENGINE`), resampla PCM 24→16kHz, codifica Opus, invia frame via `ws_audio_handler.send_tts_frame()`.
 
 ---
 
@@ -455,7 +455,7 @@ Definiti in `docker-compose.yml` nella root del progetto:
 |----------|----------|-------|-------|
 | `ollama` | ollama/ollama | 11434 | Qwen 7B Q4 + nomic-embed-text (GPU) |
 | Parakeet STT | GX10 systemd | 7865 | Speech-to-text (nvidia/parakeet-tdt-0.6b-v3, via Tailscale) |
-| Qwen3-TTS | GX10 systemd | 9880 | TTS voice cloning IT/EN (Qwen3-TTS-12Hz-1.7B, via Tailscale) |
+| CosyVoice3 | GX10 systemd | 9880 | TTS zero-shot voice cloning (Fun-CosyVoice3-0.5B, via Tailscale) |
 | `orchestrator` | build locale | 5000 | JARVIS Skill (questo progetto) |
 | `redis` | redis:7-alpine | 6379 | Context bus cross-system (su LXC Jarvis) |
 | `mem0` | mem0 server | 8200 | Long-term behavioral memory (su LXC Jarvis) |

@@ -88,25 +88,29 @@ Host (LXC-JARVIS)
 +-- Tailscale (host-level)          — VPN mesh
 +-- nginx              (:80, :443)  — Host (reverse proxy, TLS)
 +-- jarvis_ollama       (:11434)    — Docker
-+-- jarvis_whisper      (:9000)     — Docker (build: infrastructure/whisper-custom/)
-+-- jarvis_xtts         (:8890)     — Docker (build: infrastructure/xtts/)
++-- jarvis_fastembed    (:11435)    — Docker (CPU, embeddings)
 +-- jarvis_core         (:5000)     — Docker (network_mode: host)
 +-- jarvis_ontology     (:8100)     — Docker (127.0.0.1)
 +-- jarvis_postgres     (:5432)     — Docker
 +-- jarvis_mongo        (:27017)    — Docker
+
+GX10 DGX Spark (100.98.187.12, via Tailscale)
++-- parakeet-stt        (:7865)     — systemd (STT)
++-- cosyvoice3-tts      (:9880)     — systemd (TTS)
 ```
 
 L'orchestrator raggiunge i servizi su `localhost`:
 - `http://localhost:11434` per Ollama
-- `http://localhost:9000` per Whisper
+- `http://localhost:11435` per fastembed (embeddings)
 - `https://your-agent-host:18789` per AI Agent (LXC separato, TLS, via Tailscale MagicDNS)
+- `http://100.98.187.12:7865` per Parakeet STT (GX10, via Tailscale)
+- `http://100.98.187.12:9880` per CosyVoice3 TTS (GX10, via Tailscale)
 
 > **Nota**: AI Agent gira bare-metal su un **LXC separato** (non in Docker).
 > Tailscale gira **host-level** (non in Docker) — l'orchestrator vede l'interfaccia Tailscale direttamente.
 
-> **Build custom**: `jarvis_whisper` e `jarvis_xtts` usano immagini custom con Dockerfile
-> in sottodirectory di `infrastructure/` (`infrastructure/whisper-custom/` e `infrastructure/xtts/`).
-> I build context sono specificati nel `docker-compose.yml` alla voce `build.context`.
+> **Nota**: STT e TTS girano sul GX10 DGX Spark come servizi systemd, non in Docker.
+> I Dockerfile legacy (whisper-custom-deprecated, xtts-custom-deprecated) sono preservati ma non usati.
 
 ---
 

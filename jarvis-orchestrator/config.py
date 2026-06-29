@@ -437,15 +437,15 @@ SECURITY_ANIMAL_LABELS = os.getenv("SECURITY_ANIMAL_LABELS", "cat,dog").split(",
 # ===========================================================================
 # TTS ENGINE
 # ===========================================================================
-# Engine: "qwen3tts" (Qwen3-TTS su GX10, GPU) o "kokoro" (Kokoro-82M, cloud/CPU)
-# Legacy: "xtts" (XTTSv2 Coqui, deprecato — rimosso dallo stack Atomman)
-# Default: "qwen3tts" per deploy locale (AI_BACKEND=local), "kokoro" per cloud (AI_BACKEND=api)
-TTS_ENGINE = os.getenv("TTS_ENGINE", "qwen3tts" if AI_BACKEND == "local" else "kokoro")
+# Engine: "cosyvoice3" (CosyVoice3-0.5B su GX10, GPU) o "kokoro" (Kokoro-82M, cloud/CPU)
+# Legacy: "qwen3tts" (alias per cosyvoice3), "xtts" (XTTSv2 Coqui, deprecato)
+# Default: "cosyvoice3" per deploy locale (AI_BACKEND=local), "kokoro" per cloud (AI_BACKEND=api)
+TTS_ENGINE = os.getenv("TTS_ENGINE", "cosyvoice3" if AI_BACKEND == "local" else "kokoro")
 
-# --- Qwen3-TTS (GX10, GPU ~4.4 GiB VRAM, voice cloning) ---
-QWEN3_TTS_URL = os.getenv("QWEN3_TTS_URL", "http://100.98.187.12:9880")
-QWEN3_TTS_VOICE = os.getenv("QWEN3_TTS_VOICE", "sofia")  # sofia(IT-F), marco(IT-M), emma(EN-F), james(EN-M)
-QWEN3_TTS_LANGUAGE = os.getenv("QWEN3_TTS_LANGUAGE", "it")
+# --- CosyVoice3 (GX10, GPU ~3.6 GiB VRAM, zero-shot voice cloning) ---
+COSYVOICE3_TTS_URL = os.getenv("COSYVOICE3_TTS_URL", os.getenv("QWEN3_TTS_URL", "http://100.98.187.12:9880"))
+COSYVOICE3_TTS_VOICE = os.getenv("COSYVOICE3_TTS_VOICE", os.getenv("QWEN3_TTS_VOICE", "sofia"))
+COSYVOICE3_TTS_LANGUAGE = os.getenv("COSYVOICE3_TTS_LANGUAGE", os.getenv("QWEN3_TTS_LANGUAGE", "it"))
 
 # --- XTTSv2 (DEPRECATO — rimosso dallo stack Atomman, mantenuto per backward compat) ---
 XTTS_URL = os.getenv("XTTS_URL", "http://localhost:8890")

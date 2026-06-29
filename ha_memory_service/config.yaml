@@ -50,7 +50,11 @@ map:
 # ===========================================================================
 options:
   location_id: "wagmi"
-  ai_backend: "api"
+  ai_backend: "proxy"
+
+  # --- Proxy mode (billing proxy Anthropic-compatible, es. hermes) ---
+  proxy_url: "http://100.116.99.9:18801"
+  proxy_model: "claude-sonnet-4-6"
 
   # --- Local mode (Ollama) ---
   ollama_url: "http://100.x.x.x:11434"
@@ -76,7 +80,11 @@ options:
 # ===========================================================================
 schema:
   location_id: str
-  ai_backend: "list(local|api)"
+  ai_backend: "list(local|api|proxy)"
+
+  # Proxy mode
+  proxy_url: str
+  proxy_model: str
 
   # Local mode
   ollama_url: str

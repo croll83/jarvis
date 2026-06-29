@@ -47,7 +47,9 @@ if [ -z "${HA_TOKEN}" ]; then
     log "WARNING" "SUPERVISOR_TOKEN not set — HA WebSocket auth may fail"
 fi
 
-if [ "${AI_BACKEND}" = "api" ]; then
+if [ "${AI_BACKEND}" = "proxy" ]; then
+    log "INFO" "Mode: Proxy (${PROXY_MODEL} at ${PROXY_URL})"
+elif [ "${AI_BACKEND}" = "api" ]; then
     log "INFO" "Mode: Cloud (OpenRouter + cloud embeddings)"
 else
     log "INFO" "Mode: Local (Ollama at ${OLLAMA_URL})"

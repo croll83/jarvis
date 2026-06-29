@@ -46,7 +46,7 @@ workstation:
       ansible_become: true
 
 # Gruppo per il GB10 DGX Spark (heavy LLM remoto, sede separata via Tailscale)
-# Ospita: parakeet-stt, qwen3-tts, dark-jarvis (llama.cpp stock + MTP), comfyui, ace-step
+# Ospita: parakeet-stt, cosyvoice3-tts, dark-jarvis (llama.cpp stock + MTP), comfyui, ace-step
 # Setup gestito dal playbook gb10.yml (build llama-cpp-stock + dark-jarvis.service)
 gb10:
   hosts:

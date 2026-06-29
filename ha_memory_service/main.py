@@ -31,7 +31,7 @@ LOCATION_ID = os.getenv("LOCATION_ID", "unknown")
 HA_URL = os.getenv("HA_URL", "http://supervisor/core")
 HA_TOKEN = os.getenv("HA_TOKEN", "")
 
-# AI Backend: "local" (Ollama) or "api" (OpenRouter + cloud embeddings)
+# AI Backend: "local" (Ollama), "api" (OpenRouter) o "proxy" (billing proxy Anthropic-compatible)
 AI_BACKEND = os.getenv("AI_BACKEND", "local")
 
 # --- Local mode (Ollama for LLM) ---
@@ -44,6 +44,11 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "https://jarvis.yourdomain.com")
 OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "JARVIS HA Memory")
 OPENROUTER_SUMMARY_MODEL = os.getenv("OPENROUTER_SUMMARY_MODEL", "qwen/qwen-2.5-7b-instruct")
+
+# --- Proxy mode (billing proxy Anthropic-compatible, es. hermes :18801) ---
+PROXY_URL = os.getenv("PROXY_URL", "http://100.116.99.9:18801")
+PROXY_MODEL = os.getenv("PROXY_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
 
 # --- Common ---
 SUMMARY_TEMPERATURE = float(os.getenv("SUMMARY_TEMPERATURE", "0.3"))
@@ -265,11 +270,49 @@ LOCATION_DAILY_PROMPT = load_prompt("location_daily")
 
 
 async def call_llm_summary(prompt: str, max_tokens: int = 150) -> str:
-    """Chiama LLM per summarization. Usa Ollama o OpenRouter in base a AI_BACKEND."""
-    if AI_BACKEND == "api":
+    """Chiama LLM per summarization. Backend scelto da AI_BACKEND: proxy/api/local."""
+    if AI_BACKEND == "proxy":
+        return await _call_anthropic_proxy(prompt, max_tokens)
+    elif AI_BACKEND == "api":
         return await _call_openrouter(prompt, max_tokens)
     else:
         return await _call_ollama(prompt, max_tokens)
+
+
+async def _call_anthropic_proxy(prompt: str, max_tokens: int = 150) -> str:
+    """Chiamata al billing proxy Anthropic-compatible (es. hermes :18801).
+
+    Endpoint Messages API (/v1/messages), nessuna auth lato proxy.
+    La risposta Anthropic ha `content` come lista di blocchi: si ritorna
+    il testo del primo blocco di tipo 'text'.
+    """
+    headers = {
+        "content-type": "application/json",
+        "anthropic-version": ANTHROPIC_VERSION,
+    }
+    payload = {
+        "model": PROXY_MODEL,
+        "max_tokens": max_tokens,
+        "temperature": SUMMARY_TEMPERATURE,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{PROXY_URL.rstrip('/')}/v1/messages",
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=SUMMARY_TIMEOUT)
+        ) as resp:
+            if resp.status == 200:
+                result = await resp.json()
+                for block in result.get("content", []):
+                    if block.get("type") == "text":
+                        return block.get("text", "")
+                return ""
+            else:
+                body = await resp.text()
+                raise Exception(f"Proxy error {resp.status}: {body[:200]}")
 
 
 async def _call_ollama(prompt: str, max_tokens: int = 150) -> str:
@@ -500,7 +543,9 @@ async def scheduler():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Log backend mode
-    if AI_BACKEND == "api":
+    if AI_BACKEND == "proxy":
+        logger.info(f"AI Backend: proxy ({PROXY_MODEL} @ {PROXY_URL})")
+    elif AI_BACKEND == "api":
         logger.info(f"AI Backend: cloud (OpenRouter: {OPENROUTER_SUMMARY_MODEL})")
     else:
         logger.info(f"AI Backend: local (Ollama: {SUMMARY_MODEL})")

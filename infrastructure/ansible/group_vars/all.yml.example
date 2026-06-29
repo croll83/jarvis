@@ -36,7 +36,7 @@ docker_log_max_file: "3"
 # NVIDIA (solo per deploy_type: lxc_gpu)
 # =============================================================================
 # Il driver è installato sull'HOST Proxmox, non nel container.
-# GPU VRAM budget: Qwen 2.5 3B (~2.5GB) + Whisper large-v3-turbo (~1.3GB) + XTTSv2 (~2.0GB) + nomic (~0.3GB) = ~6.1 GB / 8.15 GB
+# GPU VRAM budget: Qwen 2.5 3B (~2.6GB) — STT/TTS su GX10, embeddings su CPU
 ollama_gpu_layers: 15           # 6GB->10, 8GB->15, 12GB->25, 16GB+->40
 ollama_num_ctx: 4096
 
@@ -162,28 +162,19 @@ wakeword_server_urls: ""
 # =============================================================================
 # TTS ENGINE
 # =============================================================================
-# "xtts" = XTTSv2 Coqui (GPU, voice cloning italiana)
+# "cosyvoice3" = CosyVoice3-0.5B (GX10 GPU, zero-shot voice cloning)
 # "kokoro" = Kokoro-82M (CPU, fallback cloud)
-# Default: "xtts" per lxc_gpu, "kokoro" altrimenti (override con tts_engine)
-tts_engine: "xtts"
+# Default: "cosyvoice3" per lxc_gpu, "kokoro" altrimenti
+tts_engine: "cosyvoice3"
 
-# URL di XTTS API server
-# Deploy locale GPU: http://localhost:8890 (container sullo stesso host)
-# Deploy cloud (VPS → LXC remoto via Tailscale): http://<tailscale-ip-lxc>:8890
-xtts_url: "http://localhost:8890"
+# URL del server CosyVoice3 (GX10 via Tailscale)
+cosyvoice3_tts_url: "http://100.98.187.12:9880"
 
-# Speaker WAV per voice cloning (nome file senza .wav in speakers/)
-# "default" usa la voce built-in di XTTS
-xtts_speaker: "default"
+# Nome voce (mappato allo speaker zero-shot registrato sul server)
+cosyvoice3_tts_voice: "sofia"
 
 # Lingua per sintesi vocale
-xtts_language: "it"
-
-# Path LOCALE al file WAV per voice cloning (opzionale)
-# Se impostato, Ansible copia il WAV in speakers/<xtts_speaker>.wav sul target.
-# Il file deve essere mono, 22050Hz+, 6-15 secondi di parlato pulito.
-# Lasciare commentato per usare la voce built-in di XTTS.
-# speaker_wav_src: "/path/to/jarvis-voice.wav"
+cosyvoice3_tts_language: "it"
 
 # =============================================================================
 # OPZIONALI
