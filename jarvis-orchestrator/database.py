@@ -2864,64 +2864,26 @@ def discover_entities_for_voice(
 
     results = []
 
-    # 1. Match per stanza (room) — priorità più alta
+    # Match across room ∪ area ∪ zone in ONE query: a zone/area name like
+    # "depandance" must catch ALL its rooms (Ufficio/Lavanderia/Pergotenda via
+    # area=Depandance), not only the rooms whose NAME contains the word. A single
+    # SELECT already de-duplicates by row.
     query = """
         SELECT entity_id, entity_name, entity_type, room, area, zone
         FROM entity_maps
         WHERE location_id = ? AND entity_id IS NOT NULL
-          AND LOWER(room) LIKE ?
+          AND (LOWER(room) LIKE ? OR LOWER(area) LIKE ? OR LOWER(zone) LIKE ?)
     """
-    params = [location_id, f"%{target_lower}%"]
+    params = [location_id, f"%{target_lower}%", f"%{target_lower}%", f"%{target_lower}%"]
     if domain:
         query += " AND entity_type = ?"
         params.append(domain)
     c.execute(query, params)
     rows = c.fetchall()
-    if rows:
-        results = [{"entity_id": r["entity_id"], "entity_name": r["entity_name"],
-                     "room": r["room"], "match_type": "room"} for r in rows]
-        conn.close()
-        return results
-
-    # 2. Match per zona (area) — es. "Zona Giorno", "Zona Notte"
-    query = """
-        SELECT entity_id, entity_name, entity_type, room, area, zone
-        FROM entity_maps
-        WHERE location_id = ? AND entity_id IS NOT NULL
-          AND LOWER(area) LIKE ?
-    """
-    params = [location_id, f"%{target_lower}%"]
-    if domain:
-        query += " AND entity_type = ?"
-        params.append(domain)
-    c.execute(query, params)
-    rows = c.fetchall()
-    if rows:
-        results = [{"entity_id": r["entity_id"], "entity_name": r["entity_name"],
-                     "room": r["room"], "match_type": "zone"} for r in rows]
-        conn.close()
-        return results
-
-    # 3. Match per piano (zone) — es. "Piano 1", "Piano Terra"
-    query = """
-        SELECT entity_id, entity_name, entity_type, room, area, zone
-        FROM entity_maps
-        WHERE location_id = ? AND entity_id IS NOT NULL
-          AND LOWER(zone) LIKE ?
-    """
-    params = [location_id, f"%{target_lower}%"]
-    if domain:
-        query += " AND entity_type = ?"
-        params.append(domain)
-    c.execute(query, params)
-    rows = c.fetchall()
-    if rows:
-        results = [{"entity_id": r["entity_id"], "entity_name": r["entity_name"],
-                     "room": r["room"], "match_type": "floor"} for r in rows]
-        conn.close()
-        return results
-
     conn.close()
+    if rows:
+        return [{"entity_id": r["entity_id"], "entity_name": r["entity_name"],
+                 "room": r["room"], "match_type": "scope"} for r in rows]
     return []
 
 
