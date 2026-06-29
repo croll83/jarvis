@@ -3997,7 +3997,16 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
         if params.get("search"):
             try:
                 import semantic_discovery
-                _dc = params.get("device_class") or semantic_discovery.device_class_hint(params["search"])
+                # The router confuses device_class with domain (a vacuum query gets
+                # device_class="switch", which would hard-filter out the vacuum).
+                # Trust only real measured-quantity classes; else use the text hint.
+                _DOMAIN_LIKE = {"switch", "light", "cover", "climate", "media_player",
+                                "vacuum", "fan", "lock", "camera", "scene", "script",
+                                "binary_sensor", "sensor", "number"}
+                _router_dc = params.get("device_class")
+                if _router_dc in _DOMAIN_LIKE:
+                    _router_dc = None
+                _dc = _router_dc or semantic_discovery.device_class_hint(params["search"])
                 _hits = await semantic_discovery.search(
                     target_location, params["search"],
                     # NB: the router's `domain` is unreliable for device/info queries

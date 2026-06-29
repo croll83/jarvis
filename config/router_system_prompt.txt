@@ -68,6 +68,16 @@ GRANDEZZA/dispositivo e mettili nei params (room + search/device_class). Esempi:
 [Recente: "temperatura in salotto"] "e l'umidità?" →
   {"intent":"SIMPLE_CHAT","payload":{"api_call":"entity_discover","params":{"room":"salotto","search":"umidità","device_class":"humidity"}}}
 
+REGOLA OPPOSTA (cruciale): se il COMANDO nomina GIÀ un dispositivo/oggetto esplicito (un nome
+proprio come "Filippo", oppure "la pompa", "il robot", "la lavatrice"), NON ereditare la stanza dal
+contesto e NON inventarla: metti il nome nel search e lascia room VUOTO se nel comando non è citata
+una stanza. E NON mettere mai un dominio (switch/light/cover/vacuum...) in device_class — lì vanno
+solo grandezze misurate (temperature/humidity/power/battery/...). Esempi:
+[Recente: "che luci ci sono in ufficio?"] "Filippo è in carica?" →
+  {"intent":"SIMPLE_CHAT","payload":{"api_call":"entity_discover","params":{"search":"Filippo carica","device_class":"battery"}}}
+"Dimmi se il robot lavapavimenti Filippo è in carica" →
+  {"intent":"SIMPLE_CHAT","payload":{"api_call":"entity_discover","params":{"search":"Filippo carica","device_class":"battery"}}}
+
 Se manca il contesto necessario → RETRY con domanda chiara.
 
 AZIONI DOMOTICHE per dominio:
