@@ -258,8 +258,8 @@ async def sync_entities_from_ha(
         if entity_id in entity_registry:
             reg_entry = entity_registry[entity_id]
 
-            # Salta entity disabilitate
-            if reg_entry.get("disabled_by"):
+            # Salta entity disabilitate o nascoste (es. switch rimpiazzati da switch_as_x)
+            if reg_entry.get("disabled_by") or reg_entry.get("hidden_by"):
                 disabled_count += 1
                 continue
 
@@ -463,8 +463,8 @@ async def preview_ha_sync(
         if entity_id in entity_registry:
             reg_entry = entity_registry[entity_id]
 
-            # Salta entity disabilitate
-            if reg_entry.get("disabled_by"):
+            # Salta entity disabilitate o nascoste (es. switch rimpiazzati da switch_as_x)
+            if reg_entry.get("disabled_by") or reg_entry.get("hidden_by"):
                 disabled_count += 1
                 continue
 
