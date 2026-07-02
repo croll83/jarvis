@@ -4628,7 +4628,7 @@ async def process_jarvis_logic(text: str, context: dict):
                 _enq = str(ha_params.get("enqueue") or "").lower()
                 if _enq in _MUSIC_ENQUEUE:
                     _svc_data["enqueue"] = _enq
-                ok, msg = await ha.call_service(location, "music_assistant", "play_media", _svc_data)
+                ok, msg = await multi_ha.call_service(location, "music_assistant", "play_media", _svc_data)
                 if ok:
                     if _enq == "add":
                         response = f"Aggiungo {_music_query} alla coda in {_room_label}."
