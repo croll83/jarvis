@@ -4622,21 +4622,28 @@ async def process_jarvis_logic(text: str, context: dict):
                 response = "Cosa vuoi ascoltare?"
             else:
                 _svc_data = {"entity_id": player, "media_id": _music_query}
+                # media_type solo quando inequivocabile (playlist/radio): il 7B
+                # sbaglia spesso artist/track ("stelle di geolier" ≠ artista) e
+                # la ricerca libera di MA risolve meglio da sola.
                 _mt = str(ha_params.get("media_type") or "").lower()
-                if _mt in _MUSIC_MEDIA_TYPES:
+                if _mt in ("playlist", "radio"):
                     _svc_data["media_type"] = _mt
                 _enq = str(ha_params.get("enqueue") or "").lower()
                 if _enq in _MUSIC_ENQUEUE:
                     _svc_data["enqueue"] = _enq
-                ok, msg = await multi_ha.call_service(location, "music_assistant", "play_media", _svc_data)
-                if ok:
-                    if _enq == "add":
-                        response = f"Aggiungo {_music_query} alla coda in {_room_label}."
+                # Fire-and-forget: la ricerca+coda+aggancio Echo di MA può superare
+                # il timeout del client HA; rispondiamo subito e logghiamo l'esito.
+                async def _play_bg(svc_data=_svc_data, ploc=location, pplayer=player):
+                    _ok, _msg = await multi_ha.call_service(ploc, "music_assistant", "play_media", svc_data)
+                    if _ok:
+                        logger.info(f"play_music OK su {pplayer}: {svc_data.get('media_id')}")
                     else:
-                        response = f"Metto {_music_query} in {_room_label}."
+                        logger.warning(f"play_music fallito su {pplayer}: {_msg}")
+                asyncio.create_task(_play_bg())
+                if _enq == "add":
+                    response = f"Aggiungo {_music_query} alla coda in {_room_label}."
                 else:
-                    logger.warning(f"play_music fallito su {player}: {msg}")
-                    response = "Non sono riuscito a far partire la musica, riprova."
+                    response = f"Metto {_music_query} in {_room_label}."
             # NOTA: niente smart_cache.learn — un comando d'azione cacheato
             # verrebbe replayato senza eseguire play_media.
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
