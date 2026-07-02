@@ -4223,6 +4223,44 @@ async def _phrase_ha_data(user_text: str, ha_data: str, context: dict,
 _ENERGY_METER = {"wagmi": "sensor.impianti_meter_principale_casa_energia"}
 
 
+# Music Assistant player per stanza. Salotto usa la soundbar MASS nativa; le altre
+# stanze usano gli Echo esposti da MA (provider alexa: il play su questi player
+# carica la coda MA e attiva da solo l'Echo via skill "la mia radio").
+# None = default quando la stanza non è indicata o non ha un player.
+_MUSIC_PLAYERS = {
+    "wagmi": {
+        "salotto": "media_player.soundbar_salotto_5",
+        "soggiorno": "media_player.soundbar_salotto_5",
+        "zona giorno": "media_player.soundbar_salotto_5",
+        "ufficio": "media_player.echo_ufficio_2",
+        "cameretta": "media_player.echo_cameretta_2",
+        "camera": "media_player.echo_camera_2",
+        "depandance": "media_player.echo_depandance_2",
+        "ovunque": "media_player.ovunque_2",
+        "tutta la casa": "media_player.ovunque_2",
+        "casa": "media_player.ovunque_2",
+        None: "media_player.soundbar_salotto_5",
+    }
+}
+
+_MUSIC_MEDIA_TYPES = {"artist", "album", "track", "playlist", "radio"}
+_MUSIC_ENQUEUE = {"play", "replace", "next", "replace_next", "add"}
+
+
+def _resolve_music_player(location: str, room_text: str | None) -> tuple[str | None, str]:
+    """Room text → (player entity_id, label). Longest-key match wins so
+    'cameretta' non viene catturata da 'camera'."""
+    players = _MUSIC_PLAYERS.get(location, {})
+    if not players:
+        return None, ""
+    rt = (room_text or "").strip().lower()
+    if rt:
+        for key in sorted((k for k in players if k), key=len, reverse=True):
+            if key in rt or rt in key:
+                return players[key], key
+    return players.get(None), "salotto"
+
+
 async def _execute_history_compare(location: str, context: dict) -> str | None:
     """Today-so-far vs yesterday electricity consumption from the main meter.
 
@@ -4562,6 +4600,50 @@ async def process_jarvis_logic(text: str, context: dict):
         action = payload.get("action", "toggle")
         entity_raw = payload.get("entity", "unknown")
         ha_params = payload.get("parameters", {}) or {}
+
+        # --- MUSICA via Music Assistant ---
+        # "metti i Pink Floyd in ufficio" → music_assistant.play_media sul player
+        # della stanza (soundbar MASS in salotto, Echo altrove via provider alexa).
+        _music_query = ""
+        if ha_params:
+            _music_query = str(ha_params.get("query") or ha_params.get("media_id") or "").strip()
+        if action in ("play_music", "music_play") or (action == "play_media" and _music_query):
+            _room_hint = ""
+            if entity_raw and entity_raw != "unknown":
+                _room_hint = str(entity_raw)
+            elif ha_params and ha_params.get("room"):
+                _room_hint = str(ha_params["room"])
+            elif context.get("room"):
+                _room_hint = str(context["room"])
+            player, _room_label = _resolve_music_player(location, _room_hint)
+            if not player:
+                response = "Non ho un player musicale configurato per questa casa."
+            elif not _music_query:
+                response = "Cosa vuoi ascoltare?"
+            else:
+                _svc_data = {"entity_id": player, "media_id": _music_query}
+                _mt = str(ha_params.get("media_type") or "").lower()
+                if _mt in _MUSIC_MEDIA_TYPES:
+                    _svc_data["media_type"] = _mt
+                _enq = str(ha_params.get("enqueue") or "").lower()
+                if _enq in _MUSIC_ENQUEUE:
+                    _svc_data["enqueue"] = _enq
+                ok, msg = await ha.call_service(location, "music_assistant", "play_media", _svc_data)
+                if ok:
+                    if _enq == "add":
+                        response = f"Aggiungo {_music_query} alla coda in {_room_label}."
+                    else:
+                        response = f"Metto {_music_query} in {_room_label}."
+                else:
+                    logger.warning(f"play_music fallito su {player}: {msg}")
+                    response = "Non sono riuscito a far partire la musica, riprova."
+            # NOTA: niente smart_cache.learn — un comando d'azione cacheato
+            # verrebbe replayato senza eseguire play_media.
+            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+            _ok_music = response.startswith(("Metto", "Aggiungo"))
+            await deliver_final_response(response, context,
+                                         sound_type="positive" if _ok_music else "negative")
+            return
 
         # Qwen a volte rotta domande informative come HOME_CONTROL
         # Detect: azione non-HA, o testo è una domanda di stato → redirect a SIMPLE_CHAT entity_discover
