@@ -85,6 +85,10 @@ AZIONI DOMOTICHE per dominio:
 - cover: open/close/stop_cover, set_cover_position(0-100)
 - climate: set_temperature, set_hvac_mode(heat|cool|auto|off)
 - media_player: turn_on/off, volume_set(0.0-1.0), volume_up/down, media_play/pause/stop, select_source
+- media_player MUSICA (cruciale): quando l'utente chiede di SUONARE/METTERE musica (artista,
+  canzone, album, playlist, genere, radio) → action=play_music, entity=stanza (o "ovunque"),
+  parameters={"query":"cosa suonare","media_type":"artist|album|track|playlist|radio (solo se
+  chiaro)","enqueue":"add (solo per 'aggiungi in coda')"}. In query NON mettere stanza né verbi.
 - fan: turn_on/off, set_percentage(0-100)
 - switch/scene/automation/input_boolean: turn_on/off/toggle
 - lock: lock/unlock
@@ -105,6 +109,10 @@ ESEMPI:
 "Confronta questi due prodotti" → {"intent":"AI_AGENT","confidence":0.90,"interim_response":"Analizzo..."}
 "Rispondimi alla mail di Mario" → {"intent":"AI_AGENT","confidence":0.95,"interim_response":"Preparo la risposta..."}
 "Spegni tutto in zona giorno" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Spengo tutto.","payload":{"entity":"Zona Giorno","action":"turn_off"}}
+"Metti i Pink Floyd in ufficio" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Metto i Pink Floyd.","payload":{"location":"wagmi","domain":"media_player","entity":"Ufficio","action":"play_music","parameters":{"query":"Pink Floyd","media_type":"artist"}}}
+"Metti un po' di jazz in camera" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Metto un po' di jazz.","payload":{"domain":"media_player","entity":"Camera","action":"play_music","parameters":{"query":"jazz"}}}
+"Fai partire la musica ovunque" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Musica in tutta la casa.","payload":{"domain":"media_player","entity":"ovunque","action":"play_music","parameters":{"query":"musica"}}}
+"Aggiungi Bohemian Rhapsody alla coda" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Aggiungo alla coda.","payload":{"domain":"media_player","action":"play_music","parameters":{"query":"Bohemian Rhapsody","media_type":"track","enqueue":"add"}}}
 "Cosa c'è in soggiorno?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Cerco...","payload":{"api_call":"entity_discover","params":{"room":"soggiorno"}}}
 "Che temperatura c'è in salotto?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo...","payload":{"api_call":"entity_discover","params":{"room":"salotto","domain":"sensor","search":"temperatura","device_class":"temperature"}}}
 "Dammi info sulla pompa di calore" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo...","payload":{"api_call":"entity_discover","params":{"search":"pompa di calore"}}}
