@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
+import app.rive.runtime.kotlin.core.SMITrigger
 import com.jarvis.voice.mobile.core.RiveAvailability
 import com.jarvis.voice.shared.HeadState
 import kotlinx.coroutines.delay
@@ -81,25 +82,28 @@ fun RiveFace(
 
     val riveView = remember { mutableStateOf<RiveAnimationView?>(null) }
 
-    // Fire del trigger al cambio di stato — SOLO se l'input esiste davvero (no crash).
+    // Fire al cambio di stato — SOLO se l'input esiste ED è un Trigger (fireState su un
+    // Boolean/Number ricrasha nativamente sul thread di render, non catturabile).
     LaunchedEffect(state, riveView.value) {
         val v = riveView.value ?: return@LaunchedEffect
-        // Attendi che la state machine sia istanziata (max ~1s), poi leggi gli input reali.
-        var names = emptyList<String>()
+        // Attendi che la state machine sia istanziata (max ~1s).
+        var sm = runCatching { v.stateMachines.firstOrNull() }.getOrNull()
         var tries = 0
-        while (names.isEmpty() && tries < 20) {
-            names = runCatching { v.stateMachines.flatMap { it.inputNames } }.getOrDefault(emptyList())
-            if (names.isEmpty()) { delay(50); tries++ }
+        while (sm == null && tries < 20) {
+            delay(50); tries++
+            sm = runCatching { v.stateMachines.firstOrNull() }.getOrNull()
         }
-        if (tries == 0 || names.isNotEmpty()) {
-            Log.i("RiveFace", "input disponibili nella state machine: $names")
-        }
+        val machine = sm ?: return@LaunchedEffect
         val target = triggerFor(state) ?: return@LaunchedEffect
-        if (target in names) {
-            runCatching { v.fireState(STATE_MACHINE, target) }
-                .onFailure { Log.w("RiveFace", "fireState($target): ${it.message}") }
-        } else {
-            Log.w("RiveFace", "input '$target' assente (stato=$state) → skip. Disponibili: $names")
+        val input = runCatching { machine.input(target) }.getOrNull()
+        when {
+            input is SMITrigger ->
+                runCatching { v.fireState(STATE_MACHINE, target) }
+                    .onFailure { Log.w("RiveFace", "fireState($target): ${it.message}") }
+            input == null ->
+                Log.w("RiveFace", "input '$target' assente → skip. Disponibili: ${machine.inputNames}")
+            else ->
+                Log.w("RiveFace", "input '$target' non è Trigger → skip. Disponibili: ${machine.inputNames}")
         }
     }
 
