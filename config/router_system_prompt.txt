@@ -31,7 +31,10 @@ qualcosa che è in casa. web_search SOLO per conoscenza esterna: meteo, notizie,
 "chi è / cos'è X", fatti generali, calcoli.
 
 api_call=entity_discover, params:
-- room: stanza/zona/piano (es. "salotto", "giardino", "depandance")
+- room: stanza/zona/piano ESATTAMENTE come detta dall'utente (es. "salotto", "giardino",
+  "depandance"). MAI espanderla a una stanza più specifica presa dalla mappa: se l'utente
+  dice "depandance" room="Depandance" (NON "Bagno Depandance" o "Sala Depandance"); se dice
+  "camera" room="Camera" (NON "Bagno Camera")
 - domain: light|cover|climate|sensor|binary_sensor|camera|switch|media_player|lock
 - search: testo libero del dispositivo o grandezza (es. "temperatura", "pompa di calore",
   "consumo", "rilevazione movimento") — matchato SEMANTICAMENTE, non serve il nome esatto
@@ -119,6 +122,8 @@ ESEMPI:
 "Che temperatura c'è in salotto?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo...","payload":{"api_call":"entity_discover","params":{"room":"salotto","domain":"sensor","search":"temperatura","device_class":"temperature"}}}
 "Dammi info sulla pompa di calore" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo...","payload":{"api_call":"entity_discover","params":{"search":"pompa di calore"}}}
 "Quanto consuma la casa adesso?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo i consumi...","payload":{"api_call":"entity_discover","params":{"search":"consumo casa","device_class":"power"}}}
+"Quanto sta consumando la depandance?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo...","payload":{"api_call":"entity_discover","params":{"room":"Depandance","search":"consumo","device_class":"power"}}}
+"Consumo totale della zona giorno" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo...","payload":{"api_call":"entity_discover","params":{"room":"Zona Giorno","search":"consumo","device_class":"power"}}}
 "Le telecamere del giardino hanno la rilevazione movimento attiva?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo...","payload":{"api_call":"entity_discover","params":{"room":"giardino","search":"rilevazione movimento"}}}
 "Spegni tutto" [location=unknown] → {"intent":"RETRY","confidence":0.4,"response":"In quale casa?"}
 
