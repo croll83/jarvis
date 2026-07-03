@@ -75,8 +75,17 @@ class JarvisConfig(private val context: Context) {
      * in dashboard con use_internal_speaker=true). Default = device_id telefono + "W".
      */
     var wearDeviceId: String
-        get() = prefs.getString(KEY_WEAR_ID, "")?.takeIf { it.isNotBlank() } ?: (deviceId + "W")
+        get() = prefs.getString(KEY_WEAR_ID, "")?.takeIf { it.isNotBlank() } ?: defaultWearId()
         set(v) = prefs.edit().putString(KEY_WEAR_ID, normalizeId(v)).apply()
+
+    /** device_id Wear di default: MAC 12-hex valido derivato dal telefono (ultimo digit +1).
+     *  (l'orchestrator valida il formato MAC, quindi niente suffissi tipo "W".) */
+    private fun defaultWearId(): String {
+        val base = deviceId
+        val last = base.lastOrNull()?.digitToIntOrNull(16) ?: return base
+        val newLast = ((last + 1) % 16).toString(16).uppercase(Locale.ROOT)
+        return base.dropLast(1) + newLast
+    }
 
     val isConfigured: Boolean get() = url.isNotBlank()
 
