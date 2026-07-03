@@ -30,6 +30,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
+import app.rive.runtime.kotlin.core.SMIBoolean
+import app.rive.runtime.kotlin.core.SMINumber
 import app.rive.runtime.kotlin.core.SMITrigger
 import com.jarvis.voice.mobile.core.RiveAvailability
 import com.jarvis.voice.shared.HeadState
@@ -95,16 +97,26 @@ fun RiveFace(
         }
         val machine = sm ?: return@LaunchedEffect
         val target = triggerFor(state) ?: return@LaunchedEffect
-        val input = runCatching { machine.input(target) }.getOrNull()
-        when {
-            input is SMITrigger ->
-                runCatching { v.fireState(STATE_MACHINE, target) }
-                    .onFailure { Log.w("RiveFace", "fireState($target): ${it.message}") }
-            input == null ->
-                Log.w("RiveFace", "input '$target' assente → skip. Disponibili: ${machine.inputNames}")
-            else ->
-                Log.w("RiveFace", "input '$target' non è Trigger → skip. Disponibili: ${machine.inputNames}")
+
+        // One-hot: attiva l'input del target e disattiva gli altri, usando il setter
+        // corretto per il tipo reale di ciascun input (Boolean/Number/Trigger) → no crash.
+        for (name in machine.inputNames) {
+            val inp = runCatching { machine.input(name) }.getOrNull() ?: continue
+            val on = name == target
+            runCatching {
+                when {
+                    inp is SMIBoolean -> v.setBooleanState(STATE_MACHINE, name, on)
+                    inp is SMINumber -> v.setNumberState(STATE_MACHINE, name, if (on) 1f else 0f)
+                    inp is SMITrigger -> if (on) v.fireState(STATE_MACHINE, name)
+                }
+            }.onFailure { Log.w("RiveFace", "set '$name': ${it.message}") }
         }
+        Log.i("RiveFace", "stato=$state faccia=$target | tipi=" + machine.inputNames.joinToString {
+            val i = runCatching { machine.input(it) }.getOrNull()
+            it + ":" + when {
+                i is SMIBoolean -> "bool"; i is SMINumber -> "num"; i is SMITrigger -> "trig"; else -> "?"
+            }
+        })
     }
 
     val accent by animateColorAsState(
