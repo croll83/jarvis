@@ -13,7 +13,9 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,19 +30,28 @@ import app.rive.runtime.kotlin.RiveAnimationView
 import com.jarvis.voice.shared.HeadState
 
 /**
- * Volto animato basato su Rive (state machine). Se il file `.riv` non è presente in
- * assets/, fa fallback automatico su [JarvisFace] (l'app resta funzionante).
+ * Volto animato Rive (Robocat / "Catbot"). Se `assets/jarvis_face.riv` non c'è,
+ * fa fallback su [JarvisFace] (l'app resta funzionante).
  *
- * SETUP (una volta): esporta il file Rive (es. "Robocat" da rive.app) come .riv e
- * mettilo in  mobile/src/main/assets/jarvis_face.riv .
- * Poi comunica i nomi reali (visibili nell'editor Rive → pannello State Machine) di:
- *   - STATE_MACHINE (nome della state machine)
- *   - gli input che pilotano gli stati
- * e affiniamo la mappatura in [applyRiveInputs]. Finché non combaciano, l'animazione
- * riproduce comunque il suo stato di default (autoplay) — nessun crash.
+ * File Rive analizzato:
+ *   artboard      = "Catbot"
+ *   state machine = "State Machine"
+ *   input (Trigger) = Chat, Error, Download, No Internet, Reset Face, Face to Center, Face Follow Cursor
+ * I trigger sono one-shot → li spariamo SOLO al cambio di stato (LaunchedEffect(state)).
+ * Robocat non ha un input "livello voce", quindi la waveform reattiva resta nel fallback.
  */
 private const val RIVE_ASSET = "jarvis_face.riv"
-private const val STATE_MACHINE = "State Machine 1"   // TODO: nome reale dal file Rive
+private const val STATE_MACHINE = "State Machine"
+
+/** Mappa il nostro HeadState sul trigger della faccia Robocat da attivare. */
+private fun triggerFor(state: HeadState): String = when (state) {
+    HeadState.IDLE -> "Reset Face"
+    HeadState.CONNECTING -> "Download"
+    HeadState.LISTENING -> "Chat"
+    HeadState.THINKING -> "Download"
+    HeadState.SPEAKING -> "Chat"
+    HeadState.ERROR -> "Error"
+}
 
 @Composable
 fun RiveFace(
@@ -54,15 +65,24 @@ fun RiveFace(
         runCatching { context.assets.open(RIVE_ASSET).close(); true }.getOrDefault(false)
     }
 
-    // Fallback: nessun .riv → usa l'avatar/animazioni attuali.
+    // Fallback: nessun .riv → avatar/animazioni attuali (con waveform mic).
     if (!hasRive) {
         JarvisFace(state, amplitude, onTap, modifier)
         return
     }
 
+    val riveView = remember { mutableStateOf<RiveAnimationView?>(null) }
+
+    // Fire del trigger SOLO al cambio di stato (o quando la view è pronta).
+    LaunchedEffect(state, riveView.value) {
+        val v = riveView.value ?: return@LaunchedEffect
+        runCatching { v.fireState(STATE_MACHINE, triggerFor(state)) }
+            .onFailure { Log.w("RiveFace", "fireState(${triggerFor(state)}): ${it.message}") }
+    }
+
     val accent by animateColorAsState(
         targetValue = when (state) {
-            HeadState.IDLE -> JarvisColors.cyan.copy(alpha = 0.5f)
+            HeadState.IDLE -> JarvisColors.cyan.copy(alpha = 0.45f)
             HeadState.CONNECTING -> JarvisColors.gold
             HeadState.LISTENING -> JarvisColors.cyan
             HeadState.THINKING -> JarvisColors.purple
@@ -73,7 +93,7 @@ fun RiveFace(
     )
     val t = rememberInfiniteTransition(label = "rivfx")
     val glow by t.animateFloat(
-        0.3f, 0.7f, infiniteRepeatable(tween(1900, easing = LinearEasing), RepeatMode.Reverse), "glow",
+        0.3f, 0.65f, infiniteRepeatable(tween(1900, easing = LinearEasing), RepeatMode.Reverse), "glow",
     )
 
     Box(
@@ -88,7 +108,7 @@ fun RiveFace(
                 val r = size.minDimension * 0.5f
                 drawCircle(
                     brush = Brush.radialGradient(
-                        listOf(accent.copy(alpha = glow * 0.5f), Color.Transparent),
+                        listOf(accent.copy(alpha = glow * 0.45f), Color.Transparent),
                         center = c, radius = r,
                     ),
                     radius = r, center = c,
@@ -98,25 +118,15 @@ fun RiveFace(
     ) {
         AndroidView(
             factory = { ctx ->
-                RiveAnimationView(ctx).apply {
+                RiveAnimationView(ctx).also { view ->
                     runCatching {
                         val bytes = ctx.assets.open(RIVE_ASSET).readBytes()
-                        setRiveBytes(bytes, stateMachineName = STATE_MACHINE, autoplay = true)
+                        view.setRiveBytes(bytes, stateMachineName = STATE_MACHINE, autoplay = true)
                     }.onFailure { Log.w("RiveFace", "load .riv: ${it.message}") }
+                    riveView.value = view
                 }
             },
-            update = { view -> applyRiveInputs(view, state, amplitude) },
-            modifier = Modifier.size(260.dp),
+            modifier = Modifier.size(280.dp),
         )
     }
-}
-
-/**
- * Mappa stato + livello mic sugli input della state machine Rive.
- * Idempotente e "best-effort": input mancanti vengono ignorati (runCatching).
- * TODO: sostituire "state"/"level" con i nomi reali degli input del file scelto.
- */
-private fun applyRiveInputs(view: RiveAnimationView, state: HeadState, amplitude: Float) {
-    runCatching { view.setNumberState(STATE_MACHINE, "state", state.ordinal.toFloat()) }
-    runCatching { view.setNumberState(STATE_MACHINE, "level", amplitude * 100f) }
 }

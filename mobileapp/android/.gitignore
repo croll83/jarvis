@@ -13,3 +13,6 @@ local.properties
 !gradle/wrapper/gradle-wrapper.properties
 # Secrets: URL/token orchestrator non vanno committati
 secrets.properties
+# Asset Rive di marketplace: non ridistribuire via git (copiare a mano su ogni macchina).
+# Se il repo è privato e la licenza lo consente, rimuovi questa riga per committarlo.
+mobile/src/main/assets/*.riv
