@@ -50,6 +50,10 @@ class PhoneLink(private val context: Context) {
     private val _state = MutableStateFlow(HeadState.IDLE)
     val state: StateFlow<HeadState> = _state.asStateFlow()
 
+    private val _amplitude = MutableStateFlow(0f)
+    /** Livello mic 0..1 (per la waveform), calcolato localmente sul watch durante l'ascolto. */
+    val amplitude: StateFlow<Float> = _amplitude.asStateFlow()
+
     private val stateListener = MessageClient.OnMessageReceivedListener { event ->
         if (event.path == DataLayer.PATH_STATE) {
             val s = runCatching { HeadState.valueOf(String(event.data)) }.getOrNull() ?: return@OnMessageReceivedListener
@@ -76,6 +80,7 @@ class PhoneLink(private val context: Context) {
 
     private fun onNewState(s: HeadState) {
         _state.value = s
+        if (s != HeadState.LISTENING) _amplitude.value = 0f
         when (s) {
             HeadState.LISTENING -> startMic()
             HeadState.SPEAKING -> player.start()
@@ -86,7 +91,24 @@ class PhoneLink(private val context: Context) {
 
     private fun startMic() {
         val out = micOut ?: return
-        mic.start { frame -> runCatching { out.write(frame); out.flush() } }
+        mic.start { frame ->
+            runCatching { out.write(frame); out.flush() }
+            _amplitude.value = frameLevel(frame)
+        }
+    }
+
+    /** RMS del frame PCM int16 LE → 0..1 (con guadagno per una waveform viva). */
+    private fun frameLevel(frame: ByteArray): Float {
+        val n = frame.size / 2
+        if (n == 0) return 0f
+        var sum = 0.0
+        var i = 0
+        while (i + 1 < frame.size) {
+            val v = ((frame[i].toInt() and 0xFF) or (frame[i + 1].toInt() shl 8)).toShort().toInt()
+            sum += v.toDouble() * v
+            i += 2
+        }
+        return (Math.sqrt(sum / n) / 32768.0 * 9.0).coerceIn(0.0, 1.0).toFloat()
     }
 
     private suspend fun ensureChannel() {
