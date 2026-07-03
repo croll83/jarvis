@@ -4684,6 +4684,8 @@ async def process_jarvis_logic(text: str, context: dict):
             "set_percentage",
             "lock", "unlock",
             "press",
+            # forme corte che il 7B emette spesso (normalizzate per dominio dopo)
+            "open", "close", "stop",
         }
         _query_patterns = {"quali ", "quante ", "quanti ", "che stato ", "sono acces",
                            "è acces", "sono spen", "è spen", "cosa c'è ", "cosa ce ",
@@ -4915,9 +4917,12 @@ async def process_jarvis_logic(text: str, context: dict):
                 """Converte action generico nell'action corretto per il dominio."""
                 if entity_domain == "cover":
                     return {"turn_on": "open_cover", "turn_off": "close_cover",
+                            "open": "open_cover", "close": "close_cover",
+                            "stop": "stop_cover",
                             "toggle": "toggle"}.get(base_action, base_action)
                 if entity_domain == "lock":
                     return {"turn_on": "unlock", "turn_off": "lock",
+                            "open": "unlock", "close": "lock",
                             "toggle": "toggle"}.get(base_action, base_action)
                 if entity_domain == "button":
                     # aperture (apriporta/cancelli) e altri button: si premono

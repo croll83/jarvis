@@ -85,7 +85,7 @@ Se manca il contesto necessario → RETRY con domanda chiara.
 
 AZIONI DOMOTICHE per dominio:
 - light: turn_on/off/toggle. Params: brightness(0-255), color_temp_kelvin(2000-6500), rgb_color
-- cover: open/close/stop_cover, set_cover_position(0-100)
+- cover: open_cover/close_cover/stop_cover, set_cover_position(0-100)
 - climate: set_temperature, set_hvac_mode(heat|cool|auto|off)
 - media_player: turn_on/off, volume_set(0.0-1.0), volume_up/down, media_play/pause/stop, select_source
 - media_player MUSICA (cruciale): quando l'utente chiede di SUONARE/METTERE musica (artista,
