@@ -4103,7 +4103,9 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
         _agg = any(w in _utext for w in ("quanto consum", "consumo", "consumi",
                                          "totale", "complessiv", "quanto sta consumando"))
         _scope_name = params.get("room") or params.get("zone") or params.get("floor")
-        if (_agg and params.get("device_class") == "power" and _scope_name
+        # Gate sull'unità reale (W) delle entità trovate, NON su params.device_class:
+        # il 7B lo omette spesso ("consumo totale della depandance" → niente dc).
+        if (_agg and _scope_name
                 and _scope_name.lower() not in ("casa", "wagmi", "tutta la casa")):
             _tot = 0.0
             _contrib = []
@@ -4120,8 +4122,11 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
                                            "deumidificatore_dependance_potenza",
                                            "deumidificatore_soggiorno_potenza")):
                     continue
+                _live = states.get(ent["entity_id"], {})
+                if _live.get("attributes", {}).get("unit_of_measurement") != "W":
+                    continue
                 try:
-                    _w = float(states.get(ent["entity_id"], {}).get("state"))
+                    _w = float(_live.get("state"))
                 except (ValueError, TypeError):
                     continue
                 _tot += _w
