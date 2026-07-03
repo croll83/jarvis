@@ -2,6 +2,7 @@ package com.jarvis.voice.mobile.ui
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -36,7 +37,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
@@ -54,8 +57,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         JarvisRuntime.init(this)
-        JarvisForegroundService.start(this)
-
+        // NB: il foreground service (tipo microphone) va avviato SOLO dopo che
+        // RECORD_AUDIO è concesso, altrimenti Android 14+ lancia SecurityException.
+        // Lo avvia AppRoot nel callback dei permessi.
         setContent { MaterialTheme { AppRoot() } }
         maybeAutoTap(intent)
     }
@@ -79,19 +83,31 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun AppRoot() {
+    val context = LocalContext.current
     val config = JarvisRuntime.config
     var showSettings by remember { mutableStateOf(!config.isConfigured) }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* risultato gestito on-demand */ }
+    ) { result ->
+        if (result[Manifest.permission.RECORD_AUDIO] == true) {
+            JarvisForegroundService.start(context)
+        }
+    }
 
     LaunchedEffect(Unit) {
-        val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            perms += Manifest.permission.POST_NOTIFICATIONS
+        val micGranted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (micGranted) {
+            JarvisForegroundService.start(context)
+        } else {
+            val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                perms += Manifest.permission.POST_NOTIFICATIONS
+            }
+            permLauncher.launch(perms.toTypedArray())
         }
-        permLauncher.launch(perms.toTypedArray())
     }
 
     if (showSettings) {
