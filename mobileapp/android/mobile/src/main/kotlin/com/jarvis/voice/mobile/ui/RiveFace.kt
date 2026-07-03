@@ -5,9 +5,11 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -23,33 +25,38 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
 import com.jarvis.voice.shared.HeadState
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * Volto animato Rive (Robocat / "Catbot"). Se `assets/jarvis_face.riv` non c'è,
- * fa fallback su [JarvisFace] (l'app resta funzionante).
+ * fa fallback su [JarvisFace].
  *
- * File Rive analizzato:
- *   artboard      = "Catbot"
- *   state machine = "State Machine"
- *   input (Trigger) = Chat, Error, Download, No Internet, Reset Face, Face to Center, Face Follow Cursor
- * I trigger sono one-shot → li spariamo SOLO al cambio di stato (LaunchedEffect(state)).
- * Robocat non ha un input "livello voce", quindi la waveform reattiva resta nel fallback.
+ * File Rive: artboard "Catbot", state machine "State Machine", trigger inputs
+ * (Chat/Error/Download/No Internet/Reset Face/...).
+ *
+ * Il Robocat ha solo 4 facce oltre a idle e nessun input "voce", quindi listening e
+ * speaking userebbero la stessa faccia. Per distinguerli aggiungiamo un OVERLAY Compose
+ * sopra l'avatar: anello-waveform cyan reattivo al mic (listening) e anello verde
+ * ritmico (speaking). Nessuna modifica al .riv necessaria.
  */
 private const val RIVE_ASSET = "jarvis_face.riv"
 private const val STATE_MACHINE = "State Machine"
 
-/** Mappa il nostro HeadState sul trigger della faccia Robocat da attivare. */
+/** Faccia Rive per ogni stato (listening/speaking restano su idle + overlay Compose). */
 private fun triggerFor(state: HeadState): String = when (state) {
     HeadState.IDLE -> "Reset Face"
     HeadState.CONNECTING -> "Download"
-    HeadState.LISTENING -> "Chat"
-    HeadState.THINKING -> "Download"
-    HeadState.SPEAKING -> "Chat"
+    HeadState.LISTENING -> "Reset Face"   // idle + overlay waveform mic
+    HeadState.THINKING -> "Chat"
+    HeadState.SPEAKING -> "Reset Face"    // idle + overlay parlato
     HeadState.ERROR -> "Error"
 }
 
@@ -65,7 +72,6 @@ fun RiveFace(
         runCatching { context.assets.open(RIVE_ASSET).close(); true }.getOrDefault(false)
     }
 
-    // Fallback: nessun .riv → avatar/animazioni attuali (con waveform mic).
     if (!hasRive) {
         JarvisFace(state, amplitude, onTap, modifier)
         return
@@ -73,7 +79,7 @@ fun RiveFace(
 
     val riveView = remember { mutableStateOf<RiveAnimationView?>(null) }
 
-    // Fire del trigger SOLO al cambio di stato (o quando la view è pronta).
+    // Fire del trigger SOLO al cambio di stato (i trigger sono one-shot).
     LaunchedEffect(state, riveView.value) {
         val v = riveView.value ?: return@LaunchedEffect
         runCatching { v.fireState(STATE_MACHINE, triggerFor(state)) }
@@ -95,6 +101,10 @@ fun RiveFace(
     val glow by t.animateFloat(
         0.3f, 0.65f, infiniteRepeatable(tween(1900, easing = LinearEasing), RepeatMode.Reverse), "glow",
     )
+    val wavePhase by t.animateFloat(
+        0f, (2 * PI).toFloat(), infiniteRepeatable(tween(1400, easing = LinearEasing)), "wave",
+    )
+    val ampSmoothed by animateFloatAsState(amplitude, tween(90), label = "amp")
 
     Box(
         modifier = modifier
@@ -116,6 +126,7 @@ fun RiveFace(
             },
         contentAlignment = Alignment.Center,
     ) {
+        // Avatar Rive
         AndroidView(
             factory = { ctx ->
                 RiveAnimationView(ctx).also { view ->
@@ -128,5 +139,30 @@ fun RiveFace(
             },
             modifier = Modifier.size(280.dp),
         )
+
+        // Overlay waveform: distingue LISTENING (cyan, reattivo al mic) da SPEAKING (verde, ritmico)
+        if (state == HeadState.LISTENING || state == HeadState.SPEAKING) {
+            val listening = state == HeadState.LISTENING
+            val ringColor = if (listening) JarvisColors.cyan else JarvisColors.green
+            Canvas(Modifier.size(300.dp)) {
+                val c = Offset(size.width / 2f, size.height / 2f)
+                val bars = 64
+                val inner = size.minDimension * 0.43f   // anello sul bordo esterno, non copre il volto
+                val barMax = size.minDimension * 0.06f
+                val w = size.minDimension * 0.007f
+                for (i in 0 until bars) {
+                    val ang = i.toFloat() / bars * 2f * PI.toFloat()
+                    val live = 0.6f + 0.4f * sin(wavePhase + i * 0.4f)
+                    val level = if (listening) ampSmoothed
+                                else (0.45f + 0.35f * sin(wavePhase * 2f)).coerceIn(0f, 1f)
+                    val v = ((0.15f + 0.85f * level) * live).coerceIn(0f, 1f)
+                    val len = barMax * v
+                    val cosA = cos(ang); val sinA = sin(ang)
+                    val p1 = Offset(c.x + cosA * inner, c.y + sinA * inner)
+                    val p2 = Offset(c.x + cosA * (inner + len), c.y + sinA * (inner + len))
+                    drawLine(ringColor.copy(alpha = 0.9f), p1, p2, strokeWidth = w, cap = StrokeCap.Round)
+                }
+            }
+        }
     }
 }
