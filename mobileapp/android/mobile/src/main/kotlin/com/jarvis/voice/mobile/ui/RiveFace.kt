@@ -54,11 +54,11 @@ private const val STATE_MACHINE = "State Machine"
 
 /** Miglior tentativo di trigger per stato; null = non firare (resta faccia corrente). */
 private fun triggerFor(state: HeadState): String? = when (state) {
-    HeadState.IDLE -> "Face to Center"
+    HeadState.IDLE -> "Reset"
     HeadState.CONNECTING -> "Download"
-    HeadState.LISTENING -> "Face to Center"   // faccia neutra + overlay cyan
+    HeadState.LISTENING -> "Reset"    // faccia neutra + overlay cyan reattivo al mic
     HeadState.THINKING -> "Chat"
-    HeadState.SPEAKING -> "Face to Center"     // faccia neutra + overlay verde
+    HeadState.SPEAKING -> "Reset"     // faccia neutra + overlay verde
     HeadState.ERROR -> "Error"
 }
 
@@ -126,10 +126,6 @@ fun RiveFace(
     Box(
         modifier = modifier
             .size(300.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) { onTap() }
             .drawBehind {
                 val c = Offset(size.width / 2f, size.height / 2f)
                 val r = size.minDimension * 0.5f
@@ -180,5 +176,16 @@ fun RiveFace(
                 }
             }
         }
+
+        // Layer trasparente SOPRA Rive per catturare il tap: Rive consuma il touch
+        // (cursor/mouse tracking), quindi il click va intercettato in cima.
+        Box(
+            Modifier
+                .matchParentSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { onTap() }
+        )
     }
 }
