@@ -60,4 +60,5 @@ dependencies {
     implementation(libs.wear.tiles)
     implementation(libs.wear.protolayout)
     implementation(libs.wear.protolayout.material)
+    implementation(libs.guava)  // Futures.immediateFuture per le Tile (tiles porta solo lo stub)
 }
