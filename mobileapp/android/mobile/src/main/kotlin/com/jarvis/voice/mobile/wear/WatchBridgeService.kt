@@ -86,6 +86,7 @@ class WatchBridgeService : WearableListenerService() {
                 // Mic dallo watch → controller.feedMicFrame() a frame da 640 byte
                 readJob = launch {
                     val buf = ByteArray(AudioFormat.FRAME_BYTES)
+                    var frames = 0
                     try {
                         while (true) {
                             var off = 0
@@ -94,6 +95,8 @@ class WatchBridgeService : WearableListenerService() {
                                 if (n < 0) return@launch
                                 off += n
                             }
+                            frames++
+                            if (frames % 100 == 1) Log.i(TAG, "mic dal watch frame #$frames")
                             c.feedMicFrame(buf.copyOf())
                         }
                     } catch (e: Exception) {
