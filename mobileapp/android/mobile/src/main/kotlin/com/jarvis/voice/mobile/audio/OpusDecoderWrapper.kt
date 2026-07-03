@@ -1,7 +1,7 @@
 package com.jarvis.voice.mobile.audio
 
 import com.jarvis.voice.shared.protocol.AudioFormat
-import org.concentus.OpusDecoder
+import io.github.jaredmdobson.concentus.OpusDecoder
 
 /**
  * Decoder Opus per la TTS di ritorno (16 kHz mono). Usa Concentus (pure Java, no NDK).
