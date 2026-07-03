@@ -22,6 +22,12 @@ Protocol (unified: control + audio on a single persistent connection):
   Device → Server state:
   - {"type":"state","state":"idle|listening|busy|dnd|error"}
 
+  Device → Server audio control:
+  - {"type":"audio_start","codec":"opus|pcm"}  -- begin an utterance
+  - {"type":"audio_flush"}                      -- end-of-turn: deliver buffered speech NOW
+                                                   (push-to-talk clients; skips the VAD silence wait)
+  - {"type":"audio_end"}                        -- abort utterance, discard captured audio
+
   Backward compatibility:
   - If device sends binary Opus frames without "audio_start" first,
     auto-create audio session (legacy ephemeral protocol).
@@ -721,6 +727,33 @@ async def ws_audio_endpoint(
                             conn.end_audio_session()
                             await conn.send_command({"type": "tts_done"})
                             logger.info(f"Device {device_id}: audio session killed by device (audio_end)")
+
+                    elif msg_type == "audio_flush":
+                        # Explicit end-of-turn from push-to-talk clients (phone/watch:
+                        # e.g. second tap on the mic). Unlike audio_end (which aborts and
+                        # discards), audio_flush DELIVERS the speech captured so far
+                        # immediately, without waiting for Silero VAD to detect trailing
+                        # silence — giving a snappy "release = send now" UX.
+                        sess = conn.audio_session
+                        if sess and not sess._closed:
+                            had_speech = sess._speech_started and bool(sess._audio_buffer)
+                            if had_speech:
+                                try:
+                                    await websocket.send_json({"type": "speech_end"})
+                                except Exception:
+                                    pass
+                                await sess.deliver_speech()
+                                conn.end_audio_session()
+                                logger.info(f"Device {device_id}: audio_flush → delivered buffered speech")
+                            else:
+                                # Nothing captured (tap on silence) → don't hang the session.
+                                conn.end_audio_session()
+                                if _is_device_in_live_session(device_id):
+                                    await conn.send_command({"type": "trigger_listen", "silent": True})
+                                    logger.info(f"Device {device_id}: audio_flush without speech → re-trigger (live session)")
+                                else:
+                                    await conn.send_command({"type": "tts_done"})
+                                    logger.info(f"Device {device_id}: audio_flush without speech → tts_done")
 
                     elif msg_type == "speaker_stop":
                         # Double-tap emergency stop: stop the speaker associated with this device
