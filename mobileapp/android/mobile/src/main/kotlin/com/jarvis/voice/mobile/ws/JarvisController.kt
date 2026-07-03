@@ -82,9 +82,11 @@ class JarvisController(
     @Volatile private var streaming = false
     @Volatile private var liveSession = false
     private val lastActivity = AtomicLong(System.currentTimeMillis())
+    private val stateSince = AtomicLong(System.currentTimeMillis())
 
     init {
         scope.launch { ttlLoop() }
+        scope.launch { watchdog() }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -271,7 +273,35 @@ class JarvisController(
     private fun sendJson(obj: JSONObject) { ws?.send(obj.toString()) }
     private fun setState(s: HeadState) {
         _state.value = s
+        stateSince.set(System.currentTimeMillis())
         if (s != HeadState.LISTENING) _amplitude.value = 0f
+    }
+
+    /**
+     * Watchdog anti-stuck: se uno stato d'attesa resta appeso troppo a lungo (es. nessun
+     * tts_done arriva → THINKING infinito), resetta a IDLE (o ERROR per CONNECTING).
+     * In live session i tempi sono più lunghi → nessun timeout.
+     */
+    private suspend fun watchdog() {
+        while (true) {
+            delay(2_000)
+            if (liveSession) { stateSince.set(System.currentTimeMillis()); continue }
+            val s = _state.value
+            val limit = when (s) {
+                HeadState.CONNECTING -> 12_000L
+                HeadState.LISTENING -> 60_000L
+                HeadState.THINKING -> 45_000L
+                HeadState.SPEAKING -> 90_000L
+                else -> Long.MAX_VALUE   // IDLE / ERROR: nessun timeout
+            }
+            if (System.currentTimeMillis() - stateSince.get() > limit) {
+                Log.w(tag, "watchdog: stato $s bloccato → reset")
+                streaming = false
+                onLocalMicStop?.invoke()
+                localPlayer.stop()
+                setState(if (s == HeadState.CONNECTING) HeadState.ERROR else HeadState.IDLE)
+            }
+        }
     }
     private fun touch() { lastActivity.set(System.currentTimeMillis()) }
 
@@ -301,5 +331,9 @@ class JarvisController(
     }
 }
 
-/** Una coppia di turno conversazione per lo storico. */
-data class DialogTurn(val user: String? = null, val jarvis: String? = null)
+/** Una coppia di turno conversazione per lo storico (ts = per ordinamento cronologico). */
+data class DialogTurn(
+    val user: String? = null,
+    val jarvis: String? = null,
+    val ts: Long = System.currentTimeMillis(),
+)

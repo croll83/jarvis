@@ -172,16 +172,23 @@ private fun ResponsiveHome(onOpenSettings: () -> Unit) {
 
 @Composable
 private fun HistoryPane(modifier: Modifier = Modifier) {
-    val history by JarvisRuntime.controller.history.collectAsState()
+    // Storico UNIFICATO: turni del telefono (📱) + del watch (⌚), in ordine cronologico.
+    val phone by JarvisRuntime.controller.history.collectAsState()
+    val watch by JarvisRuntime.relayController.history.collectAsState()
+    val merged = remember(phone, watch) {
+        (phone.map { it to "📱" } + watch.map { it to "⌚" })
+            .sortedBy { it.first.ts }
+            .takeLast(20)
+    }
     val listState = rememberLazyListState()
-    LaunchedEffect(history.size) {
-        if (history.isNotEmpty()) listState.animateScrollToItem(history.size - 1)
+    LaunchedEffect(merged.size) {
+        if (merged.isNotEmpty()) listState.animateScrollToItem(merged.size - 1)
     }
     Column(modifier.statusBarsPadding().padding(horizontal = 20.dp, vertical = 16.dp)) {
         Text("Conversazione", color = JarvisColors.textPrimary,
             fontWeight = FontWeight.Bold, fontSize = 20.sp)
         Spacer(Modifier.height(12.dp))
-        if (history.isEmpty()) {
+        if (merged.isEmpty()) {
             Text(
                 "Nessuna conversazione ancora.\nTocca il volto e parla.",
                 color = JarvisColors.textMuted, fontSize = 14.sp,
@@ -192,14 +199,14 @@ private fun HistoryPane(modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                items(history) { turn -> TurnCard(turn) }
+                items(merged) { (turn, src) -> TurnCard(turn, src) }
             }
         }
     }
 }
 
 @Composable
-private fun TurnCard(turn: DialogTurn) {
+private fun TurnCard(turn: DialogTurn, source: String = "") {
     Column(
         Modifier
             .fillMaxWidth()
@@ -208,7 +215,8 @@ private fun TurnCard(turn: DialogTurn) {
             .padding(14.dp),
     ) {
         turn.user?.let {
-            Text("TU", color = JarvisColors.cyan, fontSize = 11.sp,
+            Text(if (source.isNotEmpty()) "$source  TU" else "TU",
+                color = JarvisColors.cyan, fontSize = 11.sp,
                 fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
             Text(it, color = JarvisColors.textPrimary, fontSize = 15.sp)
         }
