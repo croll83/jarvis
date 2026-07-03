@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class JarvisController(
     private val config: JarvisConfig,
+    private val deviceIdOverride: String? = null,   // usato dal relay watch (device_id distinto)
 ) {
     private val tag = "JarvisController"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -166,7 +167,7 @@ class JarvisController(
             val base = config.url
                 .replaceFirst("ws://", "http://")
                 .replaceFirst("wss://", "https://")
-            var url = "$base/ws/audio?device_id=${config.deviceId}"
+            var url = "$base/ws/audio?device_id=${deviceIdOverride ?: config.deviceId}"
             if (config.token.isNotBlank()) url += "&token=${config.token}"
 
             val req = Request.Builder().url(url).build()

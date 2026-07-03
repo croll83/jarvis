@@ -70,6 +70,14 @@ class JarvisConfig(private val context: Context) {
         get() = if (deviceIdMode == MODE_CUSTOM && customDeviceId.isNotBlank()) customDeviceId
         else autoDeviceId
 
+    /**
+     * device_id del Wear (relay). È un device separato lato orchestrator (va configurato
+     * in dashboard con use_internal_speaker=true). Default = device_id telefono + "W".
+     */
+    var wearDeviceId: String
+        get() = prefs.getString(KEY_WEAR_ID, "")?.takeIf { it.isNotBlank() } ?: (deviceId + "W")
+        set(v) = prefs.edit().putString(KEY_WEAR_ID, normalizeId(v)).apply()
+
     val isConfigured: Boolean get() = url.isNotBlank()
 
     private fun normalizeId(v: String): String = v.trim().uppercase(Locale.ROOT)
@@ -83,6 +91,7 @@ class JarvisConfig(private val context: Context) {
         private const val KEY_TTL = "ttl_ms"
         private const val KEY_ID_MODE = "device_id_mode"
         private const val KEY_CUSTOM_ID = "custom_device_id"
+        private const val KEY_WEAR_ID = "wear_device_id"
         private const val KEY_GEN_ID = "gen_device_id"
     }
 }

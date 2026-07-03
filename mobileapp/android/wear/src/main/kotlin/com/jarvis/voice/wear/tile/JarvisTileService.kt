@@ -47,8 +47,8 @@ class JarvisTileService : TileService() {
             .addContent(
                 LayoutElementBuilders.Image.Builder()
                     .setResourceId(imgId)
-                    .setWidth(DimensionBuilders.dp(84f))
-                    .setHeight(DimensionBuilders.dp(84f))
+                    .setWidth(DimensionBuilders.dp(120f))
+                    .setHeight(DimensionBuilders.dp(120f))
                     .setModifiers(
                         ModifiersBuilders.Modifiers.Builder().setClickable(click).build()
                     )
