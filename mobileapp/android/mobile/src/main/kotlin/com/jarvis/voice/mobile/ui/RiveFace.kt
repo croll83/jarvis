@@ -59,9 +59,9 @@ private const val STATE_MACHINE = "State Machine"
 private fun triggerFor(state: HeadState): String? = when (state) {
     HeadState.IDLE -> "Reset"
     HeadState.CONNECTING -> "Download"
-    HeadState.LISTENING -> "Reset"    // faccia neutra + overlay cyan reattivo al mic
+    HeadState.LISTENING -> "Listening"  // nuova faccia dedicata (bool)
     HeadState.THINKING -> "Chat"
-    HeadState.SPEAKING -> "Reset"     // faccia neutra + overlay verde
+    HeadState.SPEAKING -> "Speaking"    // nuova faccia dedicata (bool)
     HeadState.ERROR -> "Error"
 }
 
