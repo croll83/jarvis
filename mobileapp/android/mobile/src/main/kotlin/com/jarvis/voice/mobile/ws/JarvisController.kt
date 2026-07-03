@@ -89,7 +89,7 @@ class JarvisController(
         touch()
         scope.launch {
             when (_state.value) {
-                HeadState.IDLE -> startTurn()
+                HeadState.IDLE, HeadState.ERROR -> startTurn()  // tap su errore = ritenta
                 HeadState.LISTENING -> flush()          // secondo tap
                 HeadState.THINKING, HeadState.SPEAKING -> bargeStop()
                 HeadState.CONNECTING -> { /* ignora, in transito */ }
