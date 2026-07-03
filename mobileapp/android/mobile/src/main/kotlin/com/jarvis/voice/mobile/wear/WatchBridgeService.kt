@@ -48,6 +48,7 @@ class WatchBridgeService : WearableListenerService() {
     // ── Controllo ────────────────────────────────────────────────────────────
     override fun onMessageReceived(event: MessageEvent) {
         watchNodeId = event.sourceNodeId
+        Log.i(TAG, "msg '${event.path}' da ${event.sourceNodeId}")
         when (event.path) {
             DataLayer.PATH_TAP -> {
                 JarvisRuntime.relayController.relayMode = true
@@ -109,10 +110,12 @@ class WatchBridgeService : WearableListenerService() {
         stateJob = scope.launch {
             val messageClient = Wearable.getMessageClient(this@WatchBridgeService)
             JarvisRuntime.relayController.state.collect { s ->
-                val node = watchNodeId ?: return@collect
+                val node = watchNodeId
+                if (node == null) { Log.w(TAG, "stato $s ma nessun nodo watch"); return@collect }
+                Log.i(TAG, "→ watch stato=$s (node=$node)")
                 runCatching {
                     messageClient.sendMessage(node, DataLayer.PATH_STATE, s.name.toByteArray()).await()
-                }
+                }.onFailure { Log.w(TAG, "invio stato fallito: ${it.message}") }
             }
         }
     }

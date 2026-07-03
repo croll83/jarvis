@@ -57,6 +57,7 @@ class PhoneLink(private val context: Context) {
     private val stateListener = MessageClient.OnMessageReceivedListener { event ->
         if (event.path == DataLayer.PATH_STATE) {
             val s = runCatching { HeadState.valueOf(String(event.data)) }.getOrNull() ?: return@OnMessageReceivedListener
+            Log.i(tag, "stato ← $s")
             onNewState(s)
         }
     }
@@ -72,7 +73,8 @@ class PhoneLink(private val context: Context) {
     fun tap() {
         scope.launch {
             ensureChannel()
-            val node = nodeId ?: return@launch
+            val node = nodeId ?: run { Log.w(tag, "tap ma nessun telefono connesso"); return@launch }
+            Log.i(tag, "tap → node=$node")
             runCatching { messageClient.sendMessage(node, DataLayer.PATH_TAP, ByteArray(0)).await() }
                 .onFailure { Log.w(tag, "tap send: ${it.message}") }
         }
