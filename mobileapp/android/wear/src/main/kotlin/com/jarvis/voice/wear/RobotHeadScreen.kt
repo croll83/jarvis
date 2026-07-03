@@ -37,6 +37,7 @@ fun RobotHeadScreen(state: HeadState, onTap: () -> Unit) {
             HeadState.LISTENING -> Color(0xFF00C2FF)
             HeadState.THINKING -> Color(0xFFB388FF)
             HeadState.SPEAKING -> Color(0xFF00E676)
+            HeadState.ERROR -> Color(0xFFFF5A6A)
         },
         label = "accent",
     )
