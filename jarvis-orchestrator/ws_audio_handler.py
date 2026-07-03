@@ -1055,6 +1055,22 @@ async def push_config_to_device(device_id: str, config: dict) -> bool:
     return result
 
 
+async def send_dialog_text(device_id: str, kind: str, text: str) -> bool:
+    """
+    Invia al device il testo del dialogo per lo storico conversazione (UI mobile
+    dual-pane). kind = "transcript" (cosa ha detto l'utente) | "response" (risposta JARVIS).
+    Additivo: i device che non lo gestiscono (AtomS3R) ignorano il tipo sconosciuto.
+    """
+    if not text:
+        return False
+    device_id = device_id.upper().strip()
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id)
+    if not conn:
+        return False
+    return await conn.send_command({"type": kind, "text": text})
+
+
 # ---------------------------------------------------------------------------
 # Volume change handler (NabuVoice rotary encoder)
 # ---------------------------------------------------------------------------
