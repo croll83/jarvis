@@ -40,6 +40,7 @@ glance-appwidget = { module = "androidx.glance:glance-appwidget", version.ref = 
 glance-material3 = { module = "androidx.glance:glance-material3", version.ref = "glance" }
 concentus = { module = "io.github.jaredmdobson:concentus", version.ref = "concentus" }
 rive-android = { module = "app.rive:rive-android", version.ref = "rive" }
+guava = { module = "com.google.guava:guava", version = "33.6.0-android" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
