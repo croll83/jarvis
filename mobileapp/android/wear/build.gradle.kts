@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.jarvis.voice.wear"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.jarvis.voice"   // stesso package family del telefono
