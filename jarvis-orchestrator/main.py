@@ -3929,7 +3929,8 @@ def _resolve_home_control_target(
     # se il match è NETTO; se è ambiguo chiede conferma invece di agire a caso.
     try:
         import semantic_discovery
-        _hits = semantic_discovery.search_sync(location_id, entity_name, domain=domain, top_k=4)
+        _hits = semantic_discovery.search_sync(location_id, entity_name, domain=domain, top_k=4,
+                                               include_hidden=False)
         _strong = [h for h in _hits if h.get("score", 0) >= 0.6]
         if _strong:
             _top = _strong[0]
@@ -4675,6 +4676,7 @@ async def process_jarvis_logic(text: str, context: dict):
             "media_stop", "select_source",
             "set_percentage",
             "lock", "unlock",
+            "press",
         }
         _query_patterns = {"quali ", "quante ", "quanti ", "che stato ", "sono acces",
                            "è acces", "sono spen", "è spen", "cosa c'è ", "cosa ce ",
@@ -4910,6 +4912,9 @@ async def process_jarvis_logic(text: str, context: dict):
                 if entity_domain == "lock":
                     return {"turn_on": "unlock", "turn_off": "lock",
                             "toggle": "toggle"}.get(base_action, base_action)
+                if entity_domain == "button":
+                    # aperture (apriporta/cancelli) e altri button: si premono
+                    return "press"
                 # light, switch, media_player, fan, etc. → turn_on/turn_off/toggle funzionano
                 return base_action
 

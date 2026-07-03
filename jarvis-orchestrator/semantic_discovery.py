@@ -155,10 +155,10 @@ async def _rebuild(location_id: str):
     c = conn.cursor()
     c.execute(
         """
-        SELECT entity_id, entity_name, entity_type, room, area, zone, device_name
+        SELECT entity_id, entity_name, entity_type, room, area, zone, device_name,
+               COALESCE(visible, 1) AS visible
         FROM entity_maps
         WHERE location_id = ? AND entity_id IS NOT NULL
-          AND COALESCE(visible, 1) = 1
         """,
         (location_id,),
     )
@@ -313,6 +313,7 @@ def search_sync(
     domain: Optional[str] = None,
     device_class: Optional[str] = None,
     top_k: int = 8,
+    include_hidden: bool = True,
 ) -> List[dict]:
     """Semantic top-k entity search with optional hard filters.
 
@@ -357,6 +358,9 @@ def search_sync(
     # Hard filters: domain + device_class (reliable). Room is SOFT: applied only if
     # it leaves results, because the router often misfills it with a zone/location.
     base = np.ones(n, dtype=bool)
+    if not include_hidden:
+        # path di CONTROLLO: mai risolvere comandi su entità nascoste dalla mappa
+        base &= np.array([bool(it.get("visible", 1)) for it in items])
     if domain:
         base &= np.array([it.get("entity_type") == domain for it in items])
     if device_class:
@@ -402,7 +406,9 @@ async def search(
     domain: Optional[str] = None,
     device_class: Optional[str] = None,
     top_k: int = 8,
+    include_hidden: bool = True,
 ) -> List[dict]:
     """Async wrapper around search_sync (the core has no awaits)."""
     return search_sync(location_id, query, room=room, domain=domain,
-                       device_class=device_class, top_k=top_k)
+                       device_class=device_class, top_k=top_k,
+                       include_hidden=include_hidden)
