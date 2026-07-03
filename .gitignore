@@ -68,3 +68,5 @@ openclaw.json
 
 # Runtime data (database, vector store, ecc.)
 data/
+restore_*.log
+.kotlin/

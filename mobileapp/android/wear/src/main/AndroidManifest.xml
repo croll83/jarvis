@@ -37,7 +37,7 @@
             </intent-filter>
             <meta-data
                 android:name="androidx.wear.tiles.PREVIEW"
-                android:resource="@drawable/ic_robot_head" />
+                android:resource="@drawable/robocat_idle" />
         </service>
 
     </application>
