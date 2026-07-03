@@ -19,6 +19,17 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt          # PortAudio: sudo apt install libportaudio2
 ```
 
+**macOS** (opuslib è un wrapper su libopus nativa, va installata a parte, altrimenti
+"Could not find Opus library"):
+
+```bash
+brew install portaudio opus
+export DYLD_LIBRARY_PATH="$(brew --prefix opus)/lib:$DYLD_LIBRARY_PATH"
+```
+
+Se libopus non c'è, lo spike **non si blocca**: disattiva solo il playback della TTS e
+logga i frame TTS in arrivo (mic e pipeline restano testabili).
+
 ## Uso
 
 ```bash
