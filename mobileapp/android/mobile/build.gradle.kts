@@ -67,4 +67,7 @@ dependencies {
 
     // Opus decode (TTS downlink) — pure Java, no NDK
     implementation(libs.concentus)
+
+    // Rive — avatar animato interattivo (state machine) per il volto centrale
+    implementation(libs.rive.android)
 }
