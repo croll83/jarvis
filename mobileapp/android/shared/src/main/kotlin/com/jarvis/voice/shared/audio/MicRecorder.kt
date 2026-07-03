@@ -14,6 +14,8 @@ import kotlin.concurrent.thread
  * Cattura microfono 16 kHz mono int16 e consegna frame da 640 byte (20 ms).
  * L'uplink JARVIS usa PCM grezzo, quindi nessun encoding qui.
  */
+private const val MIC_GAIN = 8f   // boost cattura (mic telefono/watch molto basso)
+
 class MicRecorder {
 
     private var record: AudioRecord? = null
@@ -58,10 +60,30 @@ class MicRecorder {
                     if (n <= 0) break
                     off += n
                 }
-                if (off == frame.size) onFrame(frame.copyOf())
+                if (off == frame.size) {
+                    applyGain(frame)
+                    onFrame(frame.copyOf())
+                }
             }
         }
         return true
+    }
+
+    /**
+     * Guadagno digitale sul frame PCM int16 (con clipping). Il mic del telefono/watch cattura
+     * molto piano (RMS ~0.01): senza boost il VAD server non rileva mai la fine del parlato
+     * (sessione infinita) e lo STT, amplificando poi il rumore, sbaglia lingua/speaker.
+     */
+    private fun applyGain(frame: ByteArray) {
+        var i = 0
+        while (i + 1 < frame.size) {
+            val s = ((frame[i].toInt() and 0xFF) or (frame[i + 1].toInt() shl 8)).toShort().toInt()
+            var v = (s * MIC_GAIN).toInt()
+            if (v > 32767) v = 32767 else if (v < -32768) v = -32768
+            frame[i] = (v and 0xFF).toByte()
+            frame[i + 1] = ((v shr 8) and 0xFF).toByte()
+            i += 2
+        }
     }
 
     fun stop() {
