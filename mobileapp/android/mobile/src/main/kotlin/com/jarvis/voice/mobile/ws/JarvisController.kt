@@ -127,7 +127,7 @@ class JarvisController(
             i += 2
         }
         val rms = Math.sqrt(sum / n) / 32768.0
-        return (rms * 6.0).coerceIn(0.0, 1.0).toFloat()
+        return (rms * 9.0).coerceIn(0.0, 1.0).toFloat()  // sensibilità waveform
     }
 
     // ─────────────────────────────────────────────────────────────────────────

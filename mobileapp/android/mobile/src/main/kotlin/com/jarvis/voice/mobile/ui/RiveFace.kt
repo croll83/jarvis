@@ -141,7 +141,7 @@ fun RiveFace(
 
     Box(
         modifier = modifier
-            .size(300.dp)
+            .size(320.dp)
             .drawBehind {
                 val c = Offset(size.width / 2f, size.height / 2f)
                 val r = size.minDimension * 0.5f
@@ -165,25 +165,25 @@ fun RiveFace(
                     riveView.value = view
                 }
             },
-            modifier = Modifier.size(280.dp),
+            modifier = Modifier.size(230.dp),
         )
 
         // Overlay waveform: LISTENING (cyan, reattivo al mic) vs SPEAKING (verde, ritmico)
         if (state == HeadState.LISTENING || state == HeadState.SPEAKING) {
             val listening = state == HeadState.LISTENING
             val ringColor = if (listening) JarvisColors.cyan else JarvisColors.green
-            Canvas(Modifier.size(300.dp)) {
+            Canvas(Modifier.matchParentSize()) {
                 val c = Offset(size.width / 2f, size.height / 2f)
-                val bars = 64
-                val inner = size.minDimension * 0.43f
-                val barMax = size.minDimension * 0.06f
-                val w = size.minDimension * 0.007f
+                val bars = 72
+                val inner = size.minDimension * 0.38f    // appena fuori dall'avatar (230dp)
+                val barMax = size.minDimension * 0.11f    // barre ben più alte
+                val w = size.minDimension * 0.009f
                 for (i in 0 until bars) {
                     val ang = i.toFloat() / bars * 2f * PI.toFloat()
-                    val live = 0.6f + 0.4f * sin(wavePhase + i * 0.4f)
+                    val live = 0.55f + 0.45f * sin(wavePhase + i * 0.4f)
                     val level = if (listening) ampSmoothed
-                                else (0.45f + 0.35f * sin(wavePhase * 2f)).coerceIn(0f, 1f)
-                    val v = ((0.15f + 0.85f * level) * live).coerceIn(0f, 1f)
+                                else (0.5f + 0.4f * sin(wavePhase * 2f)).coerceIn(0f, 1f)
+                    val v = ((0.2f + 0.8f * level) * live).coerceIn(0f, 1f)
                     val len = barMax * v
                     val cosA = cos(ang); val sinA = sin(ang)
                     val p1 = Offset(c.x + cosA * inner, c.y + sinA * inner)
