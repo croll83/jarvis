@@ -10,11 +10,20 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -27,7 +36,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
+import com.jarvis.voice.mobile.config.JarvisConfig
 import com.jarvis.voice.mobile.core.JarvisRuntime
 import com.jarvis.voice.mobile.service.JarvisForegroundService
 import com.jarvis.voice.shared.HeadState
@@ -43,7 +56,7 @@ class MainActivity : ComponentActivity() {
         JarvisRuntime.init(this)
         JarvisForegroundService.start(this)
 
-        setContent { MaterialTheme { JarvisScreen() } }
+        setContent { MaterialTheme { AppRoot() } }
         maybeAutoTap(intent)
     }
 
@@ -65,16 +78,13 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun JarvisScreen() {
-    val controller = JarvisRuntime.controller
+private fun AppRoot() {
     val config = JarvisRuntime.config
-    val state by controller.state.collectAsState()
-
     var showSettings by remember { mutableStateOf(!config.isConfigured) }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* risultato ignorato: gestito on-demand */ }
+    ) { /* risultato gestito on-demand */ }
 
     LaunchedEffect(Unit) {
         val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
@@ -83,6 +93,18 @@ private fun JarvisScreen() {
         }
         permLauncher.launch(perms.toTypedArray())
     }
+
+    if (showSettings) {
+        SettingsScreen(config = config, onDone = { showSettings = false })
+    } else {
+        HomeScreen(onOpenSettings = { showSettings = true })
+    }
+}
+
+@Composable
+private fun HomeScreen(onOpenSettings: () -> Unit) {
+    val controller = JarvisRuntime.controller
+    val state by controller.state.collectAsState()
 
     Surface(Modifier.fillMaxSize()) {
         Column(
@@ -101,53 +123,120 @@ private fun JarvisScreen() {
                 modifier = Modifier.padding(top = 24.dp),
             ) { Text(if (state == HeadState.LISTENING) "Invia (2° tap)" else "Parla") }
 
-            TextButton(onClick = { showSettings = true }, modifier = Modifier.padding(top = 8.dp)) {
-                Text("Impostazioni orchestrator")
+            TextButton(onClick = onOpenSettings, modifier = Modifier.padding(top = 8.dp)) {
+                Text("⚙︎  Impostazioni")
             }
         }
-    }
-
-    if (showSettings) {
-        SettingsDialog(
-            initialUrl = config.url,
-            initialToken = config.token,
-            initialDeviceId = config.deviceId,
-            onDismiss = { showSettings = false },
-            onSave = { url, token, deviceId ->
-                config.url = url
-                config.token = token
-                if (deviceId.isNotBlank()) config.deviceId = deviceId
-                showSettings = false
-            },
-        )
     }
 }
 
 @Composable
-private fun SettingsDialog(
-    initialUrl: String,
-    initialToken: String,
-    initialDeviceId: String,
-    onDismiss: () -> Unit,
-    onSave: (String, String, String) -> Unit,
-) {
-    var url by remember { mutableStateOf(initialUrl) }
-    var token by remember { mutableStateOf(initialToken) }
-    var deviceId by remember { mutableStateOf(initialDeviceId) }
+private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
+    var url by remember { mutableStateOf(config.url) }
+    var token by remember { mutableStateOf(config.token) }
+    var ttlMin by remember { mutableStateOf((config.ttlMillis / 60_000L).toString()) }
+    var idMode by remember { mutableStateOf(config.deviceIdMode) }
+    var customId by remember { mutableStateOf(config.customDeviceId) }
+    val autoId = remember { config.autoDeviceId }
 
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = { onSave(url, token, deviceId) }) { Text("Salva") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Annulla") } },
-        title = { Text("Orchestrator") },
-        text = {
-            Column {
-                OutlinedTextField(url, { url = it }, label = { Text("URL (ws://ip:5000)") })
-                OutlinedTextField(token, { token = it }, label = { Text("Token") })
-                OutlinedTextField(deviceId, { deviceId = it }, label = { Text("device_id (MAC)") })
+    Surface(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
+        ) {
+            Text("Impostazioni orchestrator", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = url, onValueChange = { url = it },
+                label = { Text("URL (ws://ip:5000)") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = token, onValueChange = { token = it },
+                label = { Text("Token (DEVICE_API_TOKEN)") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = ttlMin, onValueChange = { ttlMin = it.filter { c -> c.isDigit() } },
+                label = { Text("TTL connessione (minuti)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(20.dp))
+
+            Text("device_id", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+
+            // Opzione 1: MAC del dispositivo (automatico)
+            IdOption(
+                selected = idMode == JarvisConfig.MODE_AUTO,
+                onSelect = { idMode = JarvisConfig.MODE_AUTO },
+                title = "MAC del dispositivo (automatico)",
+                subtitle = autoId,
+            )
+            // Opzione 2: personalizzato
+            IdOption(
+                selected = idMode == JarvisConfig.MODE_CUSTOM,
+                onSelect = { idMode = JarvisConfig.MODE_CUSTOM },
+                title = "Personalizzato",
+                subtitle = "Inserisci un device_id (es. lo stesso dello spike)",
+            )
+            if (idMode == JarvisConfig.MODE_CUSTOM) {
+                OutlinedTextField(
+                    value = customId, onValueChange = { customId = it.uppercase() },
+                    label = { Text("device_id personalizzato") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth().padding(start = 32.dp),
+                )
             }
-        },
-    )
+
+            Text(
+                "Android non espone il MAC hardware reale: l'automatico è un ID stabile del " +
+                    "dispositivo in formato MAC.",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+
+            Spacer(Modifier.height(24.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                OutlinedButton(onClick = onDone) { Text("Annulla") }
+                Button(
+                    onClick = {
+                        config.url = url
+                        config.token = token
+                        config.deviceIdMode = idMode
+                        if (idMode == JarvisConfig.MODE_CUSTOM) config.customDeviceId = customId
+                        ttlMin.toLongOrNull()?.let { if (it > 0) config.ttlMillis = it * 60_000L }
+                        onDone()
+                    },
+                    modifier = Modifier.padding(start = 12.dp),
+                ) { Text("Salva") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun IdOption(selected: Boolean, onSelect: () -> Unit, title: String, subtitle: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, onClick = onSelect)
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onSelect)
+        Column(Modifier.padding(start = 4.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall)
+        }
+    }
 }
 
 private fun HeadState.label(): String = when (this) {
