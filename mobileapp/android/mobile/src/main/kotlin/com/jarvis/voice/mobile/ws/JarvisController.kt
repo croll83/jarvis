@@ -59,6 +59,10 @@ class JarvisController(
     /** Livello mic normalizzato 0..1 (alimenta la waveform in UI). Valido in LISTENING. */
     val amplitude: StateFlow<Float> = _amplitude.asStateFlow()
 
+    private val _history = MutableStateFlow<List<DialogTurn>>(emptyList())
+    /** Ultime coppie (utente → JARVIS) per lo storico dual-pane. */
+    val history: StateFlow<List<DialogTurn>> = _history.asStateFlow()
+
     // ── Audio routing (commutabile: locale vs watch) ────────────────────────
     private val localPlayer = TtsPlayer()
     private val opus = OpusDecoderWrapper()
@@ -213,7 +217,31 @@ class JarvisController(
             MsgType.LIVE_SESSION_END -> { liveSession = false; setState(HeadState.IDLE) }
             MsgType.PING -> sendJson(JSONObject().put("type", MsgType.PONG))
             MsgType.ERROR -> Log.w(tag, "server error: ${msg.opt("msg") ?: msg.opt("message")}")
+            MsgType.TRANSCRIPT -> onTranscript(msg.optString("text"))
+            MsgType.RESPONSE -> onResponse(msg.optString("text"))
         }
+    }
+
+    // ── Storico conversazione ────────────────────────────────────────────────
+    private fun onTranscript(text: String) {
+        if (text.isBlank()) return
+        val list = _history.value.toMutableList()
+        list.add(DialogTurn(user = text))
+        while (list.size > MAX_HISTORY) list.removeAt(0)
+        _history.value = list
+    }
+
+    private fun onResponse(text: String) {
+        if (text.isBlank()) return
+        val list = _history.value.toMutableList()
+        val idx = list.indexOfLast { it.jarvis == null }  // aggancia all'ultimo turno aperto
+        if (idx >= 0) {
+            list[idx] = list[idx].copy(jarvis = text)
+        } else {
+            list.add(DialogTurn(jarvis = text))
+            while (list.size > MAX_HISTORY) list.removeAt(0)
+        }
+        _history.value = list
     }
 
     private fun handleBinary(bytes: ByteString) {
@@ -268,5 +296,9 @@ class JarvisController(
 
     private companion object {
         const val FW = "android-mobile-0.1.0"
+        const val MAX_HISTORY = 10
     }
 }
+
+/** Una coppia di turno conversazione per lo storico. */
+data class DialogTurn(val user: String? = null, val jarvis: String? = null)
