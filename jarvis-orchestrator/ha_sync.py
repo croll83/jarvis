@@ -7,6 +7,7 @@ JARVIS Home Assistant Entity Sync
 """
 
 import logging
+import re
 import json
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -44,6 +45,7 @@ class HAEntity:
 # Entity types che ci interessano per JARVIS
 SUPPORTED_DOMAINS = [
     "light",
+    "button",
     "switch",
     "cover",
     "climate",
@@ -350,12 +352,19 @@ async def sync_entities_from_ha(
                       entity.device_name, existing['id']))
                 updated += 1
             else:
-                # Nuova entity
+                # Nuova entity. I button entrano visibili solo se sono aperture
+                # (apriporta/cancelli): gli altri (riavvii, firmware, preset...)
+                # restano fuori dal prompt/resolver ma indicizzati dal semantico.
+                _blob = f"{entity.entity_id} {entity.friendly_name}".lower()
+                _visible = 1
+                if entity.domain == "button" and not re.search(
+                        r"unlock|apripor|carrabile|pedonale|cancell", _blob):
+                    _visible = 0
                 c.execute("""
                     INSERT INTO entity_maps
                     (location_id, zone, area, room, device_name,
-                     entity_type, entity_name, entity_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     entity_type, entity_name, entity_id, visible)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     location_id,
                     zone,
@@ -364,7 +373,8 @@ async def sync_entities_from_ha(
                     entity.device_name,
                     entity.domain,
                     entity.friendly_name,
-                    entity.entity_id
+                    entity.entity_id,
+                    _visible
                 ))
                 added += 1
 

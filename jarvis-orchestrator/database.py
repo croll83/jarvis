@@ -2351,9 +2351,10 @@ def get_entity_map_for_llm(location_id: str) -> dict:
     Per query su sensor/binary_sensor, il router usa entity_discover API.
     """
     # Entity types utili per il routing (controllabili + camera per contesto)
+    # 'button' entra ma il sync marca visibili SOLO le aperture (apriporta/cancelli).
     ROUTING_ENTITY_TYPES = {
         'light', 'switch', 'cover', 'climate', 'media_player',
-        'fan', 'vacuum', 'lock', 'scene', 'script', 'camera'
+        'fan', 'vacuum', 'lock', 'scene', 'script', 'camera', 'button'
     }
 
     conn = _get_conn()

@@ -96,6 +96,7 @@ AZIONI DOMOTICHE per dominio:
 - fan: turn_on/off, set_percentage(0-100)
 - switch/scene/automation/input_boolean: turn_on/off/toggle
 - lock: lock/unlock
+- button (aperture porte/cancelli, es. "Pedonale", "Carrabile"): press
 
 GERARCHIA ENTITÀ: Piano → Zona → Stanza → entity
 "Spegni tutto in X" → entity=X, domain omesso
@@ -112,6 +113,8 @@ ESEMPI:
 "Analisi del mio portfolio crypto" → {"intent":"AI_AGENT","confidence":0.95,"interim_response":"Analizzo il portfolio..."}
 "Confronta questi due prodotti" → {"intent":"AI_AGENT","confidence":0.90,"interim_response":"Analizzo..."}
 "Rispondimi alla mail di Mario" → {"intent":"AI_AGENT","confidence":0.95,"interim_response":"Preparo la risposta..."}
+"Apri il cancello carrabile" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Apro il carrabile.","payload":{"location":"wagmi","domain":"button","entity":"Carrabile","action":"press"}}
+"Apri il pedonale" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Apro il pedonale.","payload":{"domain":"button","entity":"Pedonale","action":"press"}}
 "Spegni tutto in zona giorno" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Spengo tutto.","payload":{"entity":"Zona Giorno","action":"turn_off"}}
 "Metti i Pink Floyd in ufficio" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Metto i Pink Floyd.","payload":{"location":"wagmi","domain":"media_player","entity":"Ufficio","action":"play_music","parameters":{"query":"Pink Floyd"}}}
 "Riproduci stelle di Geolier in camera" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Metto Stelle di Geolier.","payload":{"domain":"media_player","entity":"Camera","action":"play_music","parameters":{"query":"stelle geolier"}}}
