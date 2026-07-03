@@ -1,6 +1,7 @@
 package com.jarvis.voice.wear.tile
 
 import androidx.wear.protolayout.ActionBuilders
+import androidx.wear.protolayout.DimensionBuilders
 import androidx.wear.protolayout.LayoutElementBuilders
 import androidx.wear.protolayout.ModifiersBuilders
 import androidx.wear.protolayout.ResourceBuilders
@@ -10,16 +11,16 @@ import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.jarvis.voice.wear.R
 
 /**
- * Tile JARVIS: la "scheda" che scorri sul quadrante. Un tap apre MainActivity,
- * che avvia subito l'ascolto (tap sulla testa robot).
- *
- * NB: le Tile non possono accedere al microfono; per questo il tap lancia l'Activity.
+ * Tile JARVIS: mostra il Robocat (statico) — al tap apre MainActivity, che parte già in
+ * ascolto. Le Tile non possono usare mic/animazioni live: fanno solo da lanciatore.
  */
 class JarvisTileService : TileService() {
 
     private val version = "1"
+    private val imgId = "robocat"
 
     override fun onTileRequest(
         requestParams: RequestBuilders.TileRequest
@@ -39,9 +40,15 @@ class JarvisTileService : TileService() {
             .build()
 
         val root = LayoutElementBuilders.Box.Builder()
+            .setWidth(DimensionBuilders.expand())
+            .setHeight(DimensionBuilders.expand())
+            .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
+            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
             .addContent(
-                LayoutElementBuilders.Text.Builder()
-                    .setText("JARVIS")
+                LayoutElementBuilders.Image.Builder()
+                    .setResourceId(imgId)
+                    .setWidth(DimensionBuilders.dp(84f))
+                    .setHeight(DimensionBuilders.dp(84f))
                     .setModifiers(
                         ModifiersBuilders.Modifiers.Builder().setClickable(click).build()
                     )
@@ -53,15 +60,25 @@ class JarvisTileService : TileService() {
             .setResourcesVersion(version)
             .setTileTimeline(TimelineBuilders.Timeline.fromLayoutElement(root))
             .build()
-
         return Futures.immediateFuture(tile)
     }
 
     override fun onTileResourcesRequest(
         requestParams: RequestBuilders.ResourcesRequest
     ): ListenableFuture<ResourceBuilders.Resources> {
-        return Futures.immediateFuture(
-            ResourceBuilders.Resources.Builder().setVersion(version).build()
-        )
+        val res = ResourceBuilders.Resources.Builder()
+            .setVersion(version)
+            .addIdToImageMapping(
+                imgId,
+                ResourceBuilders.ImageResource.Builder()
+                    .setAndroidResourceByResId(
+                        ResourceBuilders.AndroidImageResourceByResId.Builder()
+                            .setResourceId(R.drawable.robocat_idle)
+                            .build()
+                    )
+                    .build()
+            )
+            .build()
+        return Futures.immediateFuture(res)
     }
 }
