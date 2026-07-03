@@ -55,6 +55,10 @@ class JarvisController(
     private val _state = MutableStateFlow(HeadState.IDLE)
     val state: StateFlow<HeadState> = _state.asStateFlow()
 
+    private val _amplitude = MutableStateFlow(0f)
+    /** Livello mic normalizzato 0..1 (alimenta la waveform in UI). Valido in LISTENING. */
+    val amplitude: StateFlow<Float> = _amplitude.asStateFlow()
+
     // ── Audio routing (commutabile: locale vs watch) ────────────────────────
     private val localPlayer = TtsPlayer()
     private val opus = OpusDecoderWrapper()
@@ -101,7 +105,25 @@ class JarvisController(
     // Frame mic in ingresso (dal mic locale o dallo watch)
     // ─────────────────────────────────────────────────────────────────────────
     fun feedMicFrame(frame: ByteArray) {
-        if (streaming) ws?.send(frame.toByteString())
+        if (streaming) {
+            ws?.send(frame.toByteString())
+            _amplitude.value = frameLevel(frame)
+        }
+    }
+
+    /** RMS del frame PCM int16 LE → 0..1 (con curva per renderlo vivo visivamente). */
+    private fun frameLevel(frame: ByteArray): Float {
+        val n = frame.size / 2
+        if (n == 0) return 0f
+        var sum = 0.0
+        var i = 0
+        while (i + 1 < frame.size) {
+            val v = ((frame[i].toInt() and 0xFF) or (frame[i + 1].toInt() shl 8)).toShort().toInt()
+            sum += v.toDouble() * v
+            i += 2
+        }
+        val rms = Math.sqrt(sum / n) / 32768.0
+        return (rms * 6.0).coerceIn(0.0, 1.0).toFloat()
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -133,6 +155,7 @@ class JarvisController(
             if (ws != null) return
             if (!config.isConfigured) {
                 Log.w(tag, "Orchestrator non configurato (URL mancante)")
+                flashError()
                 return
             }
             setState(HeadState.CONNECTING)
@@ -206,7 +229,7 @@ class JarvisController(
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) = handleBinary(bytes)
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             Log.w(tag, "WS failure: ${t.message}")
-            if (ws === webSocket) { ws = null; streaming = false; setState(HeadState.IDLE) }
+            if (ws === webSocket) { ws = null; streaming = false; flashError() }
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (ws === webSocket) { ws = null; streaming = false }
@@ -217,8 +240,20 @@ class JarvisController(
     // Utility
     // ─────────────────────────────────────────────────────────────────────────
     private fun sendJson(obj: JSONObject) { ws?.send(obj.toString()) }
-    private fun setState(s: HeadState) { _state.value = s }
+    private fun setState(s: HeadState) {
+        _state.value = s
+        if (s != HeadState.LISTENING) _amplitude.value = 0f
+    }
     private fun touch() { lastActivity.set(System.currentTimeMillis()) }
+
+    /** Mostra ERROR per qualche secondo, poi torna IDLE se nessun'altra transizione è avvenuta. */
+    private fun flashError() {
+        setState(HeadState.ERROR)
+        scope.launch {
+            delay(2600)
+            if (_state.value == HeadState.ERROR) setState(HeadState.IDLE)
+        }
+    }
 
     private suspend fun ttlLoop() {
         while (true) {

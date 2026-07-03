@@ -14,4 +14,5 @@ enum class HeadState {
     LISTENING,
     THINKING,
     SPEAKING,
+    ERROR,       // connessione persa / non configurato → occhi X rossi
 }
