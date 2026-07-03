@@ -346,6 +346,11 @@ STT_ENGINE = os.getenv("STT_ENGINE", "parakeet")
 STT_MODEL = os.getenv("STT_MODEL", os.getenv("WHISPER_MODEL", "deepdml/faster-whisper-large-v3-turbo-ct2"))
 STT_LANGUAGE = os.getenv("STT_LANGUAGE", os.getenv("WHISPER_LANGUAGE", "it"))
 
+# Parakeet v3 è multilingue con auto-LID: su audio breve/rumoroso a volte sbaglia lingua
+# (es. italiano → russo). Se impostata, forza la lingua anche su Parakeet.
+# Vuota ("") = lascia l'auto-detection (comportamento precedente, revert rapido via env).
+STT_PARAKEET_LANGUAGE = os.getenv("STT_PARAKEET_LANGUAGE", "it")
+
 # Initial prompt — usato solo da Whisper (Parakeet non lo supporta).
 # IMPORTANTE: scrivere in PROSA FLUIDA, senza elenchi numerati/puntati né separatori.
 STT_PROMPT = os.getenv("STT_PROMPT", os.getenv("WHISPER_PROMPT", (

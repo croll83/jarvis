@@ -617,6 +617,9 @@ async def _transcribe_local(audio_bytes: bytes) -> Optional[str]:
                 data.add_field('language', config.STT_LANGUAGE)
                 if config.STT_PROMPT:
                     data.add_field('initial_prompt', config.STT_PROMPT)
+            elif config.STT_PARAKEET_LANGUAGE:
+                # Blocca la lingua su Parakeet per evitare misdetection (es. IT→RU)
+                data.add_field('language', config.STT_PARAKEET_LANGUAGE)
 
             async with session.post(config.STT_TRANSCRIBE_URL,
                                    data=data, timeout=config.TIMEOUTS["stt"]) as resp:
