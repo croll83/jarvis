@@ -4109,8 +4109,16 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
             _contrib = []
             for ent in discovered:
                 _eid = ent["entity_id"].lower()
+                # Allineato al modello consumi della dashboard (consumi.js): fuori i
+                # totali di linea, gli aggregati/stime e i canali-prese RAW (il frigo
+                # e le TV hanno sensori propri: in scope entrano i canali "netto").
                 if any(x in _eid for x in ("meter_principale", "casa_potenza", "_meter_",
-                                           "potenza_totale_stimata", "standby")):
+                                           "potenza_totale_stimata", "standby",
+                                           "potenza_apparente", "fattore_di_potenza",
+                                           "impianti_prese_comandate_depandance_potenza",
+                                           "deumidificatore_camere_potenza",
+                                           "deumidificatore_dependance_potenza",
+                                           "deumidificatore_soggiorno_potenza")):
                     continue
                 try:
                     _w = float(states.get(ent["entity_id"], {}).get("state"))
