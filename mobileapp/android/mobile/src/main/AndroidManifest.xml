@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -43,6 +44,19 @@
                 <data android:scheme="wear" android:host="*" android:pathPrefix="/jarvis" />
             </intent-filter>
         </service>
+
+        <!-- Rive: disabilita l'auto-init via androidx.startup (carica le native PRIMA
+             dell'Activity e crashava all'avvio su questo device). Rive viene inizializzato
+             a mano e in modo guardato in MainActivity (fallback se fallisce). -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="app.rive.runtime.kotlin.RiveInitializer"
+                tools:node="remove" />
+        </provider>
 
         <!-- Home-screen widget (Glance) -->
         <receiver

@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
+import com.jarvis.voice.mobile.core.RiveAvailability
 import com.jarvis.voice.shared.HeadState
 import kotlin.math.PI
 import kotlin.math.cos
@@ -72,7 +73,8 @@ fun RiveFace(
         runCatching { context.assets.open(RIVE_ASSET).close(); true }.getOrDefault(false)
     }
 
-    if (!hasRive) {
+    // Fallback se il .riv manca O se Rive non si è inizializzato (native non caricabili).
+    if (!hasRive || !RiveAvailability.ok) {
         JarvisFace(state, amplitude, onTap, modifier)
         return
     }
