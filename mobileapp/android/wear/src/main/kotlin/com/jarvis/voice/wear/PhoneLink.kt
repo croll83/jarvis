@@ -133,6 +133,7 @@ class PhoneLink(private val context: Context) {
             channel = ch
             micOut = channelClient.getOutputStream(ch).await()
             val input: InputStream = channelClient.getInputStream(ch).await()
+            player.start()   // warm-up: AudioTrack pronto PRIMA dei frame TTS (evita testa troncata)
 
             // TTS PCM dal telefono → player
             readJob = scope.launch {
