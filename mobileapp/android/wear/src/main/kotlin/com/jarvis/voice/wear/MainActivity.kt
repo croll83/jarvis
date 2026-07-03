@@ -3,6 +3,7 @@ package com.jarvis.voice.wear
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -33,6 +34,9 @@ import kotlinx.coroutines.delay
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Tieni lo schermo acceso durante l'interazione vocale (niente ambient/standby
+        // che nascondeva l'UI con l'overlay nero durante risposte lunghe).
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent { MaterialTheme { WearRoot(onClose = { finish() }) } }
     }
 }

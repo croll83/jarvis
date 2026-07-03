@@ -23,7 +23,9 @@ class TtsPlayer {
         val t = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    // USAGE_MEDIA: suona anche con suoneria in vibrazione/silenzioso
+                    // (USAGE_ASSISTANT veniva silenziato sul watch).
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
