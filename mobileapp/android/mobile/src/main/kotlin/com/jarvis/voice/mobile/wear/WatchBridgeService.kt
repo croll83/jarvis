@@ -8,6 +8,7 @@ import com.google.android.gms.wearable.WearableListenerService
 import com.jarvis.voice.mobile.core.JarvisRuntime
 import com.jarvis.voice.shared.protocol.AudioFormat
 import com.jarvis.voice.shared.wear.DataLayer
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,7 +33,10 @@ import java.nio.ByteOrder
  */
 class WatchBridgeService : WearableListenerService() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO +
+            CoroutineExceptionHandler { _, e -> Log.w(TAG, "relay coroutine: ${e.message}") }
+    )
     private val channelClient: ChannelClient by lazy { Wearable.getChannelClient(this) }
     private var watchNodeId: String? = null
     private var readJob: Job? = null
@@ -82,14 +86,18 @@ class WatchBridgeService : WearableListenerService() {
                 // Mic dallo watch → controller.feedMicFrame() a frame da 640 byte
                 readJob = launch {
                     val buf = ByteArray(AudioFormat.FRAME_BYTES)
-                    while (true) {
-                        var off = 0
-                        while (off < buf.size) {
-                            val n = input.read(buf, off, buf.size - off)
-                            if (n < 0) return@launch
-                            off += n
+                    try {
+                        while (true) {
+                            var off = 0
+                            while (off < buf.size) {
+                                val n = input.read(buf, off, buf.size - off)
+                                if (n < 0) return@launch
+                                off += n
+                            }
+                            c.feedMicFrame(buf.copyOf())
                         }
-                        c.feedMicFrame(buf.copyOf())
+                    } catch (e: Exception) {
+                        Log.w(TAG, "mic read loop terminato: ${e.message}")  // canale chiuso: normale
                     }
                 }
             }.onFailure { Log.w(TAG, "channel setup: ${it.message}") }
