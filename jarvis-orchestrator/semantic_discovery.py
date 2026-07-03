@@ -74,25 +74,33 @@ def device_class_hint(text: str) -> Optional[str]:
     return None
 
 
+_EMBED_BATCH = 128  # l'indice ora copre TUTTE le entità (~900): a batch interi
+                    # il servizio CPU sfora il timeout → chunking
+
+
 def _embed(texts: List[str], is_query: bool) -> Optional[np.ndarray]:
     """Embed texts via fastembed; returns L2-normalized (N, D) array or None on error."""
     if not texts:
         return np.zeros((0, _DIM), dtype=np.float32)
     # nomic-embed asymmetric retrieval prefixes
     prefix = "search_query: " if is_query else "search_document: "
-    payload = {"model": _EMBED_MODEL, "input": [prefix + t for t in texts]}
+    chunks: List[np.ndarray] = []
     try:
-        req = urllib.request.Request(
-            f"{_EMBED_URL}/api/embed",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.load(r)
-        embs = data.get("embeddings")
-        if not embs:
-            return None
-        arr = np.asarray(embs, dtype=np.float32)
+        for i in range(0, len(texts), _EMBED_BATCH):
+            batch = texts[i:i + _EMBED_BATCH]
+            payload = {"model": _EMBED_MODEL, "input": [prefix + t for t in batch]}
+            req = urllib.request.Request(
+                f"{_EMBED_URL}/api/embed",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = json.load(r)
+            embs = data.get("embeddings")
+            if not embs:
+                return None
+            chunks.append(np.asarray(embs, dtype=np.float32))
+        arr = np.concatenate(chunks, axis=0) if len(chunks) > 1 else chunks[0]
         norms = np.linalg.norm(arr, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         return arr / norms
