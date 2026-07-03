@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.jarvis.voice.shared"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         // minSdk deve essere <= a quello di mobile (28) e wear (30): usiamo il più basso

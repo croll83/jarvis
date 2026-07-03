@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.jarvis.voice.mobile"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.jarvis.voice"
