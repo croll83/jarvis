@@ -46,7 +46,7 @@ Android Studio genera il Gradle wrapper all'import (o `gradle wrapper`). Poi:
 
 Questo è uno **scaffold funzionale** da rifinire durante l'integrazione:
 
-- [ ] Verificare la versione dell'artefatto Concentus (`io.github.jaredmdobson:concentus`) e il package `org.concentus`.
+- [x] Concentus verificato: `io.github.jaredmdobson:concentus:1.0.2` su Maven Central, package `io.github.jaredmdobson.concentus` (NON `org.concentus`). Fallback se mai servisse: `com.github.theeasiestway:android-opus-codec` via JitPack (JNI).
 - [ ] Contesa del `controller` singleton tra UI telefono e relay watch: definire ownership (chi ha toccato per ultimo).
 - [ ] `WatchBridgeService`: gestione robusta ciclo di vita canale (riapertura, timeout, nodo multiplo).
 - [ ] Wear: avvio FGS/wake-lock durante la sessione per stabilità mic in background.
