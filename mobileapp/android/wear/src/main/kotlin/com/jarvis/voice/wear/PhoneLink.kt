@@ -95,12 +95,19 @@ class PhoneLink(private val context: Context) {
         }
     }
 
+    private var micFrames = 0
+
     private fun startMic() {
-        val out = micOut ?: return
-        mic.start { frame ->
+        val out = micOut
+        if (out == null) { Log.w(tag, "startMic: micOut è null (canale non pronto)"); return }
+        micFrames = 0
+        val ok = mic.start { frame ->
+            micFrames++
+            if (micFrames % 100 == 1) Log.i(tag, "mic → phone frame #$micFrames")
             runCatching { out.write(frame); out.flush() }
             _amplitude.value = frameLevel(frame)
         }
+        Log.i(tag, "mic.start ok=$ok (permesso RECORD_AUDIO?)")
     }
 
     /** RMS del frame PCM int16 LE → 0..1 (con guadagno per una waveform viva). */
