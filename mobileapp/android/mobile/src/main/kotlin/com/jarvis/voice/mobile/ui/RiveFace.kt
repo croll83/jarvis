@@ -32,32 +32,33 @@ import androidx.compose.ui.viewinterop.AndroidView
 import app.rive.runtime.kotlin.RiveAnimationView
 import com.jarvis.voice.mobile.core.RiveAvailability
 import com.jarvis.voice.shared.HeadState
+import kotlinx.coroutines.delay
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Volto animato Rive (Robocat / "Catbot"). Se `assets/jarvis_face.riv` non c'è,
- * fa fallback su [JarvisFace].
+ * Volto animato Rive (Robocat / "Catbot"). Fallback su [JarvisFace] se manca il .riv o
+ * se Rive non è disponibile.
  *
- * File Rive: artboard "Catbot", state machine "State Machine", trigger inputs
- * (Chat/Error/Download/No Internet/Reset Face/...).
+ * IMPORTANTE: firare un input inesistente fa CRASHARE nativamente (l'eccezione esplode
+ * sul thread di render di Rive, non catturabile dal chiamante). Perciò enumeriamo gli
+ * input REALI della state machine (`inputNames`) e spariamo SOLO quelli presenti.
+ * I nomi disponibili vengono loggati (tag "RiveFace") per finalizzare la mappa.
  *
- * Il Robocat ha solo 4 facce oltre a idle e nessun input "voce", quindi listening e
- * speaking userebbero la stessa faccia. Per distinguerli aggiungiamo un OVERLAY Compose
- * sopra l'avatar: anello-waveform cyan reattivo al mic (listening) e anello verde
- * ritmico (speaking). Nessuna modifica al .riv necessaria.
+ * File: artboard "Catbot", state machine "State Machine". Robocat non ha un input
+ * "livello voce" → listening/speaking usano un overlay Compose (waveform).
  */
 private const val RIVE_ASSET = "jarvis_face.riv"
 private const val STATE_MACHINE = "State Machine"
 
-/** Faccia Rive per ogni stato (listening/speaking restano su idle + overlay Compose). */
-private fun triggerFor(state: HeadState): String = when (state) {
-    HeadState.IDLE -> "Reset Face"
+/** Miglior tentativo di trigger per stato; null = non firare (resta faccia corrente). */
+private fun triggerFor(state: HeadState): String? = when (state) {
+    HeadState.IDLE -> "Face to Center"
     HeadState.CONNECTING -> "Download"
-    HeadState.LISTENING -> "Reset Face"   // idle + overlay waveform mic
+    HeadState.LISTENING -> "Face to Center"   // faccia neutra + overlay cyan
     HeadState.THINKING -> "Chat"
-    HeadState.SPEAKING -> "Reset Face"    // idle + overlay parlato
+    HeadState.SPEAKING -> "Face to Center"     // faccia neutra + overlay verde
     HeadState.ERROR -> "Error"
 }
 
@@ -73,7 +74,6 @@ fun RiveFace(
         runCatching { context.assets.open(RIVE_ASSET).close(); true }.getOrDefault(false)
     }
 
-    // Fallback se il .riv manca O se Rive non si è inizializzato (native non caricabili).
     if (!hasRive || !RiveAvailability.ok) {
         JarvisFace(state, amplitude, onTap, modifier)
         return
@@ -81,11 +81,26 @@ fun RiveFace(
 
     val riveView = remember { mutableStateOf<RiveAnimationView?>(null) }
 
-    // Fire del trigger SOLO al cambio di stato (i trigger sono one-shot).
+    // Fire del trigger al cambio di stato — SOLO se l'input esiste davvero (no crash).
     LaunchedEffect(state, riveView.value) {
         val v = riveView.value ?: return@LaunchedEffect
-        runCatching { v.fireState(STATE_MACHINE, triggerFor(state)) }
-            .onFailure { Log.w("RiveFace", "fireState(${triggerFor(state)}): ${it.message}") }
+        // Attendi che la state machine sia istanziata (max ~1s), poi leggi gli input reali.
+        var names = emptyList<String>()
+        var tries = 0
+        while (names.isEmpty() && tries < 20) {
+            names = runCatching { v.stateMachines.flatMap { it.inputNames } }.getOrDefault(emptyList())
+            if (names.isEmpty()) { delay(50); tries++ }
+        }
+        if (tries == 0 || names.isNotEmpty()) {
+            Log.i("RiveFace", "input disponibili nella state machine: $names")
+        }
+        val target = triggerFor(state) ?: return@LaunchedEffect
+        if (target in names) {
+            runCatching { v.fireState(STATE_MACHINE, target) }
+                .onFailure { Log.w("RiveFace", "fireState($target): ${it.message}") }
+        } else {
+            Log.w("RiveFace", "input '$target' assente (stato=$state) → skip. Disponibili: $names")
+        }
     }
 
     val accent by animateColorAsState(
@@ -128,7 +143,6 @@ fun RiveFace(
             },
         contentAlignment = Alignment.Center,
     ) {
-        // Avatar Rive
         AndroidView(
             factory = { ctx ->
                 RiveAnimationView(ctx).also { view ->
@@ -142,14 +156,14 @@ fun RiveFace(
             modifier = Modifier.size(280.dp),
         )
 
-        // Overlay waveform: distingue LISTENING (cyan, reattivo al mic) da SPEAKING (verde, ritmico)
+        // Overlay waveform: LISTENING (cyan, reattivo al mic) vs SPEAKING (verde, ritmico)
         if (state == HeadState.LISTENING || state == HeadState.SPEAKING) {
             val listening = state == HeadState.LISTENING
             val ringColor = if (listening) JarvisColors.cyan else JarvisColors.green
             Canvas(Modifier.size(300.dp)) {
                 val c = Offset(size.width / 2f, size.height / 2f)
                 val bars = 64
-                val inner = size.minDimension * 0.43f   // anello sul bordo esterno, non copre il volto
+                val inner = size.minDimension * 0.43f
                 val barMax = size.minDimension * 0.06f
                 val w = size.minDimension * 0.007f
                 for (i in 0 until bars) {
