@@ -497,6 +497,14 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
         logger.warning("speak_to_device: testo vuoto, skip")
         return False, 0.0
 
+    # Storico conversazione (client mobile): invia il testo "umano" della risposta
+    # PRIMA del preprocessing TTS (che manipola markdown/numeri per la sintesi).
+    try:
+        from ws_audio_handler import send_dialog_text
+        await send_dialog_text(device_id, "response", text)
+    except Exception:
+        pass
+
     engine = _cfg.TTS_ENGINE
 
     # Pre-processing deterministico: markdown, numeri, translittering inglese

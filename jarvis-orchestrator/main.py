@@ -3051,6 +3051,13 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         if norm_ms > 50:  # log solo se significativo
             logger.info(f"STT normalize: {norm_ms:.0f}ms")
 
+        # Storico conversazione (client mobile): invia la trascrizione dell'utente
+        try:
+            from ws_audio_handler import send_dialog_text
+            await send_dialog_text(device_id, "transcript", text)
+        except Exception:
+            pass
+
         # Attendi Speaker ID (potrebbe essere già finito se STT era lenta)
         speaker_start = time.time()
         speaker_ctx = await speaker_task
