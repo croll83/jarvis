@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
@@ -147,7 +148,7 @@ private fun HomeScreen(onOpenSettings: () -> Unit) {
     Box(Modifier.fillMaxSize()) {
         // Barra superiore: wordmark + gear
         Row(
-            Modifier.fillMaxWidth().padding(20.dp),
+            Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -202,7 +203,7 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
     val autoId = remember { config.autoDeviceId }
 
     Column(
-        Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
+        Modifier.fillMaxSize().statusBarsPadding().padding(20.dp).verticalScroll(rememberScrollState()),
     ) {
         Spacer(Modifier.height(8.dp))
         Text("Impostazioni", color = JarvisColors.textPrimary,
