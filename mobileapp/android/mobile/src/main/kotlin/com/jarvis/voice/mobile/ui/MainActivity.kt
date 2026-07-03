@@ -51,6 +51,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import app.rive.runtime.kotlin.core.Rive
 import com.jarvis.voice.mobile.R
 import com.jarvis.voice.mobile.config.JarvisConfig
 import com.jarvis.voice.mobile.core.JarvisRuntime
@@ -66,6 +67,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         JarvisRuntime.init(this)
+        runCatching { Rive.init(applicationContext) }  // idempotente; serve a RiveFace
         // Il foreground service (tipo microphone) va avviato SOLO dopo RECORD_AUDIO
         // (lo fa AppRoot nel callback dei permessi), altrimenti Android 14+ crasha.
         setContent {
@@ -174,7 +176,7 @@ private fun HomeScreen(onOpenSettings: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            JarvisFace(
+            RiveFace(
                 state = state,
                 amplitude = amplitude,
                 onTap = {
