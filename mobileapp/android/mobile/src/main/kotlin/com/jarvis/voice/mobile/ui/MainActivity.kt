@@ -22,6 +22,16 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import com.jarvis.voice.mobile.ws.DialogTurn
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -136,7 +146,77 @@ private fun AppRoot() {
         if (showSettings) {
             SettingsScreen(config = config, onDone = { showSettings = false })
         } else {
-            HomeScreen(onOpenSettings = { showSettings = true })
+            ResponsiveHome(onOpenSettings = { showSettings = true })
+        }
+    }
+}
+
+/**
+ * Layout responsive: schermo largo (Fold aperto / tablet / iPad) → due pannelli
+ * (storico a sinistra, avatar+stato a destra). Schermo stretto → vista singola.
+ */
+@Composable
+private fun ResponsiveHome(onOpenSettings: () -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        if (maxWidth >= 720.dp) {
+            Row(Modifier.fillMaxSize()) {
+                HistoryPane(Modifier.weight(1f).fillMaxHeight())
+                Box(Modifier.width(1.dp).fillMaxHeight().background(JarvisColors.panelBorder))
+                Box(Modifier.weight(1.1f).fillMaxHeight()) { HomeScreen(onOpenSettings) }
+            }
+        } else {
+            HomeScreen(onOpenSettings)
+        }
+    }
+}
+
+@Composable
+private fun HistoryPane(modifier: Modifier = Modifier) {
+    val history by JarvisRuntime.controller.history.collectAsState()
+    val listState = rememberLazyListState()
+    LaunchedEffect(history.size) {
+        if (history.isNotEmpty()) listState.animateScrollToItem(history.size - 1)
+    }
+    Column(modifier.statusBarsPadding().padding(horizontal = 20.dp, vertical = 16.dp)) {
+        Text("Conversazione", color = JarvisColors.textPrimary,
+            fontWeight = FontWeight.Bold, fontSize = 20.sp)
+        Spacer(Modifier.height(12.dp))
+        if (history.isEmpty()) {
+            Text(
+                "Nessuna conversazione ancora.\nTocca il volto e parla.",
+                color = JarvisColors.textMuted, fontSize = 14.sp,
+            )
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                items(history) { turn -> TurnCard(turn) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TurnCard(turn: DialogTurn) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(JarvisColors.panel)
+            .padding(14.dp),
+    ) {
+        turn.user?.let {
+            Text("TU", color = JarvisColors.cyan, fontSize = 11.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Text(it, color = JarvisColors.textPrimary, fontSize = 15.sp)
+        }
+        turn.jarvis?.let {
+            if (turn.user != null) Spacer(Modifier.height(10.dp))
+            Text("JARVIS", color = JarvisColors.green, fontSize = 11.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Text(it, color = JarvisColors.textPrimary.copy(alpha = 0.92f), fontSize = 15.sp)
         }
     }
 }

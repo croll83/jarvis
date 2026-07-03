@@ -31,6 +31,8 @@ object MsgType {
     const val LIVE_SESSION_END = "live_session_end"
     const val PING = "ping"
     const val ERROR = "error"
+    const val TRANSCRIPT = "transcript"  // testo di ciò che ha detto l'utente (storico)
+    const val RESPONSE = "response"      // testo della risposta di JARVIS (storico)
 }
 
 object Codec {
