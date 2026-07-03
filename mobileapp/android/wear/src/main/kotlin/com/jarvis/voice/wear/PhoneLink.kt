@@ -10,6 +10,7 @@ import com.jarvis.voice.shared.audio.MicRecorder
 import com.jarvis.voice.shared.audio.TtsPlayer
 import com.jarvis.voice.shared.protocol.AudioFormat
 import com.jarvis.voice.shared.wear.DataLayer
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -34,7 +35,10 @@ import java.io.OutputStream
 class PhoneLink(private val context: Context) {
 
     private val tag = "PhoneLink"
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO +
+            CoroutineExceptionHandler { _, e -> Log.w(tag, "link coroutine: ${e.message}") }
+    )
     private val channelClient: ChannelClient = Wearable.getChannelClient(context)
     private val messageClient: MessageClient = Wearable.getMessageClient(context)
     private val channelMutex = Mutex()
@@ -127,21 +131,25 @@ class PhoneLink(private val context: Context) {
             readJob = scope.launch {
                 val buf = ByteArray(AudioFormat.FRAME_BYTES)
                 val shorts = ShortArray(AudioFormat.FRAME_SAMPLES)
-                while (true) {
-                    var off = 0
-                    while (off < buf.size) {
-                        val n = input.read(buf, off, buf.size - off)
-                        if (n < 0) return@launch
-                        off += n
+                try {
+                    while (true) {
+                        var off = 0
+                        while (off < buf.size) {
+                            val n = input.read(buf, off, buf.size - off)
+                            if (n < 0) return@launch
+                            off += n
+                        }
+                        var i = 0
+                        while (i < AudioFormat.FRAME_SAMPLES) {
+                            val lo = buf[i * 2].toInt() and 0xFF
+                            val hi = buf[i * 2 + 1].toInt()
+                            shorts[i] = ((hi shl 8) or lo).toShort()
+                            i++
+                        }
+                        player.write(shorts)
                     }
-                    var i = 0
-                    while (i < AudioFormat.FRAME_SAMPLES) {
-                        val lo = buf[i * 2].toInt() and 0xFF
-                        val hi = buf[i * 2 + 1].toInt()
-                        shorts[i] = ((hi shl 8) or lo).toShort()
-                        i++
-                    }
-                    player.write(shorts)
+                } catch (e: Exception) {
+                    Log.w(tag, "TTS read loop terminato: ${e.message}")  // canale chiuso: normale
                 }
             }
         }
