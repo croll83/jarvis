@@ -4237,7 +4237,8 @@
                     const healthState = loc.health?.state || 'unknown';
                     const healthClass = healthState === 'online' ? 'up' : healthState === 'offline' ? 'down' : 'degraded';
                     const healthText = healthState === 'online' ? `${loc.health.latency_ms}ms` : loc.health.last_error || healthState;
-                    const hasEntityMap = loc.entity_map_path === '[database]';
+                    // '[database]' = sync semplice; il JSON hierarchy viene salvato nello stesso campo
+                    const hasEntityMap = !!loc.entity_map_path;
 
                     return `
                         <div class="user-item" style="border-left: 3px solid ${loc.enabled ? 'var(--success)' : 'var(--text-muted)'}; cursor: pointer;" onclick="selectLocation('${loc.id}', '${loc.name}')">
