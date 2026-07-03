@@ -51,10 +51,16 @@ try:
 except ImportError:
     sys.exit("Manca 'websockets': pip install websockets")
 
+# opuslib è un wrapper ctypes su libopus (nativa). Serve SOLO per riprodurre la TTS
+# (downlink); l'uplink è PCM. Se manca la libreria nativa (tipico su macOS: serve
+# `brew install opus` + DYLD path), degradiamo con grazia: niente playback TTS, ma
+# la diagnosi del mic e l'intera pipeline restano testabili (si loggano i frame TTS).
+OPUS_OK = True
 try:
     import opuslib
-except ImportError:
-    sys.exit("Manca 'opuslib': pip install opuslib (serve per decodificare la TTS)")
+except Exception as _e:  # ImportError (pip) o Exception ("Could not find Opus library")
+    OPUS_OK = False
+    _OPUS_ERR = str(_e)
 
 # sounddevice è opzionale solo in --wav + --no-play, ma di norma serve
 try:
@@ -91,7 +97,7 @@ class JarvisPTTClient:
         self.ttl = ttl
         self.fw = fw
         self.wav_path = wav_path
-        self.play = play and sd is not None
+        self.play = play and sd is not None and OPUS_OK   # playback TTS richiede libopus
 
         self.ws = None
         self.connected = False
@@ -109,7 +115,8 @@ class JarvisPTTClient:
         self._pb_q: queue.Queue = queue.Queue()   # thread-safe (letta dal callback PortAudio)
         self._pb_residual = np.zeros(0, dtype=np.int16)
 
-        self._opus_dec = opuslib.Decoder(SAMPLE_RATE, 1)
+        self._opus_dec = opuslib.Decoder(SAMPLE_RATE, 1) if OPUS_OK else None
+        self._tts_frames = 0
         self._loop = None
         self._in_stream = None
         self._out_stream = None
@@ -255,6 +262,14 @@ class JarvisPTTClient:
 
     def _on_binary(self, data):
         # Frame Opus TTS → decode → coda di playback
+        self._touch()
+        self._tts_frames += 1
+        if self._opus_dec is None:
+            # libopus assente: nessun playback, ma segnaliamo che la TTS ARRIVA
+            # (prova che l'intera pipeline STT→AI→TTS ha funzionato).
+            if self._tts_frames % 25 == 1:
+                Head.show(Head.SPEAK, f"TTS in arrivo: {self._tts_frames} frame (opus non installato)")
+            return
         try:
             pcm = self._opus_dec.decode(data, OPUS_MAX_SAMPLES)
         except Exception:
@@ -262,7 +277,6 @@ class JarvisPTTClient:
         arr = np.frombuffer(pcm, dtype=np.int16)
         if self.play:
             self._pb_q.put(arr)
-        self._touch()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Sorgenti audio → coda in uscita
@@ -360,6 +374,10 @@ class JarvisPTTClient:
 
         if not self.wav_path and sd is None:
             sys.exit("sounddevice non disponibile: usa --wav oppure installa sounddevice+PortAudio")
+
+        if not OPUS_OK:
+            print("⚠️  libopus non trovata → playback TTS disattivato (mic/pipeline OK lo stesso).")
+            print("    macOS: brew install opus && export DYLD_LIBRARY_PATH=\"$(brew --prefix opus)/lib:$DYLD_LIBRARY_PATH\"\n")
 
         # Mic input (solo se non in modalità WAV)
         if not self.wav_path:
