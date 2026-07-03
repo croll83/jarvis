@@ -17,4 +17,13 @@ object JarvisRuntime {
 
     val config: JarvisConfig by lazy { JarvisConfig(appCtx) }
     val controller: JarvisController by lazy { JarvisController(config) }
+
+    /**
+     * Controller DEDICATO al relay del Wear: device_id distinto (config.wearDeviceId) e
+     * sempre in relayMode. Così la sessione del watch non contamina mai il controller del
+     * telefono (mic/TTS/stato restano separati).
+     */
+    val relayController: JarvisController by lazy {
+        JarvisController(config, deviceIdOverride = config.wearDeviceId).also { it.relayMode = true }
+    }
 }

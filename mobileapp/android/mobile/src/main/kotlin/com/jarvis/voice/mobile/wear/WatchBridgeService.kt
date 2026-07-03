@@ -50,10 +50,10 @@ class WatchBridgeService : WearableListenerService() {
         watchNodeId = event.sourceNodeId
         when (event.path) {
             DataLayer.PATH_TAP -> {
-                JarvisRuntime.controller.relayMode = true
-                JarvisRuntime.controller.onTap()
+                JarvisRuntime.relayController.relayMode = true
+                JarvisRuntime.relayController.onTap()
             }
-            DataLayer.PATH_STOP -> JarvisRuntime.controller.stopEverything()
+            DataLayer.PATH_STOP -> JarvisRuntime.relayController.stopEverything()
         }
     }
 
@@ -61,7 +61,7 @@ class WatchBridgeService : WearableListenerService() {
     override fun onChannelOpened(channel: ChannelClient.Channel) {
         if (channel.path != DataLayer.PATH_AUDIO) return
         watchNodeId = channel.nodeId
-        val c = JarvisRuntime.controller
+        val c = JarvisRuntime.relayController
         c.relayMode = true
 
         scope.launch {
@@ -99,7 +99,7 @@ class WatchBridgeService : WearableListenerService() {
         if (channel.path != DataLayer.PATH_AUDIO) return
         readJob?.cancel(); readJob = null
         ttsOut = null
-        val c = JarvisRuntime.controller
+        val c = JarvisRuntime.relayController
         c.remoteTtsWriter = null
         c.relayMode = false
     }
@@ -108,7 +108,7 @@ class WatchBridgeService : WearableListenerService() {
         stateJob?.cancel()
         stateJob = scope.launch {
             val messageClient = Wearable.getMessageClient(this@WatchBridgeService)
-            JarvisRuntime.controller.state.collect { s ->
+            JarvisRuntime.relayController.state.collect { s ->
                 val node = watchNodeId ?: return@collect
                 runCatching {
                     messageClient.sendMessage(node, DataLayer.PATH_STATE, s.name.toByteArray()).await()

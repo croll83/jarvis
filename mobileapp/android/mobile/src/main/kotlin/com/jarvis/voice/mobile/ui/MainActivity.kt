@@ -283,6 +283,7 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
     var idMode by remember { mutableStateOf(config.deviceIdMode) }
     var customId by remember { mutableStateOf(config.customDeviceId) }
     val autoId = remember { config.autoDeviceId }
+    var wearId by remember { mutableStateOf(config.wearDeviceId) }
 
     Column(
         Modifier.fillMaxSize().statusBarsPadding().padding(20.dp).verticalScroll(rememberScrollState()),
@@ -349,6 +350,21 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
             modifier = Modifier.padding(top = 8.dp),
         )
 
+        Spacer(Modifier.height(18.dp))
+        Text("device_id Wear (watch)", color = JarvisColors.textPrimary,
+            fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        Spacer(Modifier.height(4.dp))
+        OutlinedTextField(
+            value = wearId, onValueChange = { wearId = it.uppercase() },
+            label = { Text("device_id Wear") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "Il watch è un device separato lato orchestrator: configuralo in dashboard con " +
+                "use_internal_speaker=true (altrimenti niente TTS sul watch).",
+            color = JarvisColors.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
+        )
+
         Spacer(Modifier.height(24.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             OutlinedButton(onClick = onDone) { Text("Annulla") }
@@ -358,6 +374,7 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
                     config.token = token
                     config.deviceIdMode = idMode
                     if (idMode == JarvisConfig.MODE_CUSTOM) config.customDeviceId = customId
+                    if (wearId.isNotBlank()) config.wearDeviceId = wearId
                     ttlMin.toLongOrNull()?.let { if (it > 0) config.ttlMillis = it * 60_000L }
                     onDone()
                 },
