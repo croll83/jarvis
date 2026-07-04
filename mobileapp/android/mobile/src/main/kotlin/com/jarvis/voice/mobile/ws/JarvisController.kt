@@ -64,6 +64,11 @@ class JarvisController(
     /** Ultime coppie (utente → JARVIS) per lo storico dual-pane. */
     val history: StateFlow<List<DialogTurn>> = _history.asStateFlow()
 
+    private val _statusMessage = MutableStateFlow<String?>(null)
+    /** Messaggio d'errore leggibile (rete/config/token/timeout). Valorizzato in stato ERROR,
+     *  azzerato appena si esce da ERROR. La UI lo mostra al posto della label generica. */
+    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
+
     // ── Audio routing (commutabile: locale vs watch) ────────────────────────
     private val localPlayer = TtsPlayer()
     private val opus = OpusDecoderWrapper()
@@ -162,13 +167,18 @@ class JarvisController(
             if (ws != null) return
             if (!config.isConfigured) {
                 Log.w(tag, "Orchestrator non configurato (URL mancante)")
-                flashError()
+                flashError("Configura l'indirizzo dell'orchestratore nelle impostazioni")
                 return
             }
             setState(HeadState.CONNECTING)
-            val base = config.url
-                .replaceFirst("ws://", "http://")
-                .replaceFirst("wss://", "https://")
+            // Tollerante sullo schema: accetta ws://, wss://, http(s):// o solo host:porta.
+            val raw = config.url.trim()
+            val base = when {
+                raw.startsWith("ws://") -> "http://" + raw.removePrefix("ws://")
+                raw.startsWith("wss://") -> "https://" + raw.removePrefix("wss://")
+                raw.startsWith("http://") || raw.startsWith("https://") -> raw
+                else -> "http://$raw"
+            }
             var url = "$base/ws/audio?device_id=${deviceIdOverride ?: config.deviceId}"
             if (config.token.isNotBlank()) url += "&token=${config.token}"
 
@@ -225,7 +235,14 @@ class JarvisController(
             MsgType.LIVE_SESSION_START -> { liveSession = true; setState(HeadState.LISTENING) }
             MsgType.LIVE_SESSION_END -> { liveSession = false; setState(HeadState.IDLE) }
             MsgType.PING -> sendJson(JSONObject().put("type", MsgType.PONG))
-            MsgType.ERROR -> Log.w(tag, "server error: ${msg.opt("msg") ?: msg.opt("message")}")
+            MsgType.ERROR -> {
+                val m = (msg.opt("msg") ?: msg.opt("message"))?.toString()
+                Log.w(tag, "server error: $m")
+                // Non interrompere la riproduzione in corso; altrove segnala l'errore all'utente.
+                if (_state.value != HeadState.SPEAKING) {
+                    flashError(m?.takeIf { it.isNotBlank() } ?: "Errore dall'orchestratore")
+                }
+            }
             MsgType.TRANSCRIPT -> onTranscript(msg.optString("text"))
             MsgType.RESPONSE -> onResponse(msg.optString("text"))
         }
@@ -265,8 +282,18 @@ class JarvisController(
         override fun onMessage(webSocket: WebSocket, text: String) = handleText(text)
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) = handleBinary(bytes)
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            Log.w(tag, "WS failure: ${t.message}")
-            if (ws === webSocket) { ws = null; streaming = false; flashError() }
+            val code = response?.code
+            Log.w(tag, "WS failure: ${t.message} (http $code)")
+            if (ws !== webSocket) return
+            ws = null
+            streaming = false
+            onLocalMicStop?.invoke()
+            val msg = when {
+                code == 401 || code == 403 -> "Accesso negato: token non valido o mancante"
+                code != null && code >= 500 -> "Errore dell'orchestratore ($code)"
+                else -> "Orchestratore irraggiungibile. Controlla rete e VPN."
+            }
+            flashError(msg)
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (ws === webSocket) { ws = null; streaming = false }
@@ -278,6 +305,7 @@ class JarvisController(
     // ─────────────────────────────────────────────────────────────────────────
     private fun sendJson(obj: JSONObject) { ws?.send(obj.toString()) }
     private fun setState(s: HeadState) {
+        if (s != HeadState.ERROR) _statusMessage.value = null  // il messaggio vive solo in ERROR
         _state.value = s
         stateSince.set(System.currentTimeMillis())
         if (s != HeadState.LISTENING) _amplitude.value = 0f
@@ -305,17 +333,26 @@ class JarvisController(
                 streaming = false
                 onLocalMicStop?.invoke()
                 localPlayer.stop()
-                setState(if (s == HeadState.CONNECTING) HeadState.ERROR else HeadState.IDLE)
+                if (s == HeadState.CONNECTING) {
+                    ws?.cancel(); ws = null
+                    flashError("Timeout: l'orchestratore non risponde")
+                } else {
+                    setState(HeadState.IDLE)
+                }
             }
         }
     }
     private fun touch() { lastActivity.set(System.currentTimeMillis()) }
 
-    /** Mostra ERROR per qualche secondo, poi torna IDLE se nessun'altra transizione è avvenuta. */
-    private fun flashError() {
+    /**
+     * Mostra ERROR con un messaggio leggibile, poi torna IDLE se nessun'altra transizione
+     * è avvenuta. [message] null = usa la label generica di ERROR in UI.
+     */
+    private fun flashError(message: String? = null) {
+        _statusMessage.value = message
         setState(HeadState.ERROR)
         scope.launch {
-            delay(2600)
+            delay(ERROR_FLASH_MS)
             if (_state.value == HeadState.ERROR) setState(HeadState.IDLE)
         }
     }
@@ -335,6 +372,7 @@ class JarvisController(
         const val FW = "android-mobile-0.1.0"
         const val MAX_HISTORY = 10
         const val TRIGGER_LISTEN_DELAY_MS = 800L  // attesa fine coda TTS prima del multiturn
+        const val ERROR_FLASH_MS = 3600L          // durata visualizzazione messaggio d'errore
     }
 }
 

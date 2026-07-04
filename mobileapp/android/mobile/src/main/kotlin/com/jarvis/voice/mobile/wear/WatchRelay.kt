@@ -77,7 +77,6 @@ object WatchRelay {
                 readJob?.cancel()
                 readJob = launch {
                     val buf = ByteArray(AudioFormat.FRAME_BYTES)
-                    var frames = 0
                     try {
                         while (true) {
                             var off = 0
@@ -86,8 +85,6 @@ object WatchRelay {
                                 if (n < 0) return@launch
                                 off += n
                             }
-                            frames++
-                            if (frames % 100 == 1) Log.i(TAG, "mic dal watch frame #$frames")
                             c.feedMicFrame(buf.copyOf())
                         }
                     } catch (e: Exception) {
