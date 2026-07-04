@@ -3904,6 +3904,17 @@ def _resolve_home_control_target(
         entity_type=domain,
         room=room_hint
     )
+    if not exact_id and room_hint:
+        # Il room_hint del microfono è un filtro HARD in resolve_entity_id e
+        # nascondeva i nomi univoci di altre stanze ("Pedonale" in Impianti
+        # invisibile dal Salotto → fallback sintetico; "Filtraggio Piscina"
+        # scivolava sul word-match "piscina" → boiler sbagliato). Retry globale.
+        exact_id = resolve_entity_id(
+            location_id=location_id,
+            friendly_name=entity_name,
+            entity_type=domain,
+            room=None
+        )
     if exact_id:
         logger.info(f"Entity resolution [qwen_exact]: '{entity_name}' → {exact_id}")
         return {
