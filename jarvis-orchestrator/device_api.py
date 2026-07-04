@@ -198,5 +198,6 @@ def get_device_speaker_config(device_id: str) -> Optional[dict]:
         "location_id": device.location_id,
         "enabled": device.enabled,
         "friendly_name": device.friendly_name,
-        "device_type": device.device_type
+        "device_type": device.device_type,
+        "forced_user_id": device.forced_user_id
     }

@@ -40,7 +40,7 @@ from database import (
     get_all_voice_devices, get_voice_device, upsert_voice_device,
     delete_voice_device, get_unconfigured_voice_devices,
     get_configured_voice_devices, get_voice_device_stats,
-    get_voice_devices_by_location,
+    get_voice_devices_by_location, set_device_forced_user,
     # Access log functions
     get_access_log, get_access_log_stats, get_auth_attempts_log
 )
@@ -103,6 +103,7 @@ class VoiceDeviceCreate(BaseModel):
     wake_word_sensitivity: Optional[float] = 0.82
     speaker_volume: Optional[int] = 80
     volume_speaker: Optional[str] = None  # separate entity for volume control
+    forced_user_id: Optional[int] = None  # utente fisso (bypass speaker ID); None = non tocca
 
 
 class VoiceDeviceUpdate(BaseModel):
@@ -118,6 +119,11 @@ class VoiceDeviceUpdate(BaseModel):
     wake_word_sensitivity: Optional[float] = None
     speaker_volume: Optional[int] = None
     volume_speaker: Optional[str] = None  # separate entity for volume control
+    forced_user_id: Optional[int] = None  # utente fisso (bypass speaker ID); None = non tocca
+
+
+class ForcedUserSet(BaseModel):
+    user_id: Optional[int] = None  # None = azzera (torna a speaker recognition)
 
 
 # ===========================================================================
@@ -1995,6 +2001,11 @@ async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, An
         volume_speaker=data.volume_speaker
     )
 
+    # Utente fisso (device personale): impostato solo se fornito (None = non tocca,
+    # così un salvataggio dalla dashboard che non manda il campo non lo azzera).
+    if data.forced_user_id is not None:
+        set_device_forced_user(device_id, data.forced_user_id)
+
     # Push config update to device via WebSocket
     config_push = {}
     if data.wake_word_sensitivity is not None:
@@ -2019,6 +2030,19 @@ async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, An
         "status": "saved",
         "device": device.to_dict() if device else None
     }
+
+
+@router.post("/voice-devices/{device_id}/forced-user")
+async def set_voice_device_forced_user(device_id: str, data: ForcedUserSet) -> Dict[str, Any]:
+    """Associa il device a un utente fisso (bypass speaker recognition); user_id=null azzera."""
+    from database import get_user_by_id
+    device_id = device_id.upper().strip()
+    if not get_voice_device(device_id):
+        raise HTTPException(404, f"Device {device_id} non trovato")
+    if data.user_id is not None and get_user_by_id(data.user_id) is None:
+        raise HTTPException(404, f"Utente {data.user_id} non trovato")
+    set_device_forced_user(device_id, data.user_id)
+    return {"status": "ok", "device_id": device_id, "forced_user_id": data.user_id}
 
 
 @router.patch("/voice-devices/{device_id}")
