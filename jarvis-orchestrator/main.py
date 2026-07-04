@@ -5405,9 +5405,16 @@ async def process_jarvis_logic(text: str, context: dict):
                 logger.error(f"Web search failed: {e}", exc_info=True)
                 response = "Mi dispiace, non sono riuscito a cercare sul web."
         else:
+            # Small-talk / risposta conversazionale pura: il router NON ha chiesto
+            # una ricerca (nessun api_call), quindi NON esporre i tool — altrimenti il
+            # modello 7B auto-triggera web_search anche su saluti ("ciao, mi riconosci?").
+            # Se serviva davvero il web, il router avrebbe messo api_call=web_search.
             response = router_data.get("response")
             if not response:
-                response = await get_quick_response(text, context)
+                response = await get_quick_response(
+                    text, context,
+                    user_id=speaker_id, location_id=location, enable_tools=False,
+                )
 
         smart_cache.learn(text, response, intent)
         save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
