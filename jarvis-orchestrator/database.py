@@ -397,6 +397,13 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Migration: add forced_user_id — associa il device a un utente fisso (telefono/watch
+    # personali): bypassa lo speaker recognition e forza sempre quell'utente.
+    try:
+        c.execute("ALTER TABLE voice_devices ADD COLUMN forced_user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # 19. USER MEMORY HOURLY (warm layer - summaries orari per utente)
     c.execute('''CREATE TABLE IF NOT EXISTS user_memory_hourly (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3223,6 +3230,7 @@ class VoiceDevice:
     speaker_volume: int = 80
     device_type: str = "AtomS3R"
     volume_speaker: Optional[str] = None  # separate entity for volume control (e.g. Bose native vs Echo)
+    forced_user_id: Optional[int] = None  # se impostato: bypassa speaker ID, forza questo utente
 
     @property
     def is_configured(self) -> bool:
@@ -3255,6 +3263,7 @@ class VoiceDevice:
             "wake_word_sensitivity": self.wake_word_sensitivity,
             "speaker_volume": self.speaker_volume,
             "volume_speaker": self.volume_speaker,
+            "forced_user_id": self.forced_user_id,
             "is_configured": self.is_configured,
             "is_online": self.is_online
         }
@@ -3280,7 +3289,8 @@ def _row_to_voice_device(row) -> VoiceDevice:
         use_internal_speaker=bool(row['use_internal_speaker']) if 'use_internal_speaker' in row.keys() else False,
         speaker_volume=row['speaker_volume'] if 'speaker_volume' in row.keys() else 80,
         device_type=row['device_type'] if 'device_type' in row.keys() else "AtomS3R",
-        volume_speaker=row['volume_speaker'] if 'volume_speaker' in row.keys() else None
+        volume_speaker=row['volume_speaker'] if 'volume_speaker' in row.keys() else None,
+        forced_user_id=row['forced_user_id'] if 'forced_user_id' in row.keys() else None
     )
 
 
@@ -3294,6 +3304,18 @@ def get_voice_device(device_id: str) -> Optional[VoiceDevice]:
     if row:
         return _row_to_voice_device(row)
     return None
+
+
+def set_device_forced_user(device_id: str, user_id: Optional[int]) -> bool:
+    """Imposta (o azzera, con None) l'utente fisso associato al device."""
+    conn = _get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE voice_devices SET forced_user_id = ? WHERE device_id = ?",
+              (user_id, device_id.upper()))
+    changed = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
 
 
 def get_all_voice_devices() -> List[VoiceDevice]:

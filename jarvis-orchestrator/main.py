@@ -3017,7 +3017,9 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         # Lancia STT, Speaker ID e Restore concorrentemente
         stt_task = _aio.ensure_future(transcribe_audio(clean_audio))
         _ws_device_type = device_config.get("device_type", "AtomS3R") if device_config else "AtomS3R"
-        speaker_task = loop.run_in_executor(
+        # Device personale (telefono/watch) con utente fisso → bypassa lo speaker recognition
+        _forced_uid = device_config.get("forced_user_id") if device_config else None
+        speaker_task = None if _forced_uid else loop.run_in_executor(
             None,  # default ThreadPoolExecutor
             build_speaker_context, audio_bytes, _ws_device_type
         )
@@ -3039,7 +3041,7 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         if not text:
             logger.info(f"WS: no speech detected from {device_id}")
             # Cancella speaker task se non serve
-            speaker_task.cancel()
+            speaker_task and speaker_task.cancel()
             return
 
         logger.info(f"WS transcribed: '{text[:120]}...' from {device_id}")
@@ -3058,9 +3060,21 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         except Exception:
             pass
 
-        # Attendi Speaker ID (potrebbe essere già finito se STT era lenta)
+        # Speaker: utente fisso (device personale) oppure speaker recognition
         speaker_start = time.time()
-        speaker_ctx = await speaker_task
+        if _forced_uid:
+            from database import get_user_by_id
+            _fu = get_user_by_id(_forced_uid)
+            speaker_ctx = {
+                "speaker_id": _forced_uid,
+                "speaker_name": _fu.name if _fu else "Sconosciuto",
+                "is_admin": _fu.is_admin if _fu else False,
+                "speaker_identified": _fu is not None,
+                "identification_method": "forced_device",
+            }
+            logger.info(f"Speaker fisso per {device_id}: {speaker_ctx['speaker_name']} (uid={_forced_uid})")
+        else:
+            speaker_ctx = await speaker_task
         speaker_elapsed = (time.time() - stt_start) * 1000  # tempo totale dall'inizio
         admin_metrics.record_speaker_id(speaker_elapsed)
 
