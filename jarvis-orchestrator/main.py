@@ -4052,11 +4052,15 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
                     _lents = [{"entity_name": r["entity_name"], "room": r["room"]}
                               for r in _c.fetchall()]
                     _conn.close()
+                _label = {"cover": "tapparelle", "light": "luci", "climate": "termostati",
+                          "camera": "telecamere", "switch": "interruttori",
+                          "media_player": "media player", "lock": "serrature",
+                          "fan": "ventilatori", "scene": "scene"}.get(_ldom, _ldom)
+                if not _lents and _lscope:
+                    # scope valido ma dominio assente lì: risposta onesta, niente
+                    # fallback semantico (porterebbe rumore o "non ho trovato")
+                    return f"Non ci sono {_label} in {_lscope}."
                 if _lents:
-                    _label = {"cover": "tapparelle", "light": "luci", "climate": "termostati",
-                              "camera": "telecamere", "switch": "interruttori",
-                              "media_player": "media player", "lock": "serrature",
-                              "fan": "ventilatori", "scene": "scene"}.get(_ldom, _ldom)
                     _names = [e["entity_name"] for e in _lents][:15]
                     _where = f" in {_lscope}" if _lscope else ""
                     if len(_names) == 1:
