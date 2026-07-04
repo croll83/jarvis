@@ -3730,6 +3730,23 @@ def _resolve_home_control_target(
             "match_type": "ambiguous",
         }
 
+    # ── B0. NOME ESATTO GLOBALE (con dominio): un friendly name univoco vince
+    # sempre sull'estrazione stanza dal testo. Senza questo, "accendi filtraggio
+    # piscina" veniva dirottato dalla parola-stanza "piscina" sull'unico switch
+    # dell'area (il boiler). Solo match ESATTO: i parziali romperebbero i bulk
+    # ("accendi le luci del salotto" non deve diventare una singola lampada).
+    if entity_name and domain:
+        _b0 = resolve_entity_id(location_id=location_id, friendly_name=entity_name,
+                                entity_type=domain, room=None, exact_only=True)
+        if _b0:
+            logger.info(f"Entity resolution [qwen_exact_global]: '{entity_name}' → {_b0}")
+            return {
+                "mode": "single",
+                "entity_ids": [_b0],
+                "description": entity_name,
+                "match_type": "exact",
+            }
+
     # ── A. TESTO UTENTE: estrai target direttamente dal testo originale ──
     if user_text:
         extracted = _extract_target_from_user_text(user_text, location_id)
