@@ -3983,7 +3983,7 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
     Returns a human-readable summary string, or None on failure.
     """
     try:
-        from database import _get_conn
+        from database import _get_conn, discover_entities_for_voice
 
         params = payload.get("params", {})
         target_location = params.get("location_id") or location or get_default_location_id()
@@ -3998,6 +3998,57 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
             _hist = await _execute_history_compare(target_location, context)
             if _hist:
                 return _hist
+
+        # NAME LISTING: "quali tapparelle ci sono in zona giorno?", "come si
+        # chiamano le luci del salotto?" → elenco ESATTO dalla mappa (dominio +
+        # scope room/area/zone, solo visibili), niente semantica: la ricerca
+        # libera qui porta rumore (valori, entità nascoste, timestamp).
+        _LIST_PATTERNS = ("quali ", "come si chiama", "che tapparelle", "che luci",
+                          "che dispositivi", "che termostati", "che telecamere",
+                          "elenca", "elenco ", "lista d", "nomi d", "dammi i nomi")
+        _NOUN2DOMAIN = (("tapparell", "cover"), ("luc", "light"), ("faret", "light"),
+                        ("termostat", "climate"), ("clima", "climate"),
+                        ("telecamer", "camera"), ("interruttor", "switch"),
+                        ("pres", "switch"), ("televisor", "media_player"),
+                        ("tv", "media_player"), ("serratur", "lock"),
+                        ("scen", "scene"), ("ventilator", "fan"))
+        if any(pat in _utext for pat in _LIST_PATTERNS):
+            _DOMAIN_SET = {"light", "cover", "climate", "media_player", "switch",
+                           "camera", "lock", "fan", "vacuum", "scene", "sensor",
+                           "binary_sensor"}
+            _ldom = params.get("domain") if params.get("domain") in _DOMAIN_SET else None
+            if not _ldom and params.get("device_class") in _DOMAIN_SET:
+                _ldom = params.get("device_class")   # il 7B ci mette spesso il dominio
+            if not _ldom:
+                _blob = f"{params.get('search') or ''} {_utext}".lower()
+                for _stem, _d in _NOUN2DOMAIN:
+                    if _stem in _blob:
+                        _ldom = _d
+                        break
+            _lscope = params.get("room") or params.get("zone") or params.get("floor")
+            if _ldom:
+                _lents = discover_entities_for_voice(target_location, _lscope, domain=_ldom) \
+                    if _lscope else []
+                if not _lents and not _lscope:
+                    _conn = _get_conn(); _c = _conn.cursor()
+                    _c.execute("""SELECT entity_name, room FROM entity_maps
+                                  WHERE location_id=? AND entity_type=?
+                                    AND COALESCE(visible,1)=1 ORDER BY room, entity_name""",
+                               (target_location, _ldom))
+                    _lents = [{"entity_name": r["entity_name"], "room": r["room"]}
+                              for r in _c.fetchall()]
+                    _conn.close()
+                if _lents:
+                    _label = {"cover": "tapparelle", "light": "luci", "climate": "termostati",
+                              "camera": "telecamere", "switch": "interruttori",
+                              "media_player": "media player", "lock": "serrature",
+                              "fan": "ventilatori", "scene": "scene"}.get(_ldom, _ldom)
+                    _names = [e["entity_name"] for e in _lents][:15]
+                    _where = f" in {_lscope}" if _lscope else ""
+                    if len(_names) == 1:
+                        return f"C'è una sola {_label[:-1] if _label.endswith('e') else _label}{_where}: {_names[0]}."
+                    return (f"Ci sono {len(_lents)} {_label}{_where}: " + ", ".join(_names)
+                            + ("" if len(_lents) <= 15 else f" e altre {len(_lents)-15}") + ".")
 
         # Semantic resolution for free-text searches (handles language/synonyms,
         # e.g. "temperatura" -> "...temperature"); falls back to the SQL map query.
