@@ -62,6 +62,27 @@ DEFAULT_DOMAIN_LEVELS: Dict[str, SecurityLevel] = {
     # (no default domains — L4 is for channel-based blocking)
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENTITY-LEVEL OVERRIDES (prefix match on entity_id)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Alcune entità sono più critiche del loro dominio: gli apricancello BTicino sono
+# `button` (L1) ma aprono gli accessi fisici di casa → livello da serratura (L3),
+# così da hermes/agent (L2) serve l'approvazione sul bot, come per i lock.
+
+ENTITY_LEVEL_OVERRIDES: Dict[str, SecurityLevel] = {
+    "button.bticino_hometouch_unlock": SecurityLevel.L3_PROTECTED,  # Pedonale/Carrabile
+}
+
+
+def get_entity_level_override(entity_id: Optional[str]) -> Optional[SecurityLevel]:
+    """Livello di sicurezza per entità specifica (match per prefisso), se definito."""
+    if not entity_id:
+        return None
+    for prefix, level in ENTITY_LEVEL_OVERRIDES.items():
+        if entity_id.startswith(prefix):
+            return level
+    return None
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CHANNEL → MAX SECURITY LEVEL MAPPING
@@ -158,6 +179,9 @@ def check_security(
         Tuple of (allowed, reason, domain_level, channel_max_level)
     """
     domain_level = get_domain_level(domain, db_domain_overrides)
+    _entity_level = get_entity_level_override(entity_id)
+    if _entity_level is not None and _entity_level > domain_level:
+        domain_level = _entity_level
     channel_max = get_channel_permission(source_channel, db_channel_overrides)
 
     entity_str = f" ({entity_id})" if entity_id else ""
