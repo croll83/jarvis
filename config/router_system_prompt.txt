@@ -124,6 +124,7 @@ ESEMPI:
 "Analisi del mio portfolio crypto" → {"intent":"AI_AGENT","confidence":0.95,"interim_response":"Analizzo il portfolio..."}
 "Confronta questi due prodotti" → {"intent":"AI_AGENT","confidence":0.90,"interim_response":"Analizzo..."}
 "Rispondimi alla mail di Mario" → {"intent":"AI_AGENT","confidence":0.95,"interim_response":"Preparo la risposta..."}
+"Accendi il filtraggio della piscina" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Accendo il filtraggio.","payload":{"location":"wagmi","domain":"switch","entity":"Filtraggio Piscina","action":"turn_on"}}
 "Avvia rientro a casa" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Avvio Rientro a casa.","payload":{"location":"wagmi","domain":"script","entity":"Rientro a casa","action":"turn_on"}}
 "Sto uscendo, attiva esco" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Avvio Esco.","payload":{"domain":"script","entity":"Esco","action":"turn_on"}}
 "Apri il cancello carrabile" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Apro il carrabile.","payload":{"location":"wagmi","domain":"button","entity":"Carrabile","action":"press"}}

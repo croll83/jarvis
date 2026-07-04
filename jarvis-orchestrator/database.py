@@ -2903,7 +2903,8 @@ def resolve_entity_id(
     location_id: str,
     friendly_name: str,
     entity_type: str = None,
-    room: str = None
+    room: str = None,
+    exact_only: bool = False
 ) -> Optional[str]:
     """
     Risolve un friendly name nel corrispondente entity_id di Home Assistant.
@@ -2959,6 +2960,9 @@ def resolve_entity_id(
     for row in rows:
         if row['entity_name'].lower().strip() == friendly_lower:
             return row['entity_id']
+
+    if exact_only:
+        return None
 
     # Cerca match parziale (friendly_name contenuto in entity_name o viceversa)
     for row in rows:
