@@ -1,6 +1,7 @@
 package com.jarvis.voice.wear
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.WindowManager
@@ -34,8 +35,9 @@ import kotlinx.coroutines.delay
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Tieni lo schermo acceso durante l'interazione vocale (niente ambient/standby
-        // che nascondeva l'UI con l'overlay nero durante risposte lunghe).
+        // Schermo acceso all'avvio (parte subito in ascolto); poi WearRoot lo gestisce
+        // per stato: acceso solo quando serve interagire, rilasciato in IDLE/ERROR
+        // così l'OLED può spegnersi e non drena la batteria a sessione finita.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent { MaterialTheme { WearRoot(onClose = { finish() }) } }
     }
@@ -62,13 +64,37 @@ private fun WearRoot(onClose: () -> Unit) {
     }
     DisposableEffect(Unit) { onDispose { link.stop() } }
 
-    // Autochiusura: quando torna IDLE dopo essere stata attiva (fine risposta).
+    // Batteria: tieni lo schermo acceso SOLO durante l'interazione attiva; rilascialo
+    // in IDLE/ERROR così l'OLED può spegnersi (il flag da solo teneva acceso all'infinito).
+    val window = (context as? Activity)?.window
+    LaunchedEffect(state) {
+        val keepOn = when (state) {
+            HeadState.CONNECTING, HeadState.LISTENING,
+            HeadState.THINKING, HeadState.SPEAKING -> true
+            HeadState.IDLE, HeadState.ERROR -> false
+        }
+        window?.apply {
+            if (keepOn) addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // Autochiusura: torna IDLE dopo essere stata attiva (fine risposta), oppure resta in
+    // ERROR → chiudi dopo un attimo per non lasciare l'Activity (e lo schermo) accesa.
     var wasActive by remember { mutableStateOf(false) }
     LaunchedEffect(state) {
-        if (state != HeadState.IDLE && state != HeadState.CONNECTING) wasActive = true
-        if (wasActive && state == HeadState.IDLE) {
-            delay(700)
-            if (link.state.value == HeadState.IDLE) onClose()
+        if (state != HeadState.IDLE && state != HeadState.CONNECTING && state != HeadState.ERROR) {
+            wasActive = true
+        }
+        when {
+            wasActive && state == HeadState.IDLE -> {
+                delay(700)
+                if (link.state.value == HeadState.IDLE) onClose()
+            }
+            state == HeadState.ERROR -> {
+                delay(2500)
+                if (link.state.value == HeadState.ERROR) onClose()
+            }
         }
     }
 
