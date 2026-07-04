@@ -4580,6 +4580,11 @@ def _map_action_for_domain(base_action: str, entity_domain: str) -> str:
                 "toggle": "toggle"}.get(base_action, base_action)
     if entity_domain == "button":
         return "press"  # i button si premono e basta
+    if entity_domain == "script":
+        # gli script si ESEGUONO: "disattiva privacy telecamere" arriva già
+        # flippato sullo script opposto, ma con action=turn_off che per HA
+        # significa "ferma lo script in corso" (no-op) — non "eseguilo".
+        return "turn_on"
     # domini on/off (light, switch, media_player, fan, scene, script, ...):
     # press/open → turn_on, close → turn_off
     return {"press": "turn_on", "open": "turn_on", "close": "turn_off"}.get(
