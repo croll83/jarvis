@@ -3,8 +3,10 @@ package com.jarvis.voice.mobile.ui
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -55,6 +57,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
@@ -118,12 +121,16 @@ private fun AppRoot() {
     val context = LocalContext.current
     val config = JarvisRuntime.config
     var showSettings by remember { mutableStateOf(!config.isConfigured) }
+    var micDenied by remember { mutableStateOf(false) }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
         if (result[Manifest.permission.RECORD_AUDIO] == true) {
+            micDenied = false
             JarvisForegroundService.start(context)
+        } else {
+            micDenied = true
         }
     }
 
@@ -132,6 +139,7 @@ private fun AppRoot() {
             context, Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
         if (micGranted) {
+            micDenied = false
             JarvisForegroundService.start(context)
         } else {
             val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
@@ -142,11 +150,24 @@ private fun AppRoot() {
         }
     }
 
+    // Apre la schermata di dettaglio app di sistema (funziona anche dopo "non chiedere più").
+    val openAppSettings = {
+        val intent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.fromParts("package", context.packageName, null),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+    }
+
     AuroraBackground {
         if (showSettings) {
             SettingsScreen(config = config, onDone = { showSettings = false })
         } else {
-            ResponsiveHome(onOpenSettings = { showSettings = true })
+            ResponsiveHome(
+                onOpenSettings = { showSettings = true },
+                micDenied = micDenied,
+                onFixPermission = openAppSettings,
+            )
         }
     }
 }
@@ -156,16 +177,22 @@ private fun AppRoot() {
  * (storico a sinistra, avatar+stato a destra). Schermo stretto → vista singola.
  */
 @Composable
-private fun ResponsiveHome(onOpenSettings: () -> Unit) {
+private fun ResponsiveHome(
+    onOpenSettings: () -> Unit,
+    micDenied: Boolean = false,
+    onFixPermission: () -> Unit = {},
+) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         if (maxWidth >= 720.dp) {
             Row(Modifier.fillMaxSize()) {
                 HistoryPane(Modifier.weight(1f).fillMaxHeight())
                 Box(Modifier.width(1.dp).fillMaxHeight().background(JarvisColors.panelBorder))
-                Box(Modifier.weight(1.1f).fillMaxHeight()) { HomeScreen(onOpenSettings) }
+                Box(Modifier.weight(1.1f).fillMaxHeight()) {
+                    HomeScreen(onOpenSettings, micDenied, onFixPermission)
+                }
             }
         } else {
-            HomeScreen(onOpenSettings)
+            HomeScreen(onOpenSettings, micDenied, onFixPermission)
         }
     }
 }
@@ -230,10 +257,15 @@ private fun TurnCard(turn: DialogTurn, source: String = "") {
 }
 
 @Composable
-private fun HomeScreen(onOpenSettings: () -> Unit) {
+private fun HomeScreen(
+    onOpenSettings: () -> Unit,
+    micDenied: Boolean = false,
+    onFixPermission: () -> Unit = {},
+) {
     val controller = JarvisRuntime.controller
     val state by controller.state.collectAsState()
     val amplitude by controller.amplitude.collectAsState()
+    val errorMsg by controller.statusMessage.collectAsState()
 
     Box(Modifier.fillMaxSize()) {
         // Barra superiore: wordmark + gear
@@ -274,11 +306,28 @@ private fun HomeScreen(onOpenSettings: () -> Unit) {
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                state.label(),
+                text = if (state == HeadState.ERROR && !errorMsg.isNullOrBlank()) errorMsg!!
+                       else state.label(),
                 color = state.labelColor(),
                 fontSize = 17.sp,
                 fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 28.dp),
             )
+        }
+
+        // Banner permesso microfono negato: senza mic l'app non può funzionare.
+        if (micDenied) {
+            Box(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(20.dp)
+                    .clip(RoundedCornerShape(14.dp)).background(JarvisColors.red.copy(alpha = 0.16f))
+                    .selectable(selected = false, onClick = onFixPermission).padding(16.dp),
+            ) {
+                Text(
+                    "Permesso microfono negato. Tocca per abilitarlo nelle impostazioni di sistema.",
+                    color = JarvisColors.red, fontSize = 14.sp,
+                )
+            }
         }
     }
 }
