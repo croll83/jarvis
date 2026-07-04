@@ -215,7 +215,13 @@ class JarvisController(
                 setState(HeadState.SPEAKING)
             }
             MsgType.TTS_DONE -> setState(HeadState.IDLE)
-            MsgType.TRIGGER_LISTEN -> scope.launch { startTurn() }  // multiturn / prossimo turno live
+            MsgType.TRIGGER_LISTEN -> scope.launch {
+                // Multiturn: l'orchestrator manda trigger_listen ma il device sta ancora
+                // riproducendo la coda del TTS della domanda → attendo che finisca di suonare,
+                // altrimenti il mic la ricattura come risposta ("...intendi?").
+                delay(TRIGGER_LISTEN_DELAY_MS)
+                startTurn()
+            }
             MsgType.LIVE_SESSION_START -> { liveSession = true; setState(HeadState.LISTENING) }
             MsgType.LIVE_SESSION_END -> { liveSession = false; setState(HeadState.IDLE) }
             MsgType.PING -> sendJson(JSONObject().put("type", MsgType.PONG))
@@ -328,6 +334,7 @@ class JarvisController(
     private companion object {
         const val FW = "android-mobile-0.1.0"
         const val MAX_HISTORY = 10
+        const val TRIGGER_LISTEN_DELAY_MS = 800L  // attesa fine coda TTS prima del multiturn
     }
 }
 
