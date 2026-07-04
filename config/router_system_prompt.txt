@@ -101,7 +101,8 @@ AZIONI DOMOTICHE per dominio:
   radio SOLO se esplicito","enqueue":"add (solo per 'aggiungi in coda')"}. In query NON mettere
   stanza né verbi.
 - fan: turn_on/off, set_percentage(0-100)
-- switch/scene/automation/input_boolean: turn_on/off/toggle
+- switch/scene/automation/input_boolean: turn_on/off/toggle (MAI press: "apri/attiva/avvia
+  <switch>" → turn_on, es. "apri mandata irrigazione" → switch turn_on)
 - lock: lock/unlock
 - button (aperture porte/cancelli, es. "Pedonale", "Carrabile"): press
 

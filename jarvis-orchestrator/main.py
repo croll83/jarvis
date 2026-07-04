@@ -598,8 +598,16 @@ async def _handle_approval_update(update: dict):
         if payload:
             delete_action(action_id)
             location = payload.get('location', get_default_location_id())
+            # domain dal payload se c'è, altrimenti dal prefisso dell'entity risolta
+            # (il router lo omette spesso → "None.press"); action normalizzata per dominio.
+            _ap_dom = payload.get('domain')
+            _ap_eids = (payload.get('data') or {}).get('entity_id')
+            _ap_first = (_ap_eids[0] if isinstance(_ap_eids, list) else _ap_eids) or ""
+            if (not _ap_dom or str(_ap_dom).lower() in ("none", "null")) and "." in _ap_first:
+                _ap_dom = _ap_first.split(".")[0]
+            _ap_act = _map_action_for_domain(payload['action'], _ap_dom)
             success, err = await call_hass_service(
-                location, payload['domain'], payload['action'], payload['data']
+                location, _ap_dom, _ap_act, payload['data']
             )
             msg = callback_query.get("message", {})
             chat_id = msg.get("chat", {}).get("id")
@@ -4515,6 +4523,31 @@ async def _execute_entity_status(payload: dict, location: str, context: dict) ->
 # CORE LOGIC
 # ===========================================================================
 
+
+def _map_action_for_domain(base_action: str, entity_domain: str) -> str:
+    """Action generico del router → action valido per il dominio dell'entità.
+
+    Il 7B generalizza: emette "press" anche su switch ("apri mandata irrigazione"),
+    "open/close" su cover/lock, ecc. La normalizzazione avviene qui, per entità
+    RISOLTA (mai fidarsi del domain del payload), ed è usata sia dall'esecuzione
+    diretta sia dal path di approvazione sicurezza.
+    """
+    if entity_domain == "cover":
+        return {"turn_on": "open_cover", "turn_off": "close_cover",
+                "open": "open_cover", "close": "close_cover", "press": "open_cover",
+                "stop": "stop_cover", "toggle": "toggle"}.get(base_action, base_action)
+    if entity_domain == "lock":
+        return {"turn_on": "unlock", "turn_off": "lock",
+                "open": "unlock", "close": "lock", "press": "unlock",
+                "toggle": "toggle"}.get(base_action, base_action)
+    if entity_domain == "button":
+        return "press"  # i button si premono e basta
+    # domini on/off (light, switch, media_player, fan, scene, script, ...):
+    # press/open → turn_on, close → turn_off
+    return {"press": "turn_on", "open": "turn_on", "close": "turn_off"}.get(
+        base_action, base_action)
+
+
 async def process_jarvis_logic(text: str, context: dict):
     """Main processing logic per tutti i comandi."""
     context["_user_text"] = text  # Per VirtualMic response tracking
@@ -4981,23 +5014,6 @@ async def process_jarvis_logic(text: str, context: dict):
                 await deliver_final_response(response, context, sound_type="positive" if _ok else "negative")
                 return
 
-            # Helper: mappa action generico → action specifico per dominio
-            def _map_action_for_domain(base_action: str, entity_domain: str) -> str:
-                """Converte action generico nell'action corretto per il dominio."""
-                if entity_domain == "cover":
-                    return {"turn_on": "open_cover", "turn_off": "close_cover",
-                            "open": "open_cover", "close": "close_cover",
-                            "stop": "stop_cover",
-                            "toggle": "toggle"}.get(base_action, base_action)
-                if entity_domain == "lock":
-                    return {"turn_on": "unlock", "turn_off": "lock",
-                            "open": "unlock", "close": "lock",
-                            "toggle": "toggle"}.get(base_action, base_action)
-                if entity_domain == "button":
-                    # aperture (apriporta/cancelli) e altri button: si premono
-                    return "press"
-                # light, switch, media_player, fan, etc. → turn_on/turn_off/toggle funzionano
-                return base_action
 
             # Normalizza parametri Qwen → formato HA
             def _normalize_ha_params(params: dict) -> dict:
