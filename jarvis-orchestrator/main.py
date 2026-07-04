@@ -3985,13 +3985,23 @@ def _resolve_home_control_target(
         logger.debug(f"semantic action resolution failed: {_e}")
 
     # ── D. FALLBACK SINTETICO (backwards compatible) ──
-    fallback_id = f"{domain}.{entity_name.lower().replace(' ', '_')}"
-    logger.warning(f"Entity resolution: no match for '{entity_name}' (user_text='{user_text}'), fallback → {fallback_id}")
+    # Solo con un dominio valido: senza dominio il fallback produrrebbe l'id
+    # letterale "None.<nome>" (visto in prod: "Service None.turn_on not found").
+    if domain:
+        fallback_id = f"{domain}.{entity_name.lower().replace(' ', '_')}"
+        logger.warning(f"Entity resolution: no match for '{entity_name}' (user_text='{user_text}'), fallback → {fallback_id}")
+        return {
+            "mode": "single",
+            "entity_ids": [fallback_id],
+            "description": entity_name,
+            "match_type": "fallback",
+        }
+    logger.warning(f"Entity resolution: no match for '{entity_name}' (user_text='{user_text}'), no domain → not_found")
     return {
-        "mode": "single",
-        "entity_ids": [fallback_id],
+        "mode": "not_found",
+        "entity_ids": [],
         "description": entity_name,
-        "match_type": "fallback",
+        "match_type": "none",
     }
 
 
@@ -4850,7 +4860,8 @@ async def process_jarvis_logic(text: str, context: dict):
         # Normalizza domain — Qwen può restituire "light|switch|media_player", lista, o None (tutti)
         VALID_DOMAINS = {"light", "switch", "cover", "climate", "lock", "fan",
                          "media_player", "sensor", "binary_sensor", "camera",
-                         "automation", "scene", "script", "input_boolean"}
+                         "automation", "scene", "script", "input_boolean",
+                         "button", "vacuum"}
         if domain_raw is None:
             domain = None
         elif isinstance(domain_raw, list):
@@ -4955,6 +4966,13 @@ async def process_jarvis_logic(text: str, context: dict):
                             text_length=len(response) if response else 0,
                         )
                         logger.info(f"🔄 Clarification follow-up: waiting for TTS on {cl_speaker}")
+            return
+
+        # Nessuna entità risolta → risposta onesta (mai chiamare HA con id sintetici)
+        if not target.get("entity_ids"):
+            response = f"Non ho trovato nessun dispositivo chiamato {target.get('description') or entity}."
+            save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+            await deliver_final_response(response, context, sound_type="negative")
             return
 
         # L1-L4 security check (domain-level, come entity_bulk)
