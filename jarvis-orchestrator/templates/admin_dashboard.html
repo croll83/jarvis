@@ -2278,6 +2278,17 @@
                 </div>
 
                 <div class="form-group">
+                    <label>Utente associato</label>
+                    <select id="vdForcedUser">
+                        <option value="">Nessuno — usa riconoscimento vocale</option>
+                    </select>
+                    <small style="color: var(--text-muted, #8a8fa3);">
+                        Se impostato, i comandi da questo device vengono attribuiti sempre a questo
+                        utente (bypassa lo speaker recognition). Utile per telefono/watch personali.
+                    </small>
+                </div>
+
+                <div class="form-group">
                     <label>Note</label>
                     <textarea id="vdNotes" rows="2" placeholder="Note opzionali..."></textarea>
                 </div>
@@ -3682,6 +3693,15 @@
             locSelect.innerHTML = '<option value="">Seleziona location...</option>' +
                 voiceDevicesLocations.filter(l => l.enabled).map(l => `<option value="${l.id}">${l.name} (${l.id})</option>`).join('');
 
+            // Populate forced-user dropdown (utente associato al device)
+            try {
+                const usersResp = await fetch('/api/users/');
+                const users = await usersResp.json();
+                document.getElementById('vdForcedUser').innerHTML =
+                    '<option value="">Nessuno — usa riconoscimento vocale</option>' +
+                    (users || []).map(u => `<option value="${u.id}">${u.name}</option>`).join('');
+            } catch (e) { /* dropdown resta con solo "Nessuno" */ }
+
             // Reset form
             document.getElementById('vdDeviceId').value = deviceId;
             document.getElementById('vdDeviceIdDisplay').value = deviceId;
@@ -3697,6 +3717,7 @@
             document.getElementById('vdSpeakerVolume').value = 80;
             document.getElementById('vdVolumeValue').textContent = '80';
             document.getElementById('vdNotes').value = '';
+            document.getElementById('vdForcedUser').value = '';
             toggleInternalSpeaker();
 
             // If editing, load device data
@@ -3717,6 +3738,8 @@
                     document.getElementById('vdSpeakerVolume').value = device.speaker_volume != null ? device.speaker_volume : 80;
                     document.getElementById('vdVolumeValue').textContent = device.speaker_volume != null ? device.speaker_volume : 80;
                     document.getElementById('vdNotes').value = device.notes || '';
+                    document.getElementById('vdForcedUser').value =
+                        device.forced_user_id != null ? String(device.forced_user_id) : '';
 
                     // Load media players for this location
                     if (device.location_id) {
@@ -3816,6 +3839,15 @@
                 });
 
                 if (response.ok) {
+                    // Utente associato: set esplicito (o azzera con null) via endpoint dedicato
+                    const fuVal = document.getElementById('vdForcedUser').value;
+                    try {
+                        await fetch(`/api/admin/voice-devices/${deviceId}/forced-user`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ user_id: fuVal ? parseInt(fuVal) : null })
+                        });
+                    } catch (e) { /* non bloccante */ }
                     closeModal('voiceDeviceModal');
                     showToast('Voice device salvato!', 'success');
                     loadVoiceDevices();
