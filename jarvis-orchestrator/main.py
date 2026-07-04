@@ -4996,6 +4996,19 @@ async def process_jarvis_logic(text: str, context: dict):
                         logger.info(f"🔄 Clarification follow-up: waiting for TTS on {cl_speaker}")
             return
 
+        # Coppia privacy/sicurezza telecamere: "DISATTIVA privacy" significa
+        # riattivare la sorveglianza (e viceversa), ma il 7B copia il nome che
+        # sente e risolverebbe lo script OPPOSTO. Correzione deterministica.
+        _neg = any(w in _text_lower for w in ("disattiva", "togli", "rimuovi", "spegni"))
+        if _neg and target.get("entity_ids") == ["script.privacy_telecamere"] and "privacy" in _text_lower:
+            target = {**target, "entity_ids": ["script.sicurezza_telecamere"],
+                      "description": "Sicurezza Telecamere"}
+            logger.info("Privacy/sicurezza flip: 'disattiva privacy' → script.sicurezza_telecamere")
+        elif _neg and target.get("entity_ids") == ["script.sicurezza_telecamere"] and "sicurezza" in _text_lower:
+            target = {**target, "entity_ids": ["script.privacy_telecamere"],
+                      "description": "Privacy Telecamere"}
+            logger.info("Privacy/sicurezza flip: 'disattiva sicurezza' → script.privacy_telecamere")
+
         # Nessuna entità risolta → risposta onesta (mai chiamare HA con id sintetici)
         if not target.get("entity_ids"):
             response = f"Non ho trovato nessun dispositivo chiamato {target.get('description') or entity}."
