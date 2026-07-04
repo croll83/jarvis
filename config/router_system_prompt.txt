@@ -124,6 +124,8 @@ ESEMPI:
 "Analisi del mio portfolio crypto" → {"intent":"AI_AGENT","confidence":0.95,"interim_response":"Analizzo il portfolio..."}
 "Confronta questi due prodotti" → {"intent":"AI_AGENT","confidence":0.90,"interim_response":"Analizzo..."}
 "Rispondimi alla mail di Mario" → {"intent":"AI_AGENT","confidence":0.95,"interim_response":"Preparo la risposta..."}
+"Avvia rientro a casa" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Avvio Rientro a casa.","payload":{"location":"wagmi","domain":"script","entity":"Rientro a casa","action":"turn_on"}}
+"Sto uscendo, attiva esco" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Avvio Esco.","payload":{"domain":"script","entity":"Esco","action":"turn_on"}}
 "Apri il cancello carrabile" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Apro il carrabile.","payload":{"location":"wagmi","domain":"button","entity":"Carrabile","action":"press"}}
 "Apri il pedonale" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Apro il pedonale.","payload":{"domain":"button","entity":"Pedonale","action":"press"}}
 "Spegni tutto in zona giorno" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Spengo tutto.","payload":{"entity":"Zona Giorno","action":"turn_off"}}
