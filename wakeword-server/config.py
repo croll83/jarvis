@@ -42,7 +42,7 @@ WAKEWORD_THRESHOLD = float(os.getenv("WAKEWORD_THRESHOLD", "0.5"))
 # picco target, gain massimo e floor sotto il quale il chunk è solo rumore.
 WAKEWORD_AGC_TARGET = float(os.getenv("WAKEWORD_AGC_TARGET", "24000"))
 WAKEWORD_AGC_MAX = float(os.getenv("WAKEWORD_AGC_MAX", "20"))
-WAKEWORD_AGC_FLOOR = int(os.getenv("WAKEWORD_AGC_FLOOR", "300"))
+WAKEWORD_AGC_FLOOR = int(os.getenv("WAKEWORD_AGC_FLOOR", "80"))
 
 # --- Multi-room ---
 MULTIROOM_COOLDOWN_S = int(os.getenv("MULTIROOM_COOLDOWN_S", "5"))

@@ -68,12 +68,16 @@ class DeviceWakeWordEngine:
         # smussato tra chunk (attack/release morbidi) per non sporcare le
         # feature streaming del modello. Sotto il floor è rumore: gain fermo.
         peak = int(np.max(np.abs(pcm_int16))) if pcm_int16.size else 0
+        _prev = getattr(self, "_agc_gain", float(WAKEWORD_AGC_MAX))
         if peak > WAKEWORD_AGC_FLOOR:
             _target = min(WAKEWORD_AGC_TARGET / peak, WAKEWORD_AGC_MAX)
+            # ATTACK istantaneo (la wakeword dura pochi chunk: l'onset deve
+            # essere già amplificato), RELEASE lento per non pompare il rumore.
+            self._agc_gain = _target if _target > _prev else (_prev * 0.9 + _target * 0.1)
         else:
-            _target = getattr(self, "_agc_gain", 1.0)
-        _prev = getattr(self, "_agc_gain", 1.0)
-        self._agc_gain = _prev * 0.8 + _target * 0.2
+            # silenzio/rumore sotto floor: risali piano verso il gain massimo,
+            # così il primo chunk di voce lontana parte già amplificato
+            self._agc_gain = min(_prev * 1.1, float(WAKEWORD_AGC_MAX))
         if self._agc_gain > 1.05:
             pcm_int16 = np.clip(
                 pcm_int16.astype(np.float32) * self._agc_gain, -32768, 32767
