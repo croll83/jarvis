@@ -4640,6 +4640,24 @@ async def process_jarvis_logic(text: str, context: dict):
 
     # 1b. QUICK CONTEXTUAL ANSWERS (richiedono contesto, non cache statica)
     _text_lower = text.lower().strip().rstrip("?!.")
+
+    # SCENARI-RITO deterministici: "buonanotte/buongiorno [jarvis]" secchi non
+    # passano dal 7B (varianza: a volte risponde "avvio lo scenario" con intent
+    # SIMPLE_CHAT senza eseguire nulla). Frasi più lunghe ("buongiorno, che
+    # tempo fa?") restano al router.
+    _rite = _text_lower
+    for _w in ("jarvis", "ehi", "ok", "hey", ","):
+        _rite = _rite.replace(_w, " ")
+    _rite = " ".join(_rite.split())
+    _RITES = {"buonanotte": ("script.buonanotte", "Buonanotte! Avvio lo scenario."),
+              "buongiorno": ("script.buongiorno", "Buongiorno! Avvio lo scenario.")}
+    if _rite in _RITES:
+        _scr, _resp = _RITES[_rite]
+        asyncio.create_task(multi_ha.call_service(
+            get_default_location_id() or "wagmi", "script", "turn_on", {"entity_id": _scr}))
+        save_chat_message("assistant", _resp, "JARVIS", None, "Jarvis")
+        await deliver_final_response(_resp, context, sound_type="positive")
+        return
     _quick = None
     if _text_lower in ("chi sono", "chi sono io", "come mi chiamo", "mi riconosci", "sai chi sono"):
         _quick = f"Sei {speaker_name}!" if speaker_name and speaker_name != "Sconosciuto" else "Non ti ho riconosciuto, chi sei?"
