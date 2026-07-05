@@ -8,7 +8,7 @@ import numpy as np
 import openwakeword
 from openwakeword.model import Model
 
-from config import WAKEWORD_MODEL, WAKEWORD_THRESHOLD, OPUS_SAMPLE_RATE
+from config import WAKEWORD_MODEL, WAKEWORD_THRESHOLD, OPUS_SAMPLE_RATE, WAKEWORD_AGC_TARGET, WAKEWORD_AGC_MAX, WAKEWORD_AGC_FLOOR
 
 _models_downloaded = False
 
@@ -61,6 +61,23 @@ class DeviceWakeWordEngine:
         """
         if self._model is None or self.is_muted:
             return False
+
+        # AGC software: il mic dell'AtomS3R arriva molto basso e openWakeWord
+        # sotto ~1/4 del fondo scala rileva malissimo (1 detezione su 20 anche
+        # a 5 cm). Normalizza il picco verso AGC_TARGET con gain max AGC_MAX,
+        # smussato tra chunk (attack/release morbidi) per non sporcare le
+        # feature streaming del modello. Sotto il floor è rumore: gain fermo.
+        peak = int(np.max(np.abs(pcm_int16))) if pcm_int16.size else 0
+        if peak > WAKEWORD_AGC_FLOOR:
+            _target = min(WAKEWORD_AGC_TARGET / peak, WAKEWORD_AGC_MAX)
+        else:
+            _target = getattr(self, "_agc_gain", 1.0)
+        _prev = getattr(self, "_agc_gain", 1.0)
+        self._agc_gain = _prev * 0.8 + _target * 0.2
+        if self._agc_gain > 1.05:
+            pcm_int16 = np.clip(
+                pcm_int16.astype(np.float32) * self._agc_gain, -32768, 32767
+            ).astype(np.int16)
 
         # openWakeWord expects int16 numpy array
         predictions = self._model.predict(pcm_int16)
