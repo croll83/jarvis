@@ -625,7 +625,16 @@ async def _transcribe_local(audio_bytes: bytes) -> Optional[str]:
                                    data=data, timeout=config.TIMEOUTS["stt"]) as resp:
                 if resp.status == 200:
                     result = await resp.json()
-                    return result.get("text", "").strip()
+                    text = result.get("text", "").strip()
+                    # Guardia anti-misdetection: con lingua forzata "it", un
+                    # transcript in cirillico (Parakeet IT→RU su audio corti)
+                    # è spazzatura certa: meglio "ripeti" che processarlo.
+                    if text and str(config.STT_PARAKEET_LANGUAGE or "").startswith("it"):
+                        _cyr = sum(1 for ch in text if "\u0400" <= ch <= "\u04ff")
+                        if _cyr > max(2, len(text) * 0.3):
+                            logger.warning(f"STT scartato (script cirillico con lingua=it): {text[:60]!r}")
+                            return None
+                    return text
                 else:
                     logger.error(f"STT ({config.STT_ENGINE}) error: {resp.status}")
                     return None
