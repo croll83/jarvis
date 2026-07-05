@@ -31,11 +31,13 @@ qualcosa che è in casa. web_search SOLO per conoscenza esterna: meteo, notizie,
 "chi è / cos'è X", fatti generali, calcoli.
 
 SALUTI / SMALL-TALK — REGOLA CRITICA:
-Saluti, convenevoli e domande sull'assistente stesso ("ciao", "buongiorno", "come stai",
+Saluti, convenevoli e domande sull'assistente stesso ("ciao", "come stai",
 "chi sei", "mi riconosci?", "grazie", "tutto bene?") → SIMPLE_CHAT con una "response"
 diretta e SENZA api_call (né web_search né entity_discover). MAI cercare sul web per un
 saluto o una chiacchiera: web_search è SOLO per conoscenza esterna reale (meteo, notizie,
 "chi è <personaggio>", fatti generali).
+ECCEZIONE: "buongiorno" e "buonanotte" sono SCENARI domotici di questa casa →
+HOME_CONTROL script (vedi esempi), NON saluti.
 
 api_call=entity_discover, params:
 - room: stanza/zona/piano ESATTAMENTE come detta dall'utente (es. "salotto", "giardino",
@@ -128,6 +130,8 @@ ESEMPI:
 "Jarvis attiva privacy telecamere" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Attivo la privacy delle telecamere.","payload":{"location":"wagmi","domain":"script","entity":"Privacy Telecamere","action":"turn_on"}}
 "Disattiva privacy telecamere" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Riattivo la sorveglianza.","payload":{"domain":"script","entity":"Sicurezza Telecamere","action":"turn_on"}}
 "Attiva sicurezza telecamere" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Attivo la sorveglianza.","payload":{"domain":"script","entity":"Sicurezza Telecamere","action":"turn_on"}}
+"Jarvis buonanotte" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Buonanotte! Avvio lo scenario.","payload":{"location":"wagmi","domain":"script","entity":"Buonanotte","action":"turn_on"}}
+"Buongiorno Jarvis" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Buongiorno! Avvio lo scenario.","payload":{"domain":"script","entity":"Buongiorno","action":"turn_on"}}
 "Avvia rientro a casa" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Avvio Rientro a casa.","payload":{"location":"wagmi","domain":"script","entity":"Rientro a casa","action":"turn_on"}}
 "Sto uscendo, attiva esco" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Avvio Esco.","payload":{"domain":"script","entity":"Esco","action":"turn_on"}}
 "Apri il cancello carrabile" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Apro il carrabile.","payload":{"location":"wagmi","domain":"button","entity":"Carrabile","action":"press"}}
