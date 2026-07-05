@@ -10,7 +10,7 @@ type: reference
 **Hostname**: gx10-3b82
 **IP**: 192.168.1.67 (LAN), 100.98.187.12 (Tailscale)
 **OS**: Ubuntu 24.04 Noble
-**Ultimo aggiornamento**: 2026-06-29
+**Ultimo aggiornamento**: 2026-07-05
 
 ---
 
@@ -142,7 +142,7 @@ journalctl -u cosyvoice3-tts -f        # log
 ## 4. Parakeet STT (Speech-to-Text)
 
 **Cosa**: Server STT multilingue (25 lingue, auto-detection)
-**Modello**: nvidia/parakeet-tdt-0.6b-v3
+**Modello**: nvidia/canary-1b-v2 (backend swappato da Parakeet-TDT v3 a Canary, giu-lug 2026: l'auto-LID di Parakeet sbagliava IT→RU su audio corti; unit systemd `parakeet-stt` e porta :9000 invariate)
 **VRAM**: ~5.1 GiB
 **RTF**: ~0.05 (20x faster than real-time)
 
@@ -159,7 +159,7 @@ sudo systemctl stop parakeet-stt
 sudo systemctl status parakeet-stt
 ```
 
-**Servizio esposto**: `http://100.98.187.12:7865`
+**Servizio esposto**: `http://100.98.187.12:9000` (porta hardcoded in `parakeet-gpu-server.py`, mai cambiata)
 - `POST /v1/audio/transcriptions` — API OpenAI-compatible
 - `GET /health` — Health check
 
@@ -340,8 +340,8 @@ sudo systemctl stop comfyui
 | **Audio** | | |
 | `tts` | `build_tts` | Text-to-Speech (proxy a CosyVoice3 server :9880) |
 | `clone` | `build_clone` | Voice cloning (proxy a CosyVoice3 server :9880/tts/clone) |
-| `stt` | `build_stt` | Speech-to-Text (proxy a Parakeet server :7865) |
-| `music` | `build_music` | Music generation (proxy a ACE-Step server :9000) |
+| `stt` | `build_stt` | Speech-to-Text (proxy al server STT :9000, unit `parakeet-stt`) |
+| `music` | `build_music` | Music generation (proxy a ACE-Step server :7865) |
 
 **API Endpoints**:
 
@@ -414,7 +414,7 @@ sudo systemctl start ace-step
 sudo systemctl stop ace-step
 ```
 
-**Servizio esposto**: `http://100.98.187.12:9000`
+**Servizio esposto**: `http://100.98.187.12:7865` (lazy pipeline, idle timeout 300s — porta invariata da sempre)
 - Anche accessibile via ComfyUI node `comfyui-ace-step`
 
 ---
@@ -523,11 +523,11 @@ Certificati SSL self-signed. WebSocket support su tutti i siti.
 | Porta | Servizio | Auto-start |
 |-------|----------|------------|
 | 80/443 | Nginx (proxy) | ✅ systemd |
-| 7865 | Parakeet STT | ✅ systemd |
+| 7865 | ACE-Step Music | ✅ systemd |
 | 8080 | Open WebUI | ✅ docker restart |
 | 8188 | ComfyUI | ✅ systemd |
 | 8189 | ComfyUI Dashboard | ✅ systemd |
-| 9000 | ACE-Step Music | ✅ systemd |
+| 9000 | Canary STT (unit `parakeet-stt`) | ✅ systemd |
 | 9880 | CosyVoice3 TTS | ✅ systemd |
 | 11000 | DGX Dashboard | ✅ systemd |
 | 30000 | llama.cpp TQ (LLM) | ✅ docker restart |

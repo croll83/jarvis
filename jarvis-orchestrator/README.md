@@ -32,7 +32,7 @@ Il modulo Skill/Executor dell'architettura JARVIS: un FastAPI server che espone 
 │      ▼                   ▼                  ▼                │
 │  ┌──────────┐    ┌──────────────┐   ┌──────────────┐        │
 │  │ Ollama   │    │Parakeet STT │   │Home Assistant │        │
-│  │ :11434   │    │  GX10:7865  │   │   :8123       │        │
+│  │ :11434   │    │  GX10:9000  │   │   :8123       │        │
 │  │ Qwen 3B  │    │ (Tailscale) │   │ (N locations) │        │
 │  └──────────┘    └──────────────┘   └──────────────┘        │
 │                                                               │
@@ -387,7 +387,7 @@ Riferimento: `.env` nella root del progetto (vedi `docker-compose.yml`).
 # ============================
 AI_BACKEND=local                    # "local" (Ollama) o "api" (Cloud)
 OLLAMA_URL=http://ollama:11434
-STT_URL=http://100.98.187.12:7865
+STT_URL=http://100.98.187.12:9000
 
 # API keys (solo se AI_BACKEND=api)
 GROQ_API_KEY=gsk_xxx                # STT cloud
@@ -454,7 +454,7 @@ Definiti in `docker-compose.yml` nella root del progetto:
 | Servizio | Immagine | Porta | Ruolo |
 |----------|----------|-------|-------|
 | `ollama` | ollama/ollama | 11434 | Qwen 7B Q4 + nomic-embed-text (GPU) |
-| Parakeet STT | GX10 systemd | 7865 | Speech-to-text (nvidia/parakeet-tdt-0.6b-v3, via Tailscale) |
+| Canary STT | GX10 systemd | 9000 | Speech-to-text (nvidia/canary-1b-v2, unit `parakeet-stt`, via Tailscale) |
 | CosyVoice3 | GX10 systemd | 9880 | TTS zero-shot voice cloning (Fun-CosyVoice3-0.5B, via Tailscale) |
 | `orchestrator` | build locale | 5000 | JARVIS Skill (questo progetto) |
 | `redis` | redis:7-alpine | 6379 | Context bus cross-system (su LXC Jarvis) |

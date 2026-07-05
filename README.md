@@ -117,7 +117,7 @@
 | `mongo` | mongo:7 | 27017 | No | Document database (side projects) |
 
 > **Note**: AI Agent runs on a dedicated host (`100.116.99.9`), not in this Docker stack.
-> **Note**: STT (Canary `:9000`, systemd unit `parakeet-stt` — historical name) and TTS (CosyVoice3 `:9880`) run on GX10 DGX Spark (`100.98.187.12`) as systemd services, reachable via Tailscale. Port `:7865` hosts a separate multi-model experiment server — not part of the voice pipeline.
+> **Note**: STT (Canary `:9000`, systemd unit `parakeet-stt` — historical name) and TTS (CosyVoice3 `:9880`) run on GX10 DGX Spark (`100.98.187.12`) as systemd services, reachable via Tailscale. Port `:7865` hosts ACE-Step 1.5 (music generation, lazy pipeline) — not part of the voice pipeline. STT has always listened on `:9000` and ACE-Step on `:7865`: no port swap ever happened (only the STT backend model changed inside the same wrapper).
 
 ---
 
