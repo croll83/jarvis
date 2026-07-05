@@ -633,7 +633,9 @@ async def _transcribe_local(audio_bytes: bytes) -> Optional[str]:
                         _cyr = sum(1 for ch in text if "\u0400" <= ch <= "\u04ff")
                         if _cyr > max(2, len(text) * 0.3):
                             logger.warning(f"STT scartato (script cirillico con lingua=it): {text[:60]!r}")
-                            return None
+                            # Sentinella (non None): il chiamante DEVE rispondere
+                            # al device, altrimenti resta in speaking state.
+                            return "__LANG_MISMATCH__"
                     return text
                 else:
                     logger.error(f"STT ({config.STT_ENGINE}) error: {resp.status}")
