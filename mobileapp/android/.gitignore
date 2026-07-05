@@ -13,6 +13,10 @@ local.properties
 !gradle/wrapper/gradle-wrapper.properties
 # Secrets: URL/token orchestrator non vanno committati
 secrets.properties
+# Signing: keystore e credenziali NON vanno mai committati (usa keystore.properties.template)
+keystore.properties
+*.keystore
+*.jks
 # Asset Rive di marketplace: non ridistribuire via git (copiare a mano su ogni macchina).
 # Se il repo è privato e la licenza lo consente, rimuovi questa riga per committarlo.
 mobile/src/main/assets/*.riv
