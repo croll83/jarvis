@@ -63,9 +63,9 @@
       failed_when: false
       when: deploy_type == "lxc_gpu" and ai_backend == "local"
 
-    - name: Check Parakeet STT health (GX10)
+    - name: Check Canary STT health (GX10)
       ansible.builtin.uri:
-        url: "http://100.98.187.12:7865/health"
+        url: "http://100.98.187.12:9000/health"
         method: GET
         timeout: 10
       register: parakeet_check
@@ -178,7 +178,7 @@
 
           SERVIZI AI (solo deploy locale):
             Ollama:          {{ 'OK' if (ollama_check.status | default(0)) == 200 else ('N/A (cloud)' if ai_backend == 'api' else 'FAIL') }}
-            Parakeet STT:    {{ 'OK' if (parakeet_check.status | default(0)) == 200 else ('N/A (cloud)' if ai_backend == 'api' else 'FAIL (GX10)') }}
+            Canary STT:      {{ 'OK' if (parakeet_check.status | default(0)) == 200 else ('N/A (cloud)' if ai_backend == 'api' else 'FAIL (GX10)') }}
             CosyVoice3 TTS:  {{ 'OK' if (cosyvoice3_check.status | default(0)) == 200 else ('N/A (cloud)' if ai_backend == 'api' else 'FAIL (GX10)') }}
           {% if deploy_type == 'lxc_gpu' and ai_backend == 'local' %}
 

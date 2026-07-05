@@ -246,7 +246,7 @@
             - OpenClaw (Gemini):       {{ openclaw_url | default('http://localhost:18789') }}
           {% if deploy_type == 'lxc_gpu' and ai_backend == 'local' %}
             - Ollama API:              http://localhost:11434
-            - Parakeet STT (GX10):     http://100.98.187.12:7865
+            - Canary STT (GX10):       http://100.98.187.12:9000
             - CosyVoice3 TTS (GX10):  http://100.98.187.12:9880
           {% endif %}
 

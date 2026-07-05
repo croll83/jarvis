@@ -48,9 +48,9 @@
 
      +--------------------------------------------+
      |    GX10 DGX Spark (via Tailscale)           |
-     |  Parakeet STT :7865  | CosyVoice3 :9880    |
-     |  (nvidia/parakeet-   | (0.5B, zero-shot     |
-     |   tdt-0.6b-v3)       |  voice cloning, IT)  |
+     |  Canary STT :9000    | CosyVoice3 :9880    |
+     |  (nvidia/canary-1b-  | (0.5B, zero-shot     |
+     |   v2, forced IT)     |  voice cloning, IT)  |
      |  Brave Search (web tool)                    |
      +--------------------------------------------+
 
@@ -88,7 +88,7 @@
 | **AI Agent (Hermes/OpenClaw/others)** | Brain | Reasoning, web search, Telegram chat, multi-turn conversations |
 | **JARVIS Orchestrator** | Skill / Executor | Voice processing, home control (single + bulk), speaker ID, security enforcement |
 | **Qwen 2.5 3B** | Pre-router + Tool calling | Local Ollama model for domotics fast path, tool calling (web_search, web_fetch, memory_search, home_status), offline fallback |
-| **Parakeet STT** | Speech-to-Text | nvidia/parakeet-tdt-0.6b-v3 on GX10 DGX Spark, multilingual auto-detection, 20x realtime |
+| **Canary STT** | Speech-to-Text | nvidia/canary-1b-v2 on GX10 DGX Spark (:9000), forced Italian via source_lang (Parakeet's auto-LID misdetected IT→RU on short audio), ~130-180ms per phrase |
 | **CosyVoice3** | Text-to-Speech | Fun-CosyVoice3-0.5B on GX10, zero-shot voice cloning, Italian text normalization via num2words |
 | **Resemblyzer** | Speaker ID | Voice biometric identification (embedded in orchestrator) |
 | **Ontology Server** | Knowledge Graph | Entity/relation graph with speaker-based ACL, SQLite + FastAPI |
@@ -117,7 +117,7 @@
 | `mongo` | mongo:7 | 27017 | No | Document database (side projects) |
 
 > **Note**: AI Agent runs on a dedicated host (`100.116.99.9`), not in this Docker stack.
-> **Note**: STT (Parakeet `:7865`) and TTS (CosyVoice3 `:9880`) run on GX10 DGX Spark (`100.98.187.12`) as systemd services, reachable via Tailscale.
+> **Note**: STT (Canary `:9000`, systemd unit `parakeet-stt` — historical name) and TTS (CosyVoice3 `:9880`) run on GX10 DGX Spark (`100.98.187.12`) as systemd services, reachable via Tailscale. Port `:7865` hosts a separate multi-model experiment server — not part of the voice pipeline.
 
 ---
 
@@ -257,7 +257,7 @@ jarvis/
   2. **L2 Short-term — Redis context bus** (`ctx:{user_id}:events`, TTL 30 min, capped 20, source-filtered) shared between orchestrator, `ha_memory_service`, and Hermes.
   3. **L3 Long-term — mem0-stack** (external, repo `croll83/mem0-stack`, accessed via `MEM0_BASE_URL`). Populated by the nightly `habit_extraction` job, which uses a **hybrid SQL + LLM** pipeline: deterministic SQL aggregation over `chat_memory.meta` for domotics habits (entity + action + time window + value), Qwen LLM only for preferences/topics on non-HOME_CONTROL messages. Records are tagged `agent_id=jarvis-habit-extractor` for filtering in the Hermes mem0 dashboard.
 - **Redis context bus**: Shared between orchestrator, HA memory service, and Hermes. Each system writes events tagged with its source and reads only events from other sources, preventing self-duplication. Per-user event lists (`ctx:{user_id}:events`), capped at 20, TTL 30 minutes.
-- **Parakeet STT on GX10**: nvidia/parakeet-tdt-0.6b-v3 running on GX10 DGX Spark (128 GB VRAM). Multilingual auto-detection, 20x realtime, no initial prompt needed. Replaces Whisper (deprecated) to free VRAM on Atomman for router upgrades.
+- **Canary STT on GX10**: nvidia/canary-1b-v2 on GX10 DGX Spark (128 GB unified memory). Replaced Parakeet-TDT v3 (jul 2026): Parakeet's transcribe() exposes no language kwarg and its auto-LID misdetected short Italian audio as Russian; Canary is a multitask model with native source_lang/target_lang forcing (~130-180ms/phrase). A Cyrillic guard in the orchestrator discards residual misdetections and asks the user to repeat (optional Groq whisper rescue if GROQ_API_KEY is set).
 - **CosyVoice3 on GX10**: Fun-CosyVoice3-0.5B with zero-shot voice cloning from reference audio. Server-side Italian text normalization (num2words) for correct number/unit pronunciation. Replaces Qwen3-TTS (deprecated). OpenAI-compatible API, ~0.6x RTF, ~3.6 GiB VRAM.
 - **Nginx + Cloudflare Tunnel**: Public endpoints (Telegram webhook, health) served via Cloudflare Tunnel with no port forwarding. Internal services accessible only through Tailscale mesh.
 - **Speaker biometrics**: Resemblyzer runs inside the orchestrator process -- no separate container needed.
