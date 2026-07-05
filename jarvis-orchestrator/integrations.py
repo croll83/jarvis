@@ -633,6 +633,17 @@ async def _transcribe_local(audio_bytes: bytes) -> Optional[str]:
                         _cyr = sum(1 for ch in text if "\u0400" <= ch <= "\u04ff")
                         if _cyr > max(2, len(text) * 0.3):
                             logger.warning(f"STT scartato (script cirillico con lingua=it): {text[:60]!r}")
+                            # Parakeet-TDT v3 non permette di forzare la lingua
+                            # (transcribe() non ha kwargs lingua): se c'è Groq,
+                            # ritrascrivi lo STESSO audio con whisper (language=it
+                            # reale) e salva il turno in modo trasparente.
+                            if config.GROQ_API_KEY:
+                                logger.info("STT rescue: ritrascrivo via Groq whisper (language=it)")
+                                _rescued = await _transcribe_groq(audio_bytes)
+                                if _rescued and _rescued != "__LANG_MISMATCH__":
+                                    _rcyr = sum(1 for ch in _rescued if "\u0400" <= ch <= "\u04ff")
+                                    if _rcyr <= max(2, len(_rescued) * 0.3):
+                                        return _rescued
                             # Sentinella (non None): il chiamante DEVE rispondere
                             # al device, altrimenti resta in speaking state.
                             return "__LANG_MISMATCH__"
