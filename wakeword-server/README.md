@@ -133,3 +133,27 @@ async def test():
 asyncio.run(test())
 "
 ```
+
+## AGC software (pre-wakeword)
+
+Il microfono dell'AtomS3R arriva con livelli molto bassi e openWakeWord rileva
+male sotto ~1/4 del fondo scala (detection ~1/20 anche a 5 cm). Prima
+dell'inferenza, `wakeword.py` applica un gain adattivo per-chunk:
+
+- **Attack istantaneo**: se il chunk richiede più gain, si salta subito al
+  target (la wakeword dura pochi chunk: l'onset deve essere già amplificato).
+- **Release lento** (0.9/0.1) per non pompare il rumore di fondo.
+- **Pre-arming in silenzio**: sotto il floor il gain risale gradualmente verso
+  il massimo, così la prima sillaba di voce lontana parte già amplificata.
+
+Tuning via env (docker-compose):
+
+| Env | Default | Significato |
+|---|---|---|
+| `WAKEWORD_AGC_TARGET` | 24000 | picco int16 verso cui normalizzare |
+| `WAKEWORD_AGC_MAX` | 20 | gain massimo |
+| `WAKEWORD_AGC_FLOOR` | 80 | sotto questo picco il chunk è rumore |
+| `WAKEWORD_THRESHOLD` | 0.5 | soglia openWakeWord (abbassare se serve) |
+
+Deploy: i sorgenti vivono nel monorepo (`wakeword-server/`); su CT201
+`pct push` dei file in `/opt/jarvis-wakeword/` + `docker compose up -d --build`.

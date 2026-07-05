@@ -580,3 +580,52 @@ docker compose up -d
 # Solo security stack
 cd security && docker compose -f docker-compose.security.yml up -d
 ```
+
+## Novità luglio 2026 (voce & risoluzione)
+
+### STT: Canary-1b-v2 (via Parakeet)
+Parakeet-TDT v3 non espone kwargs lingua (`transcribe()` fa solo auto-LID) e su
+audio corti trascriveva l'italiano come russo. Il server su GX10 (`:9000`,
+unit `parakeet-stt` per ragioni storiche) ora carica `nvidia/canary-1b-v2` e
+inoltra `language=it` come `source_lang/target_lang` (nativo del multitask).
+Difese residue in `integrations._transcribe_local`: transcript in cirillico con
+lingua forzata → sentinella `__LANG_MISMATCH__` → il WS handler risponde
+"puoi ripetere?" (mai None: il device resterebbe in speaking state); rescue
+trasparente via Groq whisper se `GROQ_API_KEY` è configurata.
+
+### Risoluzione entità (ordine attuale)
+1. **B0 — nome esatto globale** (con dominio, `exact_only`): un friendly name
+   univoco vince sempre sull'estrazione stanza dal testo ("accendi filtraggio
+   piscina" non deve diventare il boiler dell'area Piscina).
+2. Path A (testo utente: stanza/zona/piano, union room∪area∪zone).
+3. B1 exact con room-hint, **con retry globale** se la stanza del microfono
+   nasconde nomi di altre stanze; poi discovery, parole, semantic (i comandi
+   risolvono solo entità `visible`; le query info cercano su tutto l'indice).
+Il fallback sintetico `<domain>.<nome>` esiste solo con dominio valido; senza,
+risposta onesta "non ho trovato".
+
+### Azioni normalizzate per dominio risolto
+`_map_action_for_domain` è module-level e usato anche dal path di approvazione:
+`press/open/close` diventano il servizio giusto per cover/lock/switch; i
+`button` si premono e basta; gli **script si eseguono sempre** (`turn_off` su
+uno script è "ferma", non "esegui").
+
+### Musica (Music Assistant)
+`action=play_music` → `music_assistant.play_media` con ricerca libera
+(media_type solo playlist/radio), player per stanza (`_MUSIC_PLAYERS`):
+soundbar MASS in salotto, Echo altrove (provider alexa di MA + skill
+"la mia radio"). Fire-and-forget (la ricerca può superare il timeout HA);
+niente smart-cache sulle azioni.
+
+### Scenari & riti vocali
+Script-ponte (`automation.trigger` con `skip_condition`) per gli scenari senza
+trigger (Rientro/Esco/Buongiorno/Buonanotte/Privacy-Sicurezza telecamere):
+visibili nella mappa LLM, su Android Auto e nei preferiti dashboard (con
+conferma). "Buonanotte/Buongiorno [Jarvis]" secchi bypassano il router
+(shortcut deterministico); "disattiva privacy/sicurezza telecamere" flippa
+sullo script opposto.
+
+### Sicurezza: override per entità
+`ENTITY_LEVEL_OVERRIDES` in `security_levels.py`: gli apricancello BTicino
+(`button.bticino_hometouch_unlock*`) sono L3 come le serrature, non L1 del
+dominio button — da canali agent (L2) serve l'approvazione sul bot.
