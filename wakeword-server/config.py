@@ -38,6 +38,12 @@ ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "") or _derive_orchestrator_url
 WAKEWORD_MODEL = os.getenv("WAKEWORD_MODEL", "hey_jarvis")
 WAKEWORD_THRESHOLD = float(os.getenv("WAKEWORD_THRESHOLD", "0.5"))
 
+# AGC software pre-wakeword (il mic AtomS3R è molto basso):
+# picco target, gain massimo e floor sotto il quale il chunk è solo rumore.
+WAKEWORD_AGC_TARGET = float(os.getenv("WAKEWORD_AGC_TARGET", "24000"))
+WAKEWORD_AGC_MAX = float(os.getenv("WAKEWORD_AGC_MAX", "20"))
+WAKEWORD_AGC_FLOOR = int(os.getenv("WAKEWORD_AGC_FLOOR", "300"))
+
 # --- Multi-room ---
 MULTIROOM_COOLDOWN_S = int(os.getenv("MULTIROOM_COOLDOWN_S", "5"))
 
