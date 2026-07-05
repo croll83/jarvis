@@ -1559,7 +1559,7 @@ async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
     # 2. STT only (no speaker ID, no Qwen normalize)
     text = await transcribe_audio(clean_audio)
 
-    if not text or not text.strip():
+    if not text or text == "__LANG_MISMATCH__" or not text.strip():
         logger.info(f"🎙️ Live session: no speech detected, re-triggering listen")
         # Re-trigger listen (user may have been silent or audio was noise)
         await trigger_device_listen(device_id, silent=True)
@@ -3046,10 +3046,23 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         except Exception as e:
             logger.error(f"Auto-restore fallito per {device_id}: {e}")
 
-        if not text:
-            logger.info(f"WS: no speech detected from {device_id}")
+        _lang_mismatch = (text == "__LANG_MISMATCH__")
+        if not text or _lang_mismatch:
             # Cancella speaker task se non serve
             speaker_task and speaker_task.cancel()
+            if _lang_mismatch:
+                # STT spazzatura (es. IT→RU): rispondere COMUNQUE, altrimenti
+                # l'AtomS3R resta in speaking state e va riavviato a mano.
+                logger.info(f"WS: STT lingua errata da {device_id} → chiedo di ripetere")
+                _ctx_min = {
+                    "source": _ws_device_type, "room": room_value,
+                    "mic_id": device_id, "device_id": device_id,
+                    "location": location, "device_config": device_config,
+                }
+                await deliver_final_response("Scusa, non ho capito bene. Puoi ripetere?",
+                                             _ctx_min, sound_type="negative")
+            else:
+                logger.info(f"WS: no speech detected from {device_id}")
             return
 
         logger.info(f"WS transcribed: '{text[:120]}...' from {device_id}")
