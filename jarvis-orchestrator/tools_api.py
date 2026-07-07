@@ -1616,3 +1616,158 @@ async def tool_media_cast_stop(
     except Exception as e:
         logger.error(f"media_cast stop error: {e}")
         return MediaCastStopResponse(success=False, message=f"Errore: {str(e)}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEMPORAL DATA TOOLS (Fase 1 "occhi sul passato" — per hermes/AI agent)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StatisticsRequest(BaseModel):
+    entity_ids: List[str]
+    start: str                    # ISO datetime (es. "2026-07-06T00:00:00+02:00")
+    end: Optional[str] = None     # default: adesso
+    period: str = "hour"          # 5minute|hour|day|week|month
+    location_id: Optional[str] = None
+
+
+class HistoryRequest(BaseModel):
+    entity_ids: List[str]
+    start: str
+    end: Optional[str] = None
+    max_points: int = 200         # downsampling per entità
+    location_id: Optional[str] = None
+
+
+class EnergyReportRequest(BaseModel):
+    days: int = 2                 # quanti giorni indietro (default oggi+ieri)
+    location_id: Optional[str] = None
+
+
+# Catalogo energia per il report (modello "netto" della dashboard: i canali
+# prese sono al netto di frigo/TV misurati a parte — niente doppi conteggi).
+_ENERGY_REPORT_SENSORS = {
+    "wagmi": {
+        "meter_totale": "sensor.impianti_meter_principale_casa_energia",
+        "tensioni_fase": {
+            "A": "sensor.impianti_meter_principale_casa_phase_a_tensione",
+            "B": "sensor.impianti_meter_principale_casa_phase_b_tensione",
+            "C": "sensor.impianti_meter_principale_casa_phase_c_tensione",
+        },
+        "dispositivi": {
+            "Pompa di calore MAXA": "sensor.maxa_i_32v5_wagmi_villa_energia_raffrescamento",
+            "Prese zona giorno/notte (netto)": "sensor.prese_zona_giorno_notte_netto_energia",
+            "Frigorifero": "sensor.cucina_family_hub_energia",
+            "Deumidificatori Bampi": "sensor.impianti_deumidificatori_bampi_energia",
+            "Induzione depandance": "sensor.impianti_piano_induzione_depandance_energia",
+            "Prese comandate depandance (netto)": "sensor.prese_comandate_depandance_netto_energia",
+            "Induzione cucina": "sensor.cucina_meter_piano_induzione_cucina_invernale_energia",
+            "Prese comandate cucina": "sensor.cucina_meter_prese_comandate_cucina_invernale_energia",
+            "Boiler casa": "sensor.boiler_wagmi_energia_boiler",
+            "Boiler piscina": "sensor.boiler_piscina_wagmi_energia",
+            "Lavatrice": "sensor.presa_lavatrice_energia_int",
+            "Asciugatrice": "sensor.presa_asciugatrice_energia_int",
+            "Idroclave": "sensor.impianti_idroclave_wagmi_electricity",
+            "Addolcitore": "sensor.addolcitore_wagmi_energia",
+        },
+    }
+}
+
+
+@router.post("/get_statistics")
+async def tool_get_statistics(
+    req: StatisticsRequest,
+    _: None = Depends(verify_ai_agent_token)
+):
+    """
+    Long-term statistics from the HA recorder (mean/min/max/change per bucket).
+
+    THE tool for temporal/behavioral questions: climate trends ("com'era la
+    temperatura in camera questa settimana?"), consumption per day, voltage
+    dips, humidity cycles. `change` on energy sensors (kWh cumulative) = the
+    consumption in that bucket. Statistics exist for sensors with a
+    state_class and are kept long-term (5-minute granularity for ~10 days,
+    hourly forever).
+    """
+    from multi_ha import multi_ha
+    location_id = req.location_id or _get_admin_location()
+    stats = await multi_ha.get_statistics(
+        location_id, req.entity_ids, req.start, req.end, req.period
+    )
+    return {"location_id": location_id, "period": req.period, "statistics": stats}
+
+
+@router.post("/get_history")
+async def tool_get_history(
+    req: HistoryRequest,
+    _: None = Depends(verify_ai_agent_token)
+):
+    """
+    Raw state history for entities (downsampled). Use for non-numeric states
+    (media_player: what played yesterday evening; binary sensors: door/motion
+    events; alarm states) or when you need actual state transitions rather
+    than aggregates. For numeric trends prefer get_statistics.
+    """
+    from multi_ha import multi_ha
+    location_id = req.location_id or _get_admin_location()
+    out = {}
+    for eid in req.entity_ids[:10]:
+        pts = await multi_ha.get_history(location_id, eid, req.start, req.end)
+        if len(pts) > req.max_points:
+            step = len(pts) / req.max_points
+            pts = [pts[int(i * step)] for i in range(req.max_points)]
+        out[eid] = pts
+    return {"location_id": location_id, "history": out}
+
+
+@router.post("/energy_report")
+async def tool_energy_report(
+    req: EnergyReportRequest,
+    _: None = Depends(verify_ai_agent_token)
+):
+    """
+    Structured energy report: total kWh per day (main meter), per-device
+    consumption per day (net model, no double counting), and per-phase
+    voltage quality (min/mean; phase A has a known undervoltage issue).
+    Use for "perché ieri abbiamo consumato tanto?", "chi consuma di più?",
+    "com'è la tensione oggi?". Data only — you do the interpretation.
+    """
+    from multi_ha import multi_ha
+    from datetime import datetime, timedelta
+    import zoneinfo
+    location_id = req.location_id or _get_admin_location()
+    cat = _ENERGY_REPORT_SENSORS.get(location_id)
+    if not cat:
+        return {"error": f"nessun catalogo energia per location '{location_id}'"}
+    tz = zoneinfo.ZoneInfo("Europe/Rome")
+    now = datetime.now(tz)
+    start = (now - timedelta(days=max(0, req.days - 1))).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    all_ids = ([cat["meter_totale"]] + list(cat["tensioni_fase"].values())
+               + list(cat["dispositivi"].values()))
+    stats = await multi_ha.get_statistics(
+        location_id, all_ids, start.isoformat(), now.isoformat(), "day")
+
+    def _days(eid, key):
+        return [
+            {"day": b["start"][:10] if isinstance(b.get("start"), str) else b.get("start"),
+             key: round(b[key], 2) if b.get(key) is not None else None}
+            for b in stats.get(eid, [])
+        ]
+
+    report = {
+        "location_id": location_id,
+        "totale_kwh_per_giorno": _days(cat["meter_totale"], "change"),
+        "dispositivi_kwh_per_giorno": {
+            name: _days(eid, "change") for name, eid in cat["dispositivi"].items()
+        },
+        "tensioni_fase": {
+            ph: [
+                {"day": b["start"][:10] if isinstance(b.get("start"), str) else b.get("start"),
+                 "min": b.get("min"), "mean": round(b["mean"], 1) if b.get("mean") else None}
+                for b in stats.get(eid, [])
+            ]
+            for ph, eid in cat["tensioni_fase"].items()
+        },
+        "note": "kWh per giorno = 'change' dei contatori cumulativi; soglia legale tensione = 207 V",
+    }
+    return report

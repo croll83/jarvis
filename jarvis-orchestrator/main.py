@@ -2032,6 +2032,12 @@ async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
         logger.warning("AI Agent not configured, falling back to local response")
         return await get_quick_response(text, context), None
 
+    # Corsia voce → profilo hermes veloce (Sonnet): la latenza percepita a voce
+    # non regge il modello deep di default del profilo principale.
+    _agent_url = config.AI_AGENT_URL
+    if config.AI_AGENT_URL_VOICE and context.get("source") in config.VOICE_SOURCES:
+        _agent_url = config.AI_AGENT_URL_VOICE
+
     # Build message with context for AI Agent
     speaker_name = context.get("speaker_name", "Sconosciuto")
     speaker_id = context.get("speaker_id")
@@ -2089,7 +2095,7 @@ async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
                 headers["X-Hermes-Session-Id"] = str(session_user)
 
             async with session.post(
-                f"{config.AI_AGENT_URL}/v1/chat/completions",
+                f"{_agent_url}/v1/chat/completions",
                 json=payload,
                 headers=headers,
                 timeout=timeout,
