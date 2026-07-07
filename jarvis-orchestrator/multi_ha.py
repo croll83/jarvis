@@ -341,6 +341,69 @@ class HomeAssistantClient:
             self.ws = None
 
 
+    async def get_statistics(self, entity_ids: list, start_iso: str,
+                             end_iso: str = None, period: str = "hour") -> dict:
+        """Long-term statistics dal recorder HA (WS `recorder/statistics_during_period`).
+
+        Ritorna {entity_id: [{start, mean, min, max, change}, ...]} — la stessa
+        API usata dal cruscotto Energia. `period`: 5minute|hour|day|week|month.
+        """
+        if not self.hass_token:
+            return {}
+        async with self._lock:
+            try:
+                if not await self.connect():
+                    return {}
+                self.msg_id += 1
+                req = {
+                    "id": self.msg_id,
+                    "type": "recorder/statistics_during_period",
+                    "start_time": start_iso,
+                    "statistic_ids": entity_ids,
+                    "period": period,
+                    "types": ["mean", "min", "max", "change"],
+                }
+                if end_iso:
+                    req["end_time"] = end_iso
+                await self.ws.send(json.dumps(req))
+                # il risultato può arrivare dopo eventi interleaved: matcha l'id
+                deadline = asyncio.get_event_loop().time() + self.timeout
+                while True:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                    msg = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=remaining))
+                    if msg.get("id") == self.msg_id and msg.get("type") == "result":
+                        break
+                if not msg.get("success"):
+                    logger.error(f"[{self.location_id}] statistics error: {msg.get('error')}")
+                    return {}
+                from datetime import datetime as _dt, timezone as _tz
+                out = {}
+                for eid, buckets in (msg.get("result") or {}).items():
+                    out[eid] = [
+                        {
+                            # il WS ritorna start come epoch ms → ISO leggibile
+                            "start": (_dt.fromtimestamp(b["start"] / 1000, _tz.utc).isoformat()
+                                      if isinstance(b.get("start"), (int, float)) else b.get("start")),
+                            "mean": b.get("mean"),
+                            "min": b.get("min"),
+                            "max": b.get("max"),
+                            "change": b.get("change"),
+                        }
+                        for b in buckets
+                    ]
+                return out
+            except asyncio.TimeoutError:
+                logger.error(f"[{self.location_id}] statistics timeout")
+                self.ws = None
+                return {}
+            except Exception as e:
+                logger.error(f"[{self.location_id}] get_statistics error: {e}")
+                self.ws = None
+                return {}
+
+
 class MultiHomeAssistant:
     """
     Gestisce connessioni a multiple istanze Home Assistant.
@@ -440,6 +503,16 @@ class MultiHomeAssistant:
         if not client:
             return None
         return await client.get_state(entity_id)
+
+    async def get_statistics(self, location_id: str, entity_ids: list,
+                             start_iso: str, end_iso: str = None,
+                             period: str = "hour") -> dict:
+        """Statistiche recorder (mean/min/max/change) per più entità."""
+        self._ensure_loaded()
+        client = self.clients.get(location_id)
+        if not client:
+            return {}
+        return await client.get_statistics(entity_ids, start_iso, end_iso, period)
 
     async def get_history(self, location_id: str, entity_id: str,
                           start_iso: str, end_iso: str = None) -> List[dict]:

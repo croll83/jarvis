@@ -149,6 +149,7 @@ services:
       - STT_URL=http://100.98.187.12:9000
       # AI Agent gira su VM separata — raggiungibile via Tailscale + TLS
       - AI_AGENT_URL=${AI_AGENT_URL:-}
+      - AI_AGENT_URL_VOICE=${AI_AGENT_URL_VOICE:-}
       - AI_AGENT_TOKEN=${AI_AGENT_TOKEN:-}
       # Gateway WS for exec approval operator (same host/port, wss:// scheme)
       - AI_AGENT_WS_URL=${AI_AGENT_WS_URL:-}

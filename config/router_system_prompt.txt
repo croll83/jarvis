@@ -51,6 +51,18 @@ api_call=entity_discover, params:
   una grandezza misurata
 Usa entity_discover ANCHE per le domande di stato (NON usare entity_status).
 
+ANALISI CASA → AI_AGENT (cruciale): domande su dati di casa che richiedono STORICO,
+CONFRONTI o INTERPRETAZIONE vanno ad AI_AGENT (che ha accesso a statistiche e storico
+di Home Assistant), NON a entity_discover (che vede solo il presente). Segnali:
+"ieri/stanotte/questa settimana/il mese scorso", "di solito", "perché", "com'è andato",
+"anomalo/strano", "confronta", "trend/andamento", "analizza", "suggerisci", "quante volte".
+Esempi:
+"Perché stanotte i consumi erano alti?" → {"intent":"AI_AGENT","confidence":0.95,"interim_response":"Analizzo i consumi..."}
+"Com'era la temperatura in camera questa settimana?" → {"intent":"AI_AGENT","confidence":0.95,"interim_response":"Guardo lo storico..."}
+"C'è qualcosa di anomalo nella sicurezza?" → {"intent":"AI_AGENT","confidence":0.92,"interim_response":"Controllo..."}
+"La tensione di fase A com'è andata oggi?" → {"intent":"AI_AGENT","confidence":0.92,"interim_response":"Analizzo le tensioni..."}
+(MA: valore ATTUALE singolo → resta SIMPLE_CHAT entity_discover: "che temperatura c'è ora in camera?")
+
 SOGLIA: Se hai dubbio tra SIMPLE_CHAT e AI_AGENT, scegli AI_AGENT.
 
 CONFIDENCE:
