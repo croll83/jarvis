@@ -508,7 +508,7 @@ class MultiHomeAssistant:
                              start_iso: str, end_iso: str = None,
                              period: str = "hour") -> dict:
         """Statistiche recorder (mean/min/max/change) per più entità."""
-        self._ensure_loaded()
+        self.ensure_loaded()
         client = self.clients.get(location_id)
         if not client:
             return {}
