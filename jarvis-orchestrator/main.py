@@ -801,6 +801,9 @@ async def lifespan(app: FastAPI):
     # AI Agent gateway operator (exec approval buttons via WS)
     _keep(asyncio.create_task(ai_agent_operator_loop()))
 
+    # Prewarm corsia voce AI agent (assorbe il bootstrap skill/tool ~50s)
+    _keep(asyncio.create_task(_prewarm_voice_agent()))
+
     # Approval Bot: webhook (preferred) or polling fallback
     _keep(asyncio.create_task(approval_bot_setup()))
 
@@ -1997,6 +2000,28 @@ def build_speaker_context(audio_bytes: Optional[bytes], source: str, explicit_sp
 # ===========================================================================
 # AI_AGENT STUB (Phase 4)
 # ===========================================================================
+
+async def _prewarm_voice_agent():
+    """Assorbe il bootstrap della corsia voce (hermes-shared): il primo giro
+    con skill+tool casa costa ~50s; farlo all'avvio (sessione 'marco') rende
+    la prima domanda vera dell'utente un turno warm (~10s)."""
+    if not config.AI_AGENT_URL_VOICE:
+        return
+    await asyncio.sleep(45)  # lascia stabilizzare l'avvio
+    try:
+        ctx = {"location": get_default_location_id() or "wagmi",
+               "source": "AtomS3R", "room": "Ufficio",
+               "speaker_name": "Marco", "speaker_id": 1,
+               "speaker_identified": True}
+        t0 = time.time()
+        resp, _ = await forward_to_ai_agent(
+            "Warmup silenzioso di sistema: leggi il totale kWh di ieri dal report "
+            "energia e rispondi SOLO con il numero, nessun testo.",
+            ctx, hint="warmup", session_user="marco")
+        logger.info(f"Voice-agent prewarm ok in {time.time()-t0:.0f}s: {str(resp)[:60]!r}")
+    except Exception as e:
+        logger.warning(f"Voice-agent prewarm fallito: {e}")
+
 
 async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
                               stream_tts_callback=None,
