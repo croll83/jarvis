@@ -341,6 +341,40 @@ class HomeAssistantClient:
             self.ws = None
 
 
+    async def ws_command(self, payload: dict) -> Tuple[bool, Any]:
+        """Comando WS generico verso HA: (success, result|errore).
+
+        `payload` senza 'id' (assegnato qui). Per API senza wrapper dedicato:
+        config_entries/get, call_service con return_response, ecc.
+        """
+        async with self._lock:
+            try:
+                if not await self.connect():
+                    return False, "WS non connesso"
+                self.msg_id += 1
+                req = dict(payload)
+                req["id"] = self.msg_id
+                await self.ws.send(json.dumps(req))
+                deadline = asyncio.get_event_loop().time() + self.timeout
+                while True:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                    msg = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=remaining))
+                    if msg.get("id") == self.msg_id and msg.get("type") == "result":
+                        break
+                if not msg.get("success"):
+                    return False, msg.get("error")
+                return True, msg.get("result")
+            except asyncio.TimeoutError:
+                logger.error(f"[{self.location_id}] ws_command timeout ({payload.get('type')})")
+                self.ws = None
+                return False, "timeout"
+            except Exception as e:
+                logger.error(f"[{self.location_id}] ws_command error: {e}")
+                self.ws = None
+                return False, str(e)
+
     async def get_statistics(self, entity_ids: list, start_iso: str,
                              end_iso: str = None, period: str = "hour") -> dict:
         """Long-term statistics dal recorder HA (WS `recorder/statistics_during_period`).
@@ -503,6 +537,14 @@ class MultiHomeAssistant:
         if not client:
             return None
         return await client.get_state(entity_id)
+
+    async def ws_command(self, location_id: str, payload: dict) -> Tuple[bool, Any]:
+        """Comando WS generico verso l'HA di una location."""
+        self.ensure_loaded()
+        client = self.clients.get(location_id)
+        if not client:
+            return False, f"location '{location_id}' sconosciuta"
+        return await client.ws_command(payload)
 
     async def get_statistics(self, location_id: str, entity_ids: list,
                              start_iso: str, end_iso: str = None,

@@ -2050,8 +2050,8 @@ async def _run_home_digest():
         "3) Se noti un'anomalia energetica, approfondisci con get_history sul "
         "dispositivo sospetto.\n"
         "Output: 6-10 righe in italiano, fatti concreti con numeri, evidenzia ciò "
-        "che è ANOMALO rispetto al giorno precedente. Niente domande, niente "
-        "premesse: solo il digest."
+        "che è ANOMALO rispetto al giorno precedente. Il digest deve iniziare "
+        "ESATTAMENTE con 'DIGEST CASA' — tutto ciò che scrivi prima verrà scartato."
     )
     t0 = time.time()
     resp, _ = await forward_to_ai_agent(prompt, ctx, hint="digest", session_user="digest")
@@ -2060,6 +2060,11 @@ async def _run_home_digest():
     if not resp or len(resp) < 120 or sum(c.isdigit() for c in resp) < 3:
         logger.warning(f"Home digest scartato (risposta sospetta): {str(resp)[:100]!r}")
         return
+    # Trim della narrazione tra i tool-call (lo stream SSE concatena tutto):
+    # teniamo dal marker in poi.
+    _mark = resp.find("DIGEST CASA")
+    if _mark > 0:
+        resp = resp[_mark:]
     payload = {
         "text": f"[Digest casa {yesterday}] {resp.strip()}",
         "user_id": "marco",
@@ -4480,38 +4485,28 @@ _ENERGY_METER = {"wagmi": "sensor.impianti_meter_principale_casa_energia"}
 # stanze usano gli Echo esposti da MA (provider alexa: il play su questi player
 # carica la coda MA e attiva da solo l'Echo via skill "la mia radio").
 # None = default quando la stanza non è indicata o non ha un player.
-_MUSIC_PLAYERS = {
-    "wagmi": {
-        "salotto": "media_player.soundbar_salotto_5",
-        "soggiorno": "media_player.soundbar_salotto_5",
-        "zona giorno": "media_player.soundbar_salotto_5",
-        "ufficio": "media_player.echo_ufficio_2",
-        "cameretta": "media_player.echo_cameretta_2",
-        "camera": "media_player.echo_camera_2",
-        "depandance": "media_player.echo_depandance_2",
-        "ovunque": "media_player.ovunque_2",
-        "tutta la casa": "media_player.ovunque_2",
-        "casa": "media_player.ovunque_2",
-        None: "media_player.soundbar_salotto_5",
-    }
-}
+# Mappa player + resolver condivisi con tools_api (Fase 2)
+from music import MUSIC_PLAYERS as _MUSIC_PLAYERS, resolve_music_player as _resolve_music_player
 
 _MUSIC_MEDIA_TYPES = {"artist", "album", "track", "playlist", "radio"}
 _MUSIC_ENQUEUE = {"play", "replace", "next", "replace_next", "add"}
 
-
-def _resolve_music_player(location: str, room_text: str | None) -> tuple[str | None, str]:
-    """Room text → (player entity_id, label). Longest-key match wins so
-    'cameretta' non viene catturata da 'camera'."""
-    players = _MUSIC_PLAYERS.get(location, {})
-    if not players:
-        return None, ""
-    rt = (room_text or "").strip().lower()
-    if rt:
-        for key in sorted((k for k in players if k), key=len, reverse=True):
-            if key in rt or rt in key:
-                return players[key], key
-    return players.get(None), "salotto"
+# Azione router → azione canonica trasporto musica. Volutamente SENZA le forme
+# corte "stop"/"open"/"close" (usate dalle cover) — il gate su domain_raw
+# media_player/None fa il resto.
+_MUSIC_TRANSPORT_ALIASES = {
+    "media_pause": "media_pause", "pause": "media_pause",
+    "media_play": "media_play", "play": "media_play", "media_resume": "media_play",
+    "resume": "media_play",
+    "media_stop": "media_stop",
+    "media_next_track": "media_next_track", "next_track": "media_next_track",
+    "media_next": "media_next_track", "skip": "media_next_track",
+    "media_previous_track": "media_previous_track",
+    "previous_track": "media_previous_track", "media_previous": "media_previous_track",
+    "volume_up": "volume_up", "volume_down": "volume_down", "volume_set": "volume_set",
+    "now_playing": "now_playing",
+    "transfer": "transfer", "transfer_queue": "transfer", "music_transfer": "transfer",
+}
 
 
 async def _execute_history_compare(location: str, context: dict) -> str | None:
@@ -4953,6 +4948,90 @@ async def process_jarvis_logic(text: str, context: dict):
                                          sound_type="positive" if _ok_music else "negative")
             return
 
+        # --- TRASPORTO MUSICA (Fase 2): pausa/riprendi/salta/volume/sposta/che-suona ---
+        # Stessa risoluzione player di play_music (stanza → player MASS/Echo,
+        # room del device come default): "pausa" detto all'AtomS3R dell'ufficio
+        # agisce sull'Echo Ufficio, come farebbe Alexa. Hint TV o stanza-musica
+        # sconosciuta → lascia il path generico (resolver entità).
+        _t_action = _MUSIC_TRANSPORT_ALIASES.get(action)
+        if _t_action and domain_raw in (None, "media_player"):
+            _room_hint = ""
+            if entity_raw and entity_raw != "unknown":
+                _room_hint = str(entity_raw)
+            elif ha_params and ha_params.get("room"):
+                _room_hint = str(ha_params["room"])
+            elif context.get("room"):
+                _room_hint = str(context["room"])
+            _hint_l = _room_hint.strip().lower()
+            _tvish = any(w in _hint_l for w in ("tv", "telev", "samsung"))
+            _known = (not _hint_l) or any(
+                k in _hint_l or _hint_l in k
+                for k in _MUSIC_PLAYERS.get(location, {}) if k)
+            if not _tvish and _known:
+                player, _room_label = _resolve_music_player(location, _room_hint)
+                if not player:
+                    response = "Non ho un player musicale configurato per questa casa."
+                elif _t_action == "now_playing":
+                    _st = await multi_ha.get_state(location, player)
+                    _attrs = (_st or {}).get("attributes", {}) or {}
+                    _title = _attrs.get("media_title")
+                    _artist = _attrs.get("media_artist") or _attrs.get("media_album_artist")
+                    if _st and _st.get("state") == "playing" and _title:
+                        response = (f"In {_room_label} sta suonando {_title}"
+                                    + (f" di {_artist}." if _artist else "."))
+                    elif _title:
+                        response = f"In {_room_label} c'è {_title}, in pausa."
+                    else:
+                        response = f"Non c'è musica in riproduzione in {_room_label}."
+                elif _t_action == "transfer":
+                    # source_player omesso: MASS usa il player attualmente in riproduzione
+                    _ok, _msg = await multi_ha.call_service(
+                        location, "music_assistant", "transfer_queue",
+                        {"entity_id": player})
+                    if _ok:
+                        response = f"Sposto la musica in {_room_label}."
+                    else:
+                        logger.warning(f"transfer_queue fallito su {player}: {_msg}")
+                        response = "Non sono riuscito a spostare la musica."
+                elif _t_action == "volume_set":
+                    _vol = ha_params.get("volume_level", ha_params.get("volume"))
+                    try:
+                        _vol = float(_vol)
+                        if _vol > 1:
+                            _vol = _vol / 100.0
+                        _vol = min(max(_vol, 0.0), 1.0)
+                    except (TypeError, ValueError):
+                        _vol = None
+                    if _vol is None:
+                        response = "A che volume?"
+                    else:
+                        _ok, _msg = await multi_ha.call_service(
+                            location, "media_player", "volume_set",
+                            {"entity_id": player, "volume_level": _vol})
+                        response = (f"Volume al {round(_vol * 100)}% in {_room_label}."
+                                    if _ok else "Non ci sono riuscito.")
+                else:
+                    _ok, _msg = await multi_ha.call_service(
+                        location, "media_player", _t_action, {"entity_id": player})
+                    _verbs = {"media_pause": "Metto in pausa",
+                              "media_play": "Riprendo",
+                              "media_stop": "Fermo la musica",
+                              "media_next_track": "Salto",
+                              "media_previous_track": "Torno indietro",
+                              "volume_up": "Alzo il volume",
+                              "volume_down": "Abbasso il volume"}
+                    if _ok:
+                        response = f"{_verbs[_t_action]} in {_room_label}."
+                    else:
+                        logger.warning(f"music transport {_t_action} fallito su {player}: {_msg}")
+                        response = "Non ci sono riuscito."
+                # niente smart_cache: azioni, non risposte replayabili
+                save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
+                await deliver_final_response(
+                    response, context,
+                    sound_type="negative" if response.startswith(("Non ", "A che")) else "positive")
+                return
+
         # Qwen a volte rotta domande informative come HOME_CONTROL
         # Detect: azione non-HA, o testo è una domanda di stato → redirect a SIMPLE_CHAT entity_discover
         _valid_ha_actions = {
@@ -4960,7 +5039,7 @@ async def process_jarvis_logic(text: str, context: dict):
             "open_cover", "close_cover", "stop_cover", "set_cover_position",
             "set_temperature", "set_hvac_mode",
             "volume_set", "volume_up", "volume_down", "media_play", "media_pause",
-            "media_stop", "select_source",
+            "media_stop", "media_next_track", "media_previous_track", "select_source",
             "set_percentage",
             "lock", "unlock",
             "press",
