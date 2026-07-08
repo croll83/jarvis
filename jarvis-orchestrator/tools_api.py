@@ -1978,9 +1978,11 @@ async def tool_music_play(
     Play something on the room's player via Music Assistant. media_id: an
     exact uri from music_search (preferred) or free text (MASS resolves it).
     enqueue=add appends to queue; radio_mode=true keeps playing similar
-    tracks after the item. Fire-and-forget: playback start can take a few
-    seconds (Echo attach), the call returns immediately.
+    tracks after the item. Synchronous: waits for MASS (a few seconds with
+    Echo attach) so you SEE failures — e.g. "No playable items found" on an
+    empty library playlist. Tell the user and offer an alternative.
     """
+    from multi_ha import multi_ha
     location_id = req.location_id or _get_admin_location()
     player, room_label = resolve_music_player(location_id, req.room)
     if not player:
@@ -1992,18 +1994,16 @@ async def tool_music_play(
         service_data["enqueue"] = req.enqueue
     if req.radio_mode is not None:
         service_data["radio_mode"] = req.radio_mode
-
-    async def _play_bg():
-        from multi_ha import multi_ha
-        ok, msg = await multi_ha.call_service(
-            location_id, "music_assistant", "play_media", service_data)
-        if ok:
-            logger.info(f"tools music_play OK su {player}: {req.media_id}")
-        else:
-            logger.warning(f"tools music_play fallito su {player}: {msg}")
-
-    asyncio.create_task(_play_bg())
-    return {"status": "started", "room": room_label, "player": player,
+    ok, res = await multi_ha.ws_command(location_id, {
+        "type": "call_service", "domain": "music_assistant",
+        "service": "play_media", "service_data": service_data,
+    }, timeout=30)
+    if not ok:
+        _err = res.get("message") if isinstance(res, dict) else res
+        logger.warning(f"tools music_play fallito su {player}: {_err}")
+        return {"error": f"riproduzione fallita: {_err}", "room": room_label}
+    logger.info(f"tools music_play OK su {player}: {req.media_id}")
+    return {"status": "playing", "room": room_label, "player": player,
             "media_id": req.media_id}
 
 
