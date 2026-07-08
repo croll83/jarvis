@@ -4900,6 +4900,10 @@ async def process_jarvis_logic(text: str, context: dict):
         # --- MUSICA via Music Assistant ---
         # "metti i Pink Floyd in ufficio" → music_assistant.play_media sul player
         # della stanza (soundbar MASS in salotto, Echo altrove via provider alexa).
+        # Location: contesto device se presente, altrimenti default. La location
+        # nel payload è ignorata di proposito: il 7B ci mette la stanza
+        # ("Depandance") e non è un id di casa valido.
+        _mloc = location or get_default_location_id() or "wagmi"
         _music_query = ""
         if ha_params:
             _music_query = str(ha_params.get("query") or ha_params.get("media_id") or "").strip()
@@ -4911,7 +4915,7 @@ async def process_jarvis_logic(text: str, context: dict):
                 _room_hint = str(ha_params["room"])
             elif context.get("room"):
                 _room_hint = str(context["room"])
-            player, _room_label = _resolve_music_player(location, _room_hint)
+            player, _room_label = _resolve_music_player(_mloc, _room_hint)
             if not player:
                 response = "Non ho un player musicale configurato per questa casa."
             elif not _music_query:
@@ -4929,7 +4933,7 @@ async def process_jarvis_logic(text: str, context: dict):
                     _svc_data["enqueue"] = _enq
                 # Fire-and-forget: la ricerca+coda+aggancio Echo di MA può superare
                 # il timeout del client HA; rispondiamo subito e logghiamo l'esito.
-                async def _play_bg(svc_data=_svc_data, ploc=location, pplayer=player):
+                async def _play_bg(svc_data=_svc_data, ploc=_mloc, pplayer=player):
                     _ok, _msg = await multi_ha.call_service(ploc, "music_assistant", "play_media", svc_data)
                     if _ok:
                         logger.info(f"play_music OK su {pplayer}: {svc_data.get('media_id')}")
@@ -4966,13 +4970,13 @@ async def process_jarvis_logic(text: str, context: dict):
             _tvish = any(w in _hint_l for w in ("tv", "telev", "samsung"))
             _known = (not _hint_l) or any(
                 k in _hint_l or _hint_l in k
-                for k in _MUSIC_PLAYERS.get(location, {}) if k)
+                for k in _MUSIC_PLAYERS.get(_mloc, {}) if k)
             if not _tvish and _known:
-                player, _room_label = _resolve_music_player(location, _room_hint)
+                player, _room_label = _resolve_music_player(_mloc, _room_hint)
                 if not player:
                     response = "Non ho un player musicale configurato per questa casa."
                 elif _t_action == "now_playing":
-                    _st = await multi_ha.get_state(location, player)
+                    _st = await multi_ha.get_state(_mloc, player)
                     _attrs = (_st or {}).get("attributes", {}) or {}
                     _title = _attrs.get("media_title")
                     _artist = _attrs.get("media_artist") or _attrs.get("media_album_artist")
@@ -4986,7 +4990,7 @@ async def process_jarvis_logic(text: str, context: dict):
                 elif _t_action == "transfer":
                     # source_player omesso: MASS usa il player attualmente in riproduzione
                     _ok, _msg = await multi_ha.call_service(
-                        location, "music_assistant", "transfer_queue",
+                        _mloc, "music_assistant", "transfer_queue",
                         {"entity_id": player})
                     if _ok:
                         response = f"Sposto la musica in {_room_label}."
@@ -5006,13 +5010,13 @@ async def process_jarvis_logic(text: str, context: dict):
                         response = "A che volume?"
                     else:
                         _ok, _msg = await multi_ha.call_service(
-                            location, "media_player", "volume_set",
+                            _mloc, "media_player", "volume_set",
                             {"entity_id": player, "volume_level": _vol})
                         response = (f"Volume al {round(_vol * 100)}% in {_room_label}."
                                     if _ok else "Non ci sono riuscito.")
                 else:
                     _ok, _msg = await multi_ha.call_service(
-                        location, "media_player", _t_action, {"entity_id": player})
+                        _mloc, "media_player", _t_action, {"entity_id": player})
                     _verbs = {"media_pause": "Metto in pausa",
                               "media_play": "Riprendo",
                               "media_stop": "Fermo la musica",
@@ -5142,8 +5146,13 @@ async def process_jarvis_logic(text: str, context: dict):
         else:
             entity = str(entity_raw) if entity_raw else "unknown"
 
-        # Risolvi location
-        target_location = payload.get("location") or location
+        # Risolvi location — accetta dal payload solo id di casa NOTI: il 7B
+        # a volte ci mette la stanza ("Depandance") e dirotterebbe il comando
+        _pl = payload.get("location")
+        if _pl and _pl not in service_status.get_available_locations():
+            logger.info(f"Payload location '{_pl}' non valida, uso contesto/default")
+            _pl = None
+        target_location = _pl or location
 
         # Per Telegram: risolvi location se mancante
         if source == "Telegram" and not target_location:
