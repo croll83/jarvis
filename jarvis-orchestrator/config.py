@@ -77,6 +77,12 @@ AI_AGENT_URL = os.getenv("AI_AGENT_URL", "")
 # Corsia VOCE: profilo hermes veloce (Sonnet) — la voce non può aspettare Opus.
 # Vuoto = usa AI_AGENT_URL anche per la voce.
 AI_AGENT_URL_VOICE = os.getenv("AI_AGENT_URL_VOICE", "")
+# Re-warm periodico della sessione voce su hermes (copre restart di hermes e
+# scadenza sessione, invisibili all'orchestrator). Secondi; default 5h.
+VOICE_PREWARM_INTERVAL = int(os.getenv("VOICE_PREWARM_INTERVAL", "18000"))
+# FASE 4 — digest comportamentale notturno (hermes → mem0 /add_raw)
+HOME_DIGEST_ENABLED = os.getenv("HOME_DIGEST_ENABLED", "true").lower() in ("1", "true", "yes")
+HOME_DIGEST_TIME = os.getenv("HOME_DIGEST_TIME", "05:45")  # HH:MM Europe/Rome
 AI_AGENT_TOKEN = os.getenv("AI_AGENT_TOKEN", "")
 AI_AGENT_TIMEOUT = int(os.getenv("AI_AGENT_TIMEOUT", "30"))  # legacy (non-streaming fallback)
 AI_AGENT_TIMEOUT_TOTAL = int(os.getenv("AI_AGENT_TIMEOUT_TOTAL", "300"))  # Max totale streaming SSE (5 min)

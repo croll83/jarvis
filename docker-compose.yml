@@ -150,6 +150,9 @@ services:
       # AI Agent gira su VM separata — raggiungibile via Tailscale + TLS
       - AI_AGENT_URL=${AI_AGENT_URL:-}
       - AI_AGENT_URL_VOICE=${AI_AGENT_URL_VOICE:-}
+      - VOICE_PREWARM_INTERVAL=${VOICE_PREWARM_INTERVAL:-18000}
+      - HOME_DIGEST_ENABLED=${HOME_DIGEST_ENABLED:-true}
+      - HOME_DIGEST_TIME=${HOME_DIGEST_TIME:-05:45}
       - AI_AGENT_TOKEN=${AI_AGENT_TOKEN:-}
       # Gateway WS for exec approval operator (same host/port, wss:// scheme)
       - AI_AGENT_WS_URL=${AI_AGENT_WS_URL:-}
