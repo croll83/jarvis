@@ -166,6 +166,8 @@ ESEMPI:
 "Sposta la musica in camera" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Sposto la musica.","payload":{"domain":"media_player","entity":"Camera","action":"transfer"}}
 "Che canzone sta suonando?" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Controllo...","payload":{"domain":"media_player","entity":"unknown","action":"now_playing"}}
 "Abbassa il volume della musica" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Abbasso il volume.","payload":{"domain":"media_player","entity":"unknown","action":"volume_down"}}
+"Che playlist ho in libreria?" → {"intent":"AI_AGENT","confidence":0.92,"interim_response":"Guardo la tua libreria musicale..."}
+"Consigliami qualcosa da ascoltare stasera" → {"intent":"AI_AGENT","confidence":0.90,"interim_response":"Ci penso..."}
 "Cosa c'è in soggiorno?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Cerco...","payload":{"api_call":"entity_discover","params":{"room":"soggiorno"}}}
 "Che temperatura c'è in salotto?" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo...","payload":{"api_call":"entity_discover","params":{"room":"salotto","domain":"sensor","search":"temperatura","device_class":"temperature"}}}
 "Dammi info sulla pompa di calore" → {"intent":"SIMPLE_CHAT","confidence":0.90,"response":"Controllo...","payload":{"api_call":"entity_discover","params":{"search":"pompa di calore"}}}
