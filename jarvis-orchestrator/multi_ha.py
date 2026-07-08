@@ -341,11 +341,13 @@ class HomeAssistantClient:
             self.ws = None
 
 
-    async def ws_command(self, payload: dict) -> Tuple[bool, Any]:
+    async def ws_command(self, payload: dict, timeout: float = None) -> Tuple[bool, Any]:
         """Comando WS generico verso HA: (success, result|errore).
 
         `payload` senza 'id' (assegnato qui). Per API senza wrapper dedicato:
         config_entries/get, call_service con return_response, ecc.
+        `timeout` opzionale per chiamate lente (es. search Music Assistant
+        multi-provider a cache fredda).
         """
         async with self._lock:
             try:
@@ -355,7 +357,7 @@ class HomeAssistantClient:
                 req = dict(payload)
                 req["id"] = self.msg_id
                 await self.ws.send(json.dumps(req))
-                deadline = asyncio.get_event_loop().time() + self.timeout
+                deadline = asyncio.get_event_loop().time() + (timeout or self.timeout)
                 while True:
                     remaining = deadline - asyncio.get_event_loop().time()
                     if remaining <= 0:
@@ -538,13 +540,14 @@ class MultiHomeAssistant:
             return None
         return await client.get_state(entity_id)
 
-    async def ws_command(self, location_id: str, payload: dict) -> Tuple[bool, Any]:
+    async def ws_command(self, location_id: str, payload: dict,
+                         timeout: float = None) -> Tuple[bool, Any]:
         """Comando WS generico verso l'HA di una location."""
         self.ensure_loaded()
         client = self.clients.get(location_id)
         if not client:
             return False, f"location '{location_id}' sconosciuta"
-        return await client.ws_command(payload)
+        return await client.ws_command(payload, timeout=timeout)
 
     async def get_statistics(self, location_id: str, entity_ids: list,
                              start_iso: str, end_iso: str = None,
