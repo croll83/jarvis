@@ -18,6 +18,7 @@ All endpoints are behind bearer token authentication (AI_AGENT_TOKEN).
 - media_cast/stop:       Stop active cast on a TV
 """
 
+import asyncio
 import logging
 import time
 from typing import Optional, List, Dict, Any
@@ -1747,9 +1748,20 @@ async def tool_energy_report(
     stats = await multi_ha.get_statistics(
         location_id, all_ids, start.isoformat(), now.isoformat(), "day")
 
+    def _day_label(start):
+        # i bucket 'day' partono a mezzanotte LOCALE ma il WS li ritorna in
+        # UTC (22:00 del giorno prima): senza conversione l'etichetta slitta
+        # di un giorno e "ieri" diventa il parziale di oggi.
+        if isinstance(start, str):
+            try:
+                return datetime.fromisoformat(start).astimezone(tz).strftime("%Y-%m-%d")
+            except ValueError:
+                return start[:10]
+        return start
+
     def _days(eid, key):
         return [
-            {"day": b["start"][:10] if isinstance(b.get("start"), str) else b.get("start"),
+            {"day": _day_label(b.get("start")),
              key: round(b[key], 2) if b.get(key) is not None else None}
             for b in stats.get(eid, [])
         ]
@@ -1762,12 +1774,263 @@ async def tool_energy_report(
         },
         "tensioni_fase": {
             ph: [
-                {"day": b["start"][:10] if isinstance(b.get("start"), str) else b.get("start"),
+                {"day": _day_label(b.get("start")),
                  "min": b.get("min"), "mean": round(b["mean"], 1) if b.get("mean") else None}
                 for b in stats.get(eid, [])
             ]
             for ph, eid in cat["tensioni_fase"].items()
         },
-        "note": "kWh per giorno = 'change' dei contatori cumulativi; soglia legale tensione = 207 V",
+        "note": ("kWh per giorno = 'change' dei contatori cumulativi; soglia legale "
+                 f"tensione = 207 V; il giorno {now.strftime('%Y-%m-%d')} è PARZIALE (oggi)"),
     }
     return report
+
+
+# ---------------------------------------------------------------------------
+# MUSIC TOOLS (Fase 2 "musica intelligente" — per hermes/AI agent)
+# Ricerca/libreria/coda via servizi Music Assistant con return_response;
+# play sul player della stanza (stessa mappa del fast-path voce).
+# ---------------------------------------------------------------------------
+
+from music import MUSIC_PLAYERS, resolve_music_player
+
+_MASS_ENTRY_CACHE: Dict[str, str] = {}
+
+
+async def _get_mass_entry(location_id: str) -> Optional[str]:
+    """config_entry_id dell'integrazione Music Assistant (cache per location)."""
+    if location_id in _MASS_ENTRY_CACHE:
+        return _MASS_ENTRY_CACHE[location_id]
+    from multi_ha import multi_ha
+    ok, res = await multi_ha.ws_command(
+        location_id, {"type": "config_entries/get", "domain": "music_assistant"})
+    if ok and isinstance(res, list):
+        for e in res:
+            if e.get("state") == "loaded":
+                _MASS_ENTRY_CACHE[location_id] = e["entry_id"]
+                return e["entry_id"]
+    logger.error(f"music: config entry MASS non trovata per {location_id}: {res}")
+    return None
+
+
+def _compact_media_items(items) -> List[dict]:
+    """Riduce gli item MASS all'essenziale (nome, uri, tipo, artista, album):
+    il payload pieno satura il contesto dell'agent senza aggiungere nulla."""
+    out = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        entry = {"name": it.get("name"), "uri": it.get("uri"),
+                 "media_type": it.get("media_type")}
+        artists = it.get("artists") or []
+        if artists:
+            entry["artist"] = ", ".join(
+                a.get("name", "") for a in artists if isinstance(a, dict))
+        album = it.get("album")
+        if isinstance(album, dict) and album.get("name"):
+            entry["album"] = album["name"]
+        if it.get("version"):
+            entry["version"] = it["version"]
+        out.append(entry)
+    return out
+
+
+class MusicSearchRequest(BaseModel):
+    query: str
+    media_type: Optional[List[str]] = None  # artist|album|track|playlist|radio
+    limit: int = 8
+    location_id: Optional[str] = None
+
+
+class MusicLibraryRequest(BaseModel):
+    media_type: str = "playlist"  # una sola per chiamata
+    search: Optional[str] = None
+    favorite: Optional[bool] = None
+    limit: int = 25
+    location_id: Optional[str] = None
+
+
+class MusicQueueRequest(BaseModel):
+    room: Optional[str] = None
+    location_id: Optional[str] = None
+
+
+class MusicPlayRequest(BaseModel):
+    media_id: str  # uri MASS (da music_search) o testo libero
+    room: Optional[str] = None
+    media_type: Optional[str] = None
+    enqueue: Optional[str] = None  # play|replace|next|replace_next|add
+    radio_mode: Optional[bool] = None
+    location_id: Optional[str] = None
+
+
+@router.post("/music_search")
+async def tool_music_search(
+    req: MusicSearchRequest,
+    _: None = Depends(verify_ai_agent_token)
+):
+    """
+    Search the Music Assistant catalog (all providers). Returns compact
+    matches per category with `uri` — pass that uri to music_play for an
+    exact, ambiguity-free playback. Filter with media_type when the user
+    is explicit ("l'album X", "la playlist Y").
+    """
+    from multi_ha import multi_ha
+    location_id = req.location_id or _get_admin_location()
+    entry = await _get_mass_entry(location_id)
+    if not entry:
+        return {"error": "integrazione Music Assistant non trovata"}
+    service_data = {"config_entry_id": entry, "name": req.query,
+                    "limit": max(1, min(req.limit, 25))}
+    if req.media_type:
+        service_data["media_type"] = req.media_type
+    ok, res = await multi_ha.ws_command(location_id, {
+        "type": "call_service", "domain": "music_assistant", "service": "search",
+        "service_data": service_data, "return_response": True,
+    })
+    if not ok:
+        return {"error": f"search fallita: {res}"}
+    resp = (res or {}).get("response") or {}
+    return {k: _compact_media_items(v) for k, v in resp.items() if v}
+
+
+@router.post("/music_library")
+async def tool_music_library(
+    req: MusicLibraryRequest,
+    _: None = Depends(verify_ai_agent_token)
+):
+    """
+    Browse the user's Music Assistant library (saved playlists, favorite
+    artists/albums/tracks/radio). media_type: one of artist|album|track|
+    playlist|radio. Use for "che playlist ho?", "metti una delle mie radio".
+    """
+    from multi_ha import multi_ha
+    location_id = req.location_id or _get_admin_location()
+    entry = await _get_mass_entry(location_id)
+    if not entry:
+        return {"error": "integrazione Music Assistant non trovata"}
+    service_data = {"config_entry_id": entry, "media_type": req.media_type,
+                    "limit": max(1, min(req.limit, 50))}
+    if req.search:
+        service_data["search"] = req.search
+    if req.favorite is not None:
+        service_data["favorite"] = req.favorite
+    ok, res = await multi_ha.ws_command(location_id, {
+        "type": "call_service", "domain": "music_assistant", "service": "get_library",
+        "service_data": service_data, "return_response": True,
+    })
+    if not ok:
+        return {"error": f"get_library fallita: {res}"}
+    resp = (res or {}).get("response") or {}
+    return {"items": _compact_media_items(resp.get("items")),
+            "media_type": req.media_type}
+
+
+@router.post("/music_queue")
+async def tool_music_queue(
+    req: MusicQueueRequest,
+    _: None = Depends(verify_ai_agent_token)
+):
+    """
+    Current queue of the room's player: what's playing now, what's next,
+    shuffle/repeat, queue length. Room omitted = salotto (soundbar).
+    """
+    from multi_ha import multi_ha
+    location_id = req.location_id or _get_admin_location()
+    player, room_label = resolve_music_player(location_id, req.room)
+    if not player:
+        return {"error": "nessun player musicale configurato"}
+    ok, res = await multi_ha.ws_command(location_id, {
+        "type": "call_service", "domain": "music_assistant", "service": "get_queue",
+        "service_data": {"entity_id": player}, "return_response": True,
+    })
+    if not ok:
+        return {"error": f"get_queue fallita: {res}"}
+    resp = ((res or {}).get("response") or {}).get(player) or {}
+
+    def _item(qi):
+        if not isinstance(qi, dict):
+            return None
+        mi = qi.get("media_item") or qi
+        return {"name": mi.get("name"),
+                "artist": ", ".join(a.get("name", "") for a in (mi.get("artists") or [])
+                                    if isinstance(a, dict)) or None,
+                "uri": mi.get("uri")}
+
+    return {
+        "room": room_label, "player": player,
+        "active": resp.get("active"),
+        "current_item": _item(resp.get("current_item")),
+        "next_item": _item(resp.get("next_item")),
+        "shuffle": resp.get("shuffle_enabled"),
+        "repeat": resp.get("repeat_mode"),
+        "queue_items": resp.get("items"),
+        "elapsed_time": resp.get("elapsed_time"),
+    }
+
+
+@router.post("/music_play")
+async def tool_music_play(
+    req: MusicPlayRequest,
+    _: None = Depends(verify_ai_agent_token)
+):
+    """
+    Play something on the room's player via Music Assistant. media_id: an
+    exact uri from music_search (preferred) or free text (MASS resolves it).
+    enqueue=add appends to queue; radio_mode=true keeps playing similar
+    tracks after the item. Fire-and-forget: playback start can take a few
+    seconds (Echo attach), the call returns immediately.
+    """
+    location_id = req.location_id or _get_admin_location()
+    player, room_label = resolve_music_player(location_id, req.room)
+    if not player:
+        return {"error": "nessun player musicale configurato"}
+    service_data: Dict[str, Any] = {"entity_id": player, "media_id": req.media_id}
+    if req.media_type:
+        service_data["media_type"] = req.media_type
+    if req.enqueue:
+        service_data["enqueue"] = req.enqueue
+    if req.radio_mode is not None:
+        service_data["radio_mode"] = req.radio_mode
+
+    async def _play_bg():
+        from multi_ha import multi_ha
+        ok, msg = await multi_ha.call_service(
+            location_id, "music_assistant", "play_media", service_data)
+        if ok:
+            logger.info(f"tools music_play OK su {player}: {req.media_id}")
+        else:
+            logger.warning(f"tools music_play fallito su {player}: {msg}")
+
+    asyncio.create_task(_play_bg())
+    return {"status": "started", "room": room_label, "player": player,
+            "media_id": req.media_id}
+
+
+@router.get("/music_players")
+async def tool_music_players(
+    location_id: Optional[str] = None,
+    _: None = Depends(verify_ai_agent_token)
+):
+    """
+    Room→player map with live state: what's playing where, volume. Use to
+    answer "dove sta suonando musica?" or to pick the right room.
+    """
+    from multi_ha import multi_ha
+    loc = location_id or _get_admin_location()
+    rooms = MUSIC_PLAYERS.get(loc, {})
+    seen: Dict[str, dict] = {}
+    for key, eid in rooms.items():
+        if key is None or eid in seen:
+            continue
+        st = await multi_ha.get_state(loc, eid)
+        attrs = (st or {}).get("attributes", {}) or {}
+        seen[eid] = {
+            "player": eid,
+            "rooms": [k for k, v in rooms.items() if v == eid and k],
+            "state": (st or {}).get("state"),
+            "media_title": attrs.get("media_title"),
+            "media_artist": attrs.get("media_artist"),
+            "volume": attrs.get("volume_level"),
+        }
+    return {"location_id": loc, "players": list(seen.values())}
