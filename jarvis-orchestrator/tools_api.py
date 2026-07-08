@@ -1887,7 +1887,7 @@ async def tool_music_search(
     ok, res = await multi_ha.ws_command(location_id, {
         "type": "call_service", "domain": "music_assistant", "service": "search",
         "service_data": service_data, "return_response": True,
-    })
+    }, timeout=30)
     if not ok:
         return {"error": f"search fallita: {res}"}
     resp = (res or {}).get("response") or {}
@@ -1918,7 +1918,7 @@ async def tool_music_library(
     ok, res = await multi_ha.ws_command(location_id, {
         "type": "call_service", "domain": "music_assistant", "service": "get_library",
         "service_data": service_data, "return_response": True,
-    })
+    }, timeout=30)
     if not ok:
         return {"error": f"get_library fallita: {res}"}
     resp = (res or {}).get("response") or {}
