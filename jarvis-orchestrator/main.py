@@ -2049,12 +2049,17 @@ async def _run_home_digest():
         "principali: range notte/giorno, eventuale rischio condensa.\n"
         "3) Se noti un'anomalia energetica, approfondisci con get_history sul "
         "dispositivo sospetto.\n"
-        "Output: 6-10 righe in italiano, fatti concreti con numeri, evidenzia ciò "
-        "che è ANOMALO rispetto al giorno precedente. Il digest deve iniziare "
-        "ESATTAMENTE con 'DIGEST CASA' — tutto ciò che scrivi prima verrà scartato."
+        "Chiama i tool ADESSO: non usare numeri che ricordi da conversazioni "
+        "precedenti. Output: 6-10 righe in italiano, fatti concreti con numeri, "
+        "evidenzia ciò che è ANOMALO rispetto al giorno precedente. Il digest deve "
+        "iniziare ESATTAMENTE con 'DIGEST CASA' — tutto ciò che scrivi prima verrà "
+        "scartato."
     )
     t0 = time.time()
-    resp, _ = await forward_to_ai_agent(prompt, ctx, hint="digest", session_user="digest")
+    # Sessione FRESCA per ogni digest (datata): una sessione riusata risponde
+    # coi numeri del giorno prima ricordati invece di richiamare i tool.
+    resp, _ = await forward_to_ai_agent(prompt, ctx, hint="digest",
+                                        session_user=f"digest-{yesterday}")
     # Guardia anti-fallback: se hermes è giù, forward_to_ai_agent ripiega sul
     # Qwen locale (senza tool) — non salvare un digest inventato.
     if not resp or len(resp) < 120 or sum(c.isdigit() for c in resp) < 3:
