@@ -803,6 +803,7 @@ async def lifespan(app: FastAPI):
 
     # Prewarm corsia voce AI agent (assorbe il bootstrap skill/tool ~50s)
     _keep(asyncio.create_task(_prewarm_voice_agent()))
+    _keep(asyncio.create_task(_home_digest_loop()))
 
     # Approval Bot: webhook (preferred) or polling fallback
     _keep(asyncio.create_task(approval_bot_setup()))
@@ -2002,25 +2003,97 @@ def build_speaker_context(audio_bytes: Optional[bytes], source: str, explicit_sp
 # ===========================================================================
 
 async def _prewarm_voice_agent():
-    """Assorbe il bootstrap della corsia voce (hermes-shared): il primo giro
-    con skill+tool casa costa ~50s; farlo all'avvio (sessione 'marco') rende
-    la prima domanda vera dell'utente un turno warm (~10s)."""
+    """Tiene calda la corsia voce (hermes-shared): il primo giro con skill+tool
+    casa costa ~50s; il warmup all'avvio (sessione 'marco') rende la prima
+    domanda vera un turno warm (~10s). Il re-warm periodico copre i casi che
+    l'orchestrator non vede: restart di hermes e scadenza della sessione —
+    la domanda è volutamente 'vera' (tool casa) così una sessione fredda
+    ricarica skill e ricette, non solo il keepalive."""
     if not config.AI_AGENT_URL_VOICE:
         return
     await asyncio.sleep(45)  # lascia stabilizzare l'avvio
+    while True:
+        try:
+            ctx = {"location": get_default_location_id() or "wagmi",
+                   "source": "AtomS3R", "room": "Ufficio",
+                   "speaker_name": "Marco", "speaker_id": 1,
+                   "speaker_identified": True}
+            t0 = time.time()
+            resp, _ = await forward_to_ai_agent(
+                "Warmup silenzioso di sistema: leggi il totale kWh di ieri dal report "
+                "energia e rispondi SOLO con il numero, nessun testo.",
+                ctx, hint="warmup", session_user="marco")
+            logger.info(f"Voice-agent prewarm ok in {time.time()-t0:.0f}s: {str(resp)[:60]!r}")
+        except Exception as e:
+            logger.warning(f"Voice-agent prewarm fallito: {e}")
+        await asyncio.sleep(config.VOICE_PREWARM_INTERVAL)
+
+
+async def _run_home_digest():
+    """FASE 4: chiede a hermes (corsia voce, sessione dedicata 'digest') il
+    digest comportamentale di ieri e lo salva in mem0 via /add_raw — nessuna
+    fact-extraction, il testo resta integro e ricercabile da memory_search."""
+    import httpx
+    from datetime import timedelta
+    tz = zoneinfo.ZoneInfo("Europe/Rome")
+    yesterday = (datetime.now(tz) - timedelta(days=1)).strftime("%Y-%m-%d")
+    ctx = {"location": get_default_location_id() or "wagmi",
+           "source": "AtomS3R", "room": "Ufficio",
+           "speaker_name": "Marco", "speaker_id": 1,
+           "speaker_identified": True}
+    prompt = (
+        f"Digest giornaliero della casa per ieri {yesterday}. Usa i tool temporali:\n"
+        "1) energy_report con days=2: totale kWh di ieri, i 3-4 dispositivi più "
+        "energivori, confronto col giorno prima, minimo tensione fase A.\n"
+        "2) get_statistics (period=hour) su temperatura e umidità di 2-3 zone "
+        "principali: range notte/giorno, eventuale rischio condensa.\n"
+        "3) Se noti un'anomalia energetica, approfondisci con get_history sul "
+        "dispositivo sospetto.\n"
+        "Output: 6-10 righe in italiano, fatti concreti con numeri, evidenzia ciò "
+        "che è ANOMALO rispetto al giorno precedente. Niente domande, niente "
+        "premesse: solo il digest."
+    )
+    t0 = time.time()
+    resp, _ = await forward_to_ai_agent(prompt, ctx, hint="digest", session_user="digest")
+    # Guardia anti-fallback: se hermes è giù, forward_to_ai_agent ripiega sul
+    # Qwen locale (senza tool) — non salvare un digest inventato.
+    if not resp or len(resp) < 120 or sum(c.isdigit() for c in resp) < 3:
+        logger.warning(f"Home digest scartato (risposta sospetta): {str(resp)[:100]!r}")
+        return
+    payload = {
+        "text": f"[Digest casa {yesterday}] {resp.strip()}",
+        "user_id": "marco",
+        "metadata": {"type": "home_digest", "date": yesterday,
+                     "location": ctx["location"], "agent_id": "jarvis-home-digest"},
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(f"{config.MEM0_BASE_URL}/add_raw", json=payload)
+        r.raise_for_status()
+        logger.info(f"Home digest {yesterday} salvato in mem0 "
+                    f"(id={str(r.json().get('id', '?'))[:8]}) in {time.time()-t0:.0f}s")
+
+
+async def _home_digest_loop():
+    """Scheduler del digest notturno (HOME_DIGEST_TIME, Europe/Rome)."""
+    if not config.HOME_DIGEST_ENABLED or not config.AI_AGENT_URL:
+        return
+    from datetime import timedelta
+    tz = zoneinfo.ZoneInfo("Europe/Rome")
     try:
-        ctx = {"location": get_default_location_id() or "wagmi",
-               "source": "AtomS3R", "room": "Ufficio",
-               "speaker_name": "Marco", "speaker_id": 1,
-               "speaker_identified": True}
-        t0 = time.time()
-        resp, _ = await forward_to_ai_agent(
-            "Warmup silenzioso di sistema: leggi il totale kWh di ieri dal report "
-            "energia e rispondi SOLO con il numero, nessun testo.",
-            ctx, hint="warmup", session_user="marco")
-        logger.info(f"Voice-agent prewarm ok in {time.time()-t0:.0f}s: {str(resp)[:60]!r}")
-    except Exception as e:
-        logger.warning(f"Voice-agent prewarm fallito: {e}")
+        hh, mm = (int(x) for x in config.HOME_DIGEST_TIME.split(":"))
+    except ValueError:
+        logger.error(f"HOME_DIGEST_TIME non valido: {config.HOME_DIGEST_TIME!r}")
+        return
+    while True:
+        now = datetime.now(tz)
+        target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            await _run_home_digest()
+        except Exception as e:
+            logger.error(f"Home digest fallito: {e}")
 
 
 async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
