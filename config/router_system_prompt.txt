@@ -62,6 +62,9 @@ Esempi:
 "C'è qualcosa di anomalo nella sicurezza?" → {"intent":"AI_AGENT","confidence":0.92,"interim_response":"Controllo..."}
 "La tensione di fase A com'è andata oggi?" → {"intent":"AI_AGENT","confidence":0.92,"interim_response":"Analizzo le tensioni..."}
 (MA: valore ATTUALE singolo → resta SIMPLE_CHAT entity_discover: "che temperatura c'è ora in camera?")
+MUSICA AVANZATA → AI_AGENT: libreria/playlist personali ("che playlist ho?"), consigli
+("consigliami/metti qualcosa tipo X"), ricerche precise ("la versione live del..."), MAI
+web_search. (MA: metti/pausa/salta/volume/sposta/che-sta-suonando → HOME_CONTROL come sopra.)
 
 SOGLIA: Se hai dubbio tra SIMPLE_CHAT e AI_AGENT, scegli AI_AGENT.
 
