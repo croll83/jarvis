@@ -4809,6 +4809,12 @@ async def process_jarvis_logic(text: str, context: dict):
         max_turns=config.ROUTER_MEMORY_TURNS,
         max_seconds=config.ROUTER_MEMORY_WINDOW_SECONDS,
     )
+    # SOLO turni utente: se il router vede le proprie conferme ("Fatto! acceso: X")
+    # ricopia l'entità passata invece di risolvere dalla mappa — un errore di
+    # routing diventa autorinforzante (verificato: con le righe JARVIS in memoria
+    # il 7B ripete l'entità sbagliata anche con regola+esempio contrari nel
+    # prompt). I follow-up ("spegnila") restano coperti da [INTENT PRECEDENTE].
+    recent_turns = [t for t in recent_turns if t.get("role") == "user"]
     router_memory_prompt = format_recent_turns_for_llm(recent_turns)
     _memory_ms = (time.time() - _t) * 1000
 
