@@ -129,6 +129,8 @@ AZIONI DOMOTICHE per dominio:
 
 GERARCHIA ENTITÀ: Piano → Zona → Stanza → entity
 "Spegni tutto in X" → entity=X, domain omesso
+"le luci" (PLURALE) di una stanza/zona → entity=nome stanza/zona + domain=light,
+MAI una luce singola scelta a caso (es. "accendi le luci in giardino" → entity=Giardino)
 
 OUTPUT JSON:
 {"intent":"...","confidence":0.0-1.0,"response":"testo","interim_response":"attesa","payload":{"location":"wagmi|albani","domain":"light|cover|...","entity":"nome","action":"turn_on|...","parameters":{},"api_call":"entity_discover|web_search","params":{}}}
@@ -156,6 +158,7 @@ ESEMPI:
 "Apri il cancello carrabile" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Apro il carrabile.","payload":{"location":"wagmi","domain":"button","entity":"Carrabile","action":"press"}}
 "Apri il pedonale" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Apro il pedonale.","payload":{"domain":"button","entity":"Pedonale","action":"press"}}
 "Spegni tutto in zona giorno" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Spengo tutto.","payload":{"entity":"Zona Giorno","action":"turn_off"}}
+"Accendi le luci in giardino" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Accendo le luci del giardino.","payload":{"location":"wagmi","domain":"light","entity":"Giardino","action":"turn_on"}}
 "Metti i Pink Floyd in ufficio" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Metto i Pink Floyd.","payload":{"location":"wagmi","domain":"media_player","entity":"Ufficio","action":"play_music","parameters":{"query":"Pink Floyd"}}}
 "Riproduci stelle di Geolier in camera" → {"intent":"HOME_CONTROL","confidence":0.95,"response":"Metto Stelle di Geolier.","payload":{"domain":"media_player","entity":"Camera","action":"play_music","parameters":{"query":"stelle geolier"}}}
 "Fai partire la musica ovunque" → {"intent":"HOME_CONTROL","confidence":0.92,"response":"Musica in tutta la casa.","payload":{"domain":"media_player","entity":"ovunque","action":"play_music","parameters":{"query":"musica"}}}
