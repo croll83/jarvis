@@ -5183,7 +5183,11 @@ async def process_jarvis_logic(text: str, context: dict):
         if not target_location:
             available_locations = service_status.get_available_locations()
             if available_locations:
-                target_location = available_locations[0]  # Usa prima location disponibile
+                # Default esplicito, NON il primo della lista: l'ordine è
+                # arbitrario e mandava i comandi alla casa sbagliata (albani20)
+                _default = get_default_location_id()
+                target_location = _default if _default in available_locations \
+                    else available_locations[0]
             else:
                 # Nessuna location configurata/disponibile
                 response = "Non ho case Home Assistant configurate. Vai nella dashboard per aggiungere una location."
