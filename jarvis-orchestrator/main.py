@@ -804,6 +804,7 @@ async def lifespan(app: FastAPI):
     # Prewarm corsia voce AI agent (assorbe il bootstrap skill/tool ~50s)
     _keep(asyncio.create_task(_prewarm_voice_agent()))
     _keep(asyncio.create_task(_home_digest_loop()))
+    _keep(asyncio.create_task(scenario_error_sweep_loop()))
 
     # Approval Bot: webhook (preferred) or polling fallback
     _keep(asyncio.create_task(approval_bot_setup()))
@@ -4492,6 +4493,7 @@ _ENERGY_METER = {"wagmi": "sensor.impianti_meter_principale_casa_energia"}
 # None = default quando la stanza non è indicata o non ha un player.
 # Mappa player + resolver condivisi con tools_api (Fase 2)
 from music import MUSIC_PLAYERS as _MUSIC_PLAYERS, resolve_music_player as _resolve_music_player
+from scenario_watcher import watch_scenario_run, scenario_error_sweep_loop
 
 _MUSIC_MEDIA_TYPES = {"artist", "album", "track", "playlist", "radio"}
 _MUSIC_ENQUEUE = {"play", "replace", "next", "replace_next", "add"}
@@ -4770,8 +4772,16 @@ async def process_jarvis_logic(text: str, context: dict):
               "buongiorno": ("script.buongiorno", "Buongiorno! Avvio lo scenario.")}
     if _rite in _RITES:
         _scr, _resp = _RITES[_rite]
-        asyncio.create_task(multi_ha.call_service(
-            get_default_location_id() or "wagmi", "script", "turn_on", {"entity_id": _scr}))
+        _rite_loc = get_default_location_id() or "wagmi"
+        _rite_t0 = time.time()
+
+        async def _run_rite(scr=_scr, loc=_rite_loc, ctx=dict(context),
+                            t0=_rite_t0, lbl=_rite.capitalize()):
+            await multi_ha.call_service(loc, "script", "turn_on", {"entity_id": scr})
+            # annuncio differito: se il run fallisce lo dice sul device richiedente
+            await watch_scenario_run(loc, scr, lbl, ctx, deliver_final_response, t0)
+
+        asyncio.create_task(_run_rite())
         save_chat_message("assistant", _resp, "JARVIS", None, "Jarvis")
         await deliver_final_response(_resp, context, sound_type="positive")
         return
@@ -5434,6 +5444,11 @@ async def process_jarvis_logic(text: str, context: dict):
                 logger.info(f"HOME_CONTROL call: {eid_domain}.{mapped_action} service_data={service_data}")
                 success, err = await call_hass_service(target_location, eid_domain, mapped_action, service_data)
                 entity_desc = target["description"]
+                # scenari avviati a voce: watcher per l'annuncio differito degli errori
+                if success and eid_domain == "script" and mapped_action == "turn_on":
+                    asyncio.create_task(watch_scenario_run(
+                        target_location, entity_id, entity_desc or entity_id,
+                        dict(context), deliver_final_response, time.time() - 2))
                 log_detail = f"[{target_location}] {mapped_action} su {entity_desc} ({entity_id})" + (f" params={clean_params}" if clean_params else "")
 
             admin_metrics.record_hass((time.time() - hass_start) * 1000)
