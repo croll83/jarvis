@@ -80,6 +80,10 @@ AI_AGENT_URL_VOICE = os.getenv("AI_AGENT_URL_VOICE", "")
 # Re-warm periodico della sessione voce su hermes (copre restart di hermes e
 # scadenza sessione, invisibili all'orchestrator). Secondi; default 5h.
 VOICE_PREWARM_INTERVAL = int(os.getenv("VOICE_PREWARM_INTERVAL", "18000"))
+# Watcher scenari: annuncio differito errori (voce) + sweep run schedulati → Telegram
+SCENARIO_SWEEP_ENABLED = os.getenv("SCENARIO_SWEEP_ENABLED", "true").lower() in ("1", "true", "yes")
+SCENARIO_SWEEP_SLUGS = [s.strip() for s in os.getenv(
+    "SCENARIO_SWEEP_SLUGS", "buonanotte,buongiorno,esco,rientro_a_casa").split(",") if s.strip()]
 # FASE 4 — digest comportamentale notturno (hermes → mem0 /add_raw)
 HOME_DIGEST_ENABLED = os.getenv("HOME_DIGEST_ENABLED", "true").lower() in ("1", "true", "yes")
 HOME_DIGEST_TIME = os.getenv("HOME_DIGEST_TIME", "05:45")  # HH:MM Europe/Rome
