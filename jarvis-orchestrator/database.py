@@ -3449,7 +3449,8 @@ def upsert_voice_device(
 def register_unknown_voice_device(
     device_id: str,
     firmware_version: Optional[str] = None,
-    ip_address: Optional[str] = None
+    ip_address: Optional[str] = None,
+    device_type: Optional[str] = None
 ) -> VoiceDevice:
     """
     Registra un device sconosciuto per auto-discovery.
@@ -3469,9 +3470,10 @@ def register_unknown_voice_device(
         c.execute("""
             UPDATE voice_devices
             SET last_seen_at = ?, firmware_version = COALESCE(?, firmware_version),
-                ip_address = COALESCE(?, ip_address)
+                ip_address = COALESCE(?, ip_address),
+                device_type = COALESCE(?, device_type)
             WHERE device_id = ?
-        """, (time.time(), firmware_version, ip_address, device_id))
+        """, (time.time(), firmware_version, ip_address, device_type, device_id))
         conn.commit()
         # Rileggi il device aggiornato
         c.execute("SELECT * FROM voice_devices WHERE device_id = ?", (device_id,))
@@ -3486,9 +3488,9 @@ def register_unknown_voice_device(
             INSERT INTO voice_devices (
                 device_id, friendly_name, location_id, output_speaker,
                 fallback_telegram, fallback_local_speaker, enabled,
-                last_seen_at, firmware_version, ip_address
-            ) VALUES (?, NULL, ?, 'tts.speak', 1, 1, 1, ?, ?, ?)
-        """, (device_id, default_location, time.time(), firmware_version, ip_address))
+                last_seen_at, firmware_version, ip_address, device_type
+            ) VALUES (?, NULL, ?, 'tts.speak', 1, 1, 1, ?, ?, ?, COALESCE(?, 'AtomS3R'))
+        """, (device_id, default_location, time.time(), firmware_version, ip_address, device_type))
         conn.commit()
 
         c.execute("SELECT * FROM voice_devices WHERE device_id = ?", (device_id,))
@@ -3501,10 +3503,11 @@ def register_unknown_voice_device(
 def update_voice_device_heartbeat(
     device_id: str,
     firmware_version: Optional[str] = None,
-    ip_address: Optional[str] = None
+    ip_address: Optional[str] = None,
+    device_type: Optional[str] = None
 ) -> Optional[VoiceDevice]:
     """
-    Aggiorna last_seen_at e opzionalmente firmware/ip.
+    Aggiorna last_seen_at e opzionalmente firmware/ip/device_type.
     Ritorna il device aggiornato o None se non esiste.
     """
     device_id = device_id.upper()
@@ -3525,6 +3528,9 @@ def update_voice_device_heartbeat(
     if ip_address:
         updates.append("ip_address = ?")
         params.append(ip_address)
+    if device_type:
+        updates.append("device_type = ?")
+        params.append(device_type)
 
     params.append(device_id)
     c.execute(

@@ -54,7 +54,7 @@ TAILSCALE_TIMEOUT_REMOTE = float(os.getenv("TAILSCALE_TIMEOUT_REMOTE", "15.0"))
 TAILSCALE_TIMEOUT_LOCAL = float(os.getenv("TAILSCALE_TIMEOUT_LOCAL", "10.0"))
 
 # Voice device sources (canale voce) — tutti i tipi di device vocali supportati
-VOICE_SOURCES = {"AtomS3R", "NabuVoice", "VirtualMic"}
+VOICE_SOURCES = {"AtomS3R", "NabuVoice", "VirtualMic", "AndroidPhone", "AndroidWear"}
 
 # Device API Token (autenticazione voice device firmware)
 # Se vuoto, l'autenticazione device è disabilitata

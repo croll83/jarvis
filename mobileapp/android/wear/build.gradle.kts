@@ -22,8 +22,8 @@ android {
         applicationId = "com.jarvis.voice"   // stesso package family del telefono
         minSdk = 30                            // Wear OS 4+
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
     }
 
     signingConfigs {
