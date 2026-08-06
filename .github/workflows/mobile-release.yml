@@ -1,0 +1,93 @@
+# Release automatica APK mobile+wear a ogni push che tocca l'app.
+#
+# Builda le APK firmate e le pubblica come release asset con tag
+# mobile-v<versionName>. Push successivi con la stessa versione
+# sovrascrivono gli asset (--clobber): la release è "l'ultima build
+# di quella versione". Per una release nuova bumpa versionName/-Code.
+#
+# Setup una tantum (repo Settings → Secrets and variables → Actions):
+#   KEYSTORE_B64      → base64 del keystore:  base64 -i jarvis-release.keystore | pbcopy
+#   KEYSTORE_PASSWORD → password (storePassword = keyPassword, alias "jarvis")
+# Senza secrets il workflow si limita a segnalarlo, non fallisce.
+
+name: mobile-release
+
+on:
+  push:
+    branches: [main, feature/mobile-client]
+    paths:
+      - "mobileapp/android/**"
+      - ".github/workflows/mobile-release.yml"
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+    steps:
+      - id: check
+        env:
+          KS: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Secrets di firma mancanti (KEYSTORE_B64): release APK saltata."
+          fi
+
+  build-release:
+    needs: gate
+    if: needs.gate.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: mobileapp/android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Ripristina keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > jarvis-release.keystore
+          cat > keystore.properties <<EOF
+          storeFile=jarvis-release.keystore
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=jarvis
+          keyPassword=$KEYSTORE_PASSWORD
+          EOF
+
+      - name: Build APK firmate
+        run: ./gradlew --no-daemon :mobile:assembleRelease :wear:assembleRelease
+
+      - name: Crea/aggiorna release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' mobile/build.gradle.kts)
+          VCODE=$(grep -oP 'versionCode\s*=\s*\K\d+' mobile/build.gradle.kts)
+          TAG="mobile-v${VERSION}"
+          cp mobile/build/outputs/apk/release/mobile-release.apk "jarvis-mobile-v${VERSION}.apk"
+          cp wear/build/outputs/apk/release/wear-release.apk "jarvis-wear-v${VERSION}.apk"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "JARVIS mobile v${VERSION}" \
+              --notes "APK firmate telefono+watch (versionCode ${VCODE}). Ultima build: ${GITHUB_SHA}"
+          else
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --notes "APK firmate telefono+watch (versionCode ${VCODE}). Ultima build: ${GITHUB_SHA}"
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "jarvis-mobile-v${VERSION}.apk" "jarvis-wear-v${VERSION}.apk"
