@@ -85,6 +85,7 @@ class JarvisController(
 
     private var ws: WebSocket? = null
     @Volatile private var streaming = false
+    @Volatile private var awaitingReady = false
     @Volatile private var liveSession = false
     private val lastActivity = AtomicLong(System.currentTimeMillis())
     private val stateSince = AtomicLong(System.currentTimeMillis())
@@ -143,6 +144,8 @@ class JarvisController(
     // ─────────────────────────────────────────────────────────────────────────
     private suspend fun startTurn() {
         ensureConnected()
+        if (ws == null) return   // connessione fallita: ensureConnected ha già segnalato
+        awaitingReady = true
         setState(HeadState.LISTENING)
         sendJson(JSONObject().put("type", MsgType.AUDIO_START).put("codec", Codec.PCM))
         // streaming parte davvero su 'ready' (vedi handleText)
@@ -156,6 +159,7 @@ class JarvisController(
 
     private fun bargeStop() {
         streaming = false
+        awaitingReady = false
         onLocalMicStop?.invoke()
         sendJson(JSONObject().put("type", MsgType.SPEAKER_STOP))
         localPlayer.stop()
@@ -190,6 +194,7 @@ class JarvisController(
 
     private fun closeConnection(reason: String) {
         streaming = false
+        awaitingReady = false
         onLocalMicStop?.invoke()
         localPlayer.stop()
         ws?.close(1000, reason)
@@ -211,6 +216,14 @@ class JarvisController(
                 if (spk != "internal") Log.w(tag, "speaker_type=$spk — imposta use_internal_speaker=true!")
             }
             MsgType.READY -> {
+                // Accetta solo il ready del turno che ABBIAMO chiesto: il server (compat
+                // legacy AtomS3R) auto-crea una sessione se gli arriva un frame vagante e
+                // risponde ready — senza guard il mic si riarmerebbe da solo in loop.
+                if (!awaitingReady) {
+                    Log.w(tag, "ready non richiesto (nessun turno pendente) — ignorato")
+                    return
+                }
+                awaitingReady = false
                 streaming = true
                 setState(HeadState.LISTENING)
                 if (!relayMode) onLocalMicStart?.invoke()
@@ -224,7 +237,15 @@ class JarvisController(
                 if (remoteTtsWriter == null) localPlayer.start()
                 setState(HeadState.SPEAKING)
             }
-            MsgType.TTS_DONE -> setState(HeadState.IDLE)
+            MsgType.TTS_DONE -> {
+                // Il path "session timeout without speech" del server manda SOLO tts_done
+                // (niente speech_end): senza questo reset streaming resterebbe armato e i
+                // frame residui del watch verrebbero inoltrati, innescando l'auto-create
+                // legacy lato server (loop zombie da 62s).
+                streaming = false
+                if (!relayMode) onLocalMicStop?.invoke()
+                setState(HeadState.IDLE)
+            }
             MsgType.TRIGGER_LISTEN -> scope.launch {
                 // Multiturn: l'orchestrator manda trigger_listen ma il device sta ancora
                 // riproducendo la coda del TTS della domanda → attendo che finisca di suonare,
@@ -287,6 +308,7 @@ class JarvisController(
             if (ws !== webSocket) return
             ws = null
             streaming = false
+            awaitingReady = false
             onLocalMicStop?.invoke()
             val msg = when {
                 code == 401 || code == 403 -> "Accesso negato: token non valido o mancante"
@@ -296,7 +318,7 @@ class JarvisController(
             flashError(msg)
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            if (ws === webSocket) { ws = null; streaming = false }
+            if (ws === webSocket) { ws = null; streaming = false; awaitingReady = false }
         }
     }
 
@@ -323,7 +345,9 @@ class JarvisController(
             val s = _state.value
             val limit = when (s) {
                 HeadState.CONNECTING -> 12_000L
-                HeadState.LISTENING -> 60_000L
+                // LISTENING sotto i 60s del session timeout server: così il watchdog vince
+                // la corsa e ferma mic+streaming PRIMA che il server mandi il tts_done nudo.
+                HeadState.LISTENING -> 55_000L
                 HeadState.THINKING -> 45_000L
                 HeadState.SPEAKING -> 90_000L
                 else -> Long.MAX_VALUE   // IDLE / ERROR: nessun timeout
@@ -331,6 +355,7 @@ class JarvisController(
             if (System.currentTimeMillis() - stateSince.get() > limit) {
                 Log.w(tag, "watchdog: stato $s bloccato → reset")
                 streaming = false
+                awaitingReady = false
                 onLocalMicStop?.invoke()
                 localPlayer.stop()
                 if (s == HeadState.CONNECTING) {
