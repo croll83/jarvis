@@ -1,0 +1,211 @@
+# =============================================================================
+# HAOS replication manifest — estratto da Albani20 (HA 2026.6.0 / OS 17.3)
+# =============================================================================
+# Descrive lo STACK (non i device): store repo, add-on + opzioni, HACS repo.
+# I segreti sono templatizzati come ${VAR} e risolti da .env a runtime.
+# Esclusi di proposito: integrazioni/config-entry, dispositivi, dashboard,
+# automazioni (la "entity map").
+#
+# Versioni di riferimento (Albani, giugno 2026):
+#   HA OS 17.3 · Supervisor 2026.05.1 · Core 2026.6.0
+# Le versioni degli add-on/HACS NON sono pinnate: si installa l'ultima dal
+# repo e poi si può allineare. I numeri qui sotto sono solo documentazione.
+
+# -----------------------------------------------------------------------------
+# Store repositories da aggiungere (lo slug-hash lo assegna il Supervisor)
+# -----------------------------------------------------------------------------
+store_repositories:
+  - url: "https://github.com/hassio-addons/repository"   # hash atteso: a0d7b954
+    note: "Home Assistant Community Add-ons (Tailscale, NPM, SSH)"
+  - url: "https://github.com/AlexxIT/hassio-addons"      # hash atteso: a889bffc
+    note: "go2rtc"
+  - url: "https://github.com/music-assistant/home-assistant-addon"  # hash: d5369777
+    note: "Music Assistant + YT Music PO Token Generator"
+  - url: "https://github.com/esphome/home-assistant-addon"          # hash: 5c53de3b
+    note: "ESPHome Device Builder"
+
+# -----------------------------------------------------------------------------
+# Add-on da installare. 'match_name' serve a risolvere lo slug dopo il reload
+# dello store (lo slug = <repohash>_<name>, non noto a priori).
+# 'options' viene applicato via /addons/<slug>/options.
+# -----------------------------------------------------------------------------
+addons:
+  - match_name: "Matter Server"
+    source: core                 # add-on ufficiale (slug core_matter_server)
+    boot: auto
+    auto_update: false
+    ref_version: "8.4.0"
+    options:
+      log_level: info
+      log_level_sdk: error
+      beta: false
+      enable_test_net_dcl: false
+
+  - match_name: "Tailscale"
+    source: "https://github.com/hassio-addons/repository"
+    boot: auto
+    auto_update: false
+    ref_version: "0.28.1"
+    # NB: il LOGIN Tailscale NON è clonabile — dopo lo start apri l'ingress
+    #     dell'add-on e autentica come nodo NUOVO (es. hostname ha-wagmi).
+    options:
+      accept_dns: true
+      accept_routes: true
+      advertise_exit_node: true
+      advertise_connector: true
+      advertise_routes: ["local_subnets"]
+      always_use_derp: false
+      log_level: info
+      login_server: "https://controlplane.tailscale.com"
+      share_homeassistant: "disabled"
+      share_on_port: 443
+      snat_subnet_routes: true
+      stateful_filtering: false
+      tags: []
+      taildrive:
+        addons: false
+        addon_configs: false
+        backup: false
+        config: false
+        media: false
+        share: false
+        ssl: false
+      taildrop: true
+      userspace_networking: false   # serve disabilitato per JARVIS HA Memory (host net)
+
+  - match_name: "Nginx Proxy Manager"
+    source: "https://github.com/hassio-addons/repository"
+    boot: auto
+    auto_update: false
+    ref_version: "2.1.0"
+    options: {}
+    # NB: i proxy-host stanno nel DB interno dell'add-on (SQLite), NON nelle
+    #     options → vanno ricreati a mano dalla UI dell'add-on, oppure si
+    #     copia /addon_configs/<slug>/ dall'istanza Albani (vedi README).
+
+  - match_name: "File editor"
+    source: core                 # slug core_configurator
+    boot: auto
+    auto_update: false
+    ref_version: "6.0.0"
+    options:
+      dirsfirst: false
+      enforce_basepath: true
+      git: true
+      ignore_pattern: ["__pycache__", ".cloud", ".storage", "deps"]
+      ssh_keys: []
+
+  - match_name: "Advanced SSH & Web Terminal"
+    source: "https://github.com/hassio-addons/repository"
+    boot: auto
+    auto_update: false
+    ref_version: "23.0.9"
+    # CREDENZIALI NUOVE — non riusare quelle di Albani (erano in chiaro).
+    # Lo schema dell'add-on (v23+) richiede TUTTI questi campi (no default).
+    options:
+      ssh:
+        username: "root"
+        password: "${SSH_ADDON_PASSWORD}"
+        authorized_keys:
+          - "${SSH_AUTHORIZED_KEY}"
+        sftp: false
+        compatibility_mode: false
+        allow_agent_forwarding: false
+        allow_remote_port_forwarding: false
+        allow_tcp_forwarding: false
+      zsh: true
+      share_sessions: false
+      packages: []
+      init_commands: []
+
+  - match_name: "go2rtc"
+    source: "https://github.com/AlexxIT/hassio-addons"
+    boot: auto
+    auto_update: false
+    ref_version: "1.9.14"
+    options: {}
+
+  - match_name: "Music Assistant"
+    source: "https://github.com/music-assistant/home-assistant-addon"
+    boot: auto
+    auto_update: true
+    ref_version: "2.8.9"
+    options:
+      log_level: info
+      safe_mode: false
+
+  - match_name: "YT Music PO Token Generator"
+    source: "https://github.com/music-assistant/home-assistant-addon"
+    boot: auto
+    auto_update: true
+    ref_version: "1.3.1"
+    options: {}
+
+  - match_name: "ESPHome Device Builder"
+    source: "https://github.com/esphome/home-assistant-addon"
+    boot: auto
+    auto_update: false
+    ref_version: "2026.4.5"
+    options:
+      use_new_device_builder: false
+
+# Add-on LOCALE: buildato dalla cartella ha_memory_service/ del monorepo.
+# Va prima COPIATO in /addons/jarvis_ha_memory/ sull'HAOS (lo fa replicate.sh
+# se SSH_TARGET è impostato), poi reload store + install dello slug locale.
+local_addon:
+  slug: "local_jarvis_ha_memory"
+  match_name: "JARVIS HA Memory"
+  source_dir_repo_rel: "ha_memory_service"   # relativo alla root del repo jarvis
+  dest_dir: "/addons/jarvis_ha_memory"
+  boot: auto
+  auto_update: false
+  ref_version: "1.0.5"
+  options:
+    location_id: "wagmi"           # CAMBIATO da albani20 → wagmi
+    ai_backend: "local"
+    ollama_url: "http://100.88.84.81:11434"
+    embedding_url: "http://100.88.84.81:11435"
+    embedding_model: "fastembed"
+    summary_model: "qwen2.5:3b-32k"
+    openrouter_api_key: "${OPENROUTER_API_KEY}"
+    gemini_api_key: "${GEMINI_API_KEY}"
+    openrouter_summary_model: "qwen/qwen-2.5-7b-instruct"
+    summary_temperature: 0.3
+    summary_timeout: 30
+    embedding_timeout: 30
+    chroma_host: "100.88.84.81"
+    chroma_port: 8000
+    skip_entity_prefixes: "update."
+    skip_entity_suffixes: "_battery,_linkquality,_signal,_velocita_di_,_segnale_,"
+
+# -----------------------------------------------------------------------------
+# HACS — repository da installare (custom components + lovelace plugins).
+# HACS stesso va installato PRIMA, una tantum (vedi README: script ufficiale
+# o add-on "Get HACS"), e l'integrazione configurata via OAuth GitHub.
+# -----------------------------------------------------------------------------
+hacs:
+  integrations:
+    - { full_name: "cavefire/Bose-Homeassistant",            ref_version: "1.3.1" }
+    - { full_name: "ollo69/ha-samsungtv-smart",              ref_version: "0.14.5" }
+    - { full_name: "thomasloven/hass-browser_mod",           ref_version: "2.13.4" }
+    - { full_name: "xZetsubou/hass-localtuya",               ref_version: "2025.11.0" }
+    - { full_name: "croll83/ha_bticino_hometouch",           ref_version: "4.4.1" }
+    - { full_name: "KoljaWindeler/ytube_music_player",       ref_version: "20260508.01" }
+    - { full_name: "alandtse/alexa_media_player",            ref_version: "5.15.4" }
+    - { full_name: "thlucas1/homeassistantcomponent_spotifyplus", ref_version: "1.0.201" }
+    - { full_name: "anotherjulien/MyHOME",                   ref_version: "0.9.3" }
+    - { full_name: "krahabb/meross_lan",                     ref_version: "5.8.0" }
+  plugins:
+    - { full_name: "Nerwyn/universal-remote-card",           ref_version: "4.11.1" }
+    - { full_name: "piitaya/lovelace-mushroom",              ref_version: "5.1.1" }
+
+# -----------------------------------------------------------------------------
+# Riferimento: integrazioni configurate su Albani (config-entry) — ESCLUSE
+# dalla replica (device/account specifici). Elencate solo per memoria.
+# -----------------------------------------------------------------------------
+excluded_config_entries_reference:
+  - alexa_media, apple_tv, blink, bose, bticino_hometouch, cast, dlna_dmr(x5),
+    esphome, ezviz(x15), go2rtc, homekit(x8), hue, ipp(x2), localtuya, matter,
+    meross_lan(x2), music_assistant, myhome, open_meteo, met, roomba(x2),
+    samsungtv(x3), samsungtv_smart(x4), sia, tuya, upnp, whirlpool,
+    ytube_music_player, mobile_app(x3), shopping_list, radio_browser
