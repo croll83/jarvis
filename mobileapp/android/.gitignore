@@ -17,7 +17,4 @@ secrets.properties
 keystore.properties
 *.keystore
 *.jks
-# Asset Rive di marketplace: non ridistribuire via git (copiare a mano su ogni macchina).
-# Se il repo è privato e la licenza lo consente, rimuovi questa riga per committarlo.
-mobile/src/main/assets/*.riv
 .kotlin/
