@@ -1,0 +1,43 @@
+# =============================================================================
+# HAOS-WAGMI — terraform.tfvars (esempio)
+# =============================================================================
+# Copia in terraform.tfvars e compila. terraform.tfvars è in .gitignore.
+#   cp terraform.tfvars.example terraform.tfvars
+
+# --- Connessione pve-wagmi ---
+proxmox_endpoint = "https://100.99.14.73:8006/"
+proxmox_username = "root@pam"
+proxmox_password = "CHANGE_ME" # password root@pam di pve-wagmi
+proxmox_insecure = true
+proxmox_node     = "pve-wagmi"
+proxmox_host_ssh = "100.99.14.73" # SSH host del nodo (staging immagine + import disco)
+
+# --- Immagine HAOS (allineata ad Albani20) ---
+haos_version       = "17.3"
+image_datastore_id = "local"
+
+# --- Hardware VM (= specifiche Albani20) ---
+vm_id        = 210 # 100/101/200/201 occupati su pve-wagmi
+vm_name      = "haos-wagmi"
+vm_cores     = 2
+vm_memory    = 8192 # 8 GB
+vm_disk_size = 64    # GB
+datastore_id = "local-lvm"
+
+# --- Rete ---
+network_bridge = "vmbr0"
+vlan_id        = 0
+mac_address    = "" # vuoto = generato; impostane uno fisso se vuoi prenotazione DHCP
+
+# --- Comportamento ---
+# Autostart al boot dell'host: SEMPRE attivo (on_boot=true, hardcoded in vm_haos.tf).
+start_on_create = false # NON avvia subito dopo l'apply (build senza avviare)
+
+# --- Container alexa-skill (Cloudflare tunnel) ---
+alexa_enabled = true
+alexa_ct_id   = 211
+# ⚠️ TOKEN NUOVO: crea un tunnel dedicato a Wagmi nella dashboard Cloudflare
+# Zero Trust (stesso account di Albani), instradalo verso l'HA di Wagmi, e
+# incolla qui il connector token. NON usare il token di Albani.
+cloudflare_tunnel_token = "CHANGE_ME_TOKEN_DEL_NUOVO_TUNNEL"
+#alexa_root_password    = ""   # opzionale, per console del container
