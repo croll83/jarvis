@@ -3623,6 +3623,12 @@ def _extract_target_from_user_text(user_text: str, location_id: str) -> Optional
     text_lower = re.sub(r'[,\.\!\?\;\:\-]', ' ', user_text.strip().lower())
     text_lower = re.sub(r'\s+', ' ', text_lower).strip()
 
+    # Alias per storpiature STT ricorrenti dei nomi di zona
+    # (es. "dependenza"/"di pancia" → "depandance")
+    for wrong, right in config.STT_TARGET_ALIASES.items():
+        if wrong in text_lower:
+            text_lower = re.sub(rf"\b{re.escape(wrong)}\b", right, text_lower)
+
     # Carica room/zone/area reali dal DB — cerca location specifica PRIMA dei wildcard
     locations = get_entity_map_locations(location_id)
     if locations:
@@ -3634,6 +3640,12 @@ def _extract_target_from_user_text(user_text: str, location_id: str) -> Optional
             if name.lower() in text_lower:
                 return name
 
+        # Fuzzy match per storpiature STT non in alias: confronta ogni nome
+        # location con finestre di parole del testo di pari lunghezza
+        fuzzy_name = _fuzzy_match_location(text_lower, all_names)
+        if fuzzy_name:
+            return fuzzy_name
+
     # Wildcard solo se nessuna location specifica trovata
     wildcard_tokens = {"tutta la casa", "tutto", "tutti", "tutte", "ovunque", "dappertutto"}
     for wt in wildcard_tokens:
@@ -3641,6 +3653,72 @@ def _extract_target_from_user_text(user_text: str, location_id: str) -> Optional
             return wt
 
     return None
+
+
+def _fuzzy_match_location(text_lower: str, all_names: list, threshold: float = 0.78) -> Optional[str]:
+    """
+    Fuzzy match tra finestre di parole del testo e i nomi di room/area/zone.
+    Cattura storpiature STT vicine (es. "de pandance" → "Depandance",
+    "zona giorno" → "Piano Giorno") che il substring match non trova.
+    """
+    from difflib import SequenceMatcher
+
+    # Escludi parole di comando/articoli: riducono il rumore delle finestre
+    _stop = {
+        "accendi", "spegni", "apri", "chiudi", "alza", "abbassa", "imposta",
+        "attiva", "disattiva", "metti", "tutte", "tutti", "tutto", "le", "la",
+        "il", "lo", "gli", "i", "un", "una", "di", "del", "della", "dello",
+        "delle", "dei", "in", "nel", "nella", "al", "alla", "per", "luce",
+        "luci", "lampada", "lampade", "tapparella", "tapparelle", "presa",
+        "prese", "clima", "casa", "please", "grazie",
+    }
+    words = [w for w in text_lower.split() if w not in _stop and len(w) >= 3]
+    if not words:
+        return None
+
+    best_name, best_ratio = None, 0.0
+    for name in all_names:
+        name_l = name.lower()
+        n = max(1, len(name_l.split()))
+        for i in range(len(words)):
+            for span in (n, n + 1):
+                chunk = " ".join(words[i:i + span])
+                if not chunk:
+                    continue
+                ratio = SequenceMatcher(None, chunk, name_l).ratio()
+                if ratio > best_ratio:
+                    best_name, best_ratio = name, ratio
+
+    if best_ratio >= threshold:
+        logger.info(f"Entity resolution [fuzzy_location]: → '{best_name}' (ratio {best_ratio:.2f})")
+        return best_name
+    return None
+
+
+def _detect_scope_phrase(user_text: str) -> Optional[str]:
+    """
+    Rileva se il testo nomina un luogo specifico (es. "della depandance",
+    "in veranda") anche quando non è stato risolto contro il DB.
+
+    Ritorna la frase dopo la preposizione, oppure None se il comando è
+    genuinamente whole-house ("spegni tutte le luci", "... di casa").
+    """
+    tl = re.sub(r"[,\.\!\?\;\:\-']", " ", user_text.lower())
+    tl = re.sub(r"\s+", " ", tl).strip()
+
+    # Riferimenti espliciti a tutta la casa → nessuno scope specifico
+    for whole in ("di casa", "della casa", "in casa", "in tutta la casa",
+                  "a casa", "dell intera casa", "di tutta la casa"):
+        if whole in tl:
+            return None
+
+    m = re.search(
+        r"\b(?:della|dello|delle|degli|dei|del|dell|nella|nello|nelle|negli|nel"
+        r"|alla|allo|alle|agli|all|al|in|di)\s+"
+        r"([a-zà-ù]{3,}(?:\s+[a-zà-ù]{3,})?)",
+        tl,
+    )
+    return m.group(1) if m else None
 
 
 def _resolve_home_control_target(
@@ -3705,7 +3783,45 @@ def _resolve_home_control_target(
     if user_text:
         extracted = _extract_target_from_user_text(user_text, location_id)
         if extracted:
-            discovered = discover_entities_for_voice(location_id, extracted, domain=domain)
+            discovered = None
+            _wildcards = {"tutta la casa", "tutto", "tutti", "tutte", "ovunque", "dappertutto"}
+            if extracted.lower() in _wildcards:
+                # ── GUARD wildcard+scope: "tutte le luci della <zona>" non deve
+                # MAI diventare "tutta la casa" solo perché lo STT ha storpiato
+                # il nome della zona. Se il testo nomina un luogo non risolto:
+                # 1) prova l'entity di Qwen come scope, 2) altrimenti chiedi
+                # chiarimento invece di agire ovunque.
+                scope_phrase = _detect_scope_phrase(user_text)
+                if scope_phrase:
+                    if entity_name and entity_name.lower().strip() not in _wildcards:
+                        scoped = discover_entities_for_voice(location_id, entity_name, domain=domain)
+                        if scoped:
+                            logger.info(
+                                f"Entity resolution [wildcard_guard]: scope '{scope_phrase}' "
+                                f"non risolto dal testo, uso entity Qwen '{entity_name}' "
+                                f"→ {len(scoped)} entities"
+                            )
+                            extracted = entity_name
+                            discovered = scoped
+                    if not discovered:
+                        logger.warning(
+                            f"Entity resolution [wildcard_guard]: wildcard + scope "
+                            f"'{scope_phrase}' non risolto in '{user_text}' → clarify "
+                            f"(bloccato bulk su tutta la casa)"
+                        )
+                        return {
+                            "mode": "clarify",
+                            "entity_ids": [],
+                            "entity_names": [],
+                            "description": f"scope non riconosciuto: '{scope_phrase}'",
+                            "match_type": "unresolved_scope",
+                            "clarify_message": (
+                                f"Vuoi agire su una zona specifica, ma non ho riconosciuto "
+                                f"'{scope_phrase}'. Puoi ripetere il nome della stanza o della zona?"
+                            ),
+                        }
+            if discovered is None:
+                discovered = discover_entities_for_voice(location_id, extracted, domain=domain)
             if discovered:
                 # Se c'è un solo entity nel risultato, restituisci direttamente
                 if len(discovered) == 1:
@@ -4803,11 +4919,13 @@ async def process_jarvis_logic(text: str, context: dict):
 
         # ── CLARIFICATION: ambiguous entity → ask user to specify ──
         if target["mode"] == "clarify":
-            names_list = ", ".join(target.get("entity_names", [])[:6])
-            more = len(target.get("entity_names", [])) - 6
-            if more > 0:
-                names_list += f" e altri {more}"
-            response = f"Non sono sicuro a quale ti riferisci. Ho trovato: {names_list}. Quale intendi?"
+            response = target.get("clarify_message")
+            if not response:
+                names_list = ", ".join(target.get("entity_names", [])[:6])
+                more = len(target.get("entity_names", [])) - 6
+                if more > 0:
+                    names_list += f" e altri {more}"
+                response = f"Non sono sicuro a quale ti riferisci. Ho trovato: {names_list}. Quale intendi?"
             logger.info(f"HOME_CONTROL clarification: {len(target['entity_ids'])} candidates → asking user")
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context)
