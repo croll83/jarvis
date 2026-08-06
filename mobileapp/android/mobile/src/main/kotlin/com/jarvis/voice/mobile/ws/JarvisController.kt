@@ -188,7 +188,13 @@ class JarvisController(
 
             val req = Request.Builder().url(url).build()
             ws = http.newWebSocket(req, Listener())
-            sendJson(JSONObject().put("type", MsgType.HELLO).put("fw", FW))
+            sendJson(
+                JSONObject()
+                    .put("type", MsgType.HELLO)
+                    .put("fw", FW)
+                    // Classificazione esplicita lato orchestrator (fallback: euristica fw)
+                    .put("device_type", if (relayMode) "AndroidWear" else "AndroidPhone")
+            )
         }
     }
 

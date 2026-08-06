@@ -632,15 +632,24 @@ async def ws_audio_endpoint(
                         # Device announces persistent mode
                         is_persistent = True
                         conn.firmware_version = ctrl.get("fw", "unknown")
-                        # Determine device_type from firmware version string
+                        # device_type esplicito dal client (client android lo manda nel
+                        # hello); fallback: euristica sulla stringa firmware
+                        _known_types = {"AtomS3R", "NabuVoice", "AndroidPhone", "AndroidWear"}
+                        _explicit_type = ctrl.get("device_type")
                         fw_lower = conn.firmware_version.lower()
-                        if "voicepe" in fw_lower or "nabuvoice" in fw_lower:
+                        if _explicit_type in _known_types:
+                            conn.device_type = _explicit_type
+                        elif "voicepe" in fw_lower or "nabuvoice" in fw_lower:
                             conn.device_type = "NabuVoice"
+                        elif fw_lower.startswith("android"):
+                            conn.device_type = "AndroidPhone"
                         else:
                             conn.device_type = "AtomS3R"
                         logger.info(f"Device {device_id}: persistent mode (fw={conn.firmware_version}, type={conn.device_type})")
 
                         # Auto-register device if not already in database + update heartbeat
+                        # (device_type persistito: i device già registrati si riclassificano
+                        # alla riconnessione)
                         try:
                             from database import get_voice_device, register_unknown_voice_device, update_voice_device_heartbeat
                             dev = get_voice_device(device_id)
@@ -648,6 +657,7 @@ async def ws_audio_endpoint(
                                 dev = register_unknown_voice_device(
                                     device_id=device_id,
                                     firmware_version=conn.firmware_version,
+                                    device_type=conn.device_type,
                                 )
                                 logger.info(f"Device {device_id}: auto-registered in database "
                                             f"(type={conn.device_type}, fw={conn.firmware_version})")
@@ -656,6 +666,7 @@ async def ws_audio_endpoint(
                                 update_voice_device_heartbeat(
                                     device_id=device_id,
                                     firmware_version=conn.firmware_version,
+                                    device_type=conn.device_type,
                                 )
                         except Exception as e:
                             logger.error(f"Device {device_id}: auto-registration failed: {e}")
