@@ -289,8 +289,8 @@ async def is_safe(text: str, source: str = "unknown") -> tuple[bool, str]:
 # Chiamata dopo STT e prima del pre-route. Se fallisce, ritorna testo originale.
 # ===========================================================================
 
-_STT_NORMALIZE_SYSTEM = (
-    "Sei un normalizzatore di testo trascritto da un sistema di riconoscimento vocale (Whisper) "
+_STT_NORMALIZE_RULES = (
+    "Sei un normalizzatore di testo trascritto da un sistema di riconoscimento vocale "
     "per un assistente domotico italiano chiamato JARVIS.\n"
     "Il tuo compito:\n"
     "1. Correggi errori di trascrizione: parole storpiate, lingue sbagliate, punteggiatura errata\n"
@@ -298,14 +298,54 @@ _STT_NORMALIZE_SYSTEM = (
     "3. NON aggiungere formattazione, virgolette o commenti\n"
     "4. Se il testo è già corretto, restituiscilo identico\n"
     "5. Rispondi SOLO con il testo corretto, nient'altro\n\n"
-    "Contesto — entità domotiche note:\n"
-    "Stanze: Ingresso, Soggiorno, Cucina, Lavanderia, Disimpegno, Camera, "
-    "Cabina armadio, Cameretta, Bagno grande, Bagno piccolo, Balcone interno, Balcone esterno, Garage, Box\n"
-    "Device: TV, Cam, Lampada, Lampada Giorgio, Luce, Luci, Porta, Soundbar, Echo\n"
-    "Luci: Centro Block, Strip Led, Divano, Faretto, Tavola, Braava, Roomba, Letto, Specchio\n"
-    "Persone: Marco, Ada, Giorgio, Sofia, Loredana, Mario, Melina\n"
-    "Azioni: accendi, spegni, apri, chiudi, cambia, imposta, alza, abbassa, muta, stop, silenzio"
 )
+
+_stt_ctx_cache = (0.0, "")  # (timestamp, sezione contesto)
+
+
+def _stt_normalize_system() -> str:
+    """
+    Prompt normalizzatore: regole statiche + contesto dinamico con le stanze/
+    aree/zone REALI dall'entity map di tutte le location (niente liste
+    hardcodate che invecchiano) e le storpiature note da STT_TARGET_ALIASES.
+    Contesto in cache 5 min per evitare query DB a ogni comando vocale.
+    """
+    global _stt_ctx_cache
+    now = time.time()
+    if _stt_ctx_cache[1] and now - _stt_ctx_cache[0] < 300:
+        return _STT_NORMALIZE_RULES + _stt_ctx_cache[1]
+
+    rooms_line = ""
+    try:
+        from database import get_all_locations, get_entity_map_locations
+        names: list = []
+        for loc in get_all_locations():
+            for n in get_entity_map_locations(loc.id):
+                if n not in names:
+                    names.append(n)
+        if names:
+            rooms_line = "Stanze e zone: " + ", ".join(names) + "\n"
+    except Exception as e:
+        logger.warning(f"STT normalize: entity map non disponibile per il prompt: {e}")
+
+    by_canon: dict = {}
+    for wrong, right in config.STT_TARGET_ALIASES.items():
+        by_canon.setdefault(right, []).append(wrong)
+    alias_lines = "".join(
+        f"ATTENZIONE: '{canon}' viene spesso trascritto male "
+        f"({', '.join(wrongs)}): nel contesto domotico correggilo in '{canon}'.\n"
+        for canon, wrongs in by_canon.items()
+    )
+
+    context = (
+        "Contesto — entità domotiche note:\n"
+        + rooms_line
+        + alias_lines
+        + "Persone: Marco, Ada, Giorgio, Sofia, Loredana, Mario, Melina\n"
+        "Azioni: accendi, spegni, apri, chiudi, cambia, imposta, alza, abbassa, muta, stop, silenzio"
+    )
+    _stt_ctx_cache = (now, context)
+    return _STT_NORMALIZE_RULES + context
 
 
 async def normalize_stt_text(text: str) -> str:
@@ -346,7 +386,7 @@ async def normalize_stt_text(text: str) -> str:
 async def _normalize_ollama(text: str, llm_params: dict) -> Optional[str]:
     """Normalizzazione STT via LLM locale (Ollama o llama-server)."""
     messages = [
-        {"role": "system", "content": _STT_NORMALIZE_SYSTEM},
+        {"role": "system", "content": _stt_normalize_system()},
         {"role": "user", "content": text}
     ]
     try:
@@ -369,7 +409,7 @@ async def _normalize_openrouter(text: str, llm_params: dict) -> Optional[str]:
     payload = {
         "model": config.OPENROUTER_ROUTER_MODEL,
         "messages": [
-            {"role": "system", "content": _STT_NORMALIZE_SYSTEM},
+            {"role": "system", "content": _stt_normalize_system()},
             {"role": "user", "content": text}
         ],
         "temperature": 0.1,

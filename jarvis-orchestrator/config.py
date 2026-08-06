@@ -356,7 +356,10 @@ STT_PROMPT = os.getenv("STT_PROMPT", os.getenv("WHISPER_PROMPT", (
     "Le stanze della casa sono Ingresso, Soggiorno, Cucina, Lavanderia, "
     "Disimpegno, Camera, Cabina armadio, Cameretta, Bagno grande, Bagno piccolo, "
     "Balcone interno, Balcone esterno, Garage e Box. "
-    "Le zone sono Notte, Giorno e Esterno. "
+    "Nella villa ci sono anche Salotto, Veranda, Ripostiglio, Bagno Cucina, "
+    "Depandance, Sala Depandance, Bagno Depandance, Disimpegno Depandance, "
+    "Pergotenda, Ufficio, Giardino, Piscina, Bagno Piscina e Scale. "
+    "Le zone sono Notte, Giorno, Esterno, Piano Giorno, Piano Notte e Piano Terra. "
     "I dispositivi includono TV, Cam, Lampada, Lampada Giorgio, Luce, Luci, "
     "Porta, Soundbar e Echo. "
     "Le luci si chiamano Centro Block, Strip Led, Divano, Faretto, Tavola, "
@@ -367,6 +370,43 @@ STT_PROMPT = os.getenv("STT_PROMPT", os.getenv("WHISPER_PROMPT", (
 
 # STT normalization via LLM (Qwen) — disable per test con solo Whisper prompt
 STT_NORMALIZE_ENABLED = os.getenv("STT_NORMALIZE_ENABLED", "false").lower() == "true"
+
+# Storpiature STT ricorrenti → nome canonico di zona/stanza (lowercase).
+# Applicate SOLO nella entity resolution HOME_CONTROL (non alterano il testo
+# per chat/reasoning: "mal di pancia" non deve diventare "mal depandance").
+# Estendibili via env STT_TARGET_ALIASES_EXTRA, JSON {"storpiatura": "canonico"}.
+STT_TARGET_ALIASES = {
+    # frasi multi-parola PRIMA delle singole (applicate in ordine di inserimento)
+    "de pandance": "depandance",
+    "di pandance": "depandance",
+    "la pandance": "depandance",
+    "de pandanzi": "depandance",
+    "di pandanzi": "depandance",
+    "de pandanze": "depandance",
+    "di pandanze": "depandance",
+    "della danza": "depandance",
+    "di tentenza": "depandance",
+    "di tendenza": "depandance",
+    "di pancia": "depandance",
+    "dependenza": "depandance",
+    "dipendenza": "depandance",
+    "dependance": "depandance",
+    "dépendance": "depandance",
+    "debondanza": "depandance",
+    "pandanza": "depandance",
+    "pandanze": "depandance",
+    "pandanzi": "depandance",
+    "pandance": "depandance",
+    "vergotenda": "pergotenda",
+    "bergotenda": "pergotenda",
+    "per godenda": "pergotenda",
+    "pergo tenda": "pergotenda",
+}
+try:
+    import json as _json
+    STT_TARGET_ALIASES.update(_json.loads(os.getenv("STT_TARGET_ALIASES_EXTRA", "{}")))
+except Exception:
+    pass
 
 # Keywords cache TTL
 KEYWORDS_CACHE_TTL = int(os.getenv("KEYWORDS_CACHE_TTL", "300"))
