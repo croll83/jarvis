@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -348,15 +349,40 @@ def _stt_normalize_system() -> str:
     return _STT_NORMALIZE_RULES + context
 
 
+def _apply_safe_stt_aliases(text: str) -> str:
+    """
+    Sostituzione DETERMINISTICA pre-router delle storpiature STT non ambigue
+    (parole inesistenti in italiano: "debondanza", "vergotenda"…). Le chiavi
+    in config.STT_ALIAS_UNSAFE ("di pancia", "dipendenza"…) sono escluse:
+    quelle vivono solo nella entity resolution HOME_CONTROL e negli hint LLM.
+    Case-insensitive, word-boundary, frasi multi-parola prima delle singole
+    (ordine di inserimento del dict).
+    """
+    result = text
+    for wrong, right in config.STT_TARGET_ALIASES.items():
+        if wrong in config.STT_ALIAS_UNSAFE:
+            continue
+        new = re.sub(rf"\b{re.escape(wrong)}\b", right, result, flags=re.IGNORECASE)
+        if new != result:
+            logger.info(f"STT alias: '{wrong}' → '{right}'")
+            result = new
+    return result
+
+
 async def normalize_stt_text(text: str) -> str:
     """
-    Normalizza il testo STT via Qwen per correggere errori di trascrizione.
-    Se la chiamata LLM fallisce, ritorna il testo originale (fail-safe).
-    Disabilitabile via config.STT_NORMALIZE_ENABLED = false.
+    Normalizza il testo STT: prima la passata deterministica sugli alias
+    sicuri (sempre attiva, anche con LLM spento/giù), poi opzionalmente il
+    normalizzatore LLM (Qwen). Se la chiamata LLM fallisce, ritorna il testo
+    della passata deterministica (fail-safe).
+    Disabilitabile (solo la parte LLM) via config.STT_NORMALIZE_ENABLED = false.
     """
-    if not config.STT_NORMALIZE_ENABLED:
-        return text
     if not text or len(text.strip()) < 3:
+        return text
+
+    text = _apply_safe_stt_aliases(text)
+
+    if not config.STT_NORMALIZE_ENABLED:
         return text
 
     _rp = get_llm_params("routing")
