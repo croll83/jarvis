@@ -5082,11 +5082,59 @@ async def process_jarvis_logic(text: str, context: dict):
                     return {}
                 return {k: v for k, v in params.items() if k in allowed and v is not None}
 
+            # ── PRE-CHECK DISPONIBILITÀ ──────────────────────────────────
+            # HA accetta turn_on/turn_off anche su entità unavailable (device
+            # offline) e risponde 200 → dicevamo "Fatto!" a vuoto (es. relè
+            # Shelly filtraggio piscina staccato). Gate SOLO su None/"unavailable"
+            # (mai "unknown": transiente legittimo) e SOLO sui domini stateful:
+            # button/scene/script/input_button hanno state timestamp/unknown e
+            # il gate li romperebbe.
+            _STATEFUL_DOMAINS = {
+                "light", "switch", "fan", "climate", "cover", "lock",
+                "media_player", "humidifier", "water_heater", "vacuum", "valve",
+            }
+
+            def _is_offline(st) -> bool:
+                return st is None or st.get("state") == "unavailable"
+
+            def _ename(eid, st) -> str:
+                return ((st or {}).get("attributes", {}) or {}).get("friendly_name") \
+                    or eid.split(".", 1)[-1].replace("_", " ")
+
+            offline_ids: list = []
+            offline_names: list = []
+
             if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
+                # Pre-check bulk: una sola get_states_bulk sui domini stateful.
+                # Fail-open: se la fetch stati fallisce in toto non blocchiamo
+                # il comando per un singhiozzo della GET.
+                _gated = [eid for eid in target["entity_ids"]
+                          if (eid.split(".")[0] if "." in eid else "light") in _STATEFUL_DOMAINS]
+                _states = {}
+                if _gated:
+                    try:
+                        _states = await multi_ha.get_states_bulk(target_location, _gated) or {}
+                    except Exception as _e:
+                        logger.warning(f"[{target_location}] pre-check states bulk fallito (fail-open): {_e}")
+                        _states = {}
+                if _states:
+                    for eid in _gated:
+                        _st = _states.get(eid)
+                        if _is_offline(_st):
+                            offline_ids.append(eid)
+                            offline_names.append(_ename(eid, _st))
+                    if offline_ids:
+                        logger.warning(
+                            f"[{target_location}] pre-check: {len(offline_ids)} entità "
+                            f"unavailable escluse dal bulk: {offline_ids}"
+                        )
+
                 # Raggruppa entity per dominio (dal prefisso entity_id)
                 from collections import defaultdict
                 domain_groups = defaultdict(list)
                 for eid in target["entity_ids"]:
+                    if eid in offline_ids:
+                        continue
                     eid_domain = eid.split(".")[0] if "." in eid else "light"
                     domain_groups[eid_domain].append(eid)
 
@@ -5111,6 +5159,9 @@ async def process_jarvis_logic(text: str, context: dict):
 
                 success = total_ok > 0
                 err = "; ".join(errors) if errors else None
+                if offline_ids and not domain_groups:
+                    # tutte le entità offline: nessuna chiamata fatta
+                    err = "unavailable"
                 entity_desc = target["description"]
                 log_detail = (
                     f"[{target_location}] BULK {action} su {entity_desc} "
@@ -5132,8 +5183,22 @@ async def process_jarvis_logic(text: str, context: dict):
                     )
                 if clean_params:
                     service_data.update(clean_params)
-                logger.info(f"HOME_CONTROL call: {eid_domain}.{mapped_action} service_data={service_data}")
-                success, err = await call_hass_service(target_location, eid_domain, mapped_action, service_data)
+                # Pre-check disponibilità (solo domini stateful, GET leggera)
+                _skip_offline = False
+                if eid_domain in _STATEFUL_DOMAINS:
+                    _st = await multi_ha.get_state(target_location, entity_id)
+                    if _is_offline(_st):
+                        _skip_offline = True
+                        offline_ids.append(entity_id)
+                if _skip_offline:
+                    success, err = False, "unavailable"
+                    logger.warning(
+                        f"[{target_location}] {entity_id} unavailable → "
+                        f"{mapped_action} NON inviato"
+                    )
+                else:
+                    logger.info(f"HOME_CONTROL call: {eid_domain}.{mapped_action} service_data={service_data}")
+                    success, err = await call_hass_service(target_location, eid_domain, mapped_action, service_data)
                 entity_desc = target["description"]
                 log_detail = f"[{target_location}] {mapped_action} su {entity_desc} ({entity_id})" + (f" params={clean_params}" if clean_params else "")
 
@@ -5147,10 +5212,14 @@ async def process_jarvis_logic(text: str, context: dict):
                         "ha_entity_ids": list(target["entity_ids"]),
                         "ha_action": action,
                         "ha_params": _normalize_ha_params(ha_params) or {},
-                        "ha_status": "ok" if success else ("partial" if total_ok else "error"),
+                        "ha_status": ("unavailable" if err == "unavailable"
+                                      else "ok" if success
+                                      else ("partial" if total_ok else "error")),
                         "ha_error": err,
                         "ha_location": target_location,
                     }
+                    if offline_ids:
+                        ha_meta["ha_offline_ids"] = list(offline_ids)
                 else:
                     ha_meta = {
                         "ha_mode": "single",
@@ -5158,7 +5227,8 @@ async def process_jarvis_logic(text: str, context: dict):
                         "ha_domain": eid_domain,
                         "ha_action": mapped_action,
                         "ha_params": clean_params or {},
-                        "ha_status": "ok" if success else "error",
+                        "ha_status": ("unavailable" if err == "unavailable"
+                                      else "ok" if success else "error"),
                         "ha_error": err,
                         "ha_location": target_location,
                     }
@@ -5188,8 +5258,27 @@ async def process_jarvis_logic(text: str, context: dict):
                     response = f"Fatto! Ho {action_verb} {target['description']}."
                 else:
                     response = f"Fatto! {action_verb}: {entity_desc}."
-                smart_cache.learn(text, response, intent)
-                log_event("HASS", log_detail, speaker_id, speaker_name)
+                # Coda onesta se nel bulk c'erano entità offline saltate
+                if offline_ids and target["mode"] == "bulk":
+                    _off = ", ".join(offline_names[:4])
+                    if len(offline_names) > 4:
+                        _off += f" e altre {len(offline_names) - 4}"
+                    _n = len(offline_ids)
+                    response = response.rstrip(".") + (
+                        f" ({_n} non rispondeva: {_off})." if _n == 1
+                        else f" ({_n} non rispondevano: {_off})."
+                    )
+                    # niente smart_cache: la coda offline è contingente
+                    log_event("HASS", log_detail + f" [{_n} offline skipped]", speaker_id, speaker_name)
+                else:
+                    smart_cache.learn(text, response, intent)
+                    log_event("HASS", log_detail, speaker_id, speaker_name)
+            elif err == "unavailable":
+                if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
+                    response = f"{entity_desc} non rispondono, sembrano offline."
+                else:
+                    response = f"{entity_desc} non risponde, sembra offline."
+                log_event("HARDWARE_ERROR", f"Offline {log_detail}", speaker_id, speaker_name)
             else:
                 response = f"Problema con {entity_desc}: {err}"
                 log_event("HARDWARE_ERROR", f"Fallito {log_detail}: {err}", speaker_id, speaker_name)
