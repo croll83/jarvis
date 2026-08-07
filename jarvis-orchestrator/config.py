@@ -372,8 +372,11 @@ STT_PROMPT = os.getenv("STT_PROMPT", os.getenv("WHISPER_PROMPT", (
 STT_NORMALIZE_ENABLED = os.getenv("STT_NORMALIZE_ENABLED", "false").lower() == "true"
 
 # Storpiature STT ricorrenti → nome canonico di zona/stanza (lowercase).
-# Applicate SOLO nella entity resolution HOME_CONTROL (non alterano il testo
-# per chat/reasoning: "mal di pancia" non deve diventare "mal depandance").
+# Due livelli di applicazione:
+# - TUTTE: entity resolution HOME_CONTROL (contesto domotico garantito)
+# - solo quelle NON in STT_ALIAS_UNSAFE: sostituzione deterministica globale
+#   pre-router in normalize_stt_text (parole inesistenti in italiano, zero
+#   rischio di corrompere frasi legittime)
 # Estendibili via env STT_TARGET_ALIASES_EXTRA, JSON {"storpiatura": "canonico"}.
 STT_TARGET_ALIASES = {
     # frasi multi-parola PRIMA delle singole (applicate in ordine di inserimento)
@@ -407,6 +410,12 @@ try:
     STT_TARGET_ALIASES.update(_json.loads(os.getenv("STT_TARGET_ALIASES_EXTRA", "{}")))
 except Exception:
     pass
+
+# Chiavi AMBIGUE: parole/frasi italiane legittime. MAI sostituite in modo
+# deterministico globale ("mal di pancia", "dipendenza dal caffè", "locale di
+# tendenza", "scuola della danza") — restano attive solo nella entity resolution
+# HOME_CONTROL e come hint per il normalizzatore LLM.
+STT_ALIAS_UNSAFE = {"di pancia", "dipendenza", "di tendenza", "della danza"}
 
 # Keywords cache TTL
 KEYWORDS_CACHE_TTL = int(os.getenv("KEYWORDS_CACHE_TTL", "300"))
