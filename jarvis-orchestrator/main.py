@@ -813,6 +813,12 @@ async def lifespan(app: FastAPI):
     logger.info("✅ JARVIS Core ready!")
     yield
     logger.info("👋 JARVIS Core shutting down...")
+    if config.JEV_ENABLED:
+        try:
+            from jev_engine import close as jev_close
+            await jev_close()
+        except Exception as e:
+            logger.warning(f"Jev session close: {e}")
 
 
 app = FastAPI(title="Jarvis Core Orchestrator", lifespan=lifespan)

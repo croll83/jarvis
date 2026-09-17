@@ -110,6 +110,28 @@ ROUTER_MODEL = os.getenv("ROUTER_MODEL", "model")  # alias del llama-server (Qwe
 SKIP_PRE_ROUTE = os.getenv("SKIP_PRE_ROUTE", "True").lower() in ("true", "1", "yes")
 
 # ===========================================================================
+# JEV (TypeSafe System One) — router primario, Qwen resta come fallback
+# ===========================================================================
+# Jev non genera testo: una sola chiamata valuta in parallelo intent, azione,
+# entita', necessita' di testo libero e injection, restituendo probabilita'
+# calibrate. Misurato dall'Atomman: ~280ms contro p50 1044ms di Qwen locale.
+# Ogni fallimento (HTTP, timeout, confidence bassa, slot di testo libero)
+# ricade su Qwen: nessun percorso resta scoperto se Jev e' giu'.
+JEV_ENABLED = os.getenv("JEV_ENABLED", "False").lower() in ("true", "1", "yes")
+JEV_API_KEY = os.getenv("JEV_API_KEY", "")
+JEV_URL = os.getenv("JEV_URL", "https://api.typesafe.ai/v1/systemone")
+JEV_MODEL = os.getenv("JEV_MODEL", "jev-latest")
+JEV_TIMEOUT = float(os.getenv("JEV_TIMEOUT", "4"))  # oltre, meglio Qwen che aspettare
+
+# Soglie. Sono confidence CALIBRATE (RLCD), non numeri auto-dichiarati da un
+# LLM: 0.70 significa davvero ~70% di correttezza, quindi la soglia e' un
+# controllo reale e non decorativo.
+JEV_MIN_CONFIDENCE = float(os.getenv("JEV_MIN_CONFIDENCE", "0.70"))
+JEV_MIN_ENTITY_CONFIDENCE = float(os.getenv("JEV_MIN_ENTITY_CONFIDENCE", "0.60"))
+JEV_FREETEXT_THRESHOLD = float(os.getenv("JEV_FREETEXT_THRESHOLD", "0.50"))
+JEV_INJECTION_THRESHOLD = float(os.getenv("JEV_INJECTION_THRESHOLD", "0.60"))
+
+# ===========================================================================
 # WEB TOOLS (Brave Search API per tool calling Qwen)
 # ===========================================================================
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")

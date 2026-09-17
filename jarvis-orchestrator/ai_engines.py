@@ -385,6 +385,13 @@ async def normalize_stt_text(text: str) -> str:
     if not config.STT_NORMALIZE_ENABLED:
         return text
 
+    # Con Jev attivo la passata LLM qui non serve: Jev riceve il testo grezzo
+    # insieme agli hint sulle storpiature note e risolve l'entita'
+    # foneticamente. Se Jev rinuncia, e' get_routing() a normalizzare prima di
+    # passare la palla a Qwen, cosi' il fallback non perde accuratezza.
+    if config.JEV_ENABLED:
+        return text
+
     _rp = get_llm_params("routing")
 
     try:
@@ -614,6 +621,32 @@ async def get_routing(text: str, context: dict) -> dict:
     """
     # Add AI Agent availability flag
     context["ai_agent_available"] = config.AI_AGENT_ENABLED
+
+    # Jev primario: una sola chiamata con domande in parallelo al posto della
+    # catena Qwen. Restituisce None quando non se la sente (HTTP/timeout,
+    # confidence sotto soglia, entita' incerta, o serve uno slot di testo
+    # libero che Jev non sa generare) e in quel caso si prosegue su Qwen.
+    if config.JEV_ENABLED:
+        try:
+            from jev_engine import route as jev_route
+            jev_result = await jev_route(text, context)
+            if jev_result is not None:
+                return _validate_routing(jev_result)
+        except Exception as e:
+            logger.warning(f"Jev engine error ({type(e).__name__}: {e}) — fallback su Qwen")
+
+        # Con Jev attivo normalize_stt_text salta la passata LLM (Jev regge il
+        # testo grezzo). Qui pero' stiamo ricadendo su Qwen, che senza
+        # normalizzazione perde accuratezza: la recuperiamo adesso.
+        if config.STT_NORMALIZE_ENABLED:
+            try:
+                normalized = await _normalize_ollama(text, get_llm_params("routing"))
+                if normalized and 2 <= len(normalized.strip()) < len(text) * 3:
+                    if normalized.strip() != text.strip():
+                        logger.info(f"STT normalized (fallback Jev): '{text}' -> '{normalized.strip()}'")
+                    text = normalized.strip()
+            except Exception as e:
+                logger.warning(f"STT normalize in fallback Jev fallita: {e}")
 
     # LLM decides (local or API)
     if config.AI_BACKEND == "api":
