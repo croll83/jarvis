@@ -359,13 +359,11 @@ def _build_questions(entity_names: list, scopes: dict, ai_agent_available: bool)
             "false": "Un singolo dispositivo, anche se nominato male o genericamente ('la luce', 'la porta', 'la tapparella')",
         },
     }
-    questions["measure_multi"] = {
-        "type": "noul",
-        "instructions": "La domanda chiede PIU' DI UNA grandezza misurata insieme (es. 'temperatura e umidita'')?",
-        "criteria": {
-            "true": "Chiede due o piu' grandezze diverse",
-            "false": "Una sola grandezza, o nessuna",
-        },
+    questions["measure_2"] = {
+        "type": "choice",
+        "instructions": "Se la domanda chiede DUE grandezze insieme (es. 'temperatura e umidita''), quale e' la SECONDA? Se ne chiede una sola, scegli 'nessuna'.",
+        "criteria": {**{k: v for k, v in _MEASURES.items() if k != _ALL_MEASURES},
+                     _ALL_MEASURES: "La domanda chiede una sola grandezza, o nessuna"},
     }
 
     targets = _scope_targets(scopes)
@@ -494,7 +492,7 @@ async def route(text: str, context: dict) -> Optional[dict]:
     domain_choice = domain_ans.get("choice", "none")
     domain_conf = float(domain_ans.get("confidence", 0.0))
     measure = answers.get("measure", {}).get("choice", _ALL_MEASURES)
-    measure_multi = float(answers.get("measure_multi", {}).get("noul", 0.0))
+    measure_2 = answers.get("measure_2", {}).get("choice", _ALL_MEASURES)
     collective = float(answers.get("is_collective", {}).get("noul", 0.0))
     room_ans = answers.get("room", {})
     room_choice = room_ans.get("choice", _NO_ROOM)
@@ -506,7 +504,8 @@ async def route(text: str, context: dict) -> Optional[dict]:
         f"entity={entity if entity != _NO_ENTITY else '-'}({entity_conf:.2f}) "
         f"api={api_call} dom={domain_choice}({domain_conf:.2f}) "
         f"room={room_choice if room_choice != _NO_ROOM else '-'}({room_conf:.2f}) "
-        f"measure={measure if measure != _ALL_MEASURES else '-'} "
+        f"measure={measure if measure != _ALL_MEASURES else '-'}"
+        f"{'+' + measure_2 if measure_2 != _ALL_MEASURES else ''} "
         f"coll={collective:.2f} freetext={freetext:.2f} inj={injection:.2f} "
         f"| {elapsed_ms:.0f}ms {tokens}tok"
     )
@@ -569,22 +568,34 @@ async def route(text: str, context: dict) -> Optional[dict]:
         params: dict = {}
         named_device = (entity not in (_NO_ENTITY, _WHOLE_HOUSE)
                         and entity not in places and entity_conf >= 0.5)
+        place = None
         if room_choice != _NO_ROOM and room_conf >= config.JEV_MIN_ENTITY_CONFIDENCE:
-            # floor/zone/room sono parametri distinti su colonne distinte
-            params[_place_param(room_choice, scopes)] = room_choice
-        elif named_device:
-            # Il comando nomina un dispositivo preciso: ereditare la stanza del
-            # contesto lo cercherebbe nel posto sbagliato. Meglio globale.
-            pass
-        elif context.get("room") and context["room"] != "unknown":
-            params["room"] = context["room"]
-        if measure != _ALL_MEASURES and measure_multi < 0.5:
-            params["search"] = measure
-        elif measure_multi >= 0.5:
-            # Piu' grandezze insieme ("temperatura e umidita'"): una choice ne
-            # sceglie una sola, quindi si omette il filtro e si lascia che
-            # entity_discover restituisca i sensori della stanza.
-            params["domain"] = "sensor"
+            place = room_choice
+        elif not named_device and context.get("room") and context["room"] != "unknown":
+            # Il comando nomina un dispositivo preciso? Allora non si eredita la
+            # stanza dal contesto, che lo cercherebbe nel posto sbagliato.
+            place = context["room"]
+
+        if measure != _ALL_MEASURES:
+            # Query su una misura: la stanza va DENTRO la stringa di ricerca, non
+            # nel filtro. Molti sensori non hanno un'area assegnata in HA — es.
+            # "Rehom Soggiorno Temperatura" ha room=Sconosciuto — e il filtro
+            # room li ESCLUDE, lasciando passare solo rumore (tempi di pulizia
+            # del robot). Misurato: con il filtro 0.580 su spazzatura, con la
+            # stanza nella query 0.684 sul sensore giusto. E dove l'area c'e'
+            # davvero i punteggi salgono lo stesso (0.497 -> 0.655 su wagmi).
+            terms = [measure]
+            if measure_2 not in (_ALL_MEASURES, measure):
+                terms.append(measure_2)
+            if place:
+                terms.append(place)
+            params["search"] = " ".join(terms)
+        elif place:
+            # Nessuna misura ("cosa c'e' in cucina"): qui il filtro strutturale
+            # e' proprio quello che serve. floor/zone/room sono parametri
+            # distinti su colonne distinte.
+            params[_place_param(place, scopes)] = place
+
         if not params:
             logger.info("Jev: entity_discover senza room ne' grandezza — fallback su Qwen")
             return None
