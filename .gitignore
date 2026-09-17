@@ -26,6 +26,8 @@ node_modules
 #ESPIF
 managed_components/
 build/
+# GENERATI da menuconfig: si portano dietro SSID, password WiFi e device
+# token reali. In repo restano solo i .defaults con i placeholder.
 sdkconfig
 sdkconfig.old
 
@@ -70,3 +72,4 @@ openclaw.json
 data/
 restore_*.log
 .kotlin/
+
