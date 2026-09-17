@@ -1866,37 +1866,32 @@ class SmartCache:
             r"^[\d\s\+\-\*\/\.\(\)\^²³√,]+$",  # espressione pura: "2+2", "81/9"
         ]
 
-    @staticmethod
-    def _today():
-        import locale
-        try:
-            locale.setlocale(locale.LC_TIME, "it_IT.UTF-8")
-        except locale.Error:
-            pass
+    # Giorni e mesi in italiano espliciti: il container non ha il locale it_IT
+    # (locale -a non lo elenca), quindi setlocale falliva in silenzio dentro il
+    # try/except e strftime restituiva "Thursday 17 September" — letto cosi'
+    # com'e' dal TTS dentro una frase italiana.
+    _GIORNI = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
+    _MESI = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+             "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"]
+
+    @classmethod
+    def _data_it(cls, d) -> str:
+        return f"{cls._GIORNI[d.weekday()]} {d.day} {cls._MESI[d.month - 1]} {d.year}"
+
+    @classmethod
+    def _today(cls):
         from datetime import datetime as _dt
-        return f"Oggi è {_dt.now().strftime('%A %d %B %Y')}."
+        return f"Oggi è {cls._data_it(_dt.now())}."
 
-    @staticmethod
-    def _tomorrow():
-        import locale
+    @classmethod
+    def _tomorrow(cls):
         from datetime import datetime as _dt, timedelta
-        try:
-            locale.setlocale(locale.LC_TIME, "it_IT.UTF-8")
-        except locale.Error:
-            pass
-        d = _dt.now() + timedelta(days=1)
-        return f"Domani sarà {d.strftime('%A %d %B %Y')}."
+        return f"Domani sarà {cls._data_it(_dt.now() + timedelta(days=1))}."
 
-    @staticmethod
-    def _yesterday():
-        import locale
+    @classmethod
+    def _yesterday(cls):
         from datetime import datetime as _dt, timedelta
-        try:
-            locale.setlocale(locale.LC_TIME, "it_IT.UTF-8")
-        except locale.Error:
-            pass
-        d = _dt.now() - timedelta(days=1)
-        return f"Ieri era {d.strftime('%A %d %B %Y')}."
+        return f"Ieri era {cls._data_it(_dt.now() - timedelta(days=1))}."
     
     def check(self, query: str) -> Optional[str]:
         query_lower = query.lower().strip()
