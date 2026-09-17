@@ -19,7 +19,25 @@ MUSIC_PLAYERS = {
         "tutta la casa": "media_player.ovunque_2",
         "casa": "media_player.ovunque_2",
         None: "media_player.soundbar_salotto_5",
-    }
+    },
+    # Albani mancava del tutto: resolve_music_player("albani20", ...) tornava
+    # (None, "") per QUALSIASI stanza, quindi la musica non partiva mai.
+    # Soggiorno via Bose esposta da alexa_media; le altre stanze sono Echo;
+    # cucina non ha speaker, si usa la TV Samsung.
+    "albani20": {
+        "soggiorno": "media_player.marco_s_bose_soundbar_700",
+        "salotto": "media_player.marco_s_bose_soundbar_700",
+        "zona giorno": "media_player.marco_s_bose_soundbar_700",
+        "cameretta": "media_player.echo_dot_giorgio",
+        "camera": "media_player.radiosveglia",
+        "box": "media_player.echo_dot_garage",
+        "garage": "media_player.echo_dot_garage",
+        "cucina": "media_player.tv_cucina",
+        "ovunque": "media_player.tutta_casa",
+        "tutta la casa": "media_player.tutta_casa",
+        "casa": "media_player.tutta_casa",
+        None: "media_player.marco_s_bose_soundbar_700",
+    },
 }
 
 
