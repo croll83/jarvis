@@ -1963,6 +1963,71 @@ class SmartCache:
         conn.commit()
         conn.close()
     
+    # Numerali italiani, per capire "settantanove moltiplicato dodici" senza
+    # passare da un LLM: un 7B l'aritmetica la tira a indovinare.
+    _NUM_UNITS = {
+        "zero": 0, "uno": 1, "un": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5,
+        "sei": 6, "sette": 7, "otto": 8, "nove": 9, "dieci": 10, "undici": 11,
+        "dodici": 12, "tredici": 13, "quattordici": 14, "quindici": 15,
+        "sedici": 16, "diciassette": 17, "diciotto": 18, "diciannove": 19,
+    }
+    _NUM_TENS = {
+        "venti": 20, "vent": 20, "trenta": 30, "trent": 30, "quaranta": 40, "quarant": 40,
+        "cinquanta": 50, "cinquant": 50, "sessanta": 60, "sessant": 60,
+        "settanta": 70, "settant": 70, "ottanta": 80, "ottant": 80,
+        "novanta": 90, "novant": 90,
+    }
+    _OPS_IT = [
+        (r"\b(?:moltiplicato\s+(?:per\s+)?|per|volte)\b", "*"),
+        (r"\b(?:diviso\s+(?:per\s+)?|fratto)\b", "/"),
+        (r"\bpi[uù]\b", "+"),
+        (r"\bmeno\b", "-"),
+        (r"\belevato\s+(?:alla\s+|a\s+)?\b", "**"),
+    ]
+
+    @classmethod
+    def _word_to_number(cls, w: str) -> Optional[int]:
+        """'settantanove' -> 79, 'centoventi' -> 120. None se non e' un numerale."""
+        w = w.strip().lower()
+        if not w or not w.isalpha():
+            return None
+        if w in cls._NUM_UNITS:
+            return cls._NUM_UNITS[w]
+        if w in cls._NUM_TENS:
+            return cls._NUM_TENS[w]
+        total, rest = 0, w
+        if rest.startswith("mille"):
+            total, rest = 1000, rest[5:]
+        elif rest.startswith("mila"):
+            total, rest = 1000, rest[4:]
+        for pref, val in (("cento", 100), ("duecento", 200), ("trecento", 300),
+                          ("quattrocento", 400), ("cinquecento", 500), ("seicento", 600),
+                          ("settecento", 700), ("ottocento", 800), ("novecento", 900)):
+            if rest.startswith(pref) and (val > 100 or not rest.startswith("cento" * 2)):
+                if rest.startswith(pref):
+                    total += val
+                    rest = rest[len(pref):]
+                    break
+        for tens, tval in sorted(cls._NUM_TENS.items(), key=lambda kv: -len(kv[0])):
+            if rest.startswith(tens):
+                total += tval
+                rest = rest[len(tens):]
+                break
+        if rest:
+            if rest in cls._NUM_UNITS:
+                total += cls._NUM_UNITS[rest]
+            else:
+                return None
+        return total if total or w == "zero" else None
+
+    @classmethod
+    def _numerals_to_digits(cls, text: str) -> str:
+        """Sostituisce i numerali italiani con le cifre, lasciando il resto intatto."""
+        def repl(m):
+            n = cls._word_to_number(m.group(0))
+            return str(n) if n is not None else m.group(0)
+        return re.sub(r"[a-zàèéìòù]+", repl, text)
+
     def _try_math(self, text: str) -> Optional[str]:
         """Valuta espressioni matematiche semplici in modo sicuro."""
         import math as _math
@@ -1978,7 +2043,7 @@ class SmartCache:
             return f"La radice quadrata di {m.group(1)} è {result}."
 
         # "quanto fa 2+2", "calcola 10*5", "risultato di 100/3"
-        m = re.search(r"(?:quanto fa|calcola|risultato di|qual è)\s+(.+)", text)
+        m = re.search(r"(?:quanto fa|quanto e|calcola|risultato di|qual è)[\s\?\.,:]+(.+)", text)
         if m:
             expr = m.group(1).strip().rstrip("?.")
 
@@ -1987,6 +2052,11 @@ class SmartCache:
             expr = text.strip().rstrip("?.")
 
         if expr:
+            # Operatori a parole ("piu'", "moltiplicato per", "diviso") e
+            # numerali italiani ("settantanove") -> simboli e cifre.
+            for pat, sym in self._OPS_IT:
+                expr = re.sub(pat, sym, expr)
+            expr = self._numerals_to_digits(expr)
             # Normalizza operatori
             expr = expr.replace("×", "*").replace("x", "*").replace("÷", "/")
             expr = expr.replace("^", "**").replace(",", ".")

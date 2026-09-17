@@ -636,17 +636,20 @@ async def get_routing(text: str, context: dict) -> dict:
             logger.warning(f"Jev engine error ({type(e).__name__}: {e}) — fallback su Qwen")
 
         # Con Jev attivo normalize_stt_text salta la passata LLM (Jev regge il
-        # testo grezzo). Qui pero' stiamo ricadendo su Qwen, che senza
-        # normalizzazione perde accuratezza: la recuperiamo adesso.
-        if config.STT_NORMALIZE_ENABLED:
-            try:
-                normalized = await _normalize_ollama(text, get_llm_params("routing"))
-                if normalized and 2 <= len(normalized.strip()) < len(text) * 3:
-                    if normalized.strip() != text.strip():
-                        logger.info(f"STT normalized (fallback Jev): '{text}' -> '{normalized.strip()}'")
-                    text = normalized.strip()
-            except Exception as e:
-                logger.warning(f"STT normalize in fallback Jev fallita: {e}")
+        # testo grezzo con gli hint sulle storpiature). Qui pero' stiamo
+        # ricadendo su Qwen, che sul testo STT grezzo sbaglia — e' successo
+        # davvero: "Spini la luz del box" letto come turn_on invece di turn_off.
+        # Quindi si normalizza SEMPRE su questo ramo, senza guardare
+        # STT_NORMALIZE_ENABLED: quel flag governa il percorso normale, dove la
+        # passata non serve piu', non il percorso degradato dove serve eccome.
+        try:
+            normalized = await _normalize_ollama(text, get_llm_params("routing"))
+            if normalized and 2 <= len(normalized.strip()) < len(text) * 3:
+                if normalized.strip() != text.strip():
+                    logger.info(f"STT normalized (fallback Jev): '{text}' -> '{normalized.strip()}'")
+                text = normalized.strip()
+        except Exception as e:
+            logger.warning(f"STT normalize in fallback Jev fallita: {e}")
 
     # LLM decides (local or API)
     if config.AI_BACKEND == "api":
@@ -758,11 +761,25 @@ def _build_routing_prompt(text: str, context: dict) -> str:
     memory_str = context.pop("memory", "") or ""
     memory_section = f"\n\n{memory_str}" if memory_str.strip() else ""
 
+    # Suggerimenti di Jev: solo le risposte di cui era SICURO (>=0.85). Arrivano
+    # qui quando Jev ha rinunciato su un altro campo — tipicamente l'entita' —
+    # e senza questo Qwen ripartirebbe da zero buttando via anche cio' che era
+    # gia' stato risolto bene.
+    _hints = context.pop("jev_hints", None) or {}
+    hints_section = ""
+    if _hints:
+        _labels = {"intent": "intent", "action": "azione", "entity": "entity",
+                   "room": "stanza", "domain": "dominio"}
+        _rendered = ", ".join(f"{_labels.get(k, k)}={v}" for k, v in _hints.items())
+        hints_section = (
+            f"\n\n[ANALISI PRELIMINARE (alta confidenza, usala se coerente col comando)]: {_rendered}"
+        )
+
     full_prompt = f"""[MAPPA ENTITÀ]:
 {entity_map_str}
 
 [CONTESTO]:
-{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{ai_agent_section}{previous_intent_section}{memory_section}
+{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}{service_status_section}{ai_agent_section}{previous_intent_section}{hints_section}{memory_section}
 
 [COMANDO UTENTE]:
 {text}"""

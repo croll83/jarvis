@@ -217,6 +217,25 @@ def _stt_hints() -> str:
     return "[STORPIATURE NOTE DELLO STT — interpreta foneticamente]:\n" + lines
 
 
+def _clean_label(name: str) -> str:
+    """
+    Etichetta leggibile per la choice. Home Assistant a volte ripete il nome del
+    device nel friendly_name ("Luce Box Luce Box"), e la ripetizione abbassa la
+    confidence del match. La CHIAVE resta il nome reale — e' il contratto con la
+    entity resolution a valle — si ripulisce solo la descrizione.
+    """
+    words = name.split()
+    n = len(words)
+    for size in range(n // 2, 0, -1):
+        # ripetizione adiacente: "Luce Box | Luce Box | ..."
+        if words[:size] == words[size:size * 2]:
+            return " ".join(words[size:]) if n > size * 2 else " ".join(words[:size])
+        # ripetizione in coda: "BT-4200 16IP | Panel | BT-4200 16IP"
+        if n > size * 2 and words[:size] == words[-size:]:
+            return " ".join(words[:-size])
+    return name
+
+
 def _scope_targets(scopes: dict) -> dict:
     """
     Stanze, zone e piani come bersagli selezionabili, con l'etichetta che dice
@@ -300,6 +319,24 @@ def _build_questions(entity_names: list, scopes: dict, ai_agent_available: bool)
         },
     }
 
+    questions["domain"] = {
+        "type": "choice",
+        "instructions": "Se il comando e' domotico, su quale tipo di dispositivo agisce? Scegli 'tutti' solo se l'utente dice esplicitamente di agire su TUTTO senza distinzione ('spegni tutto').",
+        "criteria": {
+            "light": "Luci, lampade, faretti",
+            "cover": "Tapparelle, tende, serrande, cancelli, porte di garage",
+            "climate": "Clima, termostato, riscaldamento, condizionatore",
+            "media_player": "TV, speaker, musica",
+            "fan": "Ventilatori",
+            "switch": "Prese e interruttori generici",
+            "lock": "Serrature",
+            "scene": "Scene",
+            "script": "Script e scenari",
+            "vacuum": "Robot aspirapolvere",
+            "tutti": "L'utente vuole agire su TUTTO senza distinguere il tipo ('spegni tutto')",
+            "none": "Non e' un comando domotico",
+        },
+    }
     questions["api_call"] = {
         "type": "choice",
         "instructions": "Se l'intento e' SIMPLE_CHAT, quale fonte serve per rispondere?",
@@ -314,6 +351,23 @@ def _build_questions(entity_names: list, scopes: dict, ai_agent_available: bool)
         "instructions": "Se la domanda riguarda un sensore o una misura di casa, quale grandezza?",
         "criteria": dict(_MEASURES),
     }
+    questions["is_collective"] = {
+        "type": "noul",
+        "instructions": "Il comando agisce su TUTTI i dispositivi di un luogo insieme, oppure su un singolo dispositivo nominato?",
+        "criteria": {
+            "true": "Collettivo: 'spegni tutto in cucina', 'tutte le luci del soggiorno', 'musica ovunque'",
+            "false": "Un singolo dispositivo, anche se nominato male o genericamente ('la luce', 'la porta', 'la tapparella')",
+        },
+    }
+    questions["measure_multi"] = {
+        "type": "noul",
+        "instructions": "La domanda chiede PIU' DI UNA grandezza misurata insieme (es. 'temperatura e umidita'')?",
+        "criteria": {
+            "true": "Chiede due o piu' grandezze diverse",
+            "false": "Una sola grandezza, o nessuna",
+        },
+    }
+
     targets = _scope_targets(scopes)
     if targets:
         questions["room"] = {
@@ -330,7 +384,7 @@ def _build_questions(entity_names: list, scopes: dict, ai_agent_available: bool)
         # entity la stanza, non un singolo apparecchio — e' il contratto che il
         # router usa gia' ("Spegni tutto in X" -> entity=X). Senza, i comandi
         # collettivi cadevano tutti su Qwen.
-        criteria = {n: n for n in entity_names}
+        criteria = {n: _clean_label(n) for n in entity_names}
         for name, desc in targets.items():
             criteria.setdefault(name, f"Tutti i dispositivi di {desc.lower()} insieme")
         criteria[_WHOLE_HOUSE] = "Tutta la casa, ogni stanza e ogni piano insieme"
@@ -436,7 +490,12 @@ async def route(text: str, context: dict) -> Optional[dict]:
     entity = entity_ans.get("choice", _NO_ENTITY)
     entity_conf = float(entity_ans.get("confidence", 0.0))
     api_call = answers.get("api_call", {}).get("choice", "none")
+    domain_ans = answers.get("domain", {})
+    domain_choice = domain_ans.get("choice", "none")
+    domain_conf = float(domain_ans.get("confidence", 0.0))
     measure = answers.get("measure", {}).get("choice", _ALL_MEASURES)
+    measure_multi = float(answers.get("measure_multi", {}).get("noul", 0.0))
+    collective = float(answers.get("is_collective", {}).get("noul", 0.0))
     room_ans = answers.get("room", {})
     room_choice = room_ans.get("choice", _NO_ROOM)
     room_conf = float(room_ans.get("confidence", 0.0))
@@ -445,10 +504,28 @@ async def route(text: str, context: dict) -> Optional[dict]:
     logger.info(
         f"Jev routing: {intent} conf={confidence:.2f} | action={action} "
         f"entity={entity if entity != _NO_ENTITY else '-'}({entity_conf:.2f}) "
-        f"api={api_call} room={room_choice if room_choice != _NO_ROOM else '-'}({room_conf:.2f}) "
+        f"api={api_call} dom={domain_choice}({domain_conf:.2f}) "
+        f"room={room_choice if room_choice != _NO_ROOM else '-'}({room_conf:.2f}) "
         f"measure={measure if measure != _ALL_MEASURES else '-'} "
-        f"freetext={freetext:.2f} inj={injection:.2f} | {elapsed_ms:.0f}ms {tokens}tok"
+        f"coll={collective:.2f} freetext={freetext:.2f} inj={injection:.2f} "
+        f"| {elapsed_ms:.0f}ms {tokens}tok"
     )
+
+    # Cio' di cui Jev e' SICURO viene depositato nel contesto, cosi' se piu'
+    # sotto si ricade su Qwen non si butta via anche la parte giusta. Le
+    # confidence sono per-domanda e indipendenti: capitava che l'azione fosse a
+    # 0.99 e solo l'entita' incerta, e Qwen ripartiva da zero sbagliando il verbo.
+    # Solo intent e azione. Entity, dominio e stanza NON si passano: sono
+    # l'identificazione del bersaglio, cioe' esattamente cio' che sbaglia sul
+    # testo storpiato ed e' il motivo per cui si ricade. Su "accendi la ruota
+    # del box" Jev proponeva domain=fan ad alta confidenza — un suggerimento
+    # sbagliato che avrebbe sviato Qwen, che senza indovinava il cancello.
+    hints = {}
+    if confidence >= 0.85 and intent in ("HOME_CONTROL", "SIMPLE_CHAT", "AI_AGENT"):
+        hints["intent"] = intent
+    if action != "none" and float(answers.get("action", {}).get("confidence", 0)) >= 0.85:
+        hints["action"] = action
+    context["jev_hints"] = hints
 
     # Injection: segnale calibrato e indipendente dal prompt sotto attacco.
     # SECURITY_ALERT non e' in VALID_INTENTS, quindi marchiamo il payload e
@@ -501,8 +578,13 @@ async def route(text: str, context: dict) -> Optional[dict]:
             pass
         elif context.get("room") and context["room"] != "unknown":
             params["room"] = context["room"]
-        if measure != _ALL_MEASURES:
+        if measure != _ALL_MEASURES and measure_multi < 0.5:
             params["search"] = measure
+        elif measure_multi >= 0.5:
+            # Piu' grandezze insieme ("temperatura e umidita'"): una choice ne
+            # sceglie una sola, quindi si omette il filtro e si lascia che
+            # entity_discover restituisca i sensori della stanza.
+            params["domain"] = "sensor"
         if not params:
             logger.info("Jev: entity_discover senza room ne' grandezza — fallback su Qwen")
             return None
@@ -517,11 +599,26 @@ async def route(text: str, context: dict) -> Optional[dict]:
         if entity == _NO_ENTITY or entity_conf < config.JEV_MIN_ENTITY_CONFIDENCE:
             logger.info(f"Jev: entita' incerta ({entity}, conf={entity_conf:.2f}) — fallback su Qwen")
             return None
+        if (entity == _WHOLE_HOUSE or entity in places) and collective < 0.5:
+            # Bersaglio un luogo ma il comando NON e' collettivo: succede sui
+            # testi storpiati, dove "accendi la ruota del box" si aggancia alla
+            # stanza invece di ammettere di non aver capito. Qwen fa meglio.
+            logger.info(
+                f"Jev: bersaglio collettivo '{entity}' ma comando singolo "
+                f"(coll={collective:.2f}) — fallback su Qwen"
+            )
+            return None
+
         if entity == _WHOLE_HOUSE or entity in places:
             # Bersaglio collettivo (stanza, zona, piano o tutta la casa).
-            # Niente dominio, cosi' il dispatch a valle agisce su tutto.
+            # Il dominio si omette SOLO se l'utente ha detto "tutto" senza
+            # distinguere: "spegni tutte le LUCI del piano garage" deve agire
+            # sulle luci, non anche su cancello, switch e media player.
             room = entity if entity in rooms else None
-            domain, loc_id = None, context.get("location")
+            loc_id = context.get("location")
+            domain = (domain_choice
+                      if domain_choice not in ("tutti", "none") and domain_conf >= 0.5
+                      else None)
         else:
             room, domain, loc_id = lookup.get(entity, (None, None, None))
         payload = {
