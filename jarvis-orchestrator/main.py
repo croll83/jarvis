@@ -826,6 +826,12 @@ async def lifespan(app: FastAPI):
     logger.info("✅ JARVIS Core ready!")
     yield
     logger.info("👋 JARVIS Core shutting down...")
+    if config.JEV_ENABLED:
+        try:
+            from jev_engine import close as jev_close
+            await jev_close()
+        except Exception as e:
+            logger.warning(f"Jev session close: {e}")
 
 
 app = FastAPI(title="Jarvis Core Orchestrator", lifespan=lifespan)
@@ -3780,6 +3786,12 @@ def _extract_target_from_user_text(user_text: str, location_id: str) -> Optional
     text_lower = re.sub(r'[,\.\!\?\;\:\-]', ' ', user_text.strip().lower())
     text_lower = re.sub(r'\s+', ' ', text_lower).strip()
 
+    # Alias per storpiature STT ricorrenti dei nomi di zona
+    # (es. "dependenza"/"di pancia" → "depandance")
+    for wrong, right in config.STT_TARGET_ALIASES.items():
+        if wrong in text_lower:
+            text_lower = re.sub(rf"\b{re.escape(wrong)}\b", right, text_lower)
+
     # Carica room/zone/area reali dal DB — cerca location specifica PRIMA dei wildcard
     locations = get_entity_map_locations(location_id)
     if locations:
@@ -3791,6 +3803,12 @@ def _extract_target_from_user_text(user_text: str, location_id: str) -> Optional
             if name.lower() in text_lower:
                 return name
 
+        # Fuzzy match per storpiature STT non in alias: confronta ogni nome
+        # location con finestre di parole del testo di pari lunghezza
+        fuzzy_name = _fuzzy_match_location(text_lower, all_names)
+        if fuzzy_name:
+            return fuzzy_name
+
     # Wildcard solo se nessuna location specifica trovata
     wildcard_tokens = {"tutta la casa", "tutto", "tutti", "tutte", "ovunque", "dappertutto"}
     for wt in wildcard_tokens:
@@ -3798,6 +3816,72 @@ def _extract_target_from_user_text(user_text: str, location_id: str) -> Optional
             return wt
 
     return None
+
+
+def _fuzzy_match_location(text_lower: str, all_names: list, threshold: float = 0.78) -> Optional[str]:
+    """
+    Fuzzy match tra finestre di parole del testo e i nomi di room/area/zone.
+    Cattura storpiature STT vicine (es. "de pandance" → "Depandance",
+    "zona giorno" → "Piano Giorno") che il substring match non trova.
+    """
+    from difflib import SequenceMatcher
+
+    # Escludi parole di comando/articoli: riducono il rumore delle finestre
+    _stop = {
+        "accendi", "spegni", "apri", "chiudi", "alza", "abbassa", "imposta",
+        "attiva", "disattiva", "metti", "tutte", "tutti", "tutto", "le", "la",
+        "il", "lo", "gli", "i", "un", "una", "di", "del", "della", "dello",
+        "delle", "dei", "in", "nel", "nella", "al", "alla", "per", "luce",
+        "luci", "lampada", "lampade", "tapparella", "tapparelle", "presa",
+        "prese", "clima", "casa", "please", "grazie",
+    }
+    words = [w for w in text_lower.split() if w not in _stop and len(w) >= 3]
+    if not words:
+        return None
+
+    best_name, best_ratio = None, 0.0
+    for name in all_names:
+        name_l = name.lower()
+        n = max(1, len(name_l.split()))
+        for i in range(len(words)):
+            for span in (n, n + 1):
+                chunk = " ".join(words[i:i + span])
+                if not chunk:
+                    continue
+                ratio = SequenceMatcher(None, chunk, name_l).ratio()
+                if ratio > best_ratio:
+                    best_name, best_ratio = name, ratio
+
+    if best_ratio >= threshold:
+        logger.info(f"Entity resolution [fuzzy_location]: → '{best_name}' (ratio {best_ratio:.2f})")
+        return best_name
+    return None
+
+
+def _detect_scope_phrase(user_text: str) -> Optional[str]:
+    """
+    Rileva se il testo nomina un luogo specifico (es. "della depandance",
+    "in veranda") anche quando non è stato risolto contro il DB.
+
+    Ritorna la frase dopo la preposizione, oppure None se il comando è
+    genuinamente whole-house ("spegni tutte le luci", "... di casa").
+    """
+    tl = re.sub(r"[,\.\!\?\;\:\-']", " ", user_text.lower())
+    tl = re.sub(r"\s+", " ", tl).strip()
+
+    # Riferimenti espliciti a tutta la casa → nessuno scope specifico
+    for whole in ("di casa", "della casa", "in casa", "in tutta la casa",
+                  "a casa", "dell intera casa", "di tutta la casa"):
+        if whole in tl:
+            return None
+
+    m = re.search(
+        r"\b(?:della|dello|delle|degli|dei|del|dell|nella|nello|nelle|negli|nel"
+        r"|alla|allo|alle|agli|all|al|in|di)\s+"
+        r"([a-zà-ù]{3,}(?:\s+[a-zà-ù]{3,})?)",
+        tl,
+    )
+    return m.group(1) if m else None
 
 
 def _resolve_home_control_target(
@@ -3879,7 +3963,45 @@ def _resolve_home_control_target(
     if user_text:
         extracted = _extract_target_from_user_text(user_text, location_id)
         if extracted:
-            discovered = discover_entities_for_voice(location_id, extracted, domain=domain)
+            discovered = None
+            _wildcards = {"tutta la casa", "tutto", "tutti", "tutte", "ovunque", "dappertutto"}
+            if extracted.lower() in _wildcards:
+                # ── GUARD wildcard+scope: "tutte le luci della <zona>" non deve
+                # MAI diventare "tutta la casa" solo perché lo STT ha storpiato
+                # il nome della zona. Se il testo nomina un luogo non risolto:
+                # 1) prova l'entity di Qwen come scope, 2) altrimenti chiedi
+                # chiarimento invece di agire ovunque.
+                scope_phrase = _detect_scope_phrase(user_text)
+                if scope_phrase:
+                    if entity_name and entity_name.lower().strip() not in _wildcards:
+                        scoped = discover_entities_for_voice(location_id, entity_name, domain=domain)
+                        if scoped:
+                            logger.info(
+                                f"Entity resolution [wildcard_guard]: scope '{scope_phrase}' "
+                                f"non risolto dal testo, uso entity Qwen '{entity_name}' "
+                                f"→ {len(scoped)} entities"
+                            )
+                            extracted = entity_name
+                            discovered = scoped
+                    if not discovered:
+                        logger.warning(
+                            f"Entity resolution [wildcard_guard]: wildcard + scope "
+                            f"'{scope_phrase}' non risolto in '{user_text}' → clarify "
+                            f"(bloccato bulk su tutta la casa)"
+                        )
+                        return {
+                            "mode": "clarify",
+                            "entity_ids": [],
+                            "entity_names": [],
+                            "description": f"scope non riconosciuto: '{scope_phrase}'",
+                            "match_type": "unresolved_scope",
+                            "clarify_message": (
+                                f"Vuoi agire su una zona specifica, ma non ho riconosciuto "
+                                f"'{scope_phrase}'. Puoi ripetere il nome della stanza o della zona?"
+                            ),
+                        }
+            if discovered is None:
+                discovered = discover_entities_for_voice(location_id, extracted, domain=domain)
             if discovered:
                 # Se c'è un solo entity nel risultato, restituisci direttamente
                 if len(discovered) == 1:
@@ -5221,11 +5343,13 @@ async def process_jarvis_logic(text: str, context: dict):
 
         # ── CLARIFICATION: ambiguous entity → ask user to specify ──
         if target["mode"] == "clarify":
-            names_list = ", ".join(target.get("entity_names", [])[:6])
-            more = len(target.get("entity_names", [])) - 6
-            if more > 0:
-                names_list += f" e altri {more}"
-            response = f"Non sono sicuro a quale ti riferisci. Ho trovato: {names_list}. Quale intendi?"
+            response = target.get("clarify_message")
+            if not response:
+                names_list = ", ".join(target.get("entity_names", [])[:6])
+                more = len(target.get("entity_names", [])) - 6
+                if more > 0:
+                    names_list += f" e altri {more}"
+                response = f"Non sono sicuro a quale ti riferisci. Ho trovato: {names_list}. Quale intendi?"
             logger.info(f"HOME_CONTROL clarification: {len(target['entity_ids'])} candidates → asking user")
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context)
@@ -5391,11 +5515,59 @@ async def process_jarvis_logic(text: str, context: dict):
                     return {}
                 return {k: v for k, v in params.items() if k in allowed and v is not None}
 
+            # ── PRE-CHECK DISPONIBILITÀ ──────────────────────────────────
+            # HA accetta turn_on/turn_off anche su entità unavailable (device
+            # offline) e risponde 200 → dicevamo "Fatto!" a vuoto (es. relè
+            # Shelly filtraggio piscina staccato). Gate SOLO su None/"unavailable"
+            # (mai "unknown": transiente legittimo) e SOLO sui domini stateful:
+            # button/scene/script/input_button hanno state timestamp/unknown e
+            # il gate li romperebbe.
+            _STATEFUL_DOMAINS = {
+                "light", "switch", "fan", "climate", "cover", "lock",
+                "media_player", "humidifier", "water_heater", "vacuum", "valve",
+            }
+
+            def _is_offline(st) -> bool:
+                return st is None or st.get("state") == "unavailable"
+
+            def _ename(eid, st) -> str:
+                return ((st or {}).get("attributes", {}) or {}).get("friendly_name") \
+                    or eid.split(".", 1)[-1].replace("_", " ")
+
+            offline_ids: list = []
+            offline_names: list = []
+
             if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
+                # Pre-check bulk: una sola get_states_bulk sui domini stateful.
+                # Fail-open: se la fetch stati fallisce in toto non blocchiamo
+                # il comando per un singhiozzo della GET.
+                _gated = [eid for eid in target["entity_ids"]
+                          if (eid.split(".")[0] if "." in eid else "light") in _STATEFUL_DOMAINS]
+                _states = {}
+                if _gated:
+                    try:
+                        _states = await multi_ha.get_states_bulk(target_location, _gated) or {}
+                    except Exception as _e:
+                        logger.warning(f"[{target_location}] pre-check states bulk fallito (fail-open): {_e}")
+                        _states = {}
+                if _states:
+                    for eid in _gated:
+                        _st = _states.get(eid)
+                        if _is_offline(_st):
+                            offline_ids.append(eid)
+                            offline_names.append(_ename(eid, _st))
+                    if offline_ids:
+                        logger.warning(
+                            f"[{target_location}] pre-check: {len(offline_ids)} entità "
+                            f"unavailable escluse dal bulk: {offline_ids}"
+                        )
+
                 # Raggruppa entity per dominio (dal prefisso entity_id)
                 from collections import defaultdict
                 domain_groups = defaultdict(list)
                 for eid in target["entity_ids"]:
+                    if eid in offline_ids:
+                        continue
                     eid_domain = eid.split(".")[0] if "." in eid else "light"
                     domain_groups[eid_domain].append(eid)
 
@@ -5420,6 +5592,9 @@ async def process_jarvis_logic(text: str, context: dict):
 
                 success = total_ok > 0
                 err = "; ".join(errors) if errors else None
+                if offline_ids and not domain_groups:
+                    # tutte le entità offline: nessuna chiamata fatta
+                    err = "unavailable"
                 entity_desc = target["description"]
                 log_detail = (
                     f"[{target_location}] BULK {action} su {entity_desc} "
@@ -5441,8 +5616,22 @@ async def process_jarvis_logic(text: str, context: dict):
                     )
                 if clean_params:
                     service_data.update(clean_params)
-                logger.info(f"HOME_CONTROL call: {eid_domain}.{mapped_action} service_data={service_data}")
-                success, err = await call_hass_service(target_location, eid_domain, mapped_action, service_data)
+                # Pre-check disponibilità (solo domini stateful, GET leggera)
+                _skip_offline = False
+                if eid_domain in _STATEFUL_DOMAINS:
+                    _st = await multi_ha.get_state(target_location, entity_id)
+                    if _is_offline(_st):
+                        _skip_offline = True
+                        offline_ids.append(entity_id)
+                if _skip_offline:
+                    success, err = False, "unavailable"
+                    logger.warning(
+                        f"[{target_location}] {entity_id} unavailable → "
+                        f"{mapped_action} NON inviato"
+                    )
+                else:
+                    logger.info(f"HOME_CONTROL call: {eid_domain}.{mapped_action} service_data={service_data}")
+                    success, err = await call_hass_service(target_location, eid_domain, mapped_action, service_data)
                 entity_desc = target["description"]
                 # scenari avviati a voce: watcher per l'annuncio differito degli errori
                 if success and eid_domain == "script" and mapped_action == "turn_on":
@@ -5461,10 +5650,14 @@ async def process_jarvis_logic(text: str, context: dict):
                         "ha_entity_ids": list(target["entity_ids"]),
                         "ha_action": action,
                         "ha_params": _normalize_ha_params(ha_params) or {},
-                        "ha_status": "ok" if success else ("partial" if total_ok else "error"),
+                        "ha_status": ("unavailable" if err == "unavailable"
+                                      else "ok" if success
+                                      else ("partial" if total_ok else "error")),
                         "ha_error": err,
                         "ha_location": target_location,
                     }
+                    if offline_ids:
+                        ha_meta["ha_offline_ids"] = list(offline_ids)
                 else:
                     ha_meta = {
                         "ha_mode": "single",
@@ -5472,7 +5665,8 @@ async def process_jarvis_logic(text: str, context: dict):
                         "ha_domain": eid_domain,
                         "ha_action": mapped_action,
                         "ha_params": clean_params or {},
-                        "ha_status": "ok" if success else "error",
+                        "ha_status": ("unavailable" if err == "unavailable"
+                                      else "ok" if success else "error"),
                         "ha_error": err,
                         "ha_location": target_location,
                     }
@@ -5502,8 +5696,27 @@ async def process_jarvis_logic(text: str, context: dict):
                     response = f"Fatto! Ho {action_verb} {target['description']}."
                 else:
                     response = f"Fatto! {action_verb}: {entity_desc}."
-                smart_cache.learn(text, response, intent)
-                log_event("HASS", log_detail, speaker_id, speaker_name)
+                # Coda onesta se nel bulk c'erano entità offline saltate
+                if offline_ids and target["mode"] == "bulk":
+                    _off = ", ".join(offline_names[:4])
+                    if len(offline_names) > 4:
+                        _off += f" e altre {len(offline_names) - 4}"
+                    _n = len(offline_ids)
+                    response = response.rstrip(".") + (
+                        f" ({_n} non rispondeva: {_off})." if _n == 1
+                        else f" ({_n} non rispondevano: {_off})."
+                    )
+                    # niente smart_cache: la coda offline è contingente
+                    log_event("HASS", log_detail + f" [{_n} offline skipped]", speaker_id, speaker_name)
+                else:
+                    smart_cache.learn(text, response, intent)
+                    log_event("HASS", log_detail, speaker_id, speaker_name)
+            elif err == "unavailable":
+                if target["mode"] == "bulk" and len(target["entity_ids"]) > 1:
+                    response = f"{entity_desc} non rispondono, sembrano offline."
+                else:
+                    response = f"{entity_desc} non risponde, sembra offline."
+                log_event("HARDWARE_ERROR", f"Offline {log_detail}", speaker_id, speaker_name)
             else:
                 response = f"Problema con {entity_desc}: {err}"
                 log_event("HARDWARE_ERROR", f"Fallito {log_detail}: {err}", speaker_id, speaker_name)

@@ -54,7 +54,7 @@ TAILSCALE_TIMEOUT_REMOTE = float(os.getenv("TAILSCALE_TIMEOUT_REMOTE", "15.0"))
 TAILSCALE_TIMEOUT_LOCAL = float(os.getenv("TAILSCALE_TIMEOUT_LOCAL", "10.0"))
 
 # Voice device sources (canale voce) — tutti i tipi di device vocali supportati
-VOICE_SOURCES = {"AtomS3R", "NabuVoice", "VirtualMic"}
+VOICE_SOURCES = {"AtomS3R", "NabuVoice", "VirtualMic", "AndroidPhone", "AndroidWear"}
 
 # Device API Token (autenticazione voice device firmware)
 # Se vuoto, l'autenticazione device è disabilitata
@@ -121,6 +121,28 @@ ROUTER_MODEL = os.getenv("ROUTER_MODEL", "model")  # alias del llama-server (Qwe
 # Elimina 1 chiamata LLM → meno latenza, routing unificato.
 # Per rollback: SKIP_PRE_ROUTE=False e riavvia.
 SKIP_PRE_ROUTE = os.getenv("SKIP_PRE_ROUTE", "True").lower() in ("true", "1", "yes")
+
+# ===========================================================================
+# JEV (TypeSafe System One) — router primario, Qwen resta come fallback
+# ===========================================================================
+# Jev non genera testo: una sola chiamata valuta in parallelo intent, azione,
+# entita', necessita' di testo libero e injection, restituendo probabilita'
+# calibrate. Misurato dall'Atomman: ~280ms contro p50 1044ms di Qwen locale.
+# Ogni fallimento (HTTP, timeout, confidence bassa, slot di testo libero)
+# ricade su Qwen: nessun percorso resta scoperto se Jev e' giu'.
+JEV_ENABLED = os.getenv("JEV_ENABLED", "False").lower() in ("true", "1", "yes")
+JEV_API_KEY = os.getenv("JEV_API_KEY", "")
+JEV_URL = os.getenv("JEV_URL", "https://api.typesafe.ai/v1/systemone")
+JEV_MODEL = os.getenv("JEV_MODEL", "jev-latest")
+JEV_TIMEOUT = float(os.getenv("JEV_TIMEOUT", "4"))  # oltre, meglio Qwen che aspettare
+
+# Soglie. Sono confidence CALIBRATE (RLCD), non numeri auto-dichiarati da un
+# LLM: 0.70 significa davvero ~70% di correttezza, quindi la soglia e' un
+# controllo reale e non decorativo.
+JEV_MIN_CONFIDENCE = float(os.getenv("JEV_MIN_CONFIDENCE", "0.70"))
+JEV_MIN_ENTITY_CONFIDENCE = float(os.getenv("JEV_MIN_ENTITY_CONFIDENCE", "0.60"))
+JEV_FREETEXT_THRESHOLD = float(os.getenv("JEV_FREETEXT_THRESHOLD", "0.50"))
+JEV_INJECTION_THRESHOLD = float(os.getenv("JEV_INJECTION_THRESHOLD", "0.60"))
 
 # ===========================================================================
 # WEB TOOLS (Brave Search API per tool calling Qwen)
@@ -374,7 +396,10 @@ STT_PROMPT = os.getenv("STT_PROMPT", os.getenv("WHISPER_PROMPT", (
     "Le stanze della casa sono Ingresso, Soggiorno, Cucina, Lavanderia, "
     "Disimpegno, Camera, Cabina armadio, Cameretta, Bagno grande, Bagno piccolo, "
     "Balcone interno, Balcone esterno, Garage e Box. "
-    "Le zone sono Notte, Giorno e Esterno. "
+    "Nella villa ci sono anche Salotto, Veranda, Ripostiglio, Bagno Cucina, "
+    "Depandance, Sala Depandance, Bagno Depandance, Disimpegno Depandance, "
+    "Pergotenda, Ufficio, Giardino, Piscina, Bagno Piscina e Scale. "
+    "Le zone sono Notte, Giorno, Esterno, Piano Giorno, Piano Notte e Piano Terra. "
     "I dispositivi includono TV, Cam, Lampada, Lampada Giorgio, Luce, Luci, "
     "Porta, Soundbar e Echo. "
     "Le luci si chiamano Centro Block, Strip Led, Divano, Faretto, Tavola, "
@@ -385,6 +410,52 @@ STT_PROMPT = os.getenv("STT_PROMPT", os.getenv("WHISPER_PROMPT", (
 
 # STT normalization via LLM (Qwen) — disable per test con solo Whisper prompt
 STT_NORMALIZE_ENABLED = os.getenv("STT_NORMALIZE_ENABLED", "false").lower() == "true"
+
+# Storpiature STT ricorrenti → nome canonico di zona/stanza (lowercase).
+# Due livelli di applicazione:
+# - TUTTE: entity resolution HOME_CONTROL (contesto domotico garantito)
+# - solo quelle NON in STT_ALIAS_UNSAFE: sostituzione deterministica globale
+#   pre-router in normalize_stt_text (parole inesistenti in italiano, zero
+#   rischio di corrompere frasi legittime)
+# Estendibili via env STT_TARGET_ALIASES_EXTRA, JSON {"storpiatura": "canonico"}.
+STT_TARGET_ALIASES = {
+    # frasi multi-parola PRIMA delle singole (applicate in ordine di inserimento)
+    "de pandance": "depandance",
+    "di pandance": "depandance",
+    "la pandance": "depandance",
+    "de pandanzi": "depandance",
+    "di pandanzi": "depandance",
+    "de pandanze": "depandance",
+    "di pandanze": "depandance",
+    "della danza": "depandance",
+    "di tentenza": "depandance",
+    "di tendenza": "depandance",
+    "di pancia": "depandance",
+    "dependenza": "depandance",
+    "dipendenza": "depandance",
+    "dependance": "depandance",
+    "dépendance": "depandance",
+    "debondanza": "depandance",
+    "pandanza": "depandance",
+    "pandanze": "depandance",
+    "pandanzi": "depandance",
+    "pandance": "depandance",
+    "vergotenda": "pergotenda",
+    "bergotenda": "pergotenda",
+    "per godenda": "pergotenda",
+    "pergo tenda": "pergotenda",
+}
+try:
+    import json as _json
+    STT_TARGET_ALIASES.update(_json.loads(os.getenv("STT_TARGET_ALIASES_EXTRA", "{}")))
+except Exception:
+    pass
+
+# Chiavi AMBIGUE: parole/frasi italiane legittime. MAI sostituite in modo
+# deterministico globale ("mal di pancia", "dipendenza dal caffè", "locale di
+# tendenza", "scuola della danza") — restano attive solo nella entity resolution
+# HOME_CONTROL e come hint per il normalizzatore LLM.
+STT_ALIAS_UNSAFE = {"di pancia", "dipendenza", "di tendenza", "della danza"}
 
 # Keywords cache TTL
 KEYWORDS_CACHE_TTL = int(os.getenv("KEYWORDS_CACHE_TTL", "300"))

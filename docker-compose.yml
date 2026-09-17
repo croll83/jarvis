@@ -170,6 +170,17 @@ services:
       - ROUTER_ENGINE=${ROUTER_ENGINE:-ollama}
       - ROUTER_URL=${ROUTER_URL:-http://localhost:11434}
       - ROUTER_MODEL=${ROUTER_MODEL:-qwen2.5:3b-32k}
+      # Jev (TypeSafe System One) — router primario, Qwen resta fallback.
+      # JEV_ENABLED=false -> tutto il traffico resta su Qwen locale.
+      - JEV_ENABLED=${JEV_ENABLED:-false}
+      - JEV_API_KEY=${JEV_API_KEY:-}
+      - JEV_URL=${JEV_URL:-https://api.typesafe.ai/v1/systemone}
+      - JEV_MODEL=${JEV_MODEL:-jev-latest}
+      - JEV_TIMEOUT=${JEV_TIMEOUT:-4}
+      - JEV_MIN_CONFIDENCE=${JEV_MIN_CONFIDENCE:-0.70}
+      - JEV_MIN_ENTITY_CONFIDENCE=${JEV_MIN_ENTITY_CONFIDENCE:-0.60}
+      - JEV_FREETEXT_THRESHOLD=${JEV_FREETEXT_THRESHOLD:-0.50}
+      - JEV_INJECTION_THRESHOLD=${JEV_INJECTION_THRESHOLD:-0.60}
       - OLLAMA_NUM_CTX=32768
       # API keys (only needed if AI_BACKEND=api)
       - GROQ_API_KEY=${GROQ_API_KEY:-}

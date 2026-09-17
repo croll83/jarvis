@@ -25,10 +25,17 @@
          |        |                  |                  |
          |        v                  v                  |
          |  +-------------------------------------+     |
-         |  |     Qwen 2.5 3B (Ollama :11434)     |     |
-         |  |     Pre-routing / tool calling       |     |
-         |  |     Tools: web_search, web_fetch,    |     |
-         |  |       memory_search, home_status     |     |
+         |  |  ROUTER                              |     |
+         |  |  1. Jev (TypeSafe, cloud) ~280ms     |     |
+         |  |     una call, domande tipizzate in   |     |
+         |  |     parallelo: intent, action,       |     |
+         |  |     entity, freetext, injection      |     |
+         |  |            | fallback                |     |
+         |  |            v                         |     |
+         |  |  2. Qwen 2.5 7B Q6_K                 |     |
+         |  |     llama-server :30000 (turbo3 KV)  |     |
+         |  |     tool calling + slot di testo     |     |
+         |  |     libero + modalita' offline       |     |
          |  +----------+--------------------------+     |
          |             |                                |
          |   +---------+----------+                     |
@@ -87,7 +94,8 @@
 |-----------|------|---------|
 | **AI Agent (Hermes/OpenClaw/others)** | Brain | Reasoning, web search, Telegram chat, multi-turn conversations |
 | **JARVIS Orchestrator** | Skill / Executor | Voice processing, home control (single + bulk), speaker ID, security enforcement |
-| **Qwen 2.5 3B** | Pre-router + Tool calling | Local Ollama model for domotics fast path, tool calling (web_search, web_fetch, memory_search, home_status), offline fallback |
+| **Jev** (TypeSafe System One) | Primary router | Cloud, non-generative: one call returns typed+calibrated answers for intent, action, entity, free-text need and prompt injection, all evaluated in parallel. ~280ms vs p50 1044ms for local Qwen. Disabled by default (`JEV_ENABLED`) |
+| **Qwen 2.5 7B Q6_K** | Router fallback + Tool calling | llama-server :30000 (turbo3 KV cache, ngram speculative). Takes over whenever Jev is unavailable, unsure, or when a free-text slot is needed (song name, search query). Also does TTS preprocessing, habit summarisation and tool calling. Keeps the house working with no WAN |
 | **Canary STT** | Speech-to-Text | nvidia/canary-1b-v2 on GX10 DGX Spark (:9000), forced Italian via source_lang (Parakeet's auto-LID misdetected IT→RU on short audio), ~130-180ms per phrase |
 | **CosyVoice3** | Text-to-Speech | Fun-CosyVoice3-0.5B on GX10, zero-shot voice cloning, Italian text normalization via num2words |
 | **Resemblyzer** | Speaker ID | Voice biometric identification (embedded in orchestrator) |
@@ -108,7 +116,7 @@
 
 | Service | Image / Build | Port | GPU | Purpose |
 |---------|---------------|------|-----|---------|
-| `ollama` | ollama/ollama | 11434 | Yes | Qwen 2.5 3B (LLM only) |
+| _(host)_ `llama-router.service` | llama.cpp turboquant | 30000 | Yes | Qwen 2.5 7B Q6_K — systemd sull'host, non in Docker |
 | `fastembed` | ./infrastructure/fastembed | 11435 | No | nomic-embed-text-v1.5 embeddings (CPU ONNX) |
 | `orchestrator` | ./jarvis-orchestrator | 5000 | No | Core FastAPI app + Resemblyzer + Admin UI (host network, TTS via CosyVoice3@GX10) |
 | `redis` | redis:7-alpine | 6379 | No | Cross-system context bus (on LXC Jarvis) |
@@ -209,7 +217,8 @@ jarvis/
 |   +-- main.py                # Routing, voice pipeline, Telegram webhook, WS operator client
 |   +-- config.py              # Service URLs, timeouts, security rules
 |   +-- database.py            # PostgreSQL: users, locations, entities, memory
-|   +-- ai_engines.py          # Pre-routing (Qwen) + AI Agent dispatch
+|   +-- jev_engine.py          # Router primario Jev (domande tipizzate, fallback su Qwen)
+|   +-- ai_engines.py          # Routing (Jev -> Qwen) + AI Agent dispatch
 |   +-- tools_api.py           # AI Agent skill endpoints (11 REST tools incl. entity_bulk)
 |   +-- integrations.py        # Home Assistant, Telegram, audio feedback
 |   +-- voice_recognition.py   # Resemblyzer speaker ID
@@ -249,7 +258,9 @@ jarvis/
 ## Key Design Decisions
 
 - **AI Agent as Brain**: All reasoning, web search, and conversational intelligence is handled by the AI Agent (Hermes/OpenClaw/others) backed by a Cloud LLM. The AI_AGENT intent routes complex queries, uncertain domotics, and general conversation to the brain.
-- **Qwen 2.5 3B with tool calling**: Fast local pre-routing for domotics commands plus tool calling capabilities (web_search via Brave API, web_fetch, memory_search, home_status). Falls back to offline responses when cloud is unreachable.
+- **Two-stage router, Jev first**: [Jev](https://docs.typesafe.ai) is a *System One* model — it does not generate text, it answers typed questions (`choice`, `score`, `noul`) with calibrated probabilities. One request asks intent, action, target entity, whether a free-text slot is needed, and whether the input is a prompt injection; adding questions costs no extra latency because they are evaluated in parallel. Measured from the Atomman: ~280ms against p50 1044ms / p90 1865ms for local Qwen, on the same commands.
+- **Qwen 2.5 7B Q6_K as fallback, never removed**: Jev returning low confidence, needing a free-text slot (`play_music` query, web search terms), or simply being unreachable all fall through to the local model. This is deliberate: Jev is cloud-only, and `HOME_CONTROL` must keep working with no WAN. Qwen also keeps TTS preprocessing, habit summarisation and tool calling.
+- **Prompt injection as an independent question**: asking the router to police the very prompt an injection is attacking is weak by construction. Jev scores it as a separate `noul`, in parallel, at no latency cost.
 - **Brave Search API**: Web search tool available to both Qwen (via tool calling) and the AI Agent (via skill), providing real-time web information.
 - **fastembed for all embeddings**: Single 768-dim embedding model (nomic-embed-text-v1.5 via ONNX, CPU-only) served by a dedicated container on port 11435 with Ollama-compatible API. Runs on CPU to avoid CUDA context switching with Qwen on the GPU, reducing routing latency from ~3.5s to ~0.5s.
 - **Three-layer memory (decoupled)**:

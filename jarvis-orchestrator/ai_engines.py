@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -289,8 +290,8 @@ async def is_safe(text: str, source: str = "unknown") -> tuple[bool, str]:
 # Chiamata dopo STT e prima del pre-route. Se fallisce, ritorna testo originale.
 # ===========================================================================
 
-_STT_NORMALIZE_SYSTEM = (
-    "Sei un normalizzatore di testo trascritto da un sistema di riconoscimento vocale (Whisper) "
+_STT_NORMALIZE_RULES = (
+    "Sei un normalizzatore di testo trascritto da un sistema di riconoscimento vocale "
     "per un assistente domotico italiano chiamato JARVIS.\n"
     "Il tuo compito:\n"
     "1. Correggi errori di trascrizione: parole storpiate, lingue sbagliate, punteggiatura errata\n"
@@ -298,25 +299,97 @@ _STT_NORMALIZE_SYSTEM = (
     "3. NON aggiungere formattazione, virgolette o commenti\n"
     "4. Se il testo è già corretto, restituiscilo identico\n"
     "5. Rispondi SOLO con il testo corretto, nient'altro\n\n"
-    "Contesto — entità domotiche note:\n"
-    "Stanze: Ingresso, Soggiorno, Cucina, Lavanderia, Disimpegno, Camera, "
-    "Cabina armadio, Cameretta, Bagno grande, Bagno piccolo, Balcone interno, Balcone esterno, Garage, Box\n"
-    "Device: TV, Cam, Lampada, Lampada Giorgio, Luce, Luci, Porta, Soundbar, Echo\n"
-    "Luci: Centro Block, Strip Led, Divano, Faretto, Tavola, Braava, Roomba, Letto, Specchio\n"
-    "Persone: Marco, Ada, Giorgio, Sofia, Loredana, Mario, Melina\n"
-    "Azioni: accendi, spegni, apri, chiudi, cambia, imposta, alza, abbassa, muta, stop, silenzio"
 )
+
+_stt_ctx_cache = (0.0, "")  # (timestamp, sezione contesto)
+
+
+def _stt_normalize_system() -> str:
+    """
+    Prompt normalizzatore: regole statiche + contesto dinamico con le stanze/
+    aree/zone REALI dall'entity map di tutte le location (niente liste
+    hardcodate che invecchiano) e le storpiature note da STT_TARGET_ALIASES.
+    Contesto in cache 5 min per evitare query DB a ogni comando vocale.
+    """
+    global _stt_ctx_cache
+    now = time.time()
+    if _stt_ctx_cache[1] and now - _stt_ctx_cache[0] < 300:
+        return _STT_NORMALIZE_RULES + _stt_ctx_cache[1]
+
+    rooms_line = ""
+    try:
+        from database import get_all_locations, get_entity_map_locations
+        names: list = []
+        for loc in get_all_locations():
+            for n in get_entity_map_locations(loc.id):
+                if n not in names:
+                    names.append(n)
+        if names:
+            rooms_line = "Stanze e zone: " + ", ".join(names) + "\n"
+    except Exception as e:
+        logger.warning(f"STT normalize: entity map non disponibile per il prompt: {e}")
+
+    by_canon: dict = {}
+    for wrong, right in config.STT_TARGET_ALIASES.items():
+        by_canon.setdefault(right, []).append(wrong)
+    alias_lines = "".join(
+        f"ATTENZIONE: '{canon}' viene spesso trascritto male "
+        f"({', '.join(wrongs)}): nel contesto domotico correggilo in '{canon}'.\n"
+        for canon, wrongs in by_canon.items()
+    )
+
+    context = (
+        "Contesto — entità domotiche note:\n"
+        + rooms_line
+        + alias_lines
+        + "Persone: Marco, Ada, Giorgio, Sofia, Loredana, Mario, Melina\n"
+        "Azioni: accendi, spegni, apri, chiudi, cambia, imposta, alza, abbassa, muta, stop, silenzio"
+    )
+    _stt_ctx_cache = (now, context)
+    return _STT_NORMALIZE_RULES + context
+
+
+def _apply_safe_stt_aliases(text: str) -> str:
+    """
+    Sostituzione DETERMINISTICA pre-router delle storpiature STT non ambigue
+    (parole inesistenti in italiano: "debondanza", "vergotenda"…). Le chiavi
+    in config.STT_ALIAS_UNSAFE ("di pancia", "dipendenza"…) sono escluse:
+    quelle vivono solo nella entity resolution HOME_CONTROL e negli hint LLM.
+    Case-insensitive, word-boundary, frasi multi-parola prima delle singole
+    (ordine di inserimento del dict).
+    """
+    result = text
+    for wrong, right in config.STT_TARGET_ALIASES.items():
+        if wrong in config.STT_ALIAS_UNSAFE:
+            continue
+        new = re.sub(rf"\b{re.escape(wrong)}\b", right, result, flags=re.IGNORECASE)
+        if new != result:
+            logger.info(f"STT alias: '{wrong}' → '{right}'")
+            result = new
+    return result
 
 
 async def normalize_stt_text(text: str) -> str:
     """
-    Normalizza il testo STT via Qwen per correggere errori di trascrizione.
-    Se la chiamata LLM fallisce, ritorna il testo originale (fail-safe).
-    Disabilitabile via config.STT_NORMALIZE_ENABLED = false.
+    Normalizza il testo STT: prima la passata deterministica sugli alias
+    sicuri (sempre attiva, anche con LLM spento/giù), poi opzionalmente il
+    normalizzatore LLM (Qwen). Se la chiamata LLM fallisce, ritorna il testo
+    della passata deterministica (fail-safe).
+    Disabilitabile (solo la parte LLM) via config.STT_NORMALIZE_ENABLED = false.
     """
+    if not text or len(text.strip()) < 3:
+        return text
+
+    text = _apply_safe_stt_aliases(text)
+
     if not config.STT_NORMALIZE_ENABLED:
         return text
-    if not text or len(text.strip()) < 3:
+
+    # Con Jev attivo la passata LLM qui non serve: Jev riceve il testo grezzo
+    # insieme agli hint sulle storpiature note e risolve l'entita'
+    # foneticamente. Se Jev rinuncia, e' get_routing() a normalizzare prima di
+    # passare la palla a Qwen, cosi' il fallback non perde accuratezza.
+    if config.JEV_ENABLED:
         return text
 
     _rp = get_llm_params("routing")
@@ -346,7 +419,7 @@ async def normalize_stt_text(text: str) -> str:
 async def _normalize_ollama(text: str, llm_params: dict) -> Optional[str]:
     """Normalizzazione STT via LLM locale (Ollama o llama-server)."""
     messages = [
-        {"role": "system", "content": _STT_NORMALIZE_SYSTEM},
+        {"role": "system", "content": _stt_normalize_system()},
         {"role": "user", "content": text}
     ]
     try:
@@ -369,7 +442,7 @@ async def _normalize_openrouter(text: str, llm_params: dict) -> Optional[str]:
     payload = {
         "model": config.OPENROUTER_ROUTER_MODEL,
         "messages": [
-            {"role": "system", "content": _STT_NORMALIZE_SYSTEM},
+            {"role": "system", "content": _stt_normalize_system()},
             {"role": "user", "content": text}
         ],
         "temperature": 0.1,
@@ -548,6 +621,32 @@ async def get_routing(text: str, context: dict) -> dict:
     """
     # Add AI Agent availability flag
     context["ai_agent_available"] = config.AI_AGENT_ENABLED
+
+    # Jev primario: una sola chiamata con domande in parallelo al posto della
+    # catena Qwen. Restituisce None quando non se la sente (HTTP/timeout,
+    # confidence sotto soglia, entita' incerta, o serve uno slot di testo
+    # libero che Jev non sa generare) e in quel caso si prosegue su Qwen.
+    if config.JEV_ENABLED:
+        try:
+            from jev_engine import route as jev_route
+            jev_result = await jev_route(text, context)
+            if jev_result is not None:
+                return _validate_routing(jev_result)
+        except Exception as e:
+            logger.warning(f"Jev engine error ({type(e).__name__}: {e}) — fallback su Qwen")
+
+        # Con Jev attivo normalize_stt_text salta la passata LLM (Jev regge il
+        # testo grezzo). Qui pero' stiamo ricadendo su Qwen, che senza
+        # normalizzazione perde accuratezza: la recuperiamo adesso.
+        if config.STT_NORMALIZE_ENABLED:
+            try:
+                normalized = await _normalize_ollama(text, get_llm_params("routing"))
+                if normalized and 2 <= len(normalized.strip()) < len(text) * 3:
+                    if normalized.strip() != text.strip():
+                        logger.info(f"STT normalized (fallback Jev): '{text}' -> '{normalized.strip()}'")
+                    text = normalized.strip()
+            except Exception as e:
+                logger.warning(f"STT normalize in fallback Jev fallita: {e}")
 
     # LLM decides (local or API)
     if config.AI_BACKEND == "api":

@@ -58,8 +58,24 @@ brave_api_key: ""
 # Ontology Server — Knowledge Graph API auth
 ontology_api_token: ""
 
-# Router model — default: qwen2.5:3b
-router_model: "qwen2.5:3b"
+# Router locale (Qwen). Produzione: llama-server :30000 con
+# qwen2.5_7b-q6_K.gguf servito con alias "model".
+router_engine: "llamacpp"          # llamacpp | ollama
+router_url: "http://localhost:30000"
+router_model: "model"
+
+# Jev (TypeSafe System One) — router primario, Qwen resta il fallback.
+# Chiave su https://typesafe.ai — formato apikey_<32hex>_<64hex>.
+# Lascia jev_enabled: false per restare interamente su Qwen locale.
+jev_enabled: false
+jev_api_key: ""
+jev_url: "https://api.typesafe.ai/v1/systemone"
+jev_model: "jev-latest"
+jev_timeout: 4
+jev_min_confidence: 0.70           # sotto soglia -> fallback su Qwen
+jev_min_entity_confidence: 0.60
+jev_freetext_threshold: 0.50       # serve slot di testo libero -> Qwen
+jev_injection_threshold: 0.60
 
 # =============================================================================
 # OPENCLAW (Brain - Gemini 3 Pro, bare-metal su VM separata)
