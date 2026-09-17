@@ -221,6 +221,9 @@ async def sync_entities_from_ha(
     # Carica gerarchia personalizzata (se importata)
     hierarchy = get_hierarchy_mapping(location_id)
     has_hierarchy = bool(hierarchy)
+    # Indice normalizzato: accetta sia gli area_id slug che i nomi visualizzati.
+    hierarchy_norm = {_norm_area_key(k): v for k, v in hierarchy.items()}
+    unmatched_areas = set()
     if has_hierarchy:
         logger.info(f"Using custom hierarchy with {len(hierarchy)} area mappings")
 
@@ -303,22 +306,25 @@ async def sync_entities_from_ha(
             room = entity.area_name or "Sconosciuto"
 
             if has_hierarchy:
-                # Usa la gerarchia personalizzata per zone/area
-                hier = hierarchy.get(ha_area_key)
+                # Match sull'area_id, poi normalizzato, poi sul nome visualizzato:
+                # la gerarchia puo' essere stata scritta in entrambe le forme.
+                hier = hierarchy.get(ha_area_key) if ha_area_key else None
                 if not hier:
-                    # Prova match case-insensitive sulle chiavi
-                    for k, v in hierarchy.items():
-                        if k.lower() == ha_area_key.lower():
-                            hier = v
+                    for candidate in (ha_area_key, entity.area_name):
+                        key = _norm_area_key(candidate)
+                        if key and key in hierarchy_norm:
+                            hier = hierarchy_norm[key]
                             break
 
                 if hier:
                     zone = hier["zone"]    # floor_name (Piano 1, etc.)
                     area = hier["area"]    # zone_name (Zona Giorno, etc.)
                 else:
-                    # Entity in un'area HA non presente nella gerarchia → skip o "Altri"
+                    # Entity in un'area HA non presente nella gerarchia
                     zone = "Non classificato"
                     area = "Non classificato"
+                    if ha_area_key or entity.area_name:
+                        unmatched_areas.add(entity.area_name or ha_area_key)
             else:
                 # Nessuna gerarchia → usa inferenza automatica
                 zone = _infer_zone(entity)
@@ -386,7 +392,27 @@ async def sync_entities_from_ha(
     conn.close()
 
     logger.info(f"Sync complete: {added} added, {updated} updated, {len(errors)} errors")
+    if unmatched_areas:
+        # Senza questo avviso il mismatch e' muto: le entity finiscono in
+        # "Non classificato" e sembra un problema di Home Assistant.
+        logger.warning(
+            f"Hierarchy: {len(unmatched_areas)} aree HA non presenti nella gerarchia "
+            f"importata, le loro entity sono finite in 'Non classificato': "
+            f"{sorted(unmatched_areas)}"
+        )
     return added, updated, errors
+
+
+def _norm_area_key(s: Optional[str]) -> str:
+    """
+    Normalizza una chiave d'area per il match con la gerarchia importata.
+
+    HA usa area_id slugificati ("bagno_grande"), ma una gerarchia scritta a
+    mano dall'admin panel usa naturalmente i nomi visualizzati ("Bagno Grande"),
+    perche' e' quello che il panel mostra. Senza normalizzare, le aree di una
+    sola parola matchavano e tutte le altre finivano zitte in "Non classificato".
+    """
+    return re.sub(r"[\s_\-]+", "_", (s or "").strip().lower())
 
 
 def _infer_zone(entity: HAEntity) -> str:
