@@ -56,6 +56,7 @@ _ACTIONS = {
 
 _NO_ENTITY = "__nessuna__"
 _NO_ROOM = "__nessuna__"
+_WHOLE_HOUSE = "ovunque"   # nome usato dal contratto del router per tutta la casa
 _ALL_MEASURES = "__tutto__"
 
 # Grandezze misurate, come vocabolario CHIUSO. entity_discover ignora
@@ -122,7 +123,7 @@ def _flatten_entity_map(entity_map: dict) -> Tuple[list, dict]:
     return names, lookup
 
 
-def _get_entities(location_id: Optional[str], user_id: Optional[int]) -> Tuple[list, dict]:
+def _get_entities(location_id: Optional[str], user_id: Optional[int]) -> Tuple[list, dict, dict]:
     """Entity map appiattita per la location, con cache a 5 minuti."""
     global _entity_cache
 
@@ -161,15 +162,40 @@ def _get_entities(location_id: Optional[str], user_id: Optional[int]) -> Tuple[l
                     room, domain = lk[name]
                     lookup[name] = (room, domain, loc_id)
                     names.append(name)
+
+        # Piani / zone / stanze: il contratto del router accetta come bersaglio
+        # ogni livello ("Spegni tutto in zona giorno" -> entity="Zona Giorno"),
+        # e entity_discover ha tre parametri distinti (floor/zone/room) che
+        # mappano su tre colonne diverse.
+        from database import _get_conn
+        conn = _get_conn()
+        c = conn.cursor()
+        floors, zones, rooms = set(), set(), set()
+        qmarks = ",".join("?" for _ in targets)
+        c.execute(
+            f"""SELECT DISTINCT zone, area, room FROM entity_maps
+                WHERE location_id IN ({qmarks})
+                  AND LOWER(COALESCE(zone,'')) NOT IN ('', 'non classificato')""",
+            targets,
+        )
+        for z, a, r in c.fetchall():
+            if z:
+                floors.add(z)
+            if a and a != z:
+                zones.add(a)
+            if r and r.lower() != "sconosciuto":
+                rooms.add(r)
+        conn.close()
+        scopes = {"floors": sorted(floors), "zones": sorted(zones), "rooms": sorted(rooms)}
     except Exception as e:
         logger.warning(f"Jev: entity map non disponibile ({e}) — routing senza entita'")
-        return [], {}
+        return [], {}, {"floors": [], "zones": [], "rooms": []}
 
     if not fresh:
         cache, ts = {}, now
-    cache[key] = (names, lookup)
+    cache[key] = (names, lookup, scopes)
     _entity_cache = (ts, cache)
-    return names, lookup
+    return names, lookup, scopes
 
 
 def _stt_hints() -> str:
@@ -191,7 +217,24 @@ def _stt_hints() -> str:
     return "[STORPIATURE NOTE DELLO STT — interpreta foneticamente]:\n" + lines
 
 
-def _build_questions(entity_names: list, room_names: list, ai_agent_available: bool) -> dict:
+def _scope_targets(scopes: dict) -> dict:
+    """
+    Stanze, zone e piani come bersagli selezionabili, con l'etichetta che dice
+    di che livello sono. Il contratto del router accetta ogni livello come
+    entity ("Spegni tutto in zona giorno" -> entity="Zona Giorno"), e
+    entity_discover ha tre parametri distinti che mappano su tre colonne.
+    """
+    out = {}
+    for r in scopes.get("rooms", []):
+        out[r] = f"La stanza {r}"
+    for z in scopes.get("zones", []):
+        out.setdefault(z, f"La zona {z}, che raggruppa piu' stanze")
+    for f in scopes.get("floors", []):
+        out.setdefault(f, f"Il piano {f}, che raggruppa piu' zone")
+    return out
+
+
+def _build_questions(entity_names: list, scopes: dict, ai_agent_available: bool) -> dict:
     """
     Domande valutate in parallelo. Aggiungerne non costa latenza (misurato:
     6 domande 280ms contro 281ms per una sola), quindi chiediamo tutto in una
@@ -271,15 +314,15 @@ def _build_questions(entity_names: list, room_names: list, ai_agent_available: b
         "instructions": "Se la domanda riguarda un sensore o una misura di casa, quale grandezza?",
         "criteria": dict(_MEASURES),
     }
-    if room_names:
+    targets = _scope_targets(scopes)
+    if targets:
         questions["room"] = {
             "type": "choice",
             # Solo la stanza NOMINATA: se si chiede a Jev di considerare anche
             # quella del contesto, le due competono ("in camera" usciva 0.72
             # contro 0.27 del contesto). Il fallback sul contesto lo fa il codice.
-            "instructions": "Quale stanza e' NOMINATA esplicitamente nel comando dell'utente? Guarda solo le parole del comando, NON la stanza del contesto. Se il comando non nomina nessuna stanza, scegli 'nessuna'.",
-            "criteria": {**{r: r for r in room_names},
-                         _NO_ROOM: "Il comando non nomina nessuna stanza, o riguarda tutta la casa"},
+            "instructions": "Quale stanza, zona o piano e' NOMINATO esplicitamente nel comando dell'utente? Guarda solo le parole del comando, NON la stanza del contesto. Se non ne nomina nessuno, scegli 'nessuna'.",
+            "criteria": {**targets, _NO_ROOM: "Il comando non nomina nessun luogo preciso"},
         }
 
     if entity_names:
@@ -288,12 +331,19 @@ def _build_questions(entity_names: list, room_names: list, ai_agent_available: b
         # router usa gia' ("Spegni tutto in X" -> entity=X). Senza, i comandi
         # collettivi cadevano tutti su Qwen.
         criteria = {n: n for n in entity_names}
-        for r in room_names:
-            criteria.setdefault(r, f"Tutti i dispositivi della stanza {r} insieme")
-        criteria[_NO_ENTITY] = "Il comando non punta a un dispositivo ne' a una stanza"
+        for name, desc in targets.items():
+            criteria.setdefault(name, f"Tutti i dispositivi di {desc.lower()} insieme")
+        criteria[_WHOLE_HOUSE] = "Tutta la casa, ogni stanza e ogni piano insieme"
+        criteria[_NO_ENTITY] = "Il comando non punta a un dispositivo ne' a un luogo"
         questions["entity"] = {
             "type": "choice",
-            "instructions": "Qual e' il bersaglio del comando? Un singolo dispositivo della MAPPA ENTITA', oppure un'intera stanza se il comando e' collettivo ('le luci del soggiorno', 'spegni tutto in cucina'). Usa le STORPIATURE NOTE per interpretare foneticamente il testo.",
+            "instructions": (
+                "Qual e' il bersaglio del comando? Un singolo dispositivo della MAPPA ENTITA', "
+                "oppure un intero luogo se il comando e' collettivo: una stanza ('le luci del "
+                "soggiorno'), una zona ('spegni tutto in zona giorno'), un piano ('luci del piano "
+                "notte') o tutta la casa ('spegni tutto', 'musica ovunque'). "
+                "Usa le STORPIATURE NOTE per interpretare foneticamente il testo."
+            ),
             "criteria": criteria,
         }
 
@@ -324,6 +374,21 @@ def _build_state(text: str, context: dict) -> str:
     return "\n\n".join(parts)
 
 
+def _place_param(place: str, scopes: dict) -> str:
+    """
+    entity_discover ha room/zone/floor separati, che filtrano su tre colonne
+    diverse (room, area, zone). Mandare una zona nel parametro room non
+    troverebbe nulla.
+    """
+    if place in scopes.get("rooms", []):
+        return "room"
+    if place in scopes.get("zones", []):
+        return "zone"
+    if place in scopes.get("floors", []):
+        return "floor"
+    return "room"
+
+
 async def route(text: str, context: dict) -> Optional[dict]:
     """
     Routing via Jev. Restituisce il dict di routing, oppure None se il chiamante
@@ -332,9 +397,12 @@ async def route(text: str, context: dict) -> Optional[dict]:
     if not config.JEV_ENABLED or not config.JEV_API_KEY:
         return None
 
-    names, lookup = _get_entities(context.get("location"), context.get("speaker_id"))
-    rooms = sorted({v[0] for v in lookup.values() if v[0] and v[0] != "Sconosciuto"})
-    questions = _build_questions(names, rooms, context.get("ai_agent_available", False))
+    names, lookup, scopes = _get_entities(context.get("location"), context.get("speaker_id"))
+    questions = _build_questions(names, scopes, context.get("ai_agent_available", False))
+    rooms = set(scopes.get("rooms", []))
+    zones = set(scopes.get("zones", []))
+    floors = set(scopes.get("floors", []))
+    places = rooms | zones | floors
     state = _build_state(text, context)
 
     t0 = time.monotonic()
@@ -408,6 +476,13 @@ async def route(text: str, context: dict) -> Optional[dict]:
         logger.info(f"Jev: serve slot di testo libero (noul={freetext:.2f}) — fallback su Qwen")
         return None
 
+    # play_music vuole sempre parameters.query (brano, artista, playlist): e'
+    # un insieme illimitato, quindi non e' scegliibile da un elenco chiuso.
+    # Senza questa guardia usciva un payload con parameters vuoto.
+    if action == "play_music":
+        logger.info("Jev: play_music richiede una query libera — fallback su Qwen")
+        return None
+
     payload: dict = {}
     response_text = ""
 
@@ -415,9 +490,11 @@ async def route(text: str, context: dict) -> Optional[dict]:
         # Dati di casa: fonte locale. room e measure vengono da elenchi chiusi,
         # quindi non serve generare niente e si resta sul percorso Jev puro.
         params: dict = {}
-        named_device = entity != _NO_ENTITY and entity not in rooms and entity_conf >= 0.5
+        named_device = (entity not in (_NO_ENTITY, _WHOLE_HOUSE)
+                        and entity not in places and entity_conf >= 0.5)
         if room_choice != _NO_ROOM and room_conf >= config.JEV_MIN_ENTITY_CONFIDENCE:
-            params["room"] = room_choice
+            # floor/zone/room sono parametri distinti su colonne distinte
+            params[_place_param(room_choice, scopes)] = room_choice
         elif named_device:
             # Il comando nomina un dispositivo preciso: ereditare la stanza del
             # contesto lo cercherebbe nel posto sbagliato. Meglio globale.
@@ -440,10 +517,11 @@ async def route(text: str, context: dict) -> Optional[dict]:
         if entity == _NO_ENTITY or entity_conf < config.JEV_MIN_ENTITY_CONFIDENCE:
             logger.info(f"Jev: entita' incerta ({entity}, conf={entity_conf:.2f}) — fallback su Qwen")
             return None
-        if entity in rooms:
-            # Bersaglio collettivo: la stanza stessa. Nessun dominio, cosi' il
-            # dispatch a valle agisce su tutto quello che c'e' dentro.
-            room, domain, loc_id = entity, None, context.get("location")
+        if entity == _WHOLE_HOUSE or entity in places:
+            # Bersaglio collettivo (stanza, zona, piano o tutta la casa).
+            # Niente dominio, cosi' il dispatch a valle agisce su tutto.
+            room = entity if entity in rooms else None
+            domain, loc_id = None, context.get("location")
         else:
             room, domain, loc_id = lookup.get(entity, (None, None, None))
         payload = {
