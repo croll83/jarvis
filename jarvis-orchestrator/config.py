@@ -408,6 +408,11 @@ STT_PROMPT = os.getenv("STT_PROMPT", os.getenv("WHISPER_PROMPT", (
     "shopping, cron, trading e Twitter."
 )))
 
+# Prompt del router generato da router_model invece del file statico
+# config/router_system_prompt.txt. Default OFF: si accende solo quando il banco
+# di prova lo promuove. Rollback = rimettere False e riavviare.
+ROUTER_PROMPT_GENERATO = os.getenv("ROUTER_PROMPT_GENERATO", "false").lower() == "true"
+
 # STT normalization via LLM (Qwen) — disable per test con solo Whisper prompt
 STT_NORMALIZE_ENABLED = os.getenv("STT_NORMALIZE_ENABLED", "false").lower() == "true"
 

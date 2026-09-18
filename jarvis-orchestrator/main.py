@@ -3886,7 +3886,7 @@ def _detect_scope_phrase(user_text: str) -> Optional[str]:
 
 def _resolve_home_control_target(
     location_id: str, domain: str, entity_name: str,
-    room_hint: str = None, user_text: str = None
+    room_hint: str = None, user_text: str = None, target_kind: str = None
 ) -> dict:
     """
     Risolve il target di un comando HOME_CONTROL voice.
@@ -3941,6 +3941,27 @@ def _resolve_home_control_target(
             "description": f"ambiguous in {rooms_str}",
             "match_type": "ambiguous",
         }
+
+    # ── A0. TIPO DICHIARATO DAL ROUTER (schema scope/device) ──────────
+    # Quando il router dice esplicitamente se il bersaglio è un luogo o un
+    # dispositivo, non c'è nulla da indovinare: è l'informazione che tutta la
+    # cascata sotto cerca di ricostruire dal testo. Se la via diretta non
+    # risolve (nome storpiato, entità sparita dalla mappa) si prosegue con la
+    # cascata di sempre, che resta invariata.
+    if target_kind == "scope" and entity_name:
+        _disc = discover_entities_for_voice(location_id, entity_name, domain=domain)
+        if _disc:
+            logger.info(f"Entity resolution [scope dichiarato]: '{entity_name}' → {len(_disc)} entità")
+            return _make_bulk_result(_disc, f"scope:'{entity_name}'")
+        logger.info(f"Entity resolution [scope dichiarato]: '{entity_name}' non risolto, proseguo")
+    elif target_kind == "device" and entity_name:
+        _eid = resolve_entity_id(location_id=location_id, friendly_name=entity_name,
+                                 entity_type=domain, room=None, exact_only=True)
+        if _eid:
+            logger.info(f"Entity resolution [device dichiarato]: '{entity_name}' → {_eid}")
+            return {"mode": "single", "entity_ids": [_eid],
+                    "description": entity_name, "match_type": "device_dichiarato"}
+        logger.info(f"Entity resolution [device dichiarato]: '{entity_name}' non esatto, proseguo")
 
     # ── B0. NOME ESATTO GLOBALE (con dominio): un friendly name univoco vince
     # sempre sull'estrazione stanza dal testo. Senza questo, "accendi filtraggio
@@ -5037,7 +5058,17 @@ async def process_jarvis_logic(text: str, context: dict):
         payload = router_data.get("payload", {})
         domain_raw = payload.get("domain") or None
         action = payload.get("action", "toggle")
-        entity_raw = payload.get("entity", "unknown")
+        # Schema nuovo (generato da router_model): il router distingue
+        #   scope  = stanza/zona/"ovunque" → si esegue su TUTTO ciò che contiene
+        #   device = una entità precisa    → si esegue solo su quella
+        # Schema vecchio: un unico campo "entity" che poteva essere l'una o l'altra
+        # cosa, e il resolver doveva indovinare. Qui i due mondi si incontrano:
+        # se il router ha dichiarato il tipo, lo si conserva in _target_kind e il
+        # resolver salta la parte a indovinare.
+        _scope_raw = payload.get("scope") or None
+        _device_raw = payload.get("device") or None
+        _target_kind = "scope" if _scope_raw else ("device" if _device_raw else None)
+        entity_raw = _device_raw or _scope_raw or payload.get("entity", "unknown")
         ha_params = payload.get("parameters", {}) or {}
 
         # --- MUSICA via Music Assistant ---
@@ -5338,7 +5369,8 @@ async def process_jarvis_logic(text: str, context: dict):
         # Passa il testo originale dell'utente per estrazione diretta (più affidabile di entity Qwen)
         room_hint = context.get("room")
         target = _resolve_home_control_target(
-            target_location, domain, entity, room_hint, user_text=text
+            target_location, domain, entity, room_hint, user_text=text,
+            target_kind=_target_kind
         )
 
         # ── CLARIFICATION: ambiguous entity → ask user to specify ──
