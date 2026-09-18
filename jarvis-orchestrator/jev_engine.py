@@ -534,12 +534,14 @@ async def route(text: str, context: dict) -> Optional[dict]:
 
     e_scope = scope_choice != _NO_SCOPE
     e_device = device_choice != _NO_ENTITY
+
+    # Fra luogo e dispositivo vince semplicemente il piu' sicuro, senza margini.
+    # Tarato sulle tracce di 265 comandi reali: il margine a favore del luogo
+    # costava precisione (0.00 → 81.1%, 0.05 → 80.6%, 0.15 → 80.2%) senza
+    # accettare un caso in piu'. Anche la corroborazione fra le due risposte,
+    # provata, valeva 2 casi su 265 e abbassava la precisione: rimossa.
     if e_scope and e_device:
-        # Entrambi proposti: vince chi e' piu' sicuro. Nel dubbio (scarto sotto
-        # 0.15) vince il luogo: sbagliare per eccesso spegne qualche luce in
-        # piu', sbagliare per difetto lascia acceso cio' che l'utente voleva
-        # spento e lo costringe a ripetere.
-        if device_conf > scope_conf + 0.15:
+        if device_conf > scope_conf:
             entity, entity_conf, tipo = device_choice, device_conf, "device"
         else:
             entity, entity_conf, tipo = scope_choice, scope_conf, "scope"
@@ -549,6 +551,7 @@ async def route(text: str, context: dict) -> Optional[dict]:
         entity, entity_conf, tipo = device_choice, device_conf, "device"
     else:
         entity, entity_conf, tipo = _NO_ENTITY, 0.0, None
+
     api_call = answers.get("api_call", {}).get("choice", "none")
     domain_ans = answers.get("domain", {})
     domain_choice = domain_ans.get("choice", "none")
@@ -589,6 +592,15 @@ async def route(text: str, context: dict) -> Optional[dict]:
     if action != "none" and float(answers.get("action", {}).get("confidence", 0)) >= 0.85:
         hints["action"] = action
     context["jev_hints"] = hints
+    # Traccia completa delle risposte: con questa, cambiare una soglia si
+    # rivaluta sul dataset gia' raccolto invece di rifare le chiamate.
+    context["jev_answers"] = {
+        "intent": (intent, confidence), "action": (action, float(answers.get("action", {}).get("confidence", 0))),
+        "scope": (scope_choice, scope_conf), "device": (device_choice, device_conf),
+        "domain": (domain_choice, domain_conf), "room": (room_choice, room_conf),
+        "collective": collective, "freetext": freetext, "injection": injection,
+        "api_call": api_call, "measure": measure, "tipo_scelto": tipo,
+    }
 
     # Injection: segnale calibrato e indipendente dal prompt sotto attacco.
     # SECURITY_ALERT non e' in VALID_INTENTS, quindi marchiamo il payload e
