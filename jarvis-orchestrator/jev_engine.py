@@ -31,31 +31,42 @@ _session: Optional[aiohttp.ClientSession] = None
 _entity_cache: Tuple[float, dict] = (0.0, {})
 _ENTITY_CACHE_TTL = 300
 
-# Azioni offerte a Jev, con il testo parlato gia' pronto: Jev non genera,
-# quindi la response la templatizziamo qui invece di farla scrivere a un LLM.
-_ACTIONS = {
-    "turn_on":            ("Accendere", "Accendo."),
-    "turn_off":           ("Spegnere", "Spengo."),
-    "toggle":             ("Invertire lo stato", "Fatto."),
-    "open_cover":         ("Aprire tapparella o tenda", "Apro."),
-    "close_cover":        ("Chiudere tapparella o tenda", "Chiudo."),
-    "set_cover_position": ("Portare la tapparella a una posizione parziale", "Fatto."),
-    "set_temperature":    ("Impostare la temperatura", "Imposto la temperatura."),
-    "set_hvac_mode":      ("Cambiare modalita' del clima", "Fatto."),
-    "volume_set":         ("Impostare il volume a un valore preciso", "Fatto."),
-    "volume_up":          ("Alzare il volume", "Alzo il volume."),
-    "volume_down":        ("Abbassare il volume", "Abbasso il volume."),
-    "media_play":         ("Riprendere la riproduzione", "Riprendo."),
-    "media_pause":        ("Mettere in pausa", "Metto in pausa."),
-    "media_stop":         ("Fermare la riproduzione", "Fermo."),
-    "play_music":         ("Riprodurre musica, un artista, un brano o una playlist", "Metto la musica."),
-    "lock":               ("Chiudere la serratura", "Chiudo la serratura."),
-    "unlock":             ("Aprire la serratura", "Apro la serratura."),
-    "none":               ("Nessuna azione domotica", ""),
-}
+# Azioni e domini vengono da router_model, l'unica dichiarazione: prima lo stesso
+# vocabolario viveva qui, in main._valid_ha_actions, in _map_action_for_domain e
+# in prosa nel prompt, con quattro elenchi che non concordavano (20/25/11/19).
+# La frase parlata resta templatizzata qui: Jev sceglie, non scrive.
+try:
+    import router_model as _RM
+    _ACTIONS = {a.nome: (a.descrizione, a.frase.replace("{t}", ""))
+                for a in _RM.ACTIONS.values()}
+    _ACTIONS["none"] = ("Nessuna azione domotica", "")
+    _DOMAIN_CRITERI = {d: _RM.DOMINI_DESCRIZIONE.get(d, f"Dispositivi di tipo {d}")
+                       for d in _RM.DOMAINS}
+except Exception as _e:  # pragma: no cover — il modello non c'è: si resta sul vecchio
+    logger.warning(f"router_model non disponibile ({_e}): vocabolario locale di riserva")
+    _RM = None
+    _ACTIONS = {
+        "turn_on": ("Accendere", "Accendo."), "turn_off": ("Spegnere", "Spengo."),
+        "toggle": ("Invertire lo stato", "Fatto."),
+        "open_cover": ("Aprire tapparella o tenda", "Apro."),
+        "close_cover": ("Chiudere tapparella o tenda", "Chiudo."),
+        "set_temperature": ("Impostare la temperatura", "Imposto la temperatura."),
+        "volume_up": ("Alzare il volume", "Alzo il volume."),
+        "volume_down": ("Abbassare il volume", "Abbasso il volume."),
+        "media_play": ("Riprendere la riproduzione", "Riprendo."),
+        "media_pause": ("Mettere in pausa", "Metto in pausa."),
+        "media_stop": ("Fermare la riproduzione", "Fermo."),
+        "play_music": ("Riprodurre musica, un artista, un brano o una playlist", "Metto la musica."),
+        "lock": ("Chiudere la serratura", "Chiudo la serratura."),
+        "unlock": ("Aprire la serratura", "Apro la serratura."),
+        "press": ("Premere il pulsante", "Fatto."),
+        "none": ("Nessuna azione domotica", ""),
+    }
+    _DOMAIN_CRITERI = {}
 
 _NO_ENTITY = "__nessuna__"
 _NO_ROOM = "__nessuna__"
+_NO_SCOPE = "__nessuno__"
 _WHOLE_HOUSE = "ovunque"   # nome usato dal contratto del router per tutta la casa
 _ALL_MEASURES = "__tutto__"
 
@@ -319,23 +330,21 @@ def _build_questions(entity_names: list, scopes: dict, ai_agent_available: bool)
         },
     }
 
+    _dom_criteri = dict(_DOMAIN_CRITERI) if _DOMAIN_CRITERI else {
+        "light": "Luci, lampade, faretti",
+        "cover": "Tapparelle, tende, serrande, porte di garage",
+        "climate": "Clima, termostato, riscaldamento, condizionatore",
+        "media_player": "TV, speaker, musica",
+        "fan": "Ventilatori", "switch": "Prese e interruttori generici",
+        "lock": "Serrature", "scene": "Scene", "script": "Script e scenari",
+        "vacuum": "Robot aspirapolvere",
+    }
+    _dom_criteri["tutti"] = "L'utente vuole agire su TUTTO senza distinguere il tipo ('spegni tutto')"
+    _dom_criteri["none"] = "Non e' un comando domotico"
     questions["domain"] = {
         "type": "choice",
         "instructions": "Se il comando e' domotico, su quale tipo di dispositivo agisce? Scegli 'tutti' solo se l'utente dice esplicitamente di agire su TUTTO senza distinzione ('spegni tutto').",
-        "criteria": {
-            "light": "Luci, lampade, faretti",
-            "cover": "Tapparelle, tende, serrande, cancelli, porte di garage",
-            "climate": "Clima, termostato, riscaldamento, condizionatore",
-            "media_player": "TV, speaker, musica",
-            "fan": "Ventilatori",
-            "switch": "Prese e interruttori generici",
-            "lock": "Serrature",
-            "scene": "Scene",
-            "script": "Script e scenari",
-            "vacuum": "Robot aspirapolvere",
-            "tutti": "L'utente vuole agire su TUTTO senza distinguere il tipo ('spegni tutto')",
-            "none": "Non e' un comando domotico",
-        },
+        "criteria": _dom_criteri,
     }
     questions["api_call"] = {
         "type": "choice",
@@ -377,26 +386,55 @@ def _build_questions(entity_names: list, scopes: dict, ai_agent_available: bool)
             "criteria": {**targets, _NO_ROOM: "Il comando non nomina nessun luogo preciso"},
         }
 
-    if entity_names:
-        # Le stanze entrano fra i bersagli: "spegni le luci del soggiorno" ha come
-        # entity la stanza, non un singolo apparecchio — e' il contratto che il
-        # router usa gia' ("Spegni tutto in X" -> entity=X). Senza, i comandi
-        # collettivi cadevano tutti su Qwen.
-        criteria = {n: _clean_label(n) for n in entity_names}
-        for name, desc in targets.items():
-            criteria.setdefault(name, f"Tutti i dispositivi di {desc.lower()} insieme")
-        criteria[_WHOLE_HOUSE] = "Tutta la casa, ogni stanza e ogni piano insieme"
-        criteria[_NO_ENTITY] = "Il comando non punta a un dispositivo ne' a un luogo"
-        questions["entity"] = {
+    # Due domande DISTINTE invece di una sola sul "bersaglio": un luogo e un
+    # dispositivo non sono la stessa cosa — il primo si esegue su tutto cio' che
+    # contiene, il secondo su una sola entita'. Chiedendoli insieme, la scelta
+    # fra i due tipi diventava un default implicito invece di una decisione
+    # (misurato su Qwen: spostando l'enfasi nel prompt si passava da 42% a 91%
+    # sugli scope e i device crollavano da 76% a 30%, somma costante). Separati,
+    # arrivano due confidence confrontabili e a decidere e' una soglia in codice.
+    if targets:
+        scope_criteri = {name: f"Tutti i dispositivi insieme di {desc[0].lower() + desc[1:]}"
+                         for name, desc in targets.items()}
+        scope_criteri[_WHOLE_HOUSE] = "Tutta la casa, ogni stanza e ogni piano insieme"
+        scope_criteri[_NO_SCOPE] = "Il comando punta a un dispositivo singolo, non a un luogo intero"
+        questions["scope"] = {
             "type": "choice",
             "instructions": (
-                "Qual e' il bersaglio del comando? Un singolo dispositivo della MAPPA ENTITA', "
-                "oppure un intero luogo se il comando e' collettivo: una stanza ('le luci del "
-                "soggiorno'), una zona ('spegni tutto in zona giorno'), un piano ('luci del piano "
-                "notte') o tutta la casa ('spegni tutto', 'musica ovunque'). "
-                "Usa le STORPIATURE NOTE per interpretare foneticamente il testo."
+                "Il comando agisce su un LUOGO INTERO, cioe' su tutti i dispositivi che "
+                "contiene? Succede quando l'utente nomina una stanza, una zona o un piano, "
+                "o parla al plurale: 'le luci del soggiorno', 'spegni tutto in zona giorno', "
+                "'luci del piano notte', 'spegni tutto'. Se invece punta a UN dispositivo "
+                "preciso, scegli 'nessuno'. Usa le STORPIATURE NOTE per interpretare "
+                "foneticamente il testo."
             ),
-            "criteria": criteria,
+            "criteria": scope_criteri,
+        }
+
+    if entity_names:
+        # In questa casa molte entita' si chiamano come la stanza che le contiene
+        # ("Lavanderia" e' sia la stanza sia la sua unica luce): 14 nomi su wagmi,
+        # 8 su albani20. Senza dirlo, le due domande offrono la stessa stringa e
+        # la distinzione non ha appiglio. L'etichetta la rende esplicita.
+        _nomi_scope = set(targets) | {_WHOLE_HOUSE}
+        device_criteri = {}
+        for n in entity_names:
+            etichetta = _clean_label(n)
+            if n in _nomi_scope:
+                etichetta = (f"{etichetta} — il singolo dispositivo chiamato '{n}', "
+                             f"NON tutti i dispositivi della stanza omonima")
+            device_criteri[n] = etichetta
+        device_criteri[_NO_ENTITY] = ("Il comando non nomina un dispositivo preciso: "
+                                      "riguarda un luogo intero, o non e' domotico")
+        questions["device"] = {
+            "type": "choice",
+            "instructions": (
+                "L'utente nomina UN dispositivo preciso della MAPPA ENTITA'? Se si', quale? "
+                "Rispondi 'nessuno' se nomina solo un luogo (stanza, zona, piano) oppure se "
+                "il comando non e' domotico. Usa le STORPIATURE NOTE per interpretare "
+                "foneticamente il testo."
+            ),
+            "criteria": device_criteri,
         }
 
     return questions
@@ -484,9 +522,33 @@ async def route(text: str, context: dict) -> Optional[dict]:
     injection = float(answers.get("is_injection", {}).get("noul", 0.0))
     freetext = float(answers.get("needs_freetext", {}).get("noul", 0.0))
     action = answers.get("action", {}).get("choice", "none")
-    entity_ans = answers.get("entity", {})
-    entity = entity_ans.get("choice", _NO_ENTITY)
-    entity_conf = float(entity_ans.get("confidence", 0.0))
+
+    # Bersaglio: due risposte indipendenti, e la scelta fra luogo e dispositivo
+    # la fa QUESTO codice con una soglia, non il modello con un default.
+    scope_ans = answers.get("scope", {})
+    scope_choice = scope_ans.get("choice", _NO_SCOPE)
+    scope_conf = float(scope_ans.get("confidence", 0.0))
+    device_ans = answers.get("device", {})
+    device_choice = device_ans.get("choice", _NO_ENTITY)
+    device_conf = float(device_ans.get("confidence", 0.0))
+
+    e_scope = scope_choice != _NO_SCOPE
+    e_device = device_choice != _NO_ENTITY
+    if e_scope and e_device:
+        # Entrambi proposti: vince chi e' piu' sicuro. Nel dubbio (scarto sotto
+        # 0.15) vince il luogo: sbagliare per eccesso spegne qualche luce in
+        # piu', sbagliare per difetto lascia acceso cio' che l'utente voleva
+        # spento e lo costringe a ripetere.
+        if device_conf > scope_conf + 0.15:
+            entity, entity_conf, tipo = device_choice, device_conf, "device"
+        else:
+            entity, entity_conf, tipo = scope_choice, scope_conf, "scope"
+    elif e_scope:
+        entity, entity_conf, tipo = scope_choice, scope_conf, "scope"
+    elif e_device:
+        entity, entity_conf, tipo = device_choice, device_conf, "device"
+    else:
+        entity, entity_conf, tipo = _NO_ENTITY, 0.0, None
     api_call = answers.get("api_call", {}).get("choice", "none")
     domain_ans = answers.get("domain", {})
     domain_choice = domain_ans.get("choice", "none")
@@ -501,7 +563,9 @@ async def route(text: str, context: dict) -> Optional[dict]:
 
     logger.info(
         f"Jev routing: {intent} conf={confidence:.2f} | action={action} "
-        f"entity={entity if entity != _NO_ENTITY else '-'}({entity_conf:.2f}) "
+        f"bersaglio={entity if entity != _NO_ENTITY else '-'}({entity_conf:.2f},{tipo or '-'}) "
+        f"[scope={scope_choice if scope_choice != _NO_SCOPE else '-'}({scope_conf:.2f}) "
+        f"device={device_choice if device_choice != _NO_ENTITY else '-'}({device_conf:.2f})] "
         f"api={api_call} dom={domain_choice}({domain_conf:.2f}) "
         f"room={room_choice if room_choice != _NO_ROOM else '-'}({room_conf:.2f}) "
         f"measure={measure if measure != _ALL_MEASURES else '-'}"
@@ -566,8 +630,7 @@ async def route(text: str, context: dict) -> Optional[dict]:
         # Dati di casa: fonte locale. room e measure vengono da elenchi chiusi,
         # quindi non serve generare niente e si resta sul percorso Jev puro.
         params: dict = {}
-        named_device = (entity not in (_NO_ENTITY, _WHOLE_HOUSE)
-                        and entity not in places and entity_conf >= 0.5)
+        named_device = tipo == "device" and entity_conf >= 0.5
         place = None
         if room_choice != _NO_ROOM and room_conf >= config.JEV_MIN_ENTITY_CONFIDENCE:
             place = room_choice
@@ -610,7 +673,7 @@ async def route(text: str, context: dict) -> Optional[dict]:
         if entity == _NO_ENTITY or entity_conf < config.JEV_MIN_ENTITY_CONFIDENCE:
             logger.info(f"Jev: entita' incerta ({entity}, conf={entity_conf:.2f}) — fallback su Qwen")
             return None
-        if (entity == _WHOLE_HOUSE or entity in places) and collective < 0.5:
+        if tipo == "scope" and collective < 0.5:
             # Bersaglio un luogo ma il comando NON e' collettivo: succede sui
             # testi storpiati, dove "accendi la ruota del box" si aggancia alla
             # stanza invece di ammettere di non aver capito. Qwen fa meglio.
@@ -620,7 +683,7 @@ async def route(text: str, context: dict) -> Optional[dict]:
             )
             return None
 
-        if entity == _WHOLE_HOUSE or entity in places:
+        if tipo == "scope":
             # Bersaglio collettivo (stanza, zona, piano o tutta la casa).
             # Il dominio si omette SOLO se l'utente ha detto "tutto" senza
             # distinguere: "spegni tutte le LUCI del piano garage" deve agire
@@ -633,7 +696,11 @@ async def route(text: str, context: dict) -> Optional[dict]:
         else:
             room, domain, loc_id = lookup.get(entity, (None, None, None))
         payload = {
+            # "entity" resta per compatibilita' con il contratto attuale del
+            # resolver; scope/device sono i campi tipizzati che la via diretta
+            # di _resolve_home_control_target usa quando li trova.
             "entity": entity,
+            ("scope" if tipo == "scope" else "device"): entity,
             "action": action if action != "none" else "turn_on",
             "parameters": {},
         }
