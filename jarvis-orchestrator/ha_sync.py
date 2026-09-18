@@ -354,8 +354,9 @@ async def sync_entities_from_ha(
                     UPDATE entity_maps
                     SET entity_id = ?, entity_name = ?, room = ?, zone = ?, area = ?, device_name = ?
                     WHERE id = ?
-                """, (entity.entity_id, entity.friendly_name, room, zone, area,
-                      entity.device_name, existing['id']))
+                """, (entity.entity_id,
+                      _clean_friendly_name(entity.friendly_name, entity.device_name),
+                      room, zone, area, entity.device_name, existing['id']))
                 updated += 1
             else:
                 # Nuova entity. I button entrano visibili solo se sono aperture
@@ -378,7 +379,7 @@ async def sync_entities_from_ha(
                     room,
                     entity.device_name,
                     entity.domain,
-                    entity.friendly_name,
+                    _clean_friendly_name(entity.friendly_name, entity.device_name),
                     entity.entity_id,
                     _visible
                 ))
@@ -413,6 +414,34 @@ def _norm_area_key(s: Optional[str]) -> str:
     sola parola matchavano e tutte le altre finivano zitte in "Non classificato".
     """
     return re.sub(r"[\s_\-]+", "_", (s or "").strip().lower())
+
+
+def _clean_friendly_name(friendly: str, device_name: Optional[str] = None) -> str:
+    """Toglie la ridondanza dai friendly_name che arrivano da Home Assistant.
+
+    HA compone <device> <entity> e quando i due coincidono esce un nome ripetuto:
+    'Luce Box Luce Box' (light.luce_box), 'Echo Garage Echo Dot Garage'
+    (media_player.echo_dot_garage). Il router se li ritrova nel prompt e nei
+    payload. Si collassa SOLO la ripetizione vera: il prefisso device non viene
+    tolto in generale, perche' 'Salotto Divano' -> 'Divano' creerebbe ambiguita'
+    fra stanze.
+    """
+    if not friendly:
+        return friendly
+    parts = friendly.split()
+    # 'X Y X Y' -> 'X Y'
+    if len(parts) >= 2 and len(parts) % 2 == 0:
+        meta = len(parts) // 2
+        if [p.lower() for p in parts[:meta]] == [p.lower() for p in parts[meta:]]:
+            return " ".join(parts[:meta])
+    # '<device> <resto>' dove <resto> contiene gia' tutte le parole del device
+    if device_name:
+        dev = device_name.split()
+        if len(parts) > len(dev) and [p.lower() for p in parts[:len(dev)]] == [d.lower() for d in dev]:
+            resto = parts[len(dev):]
+            if {d.lower() for d in dev} <= {r.lower() for r in resto}:
+                return " ".join(resto)
+    return friendly
 
 
 def _infer_zone(entity: HAEntity) -> str:
