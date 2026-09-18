@@ -16,15 +16,65 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
 # ───────────────────────────────────────────────────────────── intent ──
-INTENTS: Dict[str, str] = {
-    "HOME_CONTROL":  "comando su dispositivi di casa",
-    "SIMPLE_CHAT":   "risposta diretta, stato dispositivi, o 1 ricerca web",
-    "AI_AGENT":      "serve uno strumento esterno, più passi o dati storici",
-    "SET_LOCATION":  "l'utente dice dove si trova",
-    "IMAGE_GENERATION": "generare un'immagine",
-    "RETRY":         "manca il contesto necessario per decidere",
-    "VERIFY_WITH_AI_AGENT": "risposta data, ma va verificata con l'agent",
+# Due forme per ogni intent: `breve` per i prompt in prosa, `criterio` per i
+# classificatori a scelta chiusa, che hanno bisogno di sapere DOVE passa il
+# confine. Stavano scritti in due posti — il prompt di Qwen e jev_engine — con
+# parole diverse, e infatti si contraddicevano sulle ricerche web: il prompt
+# mandava il meteo a SIMPLE_CHAT, Jev lo mandava ad AI_AGENT. Da qui in avanti
+# il confine è dichiarato una volta.
+INTENT_CRITERI: Dict[str, Dict[str, str]] = {
+    "HOME_CONTROL": {
+        "breve": "comando su dispositivi di casa",
+        "criterio": ("Comando domotico su un dispositivo o un luogo della MAPPA ENTITÀ: "
+                     "accendere, spegnere, aprire, chiudere, impostare, alzare, abbassare, "
+                     "riprodurre musica. Vale anche se è formulato per cortesia "
+                     "('puoi accendere la tv?')"),
+    },
+    "SIMPLE_CHAT": {
+        "breve": "risposta diretta, stato dei dispositivi, o una ricerca web",
+        "criterio": (
+            "Si risolve in UN passo, senza strumenti esterni. Tre famiglie: "
+            "(a) calcoli, data e ora, saluti e chiacchiere; "
+            "(b) LETTURA dello stato di casa ADESSO — temperatura, umidità, consumi, "
+            "batteria, porte aperte, quali dispositivi ci sono o sono accesi. Vale per "
+            "un dispositivo o per cento: contare quante luci sono accese è ancora una "
+            "lettura, purché il valore sia quello attuale e non vada calcolato; "
+            "(c) UNA ricerca web su conoscenza esterna con risposta breve e verificabile: "
+            "meteo, 'chi è / cos'è X', notizie del giorno, quotazioni e mercato azionario"),
+    },
+    "AI_AGENT": {
+        "breve": "serve uno strumento esterno, più passi, o ragionamento sui dati",
+        "criterio": (
+            "Serve uno strumento esterno o più di un passo: email, calendario, "
+            "prenotazioni, trading operativo, ricerche approfondite e confronti "
+            "multi-fonte, musica dalla libreria personale. "
+            "E le domande sulla casa che richiedono di ELABORARE invece di leggere: "
+            "storico, andamenti, medie, confronti fra stanze o periodi, 'perché', "
+            "'com'è andato', 'è tutto a posto'. "
+            "NON le ricerche web semplici (meteo, chi è, notizie, quotazioni): "
+            "quelle sono SIMPLE_CHAT con una sola ricerca"),
+    },
+    "SET_LOCATION": {
+        "breve": "l'utente dice dove si trova",
+        "criterio": "L'utente comunica in quale casa o luogo si trova",
+    },
+    "IMAGE_GENERATION": {
+        "breve": "generare un'immagine",
+        "criterio": "L'utente chiede di generare o disegnare un'immagine",
+    },
+    "RETRY": {
+        "breve": "manca il contesto necessario per decidere",
+        "criterio": ("Ambiguo, incomprensibile, oppure manca il contesto per agire in "
+                     "sicurezza (es. comando su tutta la casa senza sapere quale casa)"),
+    },
+    "VERIFY_WITH_AI_AGENT": {
+        "breve": "risposta data, ma va verificata con l'agent",
+        "criterio": "La risposta è stata data ma va verificata con l'agent",
+    },
 }
+
+# compatibilità: la forma breve, come era prima
+INTENTS: Dict[str, str] = {k: v["breve"] for k, v in INTENT_CRITERI.items()}
 
 # ──────────────────────────────────────────────────────────── azioni ──
 @dataclass(frozen=True)
@@ -145,6 +195,11 @@ API_CALLS = {
 AZIONABILI = {"light", "switch", "cover", "climate", "media_player", "fan",
               "lock", "vacuum", "button", "script", "scene", "input_boolean"}
 
+# Bersagli offribili a un decisore: le azionabili più le telecamere, che non si
+# comandano ma sono bersagli legittimi di una domanda ("le telecamere del
+# giardino registrano?"). È l'insieme che jev_engine già offriva di fatto.
+VOCABOLARIO_BERSAGLI = AZIONABILI | {"camera"}
+
 @dataclass
 class Bersagli:
     scopes: List[str]                    # stanze, aree, zone, "ovunque" → bulk
@@ -152,6 +207,7 @@ class Bersagli:
     device_dominio: Dict[str, str]
     scope_domini: Dict[str, List[str]]   # quali domini esistono in ogni scope
     device_in_scope: Dict[str, set] = field(default_factory=dict)  # device → scope che lo contengono
+    scope_livello: Dict[str, str] = field(default_factory=dict)    # scope → 'piano' | 'zona' | 'stanza'
 
 def carica_bersagli(location_id: str, righe: Optional[List[dict]] = None) -> Bersagli:
     """Bersagli reali di una casa. `righe` = entity_maps (se None, legge dal DB)."""
@@ -166,9 +222,10 @@ def carica_bersagli(location_id: str, righe: Optional[List[dict]] = None) -> Ber
                        AND LOWER(COALESCE(zone,'')) != 'non classificato'""", (location_id,))
         righe = [dict(r) for r in c.fetchall()]
         conn.close()
-    righe = [r for r in righe if r.get("entity_type") in AZIONABILI]
+    righe = [r for r in righe if r.get("entity_type") in VOCABOLARIO_BERSAGLI]
     scopes, devices, dom, scope_dom = [], [], {}, {}
     dev_scope: Dict[str, set] = {}
+    livello: Dict[str, str] = {}
     for r in righe:
         nome = (r.get("entity_name") or "").strip()
         if nome and nome not in dom:
@@ -176,13 +233,49 @@ def carica_bersagli(location_id: str, righe: Optional[List[dict]] = None) -> Ber
         if nome:
             dev_scope.setdefault(nome, set()).update(
                 (r.get(k) or "").strip() for k in ("room", "area", "zone") if (r.get(k) or "").strip())
-        for chiave in ("room", "area", "zone"):
+        for chiave, liv in (("room", "stanza"), ("area", "zona"), ("zone", "piano")):
             s = (r.get(chiave) or "").strip()
             if s and s.lower() not in ("sconosciuto", "non classificato", "others"):
                 if s not in scopes:
                     scopes.append(s)
+                    livello[s] = liv
                 scope_dom.setdefault(s, [])
                 if r["entity_type"] not in scope_dom[s]:
                     scope_dom[s].append(r["entity_type"])
-    scopes.append("ovunque"); scope_dom["ovunque"] = sorted(AZIONABILI)
-    return Bersagli(sorted(scopes), sorted(devices), dom, scope_dom, dev_scope)
+    scopes.append("ovunque")
+    scope_dom["ovunque"] = sorted(AZIONABILI)
+    livello["ovunque"] = "casa"
+    return Bersagli(sorted(scopes), sorted(devices), dom, scope_dom, dev_scope, livello)
+
+
+def vocabolario_casa(location_id: str, righe: Optional[List[dict]] = None):
+    """Bersagli + indice per la casa: l'unica lettura dell'entity map.
+
+    Ritorna (bersagli, lookup) dove lookup mappa il nome di un dispositivo su
+    (stanza, dominio, location): serve a chi deve costruire il payload dopo che
+    il bersaglio è stato scelto. jev_engine aveva la propria lettura, con un
+    filtro leggermente diverso (includeva `camera`, escludeva `input_boolean`):
+    due vocabolari quasi uguali sono peggio di uno solo, perché la differenza
+    non si vede finché non sbaglia.
+    """
+    if righe is None:
+        from database import _get_conn
+        conn = _get_conn(); c = conn.cursor()
+        c.execute("""SELECT zone, area, room, entity_type, entity_name, location_id
+                     FROM entity_maps
+                     WHERE location_id = ? AND entity_id IS NOT NULL
+                       AND COALESCE(visible,1) = 1
+                       AND LOWER(COALESCE(room,'')) != 'sconosciuto'
+                       AND LOWER(COALESCE(zone,'')) != 'non classificato'""", (location_id,))
+        righe = [dict(r) for r in c.fetchall()]
+        conn.close()
+    b = carica_bersagli(location_id, righe)
+    lookup = {}
+    for r in righe:
+        if r.get("entity_type") not in VOCABOLARIO_BERSAGLI:
+            continue
+        nome = (r.get("entity_name") or "").strip()
+        if nome and nome not in lookup:
+            lookup[nome] = (r.get("room"), r.get("entity_type"),
+                            r.get("location_id") or location_id)
+    return b, lookup
