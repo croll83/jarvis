@@ -778,6 +778,12 @@ async def lifespan(app: FastAPI):
     """Gestisce startup e shutdown dell'applicazione."""
     global security
     logger.info("🚀 JARVIS Core starting...")
+    # Chi decide il routing, e in che ordine. Va nei log all'avvio: senza,
+    # capire quale motore ha preso una decisione significa dedurlo dalla
+    # latenza, e un motore caduto degrada in silenzio.
+    logger.info("🧭 Catena di routing: " + " → ".join(config.ROUTING_CHAIN)
+                + (f"   [GLiNER {config.GLINER_URL}]" if config.GLINER_ENABLED else "")
+                + ("   [Jev cloud]" if config.JEV_ENABLED else ""))
     init_db()
 
     # Inizializza security manager (richiede DB pronto)

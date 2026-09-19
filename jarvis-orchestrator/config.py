@@ -130,9 +130,32 @@ SKIP_PRE_ROUTE = os.getenv("SKIP_PRE_ROUTE", "True").lower() in ("true", "1", "y
 # calibrate. Misurato dall'Atomman: ~280ms contro p50 1044ms di Qwen locale.
 # Ogni fallimento (HTTP, timeout, confidence bassa, slot di testo libero)
 # ricade su Qwen: nessun percorso resta scoperto se Jev e' giu'.
-JEV_ENABLED = os.getenv("JEV_ENABLED", "False").lower() in ("true", "1", "yes")
-JEV_API_KEY = os.getenv("JEV_API_KEY", "")
-JEV_URL = os.getenv("JEV_URL", "https://api.typesafe.ai/v1/systemone")
+# ── Catena dei decisori di routing ──────────────────────────────────────
+# Tre decisori possibili, in ordine di precedenza: GLiNER (locale, ~70ms), Jev
+# (cloud, ~470ms), Qwen (locale generativo, ~1200ms). Qwen e' SEMPRE l'ultimo
+# anello e non si disattiva: e' il solo che sa generare testo libero, quindi
+# chiude la catena per definizione.
+#
+# La regola e' una sola: **un motore entra in catena se e' CONFIGURATO.**
+#   GLINER_URL valorizzato   → GLiNER  → Jev se c'e' → Qwen
+#   solo JEV_API_KEY         → Jev     → Qwen
+#   nessuno dei due          → Qwen
+#
+# `GLINER_ENABLED` e `JEV_ENABLED` restano come interruttori ESPLICITI per
+# spegnere un motore senza cancellarne la configurazione. Se non li si
+# dichiara, vale la presenza della configurazione; se li si dichiara, hanno
+# l'ultima parola (ma non possono accendere un motore non configurato).
+def _motore_attivo(nome: str, configurato: bool) -> bool:
+    esplicito = os.getenv(f"{nome}_ENABLED")
+    if esplicito is not None:
+        return esplicito.strip().lower() in ("true", "1", "yes") and configurato
+    return configurato
+
+
+JEV_API_KEY = os.getenv("JEV_API_KEY", "").strip()
+JEV_URL = os.getenv("JEV_URL", "https://api.typesafe.ai/v1/systemone").strip()
+# Jev e' CONFIGURATO se ha una chiave: l'URL ha un default, la chiave no.
+JEV_ENABLED = _motore_attivo("JEV", bool(JEV_API_KEY and JEV_URL))
 JEV_MODEL = os.getenv("JEV_MODEL", "jev-latest")
 JEV_TIMEOUT = float(os.getenv("JEV_TIMEOUT", "4"))  # oltre, meglio Qwen che aspettare
 
@@ -150,13 +173,25 @@ JEV_INJECTION_THRESHOLD = float(os.getenv("JEV_INJECTION_THRESHOLD", "0.60"))
 # Misurato sul banco dei 426 casi: payload 69,1% contro il 70,2% di Jev
 # (differenza dentro il rumore di fondo) e 77,2% contro 67,8% sui casi
 # difficili, a 62ms di p50 contro 470ms e senza cloud.
-GLINER_ENABLED = os.getenv("GLINER_ENABLED", "False").lower() in ("true", "1", "yes")
-GLINER_URL = os.getenv("GLINER_URL", "http://localhost:11436")
+# GLiNER e' CONFIGURATO se ha un URL: nessun default, perche' la presenza
+# dell'URL e' cio' che lo attiva. Il servizio gira a parte (gliner-router,
+# tipicamente http://localhost:11436) e senza un indirizzo non c'e' niente da
+# chiamare — un default punterebbe a una porta che potrebbe non esserci.
+GLINER_URL = os.getenv("GLINER_URL", "").strip()
+GLINER_ENABLED = _motore_attivo("GLINER", bool(GLINER_URL))
 GLINER_TIMEOUT = float(os.getenv("GLINER_TIMEOUT", "3"))
 # Soglia bassa di proposito: si ricade su Qwen solo quando la confidenza e'
 # scarsa E la regola sintattica si astiene. Con la sola confidenza non si
 # separa niente (misurato: nessuna soglia da' guadagno netto su RETRY).
 GLINER_MIN_CONFIDENCE = float(os.getenv("GLINER_MIN_CONFIDENCE", "0.45"))
+
+# L'ordine effettivo, calcolato una volta e loggato all'avvio. Chi lo legge
+# non deve ricostruire la precedenza da una sequenza di `if`.
+ROUTING_CHAIN: list = (
+    (["gliner"] if GLINER_ENABLED else [])
+    + (["jev"] if JEV_ENABLED else [])
+    + ["qwen"]
+)
 
 # ── Reasoning del router generativo ─────────────────────────────────────
 # I modelli con reasoning (Qwen3.x, che e' cio' che gira ora) spendono TUTTI i
