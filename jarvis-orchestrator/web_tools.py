@@ -437,6 +437,8 @@ async def call_qwen_with_tools(
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "stream": False,
+                # senza questo un modello con reasoning restituisce content vuoto
+                "chat_template_kwargs": config.ROUTER_CHAT_TEMPLATE_KWARGS,
             }
             url = f"{config.ROUTER_URL}/v1/chat/completions"
         else:

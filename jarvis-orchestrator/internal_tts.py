@@ -360,6 +360,8 @@ async def _preprocess_tts_text_llm(text: str) -> str:
                     "temperature": 0.2,
                     "max_tokens": 500,
                     "stream": False,
+                    # senza questo un modello con reasoning restituisce content vuoto
+                    "chat_template_kwargs": _cfg.ROUTER_CHAT_TEMPLATE_KWARGS,
                 }
             else:
                 url = _cfg.OLLAMA_CHAT_URL
