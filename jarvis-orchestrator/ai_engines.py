@@ -113,6 +113,8 @@ async def _llm_chat(messages: list, temperature: float = 0.1,
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": False,
+            # senza questo un modello con reasoning restituisce content vuoto
+            "chat_template_kwargs": config.ROUTER_CHAT_TEMPLATE_KWARGS,
         }
         if stop:
             payload["stop"] = stop
@@ -873,7 +875,7 @@ async def _llamacpp_routing_call(full_prompt: str, _rp: dict,
         # 200 token e 7,5s per una risposta inesistente. llama.cpp con --jinja
         # attiva il thinking per default, quindi va spento esplicitamente.
         # Sui modelli senza reasoning (Qwen2.5) il template ignora il parametro.
-        "chat_template_kwargs": {"enable_thinking": False},
+        "chat_template_kwargs": config.ROUTER_CHAT_TEMPLATE_KWARGS,
         "stream": False
     }
 

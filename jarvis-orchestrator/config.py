@@ -158,6 +158,18 @@ GLINER_TIMEOUT = float(os.getenv("GLINER_TIMEOUT", "3"))
 # separa niente (misurato: nessuna soglia da' guadagno netto su RETRY).
 GLINER_MIN_CONFIDENCE = float(os.getenv("GLINER_MIN_CONFIDENCE", "0.45"))
 
+# ── Reasoning del router generativo ─────────────────────────────────────
+# I modelli con reasoning (Qwen3.x, che e' cio' che gira ora) spendono TUTTI i
+# token consentiti in catena di pensiero e restituiscono `content` VUOTO.
+# Misurato sul 4B col prompt di `_phrase_ha_data`: senza questo flag 200 token,
+# `finish_reason=length`, content=''; con il flag 12 token e la risposta giusta.
+# llama.cpp con --jinja attiva il thinking per default, quindi va spento
+# esplicitamente. Sui modelli senza reasoning (Qwen2.5) il template lo ignora.
+# STA QUI, in un posto unico, perche' era stato messo solo nella chiamata di
+# routing e le altre tre — _llm_chat, il preprocess TTS e il tool calling —
+# restavano rotte: ogni risposta parlata con un prompt lungo usciva vuota.
+ROUTER_CHAT_TEMPLATE_KWARGS = {"enable_thinking": False}
+
 # ===========================================================================
 # WEB TOOLS (Brave Search API per tool calling Qwen)
 # ===========================================================================
