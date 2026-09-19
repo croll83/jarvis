@@ -224,10 +224,13 @@ def carica_bersagli(location_id: str, righe: Optional[List[dict]] = None) -> Ber
         conn = _get_conn(); c = conn.cursor()
         # Il filtro sulla stanza NON va nella query: scarterebbe la RIGA, e con
         # essa un dispositivo perfettamente comandabile che semplicemente non ha
-        # un'area assegnata in HA. Misurato su albani20: 18 azionabili esclusi
-        # su 73 offerti — script come "Privacy Telecamere", media player come
-        # "AirPlay TV Cucina", "MacBook Pro". Il classificatore non poteva
-        # sceglierli nemmeno volendo.
+        # un'area assegnata in HA. Misurato col diff dei due vocabolari: 10
+        # azionabili esclusi su albani20 e 4 su wagmi — script come "Privacy
+        # Telecamere" e "Sicurezza Telecamere", il clima "Rehom Soggiorno", i
+        # media player "Casa" e "Tutta Casa". Il classificatore non poteva
+        # sceglierli nemmeno volendo: non erano fra le etichette.
+        # (Le entita' di servizio tipo "AirPlay TV Cucina" restano fuori lo
+        # stesso, e giustamente: hanno visible=0.)
         # I nomi di stanza fasulli vengono gia' scartati piu' sotto, dove si
         # costruiscono gli SCOPE: e' li' che servono, perche' uno scope e' un
         # luogo mentre un device no.

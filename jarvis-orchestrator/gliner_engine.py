@@ -333,10 +333,13 @@ async def route(text: str, context: dict) -> Optional[dict]:
         # non scatta, AI_AGENT e' quasi sempre sbagliato — "che ore sono?" usciva
         # AI_AGENT con confidenza 0,49.
         intent = "SIMPLE_CHAT"
-    if intent == "SET_LOCATION" and n == "domanda":
-        # non si dichiara dove si e' facendo una domanda: "che tempo fa domani a
-        # Milano?" usciva SET_LOCATION perche' nomina una citta'
-        intent = "SIMPLE_CHAT"
+    if intent == "SET_LOCATION" and n != "incerto":
+        # SET_LOCATION e' "l'utente dice dove si trova": e' una CONSTATAZIONE.
+        # Non si dichiara dove si e' facendo una domanda ("che tempo fa domani a
+        # Milano?" usciva SET_LOCATION perche' nomina una citta') ne' dando un
+        # ordine ("avvia rientro a casa" usciva SET_LOCATION a confidenza 0,29,
+        # per via del "a casa", mentre e' l'avvio di uno scenario).
+        intent = "HOME_CONTROL" if n == "comando" else "SIMPLE_CHAT"
 
     if intent == "SECURITY_ALERT":
         logger.warning(f"GLiNER: tentativo di manipolazione su {text[:80]!r}")
