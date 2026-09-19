@@ -20,6 +20,13 @@ logger = logging.getLogger("gliner-router")
 
 MODELLO = os.getenv("GLINER_MODEL", "fastino/gliner2.5-multi-v1")
 DEVICE = os.getenv("GLINER_DEVICE", "cuda")
+# La NER richiede un SECONDO modello in VRAM: il Classifier non sa estrarre e
+# l'AutoExtractor non sa applicare vincoli, quindi servono entrambi. Misurato:
+# il processo passa da 1908 a 2838 MiB, e insieme al router generativo (4572)
+# restano ~740 MiB su 8151 — troppo pochi perche' llama-server allochi un
+# contesto lungo. Quindi e' SPENTA per default: si accende quando serve e
+# quando c'e' VRAM, non per caso alla prima richiesta che chiede `entita`.
+NER_ATTIVA = os.getenv("GLINER_NER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 
 app = FastAPI(title="GLiNER router", version="1")
 _clf = None
@@ -203,8 +210,14 @@ def classify(r: Generica):
             voce["probabilities"] = res.probabilities(nome)
         out[nome] = voce
     if r.entita:
-        out["entita"] = _estrattore().extract_entities(r.text, dict(r.entita),
-                                                       include_confidence=True)["entities"]
+        if not NER_ATTIVA:
+            out["entita"] = None
+            out["avviso"] = ("NER spenta: serve un secondo modello in VRAM (+930 MiB). "
+                             "Accendere con GLINER_NER_ENABLED=true nella unit, "
+                             "dopo aver verificato che ci sia spazio sulla GPU.")
+        else:
+            out["entita"] = _estrattore().extract_entities(
+                r.text, dict(r.entita), include_confidence=True)["entities"]
     out["ms"] = round((time.perf_counter() - t0) * 1000)
     return out
 
@@ -224,4 +237,5 @@ def _estrattore():
 
 @app.get("/health")
 def health():
-    return {"ok": _clf is not None, "model": MODELLO, "device": DEVICE}
+    return {"ok": _clf is not None, "model": MODELLO, "device": DEVICE,
+            "ner": NER_ATTIVA}

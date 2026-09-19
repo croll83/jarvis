@@ -49,5 +49,9 @@ curl -s localhost:11436/health
 ```
 
 Il venv `/home/jarvis/gliner-eval` ha `gliner2`, `torch` cuda, `fastapi`,
-`uvicorn`. VRAM occupata: **~1,65 GiB** misurati — 574 MiB di pesi piu' contesto CUDA e
+`uvicorn`. VRAM occupata: **~1,27 GiB** misurati con la NER spenta, **~2,77 GiB** con la
+NER accesa (`GLINER_NER_ENABLED=true`): la NER richiede un secondo modello, perche'
+il `Classifier` non estrae e l'`AutoExtractor` non applica vincoli. Con llama-server
+a 4,5 GiB su una scheda da 8, accenderla lascia ~740 MiB e puo' far fallire
+l'allocazione di un contesto lungo. Vecchia nota — 574 MiB di pesi piu' contesto CUDA e
 spazi di lavoro. `quantize=True` non la riduce su questo percorso.
