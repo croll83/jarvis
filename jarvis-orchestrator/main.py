@@ -3082,8 +3082,22 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
     device_config = get_device_speaker_config(device_id)
     if device_config:
         location = device_config.get("location_id", get_default_location_id())
-        room_value = device_config.get("friendly_name", "Unknown")
-        logger.info(f"WS device {device_id} configured as '{room_value}' in '{location}'")
+        # La "stanza" del device è il suo friendly_name, e regge solo finché i
+        # dispositivi si chiamano come le stanze. Un telefono si chiama
+        # "Fold 7 Marco" e si sposta: passare quel nome a valle come stanza fa
+        # cercare in una stanza che non esiste, e in resolve_entity_id il filtro
+        # è HARD, quindi scarta l'entità giusta. Si valida contro la mappa vera.
+        _nome_device = device_config.get("friendly_name", "Unknown")
+        try:
+            import router_model as _rm
+            room_value = _rm.stanza_valida(location, _nome_device) or "Unknown"
+        except Exception:
+            room_value = _nome_device
+        if room_value == "Unknown" and _nome_device not in (None, "Unknown"):
+            logger.info(f"WS device {device_id}: '{_nome_device}' non è una stanza di "
+                        f"'{location}' — nessun indizio di stanza per questo comando")
+        else:
+            logger.info(f"WS device {device_id} configured as '{room_value}' in '{location}'")
     else:
         location = extract_location_from_device(device_id) or get_default_location_id()
         room_value = "Unknown"

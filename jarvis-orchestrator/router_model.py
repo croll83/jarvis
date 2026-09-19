@@ -279,3 +279,28 @@ def vocabolario_casa(location_id: str, righe: Optional[List[dict]] = None):
             lookup[nome] = (r.get("room"), r.get("entity_type"),
                             r.get("location_id") or location_id)
     return b, lookup
+
+
+def stanza_valida(location_id: str, nome: Optional[str]) -> Optional[str]:
+    """Il nome è una stanza/zona/piano VERO di quella casa? Altrimenti None.
+
+    La "stanza" di un dispositivo vocale è il suo friendly_name (main.py), e
+    funziona solo finché i dispositivi si chiamano come le stanze. Sui client
+    mobili non può funzionare: un telefono si chiama "Fold 7 Marco" e si sposta.
+    Passare quel nome a valle come stanza fa filtrare entity_discover e
+    resolve_entity_id (dove il filtro è HARD) su una stanza inesistente, che
+    non trova niente e scarta l'entità giusta. Meglio nessun indizio che uno falso.
+    """
+    if not nome:
+        return None
+    n = nome.strip()
+    if not n or n.lower() in ("unknown", "sconosciuto", "none", "casa"):
+        return None
+    try:
+        b = carica_bersagli(location_id)
+    except Exception:
+        return n          # senza mappa non si può giudicare: si lascia passare
+    if n in b.scopes:
+        return n
+    esatto = next((s for s in b.scopes if s.lower() == n.lower()), None)
+    return esatto
