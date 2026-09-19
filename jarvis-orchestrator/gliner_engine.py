@@ -155,13 +155,22 @@ def _azione_etichette() -> Dict[str, str]:
     return {k: v.replace(" (", " — ").replace("(", "").replace(")", "") for k, v in az.items()}
 
 
-def _correggi_stanza(voc: dict, testo: str, nome: str, probabilita: dict) -> Tuple[str, str]:
-    """Se il testo nomina una stanza, il bersaglio deve starci dentro."""
-    st = rm.stanza_nel_testo(testo, voc["scopes"])
-    if not st:
-        return voc["etichette"].get(nome, (nome, "device"))
+def _correggi_bersaglio(voc: dict, testo: str, nome: str, probabilita: dict) -> Tuple[str, str]:
+    """Se il testo nomina una stanza, il bersaglio deve starci dentro.
+
+    "spegni luci garage" dava "Luce Box": l'etichetta e' corta e contiene
+    "luce", quindi la parola comune vinceva sulla stanza. Succedeva sette volte.
+    Vale +5,7 punti sul bersaglio.
+
+    PROVATO E SCARTATO: usare anche il TIPO di dispositivo nominato
+    ("tapparella" → cover) per preferire un apparecchio di quel dominio. Sembra
+    ovvio e invece porta il bersaglio da 83,0% a 68,3%: in queste case, quando
+    l'utente dice "le luci della cucina" il bersaglio atteso e' lo SCOPE Cucina,
+    non un singolo apparecchio, e forzare un device di quel dominio rompe tutto.
+    """
     reale, tipo = voc["etichette"].get(nome, (nome, "device"))
-    if reale == st or st in voc["device_in_scope"].get(reale, []):
+    st = rm.stanza_nel_testo(testo, voc["scopes"])
+    if not st or reale == st or st in voc["device_in_scope"].get(reale, []):
         return reale, tipo
     candidati = [(k, p) for k, p in (probabilita or {}).items()
                  if k in voc["etichette"] and (
@@ -253,7 +262,7 @@ async def route(text: str, context: dict) -> Optional[dict]:
     ber = dati.get("bersaglio") or {}
     if not ber.get("value"):
         return None
-    nome, tipo = _correggi_stanza(voc, text, ber["value"], ber.get("probabilities"))
+    nome, tipo = _correggi_bersaglio(voc, text, ber["value"], ber.get("probabilities"))
     azione = (dati.get("azione") or {}).get("value") or "toggle"
     if azione == "none":
         logger.info("GLiNER: intento domotico ma azione 'none' — fallback su Qwen")
