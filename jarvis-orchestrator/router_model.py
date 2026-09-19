@@ -59,10 +59,14 @@ INTENT_CRITERI: Dict[str, Dict[str, str]] = {
         "breve": "l'utente dice dove si trova",
         "criterio": "L'utente comunica in quale casa o luogo si trova",
     },
-    "IMAGE_GENERATION": {
-        "breve": "generare un'immagine",
-        "criterio": "L'utente chiede di generare o disegnare un'immagine",
-    },
+    # IMAGE_GENERATION non è dichiarato: main.py:5966 lo inoltra ad AI Agent
+    # senza fare nient'altro, quindi come decisione di routing non esiste — è
+    # AI_AGENT con un nome diverso. Offrirlo costa a ogni classificatore
+    # un'opzione in più da soppesare, e le opzioni inutili spostano le
+    # decisioni: aggiungere etichette a una classe la fa vincere. Restano
+    # attivi il ramo di dispatch e la scorciatoia a parole chiave in
+    # ai_engines (che risparmia la chiamata al modello), entrambi scorciatoie
+    # verso AI_AGENT, non un intent da far scegliere.
     "RETRY": {
         "breve": "manca il contesto necessario per decidere",
         "criterio": ("Ambiguo, incomprensibile, oppure manca il contesto per agire in "
