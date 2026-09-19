@@ -154,6 +154,74 @@ def route(r: Richiesta):
     return out
 
 
+class Generica(BaseModel):
+    """Classificazione generica: task arbitrari, nessun vincolo cablato.
+
+    `/route` esiste per il router di Jarvis e ha i suoi vincoli dentro
+    (`intent ⇔ natura ∧ argomento`): un consumer che passa etichette proprie se
+    li ritroverebbe applicati alla propria semantica, e otterrebbe sempre la
+    prima etichetta. Questo endpoint non assume niente.
+    """
+    text: str
+    # {nome_task: {etichetta: descrizione}} — la descrizione puo' essere vuota
+    tasks: Dict[str, Dict[str, str]]
+    # vincoli opzionali, espressi in forma dichiarativa:
+    #   {"tipo": "implies"|"iff"|"excludes", "a": [task, etichetta], "b": [task, etichetta]}
+    vincoli: Optional[List[dict]] = None
+    entita: Optional[Dict[str, str]] = None     # {tipo: descrizione} per la NER
+    probabilita: bool = False
+
+
+@app.post("/classify")
+def classify(r: Generica):
+    """Classificazione zero-shot su task arbitrari. Vedi [[gliner-service]]."""
+    from gliner2.classification import ClassificationSchema
+    from gliner2.classification import constraints as C
+
+    schema = ClassificationSchema()
+    for nome, etichette in r.tasks.items():
+        # NON ordinare le etichette: l'ordine nel prompt cambia il risultato
+        schema = schema.single(nome, dict(etichette))
+    _OPS = {"implies": C.implies, "iff": C.iff, "excludes": C.excludes}
+    if r.vincoli:
+        espressioni = []
+        for v in r.vincoli:
+            op = _OPS.get(v.get("tipo"))
+            if not op:
+                continue
+            espressioni.append(op(tuple(v["a"]), tuple(v["b"])))
+        if espressioni:
+            schema = schema.constrain(*espressioni)
+
+    t0 = time.perf_counter()
+    res = _clf.classify(r.text, schema, config=_CFG_LARGO)
+    d = res.to_dict()
+    out = {}
+    for nome in r.tasks:
+        voce = {"value": d[nome]["value"], "confidence": d[nome]["confidence"]}
+        if r.probabilita:
+            voce["probabilities"] = res.probabilities(nome)
+        out[nome] = voce
+    if r.entita:
+        out["entita"] = _estrattore().extract_entities(r.text, dict(r.entita),
+                                                       include_confidence=True)["entities"]
+    out["ms"] = round((time.perf_counter() - t0) * 1000)
+    return out
+
+
+_ext = None
+
+def _estrattore():
+    """L'estrattore si carica solo se qualcuno chiede entita': e' un secondo
+    modello in VRAM e la maggior parte dei consumer non ne ha bisogno."""
+    global _ext
+    if _ext is None:
+        from gliner2 import AutoExtractor
+        logger.info("carico l'estrattore per la NER")
+        _ext = AutoExtractor.from_pretrained(MODELLO, map_location=DEVICE, quantize=True)
+    return _ext
+
+
 @app.get("/health")
 def health():
     return {"ok": _clf is not None, "model": MODELLO, "device": DEVICE}
