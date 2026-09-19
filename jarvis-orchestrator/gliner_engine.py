@@ -149,18 +149,24 @@ def _vocabolario(location_id: str) -> Optional[dict]:
         "device_in_scope": {k: list(v) for k, v in b.device_in_scope.items()},
         "device_dominio": dict(b.device_dominio),
         "scope_domini": {k: list(v) for k, v in b.scope_domini.items()},
+        "scope_livello": dict(b.scope_livello),
     }
     _CACHE_VOCAB[location_id] = (ora, voc)
     return voc
+
+
+def _pulisci(etichette: Dict[str, str]) -> Dict[str, str]:
+    """Le parentesi sono vietate nelle etichette GLiNER: corromperebbero
+    l'allineamento fra logit ed etichetta (`_RESERVED` in classification/schema.py)."""
+    return {k: v.replace(" (", " — ").replace("(", "").replace(")", "")
+            for k, v in etichette.items()}
 
 
 def _azione_etichette() -> Dict[str, str]:
     """Le azioni con le loro descrizioni: identiche a quelle offerte a Jev."""
     az = {a.nome: a.descrizione for a in rm.ACTIONS.values()}
     az["none"] = "Nessuna azione domotica"
-    # le parentesi sono vietate nelle etichette GLiNER: corromperebbero
-    # l'allineamento fra logit ed etichetta (_RESERVED in classification/schema.py)
-    return {k: v.replace(" (", " — ").replace("(", "").replace(")", "") for k, v in az.items()}
+    return _pulisci(az)
 
 
 def _correggi_bersaglio(voc: dict, testo: str, nome: str, probabilita: dict) -> Tuple[str, str]:
@@ -191,6 +197,50 @@ def _correggi_bersaglio(voc: dict, testo: str, nome: str, probabilita: dict) -> 
     return voc["etichette"][scelto]
 
 
+def _payload_lettura(voc: dict, testo: str, context: dict, dati: dict) -> Optional[dict]:
+    """Payload di SIMPLE_CHAT: da dove prendere la risposta e con quali parametri.
+
+    Senza questo il payload restava vuoto e main.py finiva nel ramo small-talk:
+    "che temperatura c'e' in soggiorno?" non eseguiva nessuna lettura. La logica
+    e' quella di jev_engine, che era gia' stata tarata sui dati.
+    """
+    grandezza = (dati.get("grandezza") or {}).get("value") or rm.TUTTE_LE_GRANDEZZE
+    fonte = rm.fonte_risposta(testo, voc["scopes"], list(voc["device_dominio"]), grandezza)
+    if fonte == "web_search":
+        # la query di ricerca e' testo libero: un vocabolario chiuso non la scrive
+        logger.info("GLiNER: web_search vuole una query libera — fallback su Qwen")
+        return None
+    if fonte == "none":
+        # calcolo, ora, saluto: nessuna fonte da interrogare, risponde il generatore
+        return {"via": "gliner"}
+
+    luogo = rm.stanza_nel_testo(testo, voc["scopes"])
+    if not luogo:
+        # la stanza del microfono, ma solo se la frase non nomina un dispositivo
+        # preciso: altrimenti lo si cercherebbe nel posto sbagliato
+        stanza_ctx = context.get("room")
+        if stanza_ctx and stanza_ctx != "unknown":
+            luogo = rm.stanza_valida(context.get("location"), stanza_ctx)
+
+    params: dict = {}
+    if grandezza != rm.TUTTE_LE_GRANDEZZE:
+        # La stanza va DENTRO la stringa di ricerca, non nel filtro: molti sensori
+        # in HA non hanno un'area assegnata — "Rehom Soggiorno Temperatura" ha
+        # room=Sconosciuto — e il filtro room li ESCLUDE lasciando passare solo
+        # rumore. Misurato in jev_engine: 0,580 su spazzatura col filtro, 0,684
+        # sul sensore giusto con la stanza nella query.
+        params["search"] = f"{grandezza} {luogo}".strip() if luogo else grandezza
+    elif luogo:
+        # nessuna grandezza ("cosa c'e' in cucina"): qui il filtro strutturale e'
+        # proprio quello che serve, e room/zone/floor sono colonne distinte
+        params[rm.parametro_luogo(luogo, voc["scope_livello"])] = luogo
+
+    if not params:
+        logger.info("GLiNER: lettura senza luogo ne' grandezza — fallback su Qwen")
+        return None
+    return {"api_call": "entity_discover", "params": params, "via": "gliner"}
+
+
 async def close() -> None:
     """Chiude la sessione HTTP allo spegnimento."""
     global _session
@@ -218,6 +268,13 @@ async def route(text: str, context: dict) -> Optional[dict]:
         "ancore": _ANCORE,
         "bersaglio_labels": voc["ordine"],
         "azione_labels": _azione_etichette(),
+        # Servono a SIMPLE_CHAT: senza, il payload resta vuoto e le letture dei
+        # sensori non partono. Sono due vocabolari chiusi dichiarati in
+        # router_model, non testo libero.
+        # Solo la grandezza: la FONTE si ricava in codice, perche' chiesta al
+        # modello fa 42,5% contro il 90,8% della regola (misurato sugli 87 casi
+        # del banco che hanno un payload di lettura atteso).
+        "extra": {"grandezza": _pulisci(rm.GRANDEZZE)},
     }
     t0 = time.monotonic()
     try:
@@ -248,6 +305,16 @@ async def route(text: str, context: dict) -> Optional[dict]:
         intent = "SIMPLE_CHAT"
     if rm.serve_strumento_esterno(text, voc["scopes"]):
         intent = "AI_AGENT"
+    elif intent == "AI_AGENT":
+        # La regola lessicale e' piu' affidabile del modello su questa classe:
+        # 21/21 con 0 falsi positivi su 405, contro il 10% del classificatore. Se
+        # non scatta, AI_AGENT e' quasi sempre sbagliato — "che ore sono?" usciva
+        # AI_AGENT con confidenza 0,49.
+        intent = "SIMPLE_CHAT"
+    if intent == "SET_LOCATION" and n == "domanda":
+        # non si dichiara dove si e' facendo una domanda: "che tempo fa domani a
+        # Milano?" usciva SET_LOCATION perche' nomina una citta'
+        intent = "SIMPLE_CHAT"
 
     if intent == "SECURITY_ALERT":
         logger.warning(f"GLiNER: tentativo di manipolazione su {text[:80]!r}")
@@ -256,15 +323,17 @@ async def route(text: str, context: dict) -> Optional[dict]:
                 "interim_response": "", "payload": {"blocked": True, "via": "gliner"}}
 
     if intent != "HOME_CONTROL":
-        # Fuori dalla domotica GLiNER decide solo l'intent: il resto del payload
-        # (query di ricerca, testo della mail) e' testo libero, che un
-        # classificatore a vocabolario chiuso non puo' scrivere.
         if conf < config.GLINER_MIN_CONFIDENCE and n == "incerto":
             logger.info(f"GLiNER conf={conf:.2f} e natura incerta — fallback su Qwen")
             return None
+        payload = {"via": "gliner"}
+        if intent == "SIMPLE_CHAT":
+            payload = _payload_lettura(voc, text, context, dati)
+            if payload is None:
+                return None
         return {"intent": intent, "confidence": max(conf, 0.75), "response": "",
                 "interim_response": "Ci penso...",
-                "payload": {"via": "gliner"},
+                "payload": payload,
                 "_gliner": {"elapsed_ms": round(elapsed_ms), "ms": dati.get("ms")}}
 
     if _WILDCARD.search(text) and not rm.stanza_nel_testo(text, voc["scopes"]):

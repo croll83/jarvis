@@ -500,3 +500,78 @@ def stanza_nel_testo(testo: str, scopes: List[str], soglia: float = 0.84) -> Opt
             if r > punteggio:
                 migliore, punteggio = s, r
     return migliore if punteggio >= soglia else None
+
+
+# ─────────────────────────────────── letture di casa: fonte e grandezza ──
+# Due vocabolari chiusi che servono a SIMPLE_CHAT. Senza di loro il payload
+# resta vuoto e le letture dei sensori non partono: "che temperatura c'e' in
+# soggiorno?" arrivava a main.py senza `api_call` e finiva nel ramo small-talk.
+FONTI_RISPOSTA: Dict[str, str] = {
+    "entity_discover": "Dati di CASA: sensori, stato dei dispositivi, cosa c'è in una stanza",
+    "web_search": "Conoscenza esterna: meteo, notizie, fatti generali",
+    "none": "Nessuna fonte: calcolo, data e ora, saluto",
+}
+
+# Grandezze misurate come vocabolario CHIUSO. `entity_discover` ignora
+# device_class nel percorso strutturato e lo onora solo in quello semantico, che
+# vuole `search`: facendo scegliere i termini da questa lista invece di generarli,
+# le letture restano su un decisore a vocabolario chiuso.
+TUTTE_LE_GRANDEZZE = "__tutto__"
+GRANDEZZE: Dict[str, str] = {
+    "temperatura": "Temperatura",
+    "umidita": "Umidità",
+    "consumo": "Consumo elettrico, potenza istantanea, watt",
+    "energia": "Energia consumata o prodotta, kWh",
+    "batteria": "Livello di carica di una batteria",
+    "movimento": "Rilevazione di movimento o presenza",
+    "luminosita": "Luminosità o illuminamento",
+    "pressione": "Pressione",
+    "porta finestra": "Stato di apertura di porte o finestre",
+    "acqua": "Perdite d'acqua, livello o portata",
+    "pompa di calore": "Pompa di calore, caldaia, riscaldamento",
+    "fotovoltaico": "Produzione solare, inverter, fotovoltaico",
+    TUTTE_LE_GRANDEZZE: "Nessuna grandezza specifica: si chiede cosa c'è o lo stato generale",
+}
+
+def parametro_luogo(nome: str, livelli: Dict[str, str]) -> str:
+    """Il nome del parametro giusto per un luogo: room, zone o floor.
+
+    `entity_discover` ha tre parametri distinti che filtrano su tre colonne
+    diverse. Mandare una zona nel parametro `room` non trova niente.
+    """
+    return {"zona": "zone", "piano": "floor"}.get(livelli.get(nome, "stanza"), "room")
+
+
+# La FONTE non si chiede al modello: misurato 42,5% contro il 90,8% di questa
+# regola. Il motivo e' lo stesso di sempre — non e' una somiglianza semantica.
+# "Dimmi la temperatura del soggiorno" e "che ore sono" sono entrambe domande
+# brevi, e l'etichetta "nessuna fonte: calcolo, data e ora" vinceva su 38 casi
+# che volevano i dati di casa. Il segnale vero e' lessicale e strutturale: una
+# grandezza misurata, oppure un nome di casa nominato, oppure parole da ricerca.
+_DA_WEB = re.compile(
+    r"\b(meteo|che tempo|piover|previsioni|notiz|giornal|chi (?:è|e)\b|cos'?(?:è|e)\b|"
+    r"quanto costa|borsa|bitcoin|cambio|dollaro|euro\b|significa|capitale|"
+    r"popolazione|traduc)", re.I)
+# parole che indicano lo stato o una grandezza di casa, anche senza nominare un
+# dispositivo preciso ("è tutto spento?")
+_DA_CASA = re.compile(
+    r"\b(acces[ao]|spent[ao]|apert[ao]|chius[ao]|attiv[ao]|stato|gradi|temperatur|"
+    r"umidit|consum|batteri|dispositiv|sensor|tapparell|luc[ei]|lampad|tv|televisio|"
+    r"clima|termostat|porta|finestr|robot|aspirapolvere|serratur)", re.I)
+
+def fonte_risposta(testo: str, scopes: List[str], devices: List[str],
+                   grandezza: Optional[str] = None) -> str:
+    """Da dove prendere la risposta a una domanda: 'entity_discover', 'web_search'
+    oppure 'none' quando risponde il generatore da solo."""
+    if not testo:
+        return "none"
+    if _DA_WEB.search(testo):
+        return "web_search"
+    if grandezza and grandezza != TUTTE_LE_GRANDEZZE:
+        return "entity_discover"
+    t = testo.lower()
+    nomina = (stanza_nel_testo(testo, scopes) is not None
+              or any(re.search(rf"\b{re.escape(n.lower())}\b", t) for n in devices))
+    if nomina or _DA_CASA.search(testo):
+        return "entity_discover"
+    return "none"

@@ -68,6 +68,10 @@ class Richiesta(BaseModel):
     ancore: Ancore
     bersaglio_labels: Optional[List[str]] = None
     azione_labels: Optional[Dict[str, str]] = None
+    # Domande in piu', ognuna a scelta singola: {nome: {etichetta: descrizione}}.
+    # Generiche di proposito — il servizio non sa cosa siano `api_call` o
+    # `measure`, sa solo che sono insiemi chiusi da soppesare.
+    extra: Optional[Dict[str, Dict[str, str]]] = None
 
 
 @lru_cache(maxsize=32)
@@ -135,8 +139,18 @@ def route(r: Richiesta):
         out["azione"] = {"value": d["value"], "confidence": d["confidence"]}
     t_az = (time.perf_counter() - t) * 1000
 
-    out["ms"] = {"intento": round(t_int), "bersaglio": round(t_ber),
-                 "azione": round(t_az), "totale": round((time.perf_counter() - t0) * 1000)}
+    t = time.perf_counter()
+    for nome, etichette in (r.extra or {}).items():
+        if not etichette:
+            continue
+        # NON ordinare le etichette: l'ordine nel prompt cambia il risultato
+        d = _clf.classify(r.text, _schema_descritto(nome, tuple(etichette.items())),
+                          config=_CFG_LARGO).to_dict()[nome]
+        out[nome] = {"value": d["value"], "confidence": d["confidence"]}
+    t_ex = (time.perf_counter() - t) * 1000
+
+    out["ms"] = {"intento": round(t_int), "bersaglio": round(t_ber), "azione": round(t_az),
+                 "extra": round(t_ex), "totale": round((time.perf_counter() - t0) * 1000)}
     return out
 
 
