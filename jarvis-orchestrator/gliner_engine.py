@@ -93,6 +93,28 @@ _ANCORE = {
     "fuori": _ARGOMENTO[1],
 }
 
+def _soglia_esecuzione() -> float:
+    """La soglia oltre la quale main.py ESEGUE un comando domotico.
+
+    Va letta, non indovinata: sotto quella soglia il dispatch non esegue e il
+    comando finisce nel ramo small-talk, dove viene pronunciata la frase
+    dell'azione ("Chiudo.") senza che nulla accada. E' successo davvero con
+    "chiudi la porta del box": confidenza 0,75 contro una soglia di 0,85.
+
+    Il contratto di questo engine e' netto: `None` significa "non me la sento,
+    passa a Qwen", qualunque altra cosa significa "ho deciso". Una decisione
+    presa non deve poter essere scartata in silenzio a valle.
+    """
+    try:
+        from database import get_global_preference
+        v = get_global_preference("confidence_threshold_high")
+        if v:
+            return float(v)
+    except Exception:
+        pass
+    return float(getattr(config, "CONFIDENCE_THRESHOLD_HIGH", 0.85))
+
+
 _PREFISSO_DEVICE = "il singolo apparecchio "   # per i device omonimi di una stanza
 # "spegni tutto" punta a tutta la casa: e' un bersaglio legittimo e ha il suo
 # nome nel contratto del router, ma non sta nella entity map, quindi va aggiunto
@@ -331,8 +353,8 @@ async def route(text: str, context: dict) -> Optional[dict]:
             payload = _payload_lettura(voc, text, context, dati)
             if payload is None:
                 return None
-        return {"intent": intent, "confidence": max(conf, 0.75), "response": "",
-                "interim_response": "Ci penso...",
+        return {"intent": intent, "confidence": max(conf, _soglia_esecuzione()),
+                "response": "", "interim_response": "Ci penso...",
                 "payload": payload,
                 "_gliner": {"elapsed_ms": round(elapsed_ms), "ms": dati.get("ms")}}
 
@@ -375,10 +397,13 @@ async def route(text: str, context: dict) -> Optional[dict]:
     frase = rm.ACTIONS.get(azione)
     return {
         "intent": "HOME_CONTROL",
-        "confidence": max(conf, 0.75),
+        # la confidenza dichiara la DECISIONE, non l'incertezza del modello: quella
+        # resta in `_gliner.intento_conf` per la diagnostica
+        "confidence": max(conf, _soglia_esecuzione()),
         "response": (frase.frase.replace("{t}", "") if frase else "Fatto."),
         "interim_response": "",
         "payload": payload,
         "_gliner": {"elapsed_ms": round(elapsed_ms), "ms": dati.get("ms"),
+                    "intento_conf": round(conf, 3),
                     "bersaglio_conf": round(float(ber.get("confidence", 0)), 3)},
     }
