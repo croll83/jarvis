@@ -419,11 +419,14 @@ async def normalize_stt_text(text: str) -> str:
     if not config.STT_NORMALIZE_ENABLED:
         return text
 
-    # Con Jev attivo la passata LLM qui non serve: Jev riceve il testo grezzo
-    # insieme agli hint sulle storpiature note e risolve l'entita'
-    # foneticamente. Se Jev rinuncia, e' get_routing() a normalizzare prima di
-    # passare la palla a Qwen, cosi' il fallback non perde accuratezza.
-    if config.JEV_ENABLED:
+    # Con un decisore a vocabolario chiuso in testa alla catena la passata LLM
+    # qui non serve: quei decisori reggono il testo grezzo — Jev con gli hint
+    # sulle storpiature note, GLiNER con l'aggancio fuzzy sui nomi — e risolvono
+    # foneticamente. Se poi passano la mano, e' `get_routing()` a normalizzare
+    # prima di dare la palla a Qwen, cosi' il fallback non perde accuratezza.
+    # La condizione guarda la CATENA, non un motore in particolare: guardando
+    # solo Jev, con GLiNER attivo questa passata si pagava per niente.
+    if any(d != "qwen" for d in config.ROUTING_CHAIN):
         return text
 
     _rp = get_llm_params("routing")
@@ -656,48 +659,51 @@ async def get_routing(text: str, context: dict) -> dict:
     # Add AI Agent availability flag
     context["ai_agent_available"] = config.AI_AGENT_ENABLED
 
-    # Jev primario: una sola chiamata con domande in parallelo al posto della
-    # catena Qwen. Restituisce None quando non se la sente (HTTP/timeout,
-    # confidence sotto soglia, entita' incerta, o serve uno slot di testo
-    # libero che Jev non sa generare) e in quel caso si prosegue su Qwen.
-    # GLiNER primario quando attivo: e' locale, costa 62ms di p50 contro i 470ms
-    # di Jev, e sul banco dei 426 casi fa 69,1% di payload contro 70,2 —
-    # differenza dentro il rumore di fondo — e 77,2 contro 67,8 sui casi
-    # difficili. Restituisce None quando non se la sente, e allora si prosegue
-    # sulla catena esistente (Jev se attivo, poi Qwen).
-    if config.GLINER_ENABLED:
+    # ── La catena dei decisori ────────────────────────────────────────────
+    # L'ordine e' dichiarato in `config.ROUTING_CHAIN`, calcolato dalla
+    # configurazione: un motore entra in catena se e' configurato. Qui non si
+    # decide la precedenza, si percorre — cosi' aggiungere o togliere un
+    # decisore non significa riscrivere una scala di `if`.
+    #
+    # Il contratto e' lo stesso per tutti: `None` significa "non me la sento,
+    # passa al prossimo" (HTTP, timeout, confidenza bassa, o serve uno slot di
+    # testo libero che un vocabolario chiuso non sa scrivere).
+    _decisori = {"gliner": ("GLiNER", "gliner_engine"), "jev": ("Jev", "jev_engine")}
+    _ha_provato_vocabolario_chiuso = False
+    for _nome in config.ROUTING_CHAIN:
+        if _nome == "qwen":
+            break
+        _etichetta, _modulo = _decisori[_nome]
+        _ha_provato_vocabolario_chiuso = True
         try:
-            from gliner_engine import route as gliner_route
-            gliner_result = await gliner_route(text, context)
-            if gliner_result is not None:
-                return _validate_routing(gliner_result)
+            _mod = __import__(_modulo)
+            _esito = await _mod.route(text, context)
+            if _esito is not None:
+                return _validate_routing(_esito)
+            logger.info(f"{_etichetta}: passo al prossimo decisore")
         except Exception as e:
-            logger.warning(f"GLiNER engine error ({type(e).__name__}: {e}) — proseguo")
+            logger.warning(f"{_etichetta} error ({type(e).__name__}: {e}) — passo al prossimo")
 
-    if config.JEV_ENABLED:
-        try:
-            from jev_engine import route as jev_route
-            jev_result = await jev_route(text, context)
-            if jev_result is not None:
-                return _validate_routing(jev_result)
-        except Exception as e:
-            logger.warning(f"Jev engine error ({type(e).__name__}: {e}) — fallback su Qwen")
-
-        # Con Jev attivo normalize_stt_text salta la passata LLM (Jev regge il
-        # testo grezzo con gli hint sulle storpiature). Qui pero' stiamo
-        # ricadendo su Qwen, che sul testo STT grezzo sbaglia — e' successo
-        # davvero: "Spini la luz del box" letto come turn_on invece di turn_off.
-        # Quindi si normalizza SEMPRE su questo ramo, senza guardare
-        # STT_NORMALIZE_ENABLED: quel flag governa il percorso normale, dove la
-        # passata non serve piu', non il percorso degradato dove serve eccome.
+    if _ha_provato_vocabolario_chiuso:
+        # Si sta ricadendo su Qwen dopo che un decisore a vocabolario chiuso ha
+        # passato la mano. Quei decisori reggono il testo STT grezzo (Jev con gli
+        # hint sulle storpiature, GLiNER con l'aggancio fuzzy); Qwen no, e sul
+        # grezzo sbaglia — e' successo davvero: "Spini la luz del box" letto come
+        # turn_on invece di turn_off. Quindi si normalizza SEMPRE su questo ramo,
+        # senza guardare STT_NORMALIZE_ENABLED: quel flag governa il percorso
+        # normale, dove la passata non serve piu', non il percorso degradato dove
+        # serve eccome.
+        #
+        # Prima stava DENTRO il ramo di Jev: con GLiNER solo, la normalizzazione
+        # non veniva mai fatta e Qwen riceveva il grezzo.
         try:
             normalized = await _normalize_ollama(text, get_llm_params("routing"))
             if normalized and 2 <= len(normalized.strip()) < len(text) * 3:
                 if normalized.strip() != text.strip():
-                    logger.info(f"STT normalized (fallback Jev): '{text}' -> '{normalized.strip()}'")
+                    logger.info(f"STT normalized (ricaduta su Qwen): '{text}' -> '{normalized.strip()}'")
                 text = normalized.strip()
         except Exception as e:
-            logger.warning(f"STT normalize in fallback Jev fallita: {e}")
+            logger.warning(f"STT normalize in ricaduta su Qwen fallita: {e}")
 
     # LLM decides (local or API)
     if config.AI_BACKEND == "api":
