@@ -32,7 +32,11 @@ def carica():
     global _clf, _CFG_VINCOLI, _CFG_LARGO
     from gliner2.classification import Classifier, ClassificationConfig
     t0 = time.time()
-    _clf = Classifier.from_pretrained(MODELLO, map_location=DEVICE)
+    # fp16. MISURATO: il processo occupa ~1,65 GiB di VRAM — 574 MiB di pesi
+    # (287M parametri) piu' il contesto CUDA e gli spazi di lavoro. `quantize=True`
+    # non cambia nulla su questo percorso, l'ho verificato. Sulla 5070 da 8GB ci
+    # sta insieme al router generativo (4,7 GiB): 6,4 su 7,7 disponibili.
+    _clf = Classifier.from_pretrained(MODELLO, map_location=DEVICE, dtype="float16")
     # decodifica esatta per l'intento: lo spazio e' 6x2x2, si esplora tutto
     _CFG_VINCOLI = ClassificationConfig(decoder="exact", beam_size=32,
                                         on_infeasible="relax", include_confidence=True)
@@ -121,7 +125,12 @@ def route(r: Richiesta):
 
     t = time.perf_counter()
     if r.azione_labels:
-        d = _clf.classify(r.text, _schema_descritto("action", tuple(sorted(r.azione_labels.items()))),
+        # ATTENZIONE: NON ordinare. L'ordine delle etichette nel prompt cambia
+        # il risultato (encoder singolo: finiscono nello stesso prompt del
+        # testo). Con `sorted()` come chiave di cache l'azione e' scesa da 86,8%
+        # a 81,9% sul banco — l'ordine arriva dal chiamante ed e' quello
+        # misurato, va conservato.
+        d = _clf.classify(r.text, _schema_descritto("action", tuple(r.azione_labels.items())),
                           config=_CFG_LARGO).to_dict()["action"]
         out["azione"] = {"value": d["value"], "confidence": d["confidence"]}
     t_az = (time.perf_counter() - t) * 1000

@@ -93,6 +93,11 @@ _ANCORE = {
 }
 
 _PREFISSO_DEVICE = "il singolo apparecchio "   # per i device omonimi di una stanza
+# "spegni tutto" punta a tutta la casa: e' un bersaglio legittimo e ha il suo
+# nome nel contratto del router, ma non sta nella entity map, quindi va aggiunto
+# a mano come fa Jev con _WHOLE_HOUSE.
+_CASA_INTERA = "ovunque"
+_CASA_INTERA_ETICHETTA = "tutta la casa, ogni stanza insieme"
 _CACHE_VOCAB: Dict[str, Tuple[float, dict]] = {}
 _VOCAB_TTL = 300
 
@@ -123,6 +128,7 @@ def _vocabolario(location_id: str) -> Optional[dict]:
     et: Dict[str, Tuple[str, str]] = {}
     for s in b.scopes:
         et[s] = (s, "scope")
+    et[_CASA_INTERA_ETICHETTA] = (_CASA_INTERA, "scope")
     for d in b.devices:
         chiave = f"{_PREFISSO_DEVICE}{d}" if d in et else d
         et[chiave] = (d, "device")
@@ -134,6 +140,7 @@ def _vocabolario(location_id: str) -> Optional[dict]:
         "device_in_scope": {k: list(v) for k, v in b.device_in_scope.items()},
         "device_dominio": dict(b.device_dominio),
         "scope_domini": {k: list(v) for k, v in b.scope_domini.items()},
+        "tutti_i_domini": sorted({d for v in b.scope_domini.values() for d in v}),
     }
     _CACHE_VOCAB[location_id] = (ora, voc)
     return voc
@@ -165,6 +172,14 @@ def _correggi_stanza(voc: dict, testo: str, nome: str, probabilita: dict) -> Tup
     scelto = max(candidati, key=lambda x: x[1])[0]
     logger.debug(f"GLiNER: {reale!r} non sta in {st!r}, ripesco {voc['etichette'][scelto][0]!r}")
     return voc["etichette"][scelto]
+
+
+async def close() -> None:
+    """Chiude la sessione HTTP allo spegnimento."""
+    global _session
+    if _session is not None and not _session.closed:
+        await _session.close()
+    _session = None
 
 
 async def route(text: str, context: dict) -> Optional[dict]:
@@ -244,11 +259,21 @@ async def route(text: str, context: dict) -> Optional[dict]:
         logger.info("GLiNER: intento domotico ma azione 'none' — fallback su Qwen")
         return None
 
+    # Il dominio non va scelto prima dell'azione, o la stravolge: su uno scope
+    # scegliendo "light" per default, `open_cover` diventava `turn_on` e
+    # "apri la tapparella della camera" accendeva le luci. Le azioni portano
+    # con se' i domini su cui sono valide (router_model.ACTIONS[].domini):
+    # fra i domini presenti nel bersaglio si prende uno COMPATIBILE con l'azione.
+    validi = set(rm.ACTIONS[azione].domini) if azione in rm.ACTIONS else set()
     if tipo == "device":
         dominio = voc["device_dominio"].get(nome) or "light"
     else:
-        domini = voc["scope_domini"].get(nome) or ["light"]
-        dominio = "light" if "light" in domini else domini[0]
+        domini = (voc["scope_domini"].get(nome)
+                  or (voc["tutti_i_domini"] if nome == _CASA_INTERA else [])
+                  or ["light"])
+        compatibili = [d for d in domini if d in validi]
+        dominio = (compatibili[0] if compatibili
+                   else ("light" if "light" in domini else domini[0]))
     azione = rm.normalizza_azione(azione, dominio)
 
     # play_music vuole sempre parameters.query — brano, artista, playlist — che
