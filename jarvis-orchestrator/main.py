@@ -4469,9 +4469,19 @@ async def _execute_entity_query(payload: dict, location: str, context: dict) -> 
                 q_params.append(f"%{params['floor']}%")
 
             if params.get("search"):
-                query += " AND (LOWER(entity_name) LIKE LOWER(?) OR LOWER(entity_id) LIKE LOWER(?))"
-                q_params.append(f"%{params['search']}%")
-                q_params.append(f"%{params['search']}%")
+                # Una LIKE sulla stringa INTERA non trova niente quando l'ordine
+                # delle parole differisce: `search="temperatura Soggiorno"` non
+                # matcha "Rehom Soggiorno Temperatura". E succede spesso, perche'
+                # il router mette di proposito la stanza dentro `search` (i
+                # sensori in HA hanno spesso room=Sconosciuto e il filtro room li
+                # escluderebbe). Ogni parola va cercata per conto suo: e' il
+                # percorso di riserva quando l'indice semantico e' freddo — al
+                # primo avvio restituisce [] e costruisce in background.
+                for _w in str(params["search"]).split():
+                    if len(_w) < 3:
+                        continue
+                    query += " AND (LOWER(entity_name) LIKE LOWER(?) OR LOWER(entity_id) LIKE LOWER(?))"
+                    q_params.extend([f"%{_w}%", f"%{_w}%"])
 
             query += " ORDER BY room, entity_type, entity_name LIMIT 200"
             c.execute(query, q_params)
@@ -6062,6 +6072,18 @@ async def process_jarvis_logic(text: str, context: dict):
             # modello 7B auto-triggera web_search anche su saluti ("ciao, mi riconosci?").
             # Se serviva davvero il web, il router avrebbe messo api_call=web_search.
             response = router_data.get("response")
+            # GUARD: qui ci finisce anche un HOME_CONTROL con confidenza fra
+            # conf_low e conf_high — il dispatch sopra non l'ha eseguito. In quel
+            # caso `response` e' la frase dell'AZIONE ("Chiudo.") e pronunciarla
+            # significa dire di aver fatto una cosa che non e' stata fatta.
+            # Misurato dal vero: "chiudi la porta del box" a confidenza 0,75
+            # rispondeva "Chiudo" senza nessuna chiamata a Home Assistant.
+            if isinstance(payload, dict) and payload.get("action") and payload.get("entity"):
+                logger.warning(
+                    f"Comando domotico non eseguito (conf={conf:.2f} < {conf_high}) su "
+                    f"{payload.get('entity')!r}: chiedo di ripetere invece di dire 'fatto'"
+                )
+                response = "Non sono sicuro di aver capito il comando. Puoi ripetere?"
             if not response:
                 response = await get_quick_response(
                     text, context,
