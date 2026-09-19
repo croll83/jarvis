@@ -854,6 +854,12 @@ async def _llamacpp_routing_call(full_prompt: str, _rp: dict,
         "temperature": _rp["temperature"],
         "max_tokens": _rp["max_tokens"],
         "stop": ["<|im_start|>"],
+        # I modelli con reasoning (Qwen3.x) spendono TUTTI i token consentiti in
+        # catena di pensiero e restituiscono `content` VUOTO: misurato sul 4B,
+        # 200 token e 7,5s per una risposta inesistente. llama.cpp con --jinja
+        # attiva il thinking per default, quindi va spento esplicitamente.
+        # Sui modelli senza reasoning (Qwen2.5) il template ignora il parametro.
+        "chat_template_kwargs": {"enable_thinking": False},
         "stream": False
     }
 
