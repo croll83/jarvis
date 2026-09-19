@@ -46,6 +46,7 @@ class ServiceStatus:
     Singleton per tracking stato servizi JARVIS.
 
     Servizi monitorati:
+    - gliner_router: GLiNER (routing primario, quando attivo)
     - ollama_router: Qwen (routing) - CRITICO
     - stt: STT (Parakeet/Whisper) - IMPORTANTE per voice
     - home_assistant: Domotica - IMPORTANTE per HOME_CONTROL
@@ -73,6 +74,14 @@ class ServiceStatus:
         if config.AI_BACKEND != "api":
             self.services["ollama_router"] = ServiceHealth()
             self.services["stt"] = ServiceHealth()
+
+        # GLiNER: decisore primario del router quando attivo. Va monitorato
+        # perche' quando si rompe la catena degrada in SILENZIO — ai_engines
+        # logga un warning e prosegue su Qwen, quindi l'unico sintomo visibile
+        # e' la latenza. E' successo davvero: un NameError l'ha tenuto fuori
+        # servizio e il routing ha continuato a funzionare senza allarmi.
+        if getattr(config, "GLINER_ENABLED", False):
+            self.services["gliner_router"] = ServiceHealth()
 
         self._lock = asyncio.Lock()
         self._check_interval = 30  # secondi
@@ -122,6 +131,8 @@ class ServiceStatus:
                 tasks.append(self._check_ollama_router())
             if "stt" in self.services:
                 tasks.append(self._check_stt())
+            if "gliner_router" in self.services:
+                tasks.append(self._check_gliner())
 
             # Aggiungi check per tutte le location HA
             try:
@@ -134,6 +145,35 @@ class ServiceStatus:
             await asyncio.gather(*tasks, return_exceptions=True)
 
         return self.get_summary()
+
+    async def _check_gliner(self):
+        """Check del servizio di scoring GLiNER (gliner-router, porta 11436)."""
+        service = self.services["gliner_router"]
+        start = time.time()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{config.GLINER_URL}/health",
+                    timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS["health_check"])
+                ) as resp:
+                    elapsed = (time.time() - start) * 1000
+                    if resp.status != 200:
+                        self._mark_failed(service, f"HTTP {resp.status}", elapsed)
+                        return
+                    dati = await resp.json()
+                    if not dati.get("ok"):
+                        # risponde ma il modello non e' caricato: peggio che giu',
+                        # perche' l'HTTP passa e l'errore si vede solo a valle
+                        self._mark_failed(service, "modello non caricato", elapsed)
+                        return
+                    service.state = ServiceState.ONLINE
+                    service.last_success = time.time()
+                    service.response_time_ms = elapsed
+                    service.consecutive_failures = 0
+                    service.last_error = None
+        except Exception as e:
+            self._mark_failed(service, f"{type(e).__name__}: {e}",
+                              (time.time() - start) * 1000)
 
     async def _check_ollama_router(self):
         """Check router LLM (Ollama o llama-server)."""
