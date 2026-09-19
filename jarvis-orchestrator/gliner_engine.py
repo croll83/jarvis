@@ -96,8 +96,17 @@ _PREFISSO_DEVICE = "il singolo apparecchio "   # per i device omonimi di una sta
 # "spegni tutto" punta a tutta la casa: e' un bersaglio legittimo e ha il suo
 # nome nel contratto del router, ma non sta nella entity map, quindi va aggiunto
 # a mano come fa Jev con _WHOLE_HOUSE.
-_CASA_INTERA = "ovunque"
-_CASA_INTERA_ETICHETTA = "tutta la casa, ogni stanza insieme"
+# "spegni tutto" agisce su TUTTA la casa. Non lo gestiamo: il resolver di
+# main.py non conosce "ovunque" come nome di bersaglio — avvisa "no match" e
+# inventa un entity_id sintetico tipo `fan.ovunque` — e la logica giusta vive
+# nel ramo A della cascata, con una guardia elaborata contro il caso "tutte le
+# luci della <zona storpiata>" che non deve diventare "tutta la casa".
+# Duplicarla qui significherebbe riscrivere a mano il codice piu' delicato del
+# resolver per due casi su 426, sulla classe di errore piu' costosa che esiste
+# (un'azione di massa su tutti i dispositivi). Si passa la mano a Qwen, che e'
+# il comportamento gia' in produzione e gia' provato.
+_WILDCARD = re.compile(r"\b(tutta la casa|in tutta casa|ovunque|dappertutto|"
+                       r"tutto\s*$|tutti\s*$|tutte\s*$)", re.I)
 _CACHE_VOCAB: Dict[str, Tuple[float, dict]] = {}
 _VOCAB_TTL = 300
 
@@ -128,7 +137,6 @@ def _vocabolario(location_id: str) -> Optional[dict]:
     et: Dict[str, Tuple[str, str]] = {}
     for s in b.scopes:
         et[s] = (s, "scope")
-    et[_CASA_INTERA_ETICHETTA] = (_CASA_INTERA, "scope")
     for d in b.devices:
         chiave = f"{_PREFISSO_DEVICE}{d}" if d in et else d
         et[chiave] = (d, "device")
@@ -140,7 +148,6 @@ def _vocabolario(location_id: str) -> Optional[dict]:
         "device_in_scope": {k: list(v) for k, v in b.device_in_scope.items()},
         "device_dominio": dict(b.device_dominio),
         "scope_domini": {k: list(v) for k, v in b.scope_domini.items()},
-        "tutti_i_domini": sorted({d for v in b.scope_domini.values() for d in v}),
     }
     _CACHE_VOCAB[location_id] = (ora, voc)
     return voc
@@ -259,6 +266,10 @@ async def route(text: str, context: dict) -> Optional[dict]:
                 "payload": {"via": "gliner"},
                 "_gliner": {"elapsed_ms": round(elapsed_ms), "ms": dati.get("ms")}}
 
+    if _WILDCARD.search(text) and not rm.stanza_nel_testo(text, voc["scopes"]):
+        logger.info(f"GLiNER: comando su tutta la casa ({text[:50]!r}) — fallback su Qwen")
+        return None
+
     ber = dati.get("bersaglio") or {}
     if not ber.get("value"):
         return None
@@ -277,9 +288,7 @@ async def route(text: str, context: dict) -> Optional[dict]:
     if tipo == "device":
         dominio = voc["device_dominio"].get(nome) or "light"
     else:
-        domini = (voc["scope_domini"].get(nome)
-                  or (voc["tutti_i_domini"] if nome == _CASA_INTERA else [])
-                  or ["light"])
+        domini = voc["scope_domini"].get(nome) or ["light"]
         compatibili = [d for d in domini if d in validi]
         dominio = (compatibili[0] if compatibili
                    else ("light" if "light" in domini else domini[0]))
