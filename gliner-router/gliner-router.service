@@ -9,7 +9,15 @@ WorkingDirectory=/opt/jarvis/gliner-router
 Environment=GLINER_DEVICE=cuda
 Environment=HF_HOME=/home/jarvis/.cache/huggingface
 Environment=OMP_NUM_THREADS=4
-ExecStart=/home/jarvis/gliner-eval/bin/python -m uvicorn server:app --host 127.0.0.1 --port 11436
+# Bind su 0.0.0.0, NON su 127.0.0.1: il servizio deve essere raggiungibile da
+# tutta la rete Tailscale (Hermes e gli altri consumer). Non e' esposto sulla
+# LAN: ufw ha policy DROP e la porta 11436 e' aperta SOLO da 100.64.0.0/10
+#   ufw allow from 100.64.0.0/10 to any port 11436 proto tcp \
+#       comment 'GLiNER router - Tailscale'
+# La regola sta in /etc/ufw/user.rules e sopravvive al riavvio. Bindare
+# direttamente sull'IP Tailscale sarebbe piu' stretto ma romperebbe
+# localhost:11436, che e' quello che usa l'orchestrator sullo stesso host.
+ExecStart=/home/jarvis/gliner-eval/bin/python -m uvicorn server:app --host 0.0.0.0 --port 11436
 Restart=on-failure
 RestartSec=5
 

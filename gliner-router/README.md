@@ -18,6 +18,26 @@ nell'orchestrator: quali intent esistono, quali azioni, come si risolve un
 bersaglio. Le ancore dei vincoli si passano per nome, così il servizio non ha
 bisogno di sapere cosa sia `HOME_CONTROL`.
 
+## Rete
+
+Il servizio ascolta su `0.0.0.0:11436` ed e' raggiungibile da **tutta la rete
+Tailscale** — serve ad altri consumer oltre all'orchestrator (Hermes in primis).
+
+Non e' esposto sulla LAN: `ufw` ha policy DROP e la porta e' aperta **solo** da
+`100.64.0.0/10`:
+
+```bash
+sudo ufw allow from 100.64.0.0/10 to any port 11436 proto tcp \
+    comment 'GLiNER router - Tailscale'
+```
+
+La regola vive in `/etc/ufw/user.rules` e sopravvive al riavvio — e' la stessa
+convenzione degli altri servizi dell'host (11434 Ollama, 9000 STT, 8890 TTS).
+Verificato: raggiungibile da un altro nodo Tailscale, rifiutato da `192.168.68.68`.
+
+Bindare direttamente sull'IP Tailscale sarebbe piu' stretto, ma romperebbe
+`localhost:11436` — che e' cio' che usa l'orchestrator sullo stesso host.
+
 ## Installazione
 
 ```bash
