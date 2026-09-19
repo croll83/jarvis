@@ -51,6 +51,7 @@ per soglia di confidenza (il segnale c'e', mediana 0,53 contro 0,75, ma
 sovrapposto: nessuna soglia da' guadagno netto).
 """
 import logging
+import re
 import time
 from typing import Dict, List, Optional, Tuple
 
