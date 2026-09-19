@@ -58,16 +58,48 @@ brave_api_key: ""
 # Ontology Server — Knowledge Graph API auth
 ontology_api_token: ""
 
-# Router locale (Qwen). Produzione: llama-server :30000 con
-# qwen2.5_7b-q6_K.gguf servito con alias "model".
+# ─────────────────────────────────────────────── CATENA DI ROUTING ──
+# Tre decisori, in ordine: GLiNER (locale, ~70ms) → Jev (cloud, ~470ms) →
+# Qwen (locale generativo, ~1200ms). Qwen non si disattiva: e' il solo che sa
+# generare testo libero.
+#
+# LA REGOLA: un motore entra in catena se e' CONFIGURATO.
+#   gliner_url + jev_api_key  →  GLiNER → Jev → Qwen
+#   solo gliner_url           →  GLiNER → Qwen
+#   solo jev_api_key          →  Jev → Qwen
+#   nessuno dei due           →  Qwen
+#
+# gliner_enabled / jev_enabled sono interruttori ESPLICITI, opzionali: servono
+# a spegnere un motore senza cancellarne la configurazione. Dichiararli non
+# puo' ACCENDERE un motore non configurato.
+
+# Router locale (Qwen) — ultimo anello. Produzione: llama-server :30000 con
+# Qwen3.5-4B-Q6_K.gguf servito con alias "model". Ha sostituito il 7B: misurato
+# meglio sullo stesso banco (payload 71,4% contro 68,3%) e libera 2,2 GB.
 router_engine: "llamacpp"          # llamacpp | ollama
 router_url: "http://localhost:30000"
 router_model: "model"
 
-# Jev (TypeSafe System One) — router primario, Qwen resta il fallback.
+# GLiNER — decisore primario, locale. Gira come systemd sull'host
+# (gliner-router.service), NON nel container: il container ha torch CPU e su
+# CPU il bersaglio costa 1370ms contro 34ms in GPU. Vuole ~1,65 GiB di VRAM.
+# Misurato sui 426 casi: intento 90,8%, bersaglio 84,0%, payload 74,5%, p50 68ms.
+# Lascia vuoto per non usarlo.
+gliner_url: "http://localhost:11436"
+gliner_timeout: 3
+gliner_min_confidence: 0.45        # sotto soglia E natura incerta -> passa la mano
+# gliner_enabled: false            # spegnilo senza cancellare l'URL
+
+# Prompt di Qwen generato da router_model invece che dal file statico.
+# SPENTO: misurato 61,3% di payload contro 68,3% dello scritto a mano, pur
+# pareggiando l'intent con meta' dei token. Vedi jarvis-orchestrator/render_flat.py.
+router_prompt_generato: false
+
+# Jev (TypeSafe System One) — decisore OPZIONALE, sta fra GLiNER e Qwen.
 # Chiave su https://typesafe.ai — formato apikey_<32hex>_<64hex>.
-# Lascia jev_enabled: false per restare interamente su Qwen locale.
-jev_enabled: false
+# Lascia jev_api_key vuota per non usarlo. Misurato: payload 66,4% contro il
+# 74,5% di GLiNER, a 470ms contro 68ms — ed e' cloud, quindi a consumo.
+# jev_enabled: false               # spegnilo senza cancellare la chiave
 jev_api_key: ""
 jev_url: "https://api.typesafe.ai/v1/systemone"
 jev_model: "jev-latest"

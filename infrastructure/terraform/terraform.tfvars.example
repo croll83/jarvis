@@ -19,7 +19,13 @@ workstation_enabled = false    # VM-Workstation (Ubuntu Desktop + Chrome reale)
 # -----------------------------------------------------------------------------
 # Tipo di deploy (solo per LXC-JARVIS)
 # -----------------------------------------------------------------------------
-# "lxc_gpu" = LXC con GPU NVIDIA (Ollama router — STT/TTS su GX10 via Tailscale)
+# "lxc_gpu" = LXC con GPU NVIDIA — STT/TTS su GX10 via Tailscale.
+#             Sulla GPU girano DUE servizi systemd sull'host, non in Docker:
+#               llama-router.service  :30000  Qwen3.5-4B-Q6_K   ~4,7 GiB VRAM
+#               gliner-router.service :11436  GLiNER 2.5 multi  ~1,65 GiB VRAM
+#             Stanno insieme su una 5070 da 8 GB (6,4 usati su 7,7 disponibili).
+#             GLiNER e' fuori dal container perche' l'immagine ha torch CPU, e
+#             su CPU il bersaglio costa 1370ms contro 34ms in GPU.
 # "lxc"     = LXC senza GPU (AI via API — Groq/OpenRouter/Gemini)
 deploy_type = "lxc_gpu"
 
