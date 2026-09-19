@@ -25,6 +25,7 @@ import config
 from database import (
     init_db, smart_cache, log_event,
     save_chat_message, update_chat_meta, get_recent_turns, format_recent_turns_for_llm,
+    save_last_action, get_last_action,
     save_action, get_action, delete_action, cleanup_old_actions,
     set_user_preference, get_user_preference, set_global_preference, get_global_preference,
     get_audit_summary, save_telegram_stream,
@@ -4867,6 +4868,39 @@ def _map_action_for_domain(base_action: str, entity_domain: str) -> str:
         base_action, base_action)
 
 
+def _risolvi_coreferenza(text: str, speaker_id: Optional[int], location: str) -> Optional[dict]:
+    """Routing per le frasi che si riferiscono all'ultima azione eseguita.
+
+    Ritorna un router_data completo, oppure None se la frase non è una
+    coreferenza o se non c'è un'azione recente a cui riferirsi (nel qual caso
+    si passa al router normale, che almeno può chiedere di ripetere).
+    """
+    if not speaker_id or not text:
+        return None
+    import router_model
+    try:
+        vocab = set(router_model.carica_bersagli(location).scopes) if location else set()
+    except Exception:
+        vocab = set()
+    if not router_model.riferimento_a_turno_precedente(text, vocab):
+        return None
+    ultima = get_last_action(speaker_id)
+    if not ultima:
+        logger.info(f"Coreferenza rilevata in {text!r} ma nessuna azione recente: passo al router")
+        return None
+    azione = router_model.azione_dal_verbo(text, ultima["dominio"], ultima["azione"])
+    if not azione:
+        return None
+    payload = {"domain": ultima["dominio"], "action": azione,
+               "entity": ultima["entity"], ultima["tipo"]: ultima["entity"]}
+    logger.info(
+        f"Coreferenza risolta senza modello: {text!r} → {azione} su "
+        f"{ultima['entity']!r} ({ultima['tipo']}, azione precedente {ultima['azione']})"
+    )
+    return {"intent": "HOME_CONTROL", "confidence": 0.95, "payload": payload,
+            "interim_response": "", "_via": "coreferenza"}
+
+
 async def process_jarvis_logic(text: str, context: dict):
     """Main processing logic per tutti i comandi."""
     context["_user_text"] = text  # Per VirtualMic response tracking
@@ -5024,7 +5058,13 @@ async def process_jarvis_logic(text: str, context: dict):
         router_context["previous_payload"] = prev_intent.get("payload", {})
 
     routing_start = time.time()
-    router_data = await get_routing(text, router_context)
+    # "ora spegnila", "rifallo": il bersaglio non è nella frase perché è quello
+    # dell'ultima azione eseguita. È una domanda a cui l'orchestrator sa già
+    # rispondere — mandarla a un modello costa un secondo per riscoprire un
+    # dato che ha in memoria, e con lo STT rovinato spesso non lo riscopre.
+    router_data = _risolvi_coreferenza(text, speaker_id, location)
+    if router_data is None:
+        router_data = await get_routing(text, router_context)
     admin_metrics.record_routing((time.time() - routing_start) * 1000)
 
     intent = router_data.get("intent")
@@ -5719,6 +5759,20 @@ async def process_jarvis_logic(text: str, context: dict):
                 update_chat_meta(user_chat_id, ha_meta)
             except Exception as _e:
                 logger.debug(f"update_chat_meta(home_control) failed: {_e}")
+
+            # Riferimento per il turno dopo ("ora spegnila"). Si registra solo
+            # l'esito riuscito: un comando fallito non deve diventare il
+            # bersaglio a cui punta il pronome successivo.
+            if success and entity_raw and entity_raw != "unknown":
+                try:
+                    _dom = (target["entity_ids"][0].split(".")[0]
+                            if target.get("entity_ids") else (domain or "light"))
+                    save_last_action(
+                        speaker_id, entity_raw,
+                        _target_kind or ("scope" if target["mode"] == "bulk" else "device"),
+                        _dom, action, target_location, target.get("entity_ids"))
+                except Exception as _e:
+                    logger.debug(f"save_last_action failed: {_e}")
 
             if success:
                 action_verb = {

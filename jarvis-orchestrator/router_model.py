@@ -12,6 +12,7 @@ Distinzione portante (scelta esplicita del proprietario):
 Sono due campi distinti, mai mescolati: "cucina" e "centro block cucina" non
 sono lo stesso tipo di bersaglio.
 """
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
@@ -304,3 +305,73 @@ def stanza_valida(location_id: str, nome: Optional[str]) -> Optional[str]:
         return n
     esatto = next((s for s in b.scopes if s.lower() == n.lower()), None)
     return esatto
+
+
+# ─────────────────────────────────────────────────────── coreferenza ──
+# "ora spegnila", "rifallo", "e l'umidità?": frasi che NON nominano il
+# bersaglio perché lo danno per detto. Non sono ambigue per chi parla, e non
+# hanno bisogno di un modello: il bersaglio è quello dell'ultima azione
+# ESEGUITA, che l'orchestrator già conosce.
+#
+# La sorgente è l'ultima azione andata a buon fine, non il turno precedente.
+# Sono due cose diverse quando un turno fallisce:
+#   1. "accendi la strip led del salotto"  → eseguito
+#   2. "ora spegnila" → STT la storpia in "ora spargi qua" → nessuna azione
+#   3. "ora spegnila" → il bersaglio è quello del turno 1, non del 2.
+# Registrando solo gli esiti `ok`, il turno 2 semplicemente non esiste in
+# memoria e il salto avviene da sé.
+
+# Pronome clitico attaccato al verbo (accendi+la, spegni+le): in italiano è il
+# segnale più netto che il bersaglio è già noto.
+_CLITICO = re.compile(
+    r"\b((?:ri)?(?:accend|spegn|speng|apr|chiud|alz|abbass|fall|met|avvi|ferm|stacc|attiv|disattiv)"
+    r"\w*(?:la|lo|le|li|ne)\b|rifall[ao]|ancora una volta|di nuovo|un'altra volta)", re.I)
+# "aprile" è anche il mese: "quanti giorni è 2 aprile" non è una coreferenza.
+_MESE_APRILE = re.compile(r"(?:\d|\bil\b|\bdi\b|\bin\b)\s*aprile\b", re.I)
+# Seguito ellittico: "e l'umidità?" eredita il luogo della domanda precedente.
+_SEGUITO = re.compile(r"^\s*(?:e|ed|invece|ma)\b.{0,40}\?\s*$", re.I)
+
+def riferimento_a_turno_precedente(testo: str, vocabolario: Optional[Set[str]] = None) -> bool:
+    """La frase rimanda a un bersaglio già detto invece di nominarlo.
+
+    `vocabolario` = nomi di stanze e dispositivi della casa: se la frase ne
+    nomina uno, il bersaglio è lì e non va ereditato. "e in camera?" eredita
+    la grandezza (la temperatura), non il luogo — e il luogo è ciò che qui
+    stiamo risolvendo.
+    """
+    if not testo:
+        return False
+    if _CLITICO.search(testo) and not _MESE_APRILE.search(testo):
+        return True
+    if not _SEGUITO.search(testo):
+        return False
+    t = testo.lower()
+    nomi = vocabolario if vocabolario is not None else set()
+    return not any(re.search(rf"\b{re.escape(n.lower())}\b", t) for n in nomi)
+
+# Verbo → azione generica. `normalizza_azione` la adatta poi al dominio reale
+# del bersaglio ereditato, quindi qui bastano le forme neutre.
+_VERBO_AZIONE = [
+    (r"\b(?:ri)?(?:accend|attiv|avvi|riaccend)", "turn_on"),
+    (r"\b(?:ri)?(?:spegn|speng|disattiv|stacc|ferm)", "turn_off"),
+    (r"\b(?:ri)?apr", "open_cover"),
+    (r"\b(?:ri)?chiud", "close_cover"),
+    (r"\b(?:ri)?alz|\bsu\b", "volume_up"),
+    (r"\b(?:ri)?abbass|\bgi[uù]\b", "volume_down"),
+]
+
+def azione_dal_verbo(testo: str, dominio: str, azione_precedente: Optional[str] = None) -> Optional[str]:
+    """Azione espressa dal verbo della frase, adattata al dominio del bersaglio.
+
+    "rifallo" / "di nuovo" non portano un verbo proprio: ripetono l'azione
+    precedente.
+    """
+    t = (testo or "").lower()
+    if re.search(r"\brifall[ao]\b|\bancora una volta\b|\bdi nuovo\b|\bun'altra volta\b", t):
+        return normalizza_azione(azione_precedente, dominio) if azione_precedente else None
+    for pattern, azione in _VERBO_AZIONE:
+        if re.search(pattern, t):
+            if azione in ("volume_up", "volume_down") and dominio != "media_player":
+                azione = "open_cover" if azione == "volume_up" else "close_cover"
+            return normalizza_azione(azione, dominio)
+    return None
