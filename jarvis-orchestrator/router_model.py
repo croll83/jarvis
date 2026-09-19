@@ -214,17 +214,27 @@ class Bersagli:
     device_in_scope: Dict[str, set] = field(default_factory=dict)  # device → scope che lo contengono
     scope_livello: Dict[str, str] = field(default_factory=dict)    # scope → 'piano' | 'zona' | 'stanza'
 
+# Nomi che HA usa quando un'entita' non ha un'area: non sono luoghi.
+_SCOPE_FASULLI = ("sconosciuto", "non classificato", "others")
+
 def carica_bersagli(location_id: str, righe: Optional[List[dict]] = None) -> Bersagli:
     """Bersagli reali di una casa. `righe` = entity_maps (se None, legge dal DB)."""
     if righe is None:
         from database import _get_conn
         conn = _get_conn(); c = conn.cursor()
+        # Il filtro sulla stanza NON va nella query: scarterebbe la RIGA, e con
+        # essa un dispositivo perfettamente comandabile che semplicemente non ha
+        # un'area assegnata in HA. Misurato su albani20: 18 azionabili esclusi
+        # su 73 offerti — script come "Privacy Telecamere", media player come
+        # "AirPlay TV Cucina", "MacBook Pro". Il classificatore non poteva
+        # sceglierli nemmeno volendo.
+        # I nomi di stanza fasulli vengono gia' scartati piu' sotto, dove si
+        # costruiscono gli SCOPE: e' li' che servono, perche' uno scope e' un
+        # luogo mentre un device no.
         c.execute("""SELECT zone, area, room, entity_type, entity_name
                      FROM entity_maps
                      WHERE location_id = ? AND entity_id IS NOT NULL
-                       AND COALESCE(visible,1) = 1
-                       AND LOWER(COALESCE(room,'')) != 'sconosciuto'
-                       AND LOWER(COALESCE(zone,'')) != 'non classificato'""", (location_id,))
+                       AND COALESCE(visible,1) = 1""", (location_id,))
         righe = [dict(r) for r in c.fetchall()]
         conn.close()
     righe = [r for r in righe if r.get("entity_type") in VOCABOLARIO_BERSAGLI]
@@ -237,10 +247,12 @@ def carica_bersagli(location_id: str, righe: Optional[List[dict]] = None) -> Ber
             devices.append(nome); dom[nome] = r["entity_type"]
         if nome:
             dev_scope.setdefault(nome, set()).update(
-                (r.get(k) or "").strip() for k in ("room", "area", "zone") if (r.get(k) or "").strip())
+                (r.get(k) or "").strip() for k in ("room", "area", "zone")
+                if (r.get(k) or "").strip()
+                and (r.get(k) or "").strip().lower() not in _SCOPE_FASULLI)
         for chiave, liv in (("room", "stanza"), ("area", "zona"), ("zone", "piano")):
             s = (r.get(chiave) or "").strip()
-            if s and s.lower() not in ("sconosciuto", "non classificato", "others"):
+            if s and s.lower() not in _SCOPE_FASULLI:
                 if s not in scopes:
                     scopes.append(s)
                     livello[s] = liv
