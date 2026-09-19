@@ -29,4 +29,5 @@ curl -s localhost:11436/health
 ```
 
 Il venv `/home/jarvis/gliner-eval` ha `gliner2`, `torch` cuda, `fastapi`,
-`uvicorn`. VRAM occupata: ~563 MiB (fp16 quantizzato).
+`uvicorn`. VRAM occupata: **~1,65 GiB** misurati — 574 MiB di pesi piu' contesto CUDA e
+spazi di lavoro. `quantize=True` non la riduce su questo percorso.

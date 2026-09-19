@@ -833,6 +833,12 @@ async def lifespan(app: FastAPI):
             await jev_close()
         except Exception as e:
             logger.warning(f"Jev session close: {e}")
+    if config.GLINER_ENABLED:
+        try:
+            from gliner_engine import close as gliner_close
+            await gliner_close()
+        except Exception as e:
+            logger.warning(f"GLiNER session close: {e}")
 
 
 app = FastAPI(title="Jarvis Core Orchestrator", lifespan=lifespan)
