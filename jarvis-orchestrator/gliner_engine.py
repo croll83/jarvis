@@ -220,6 +220,12 @@ def _correggi_bersaglio(voc: dict, testo: str, nome: str, probabilita: dict) -> 
 
     if not st or reale == st or st in voc["device_in_scope"].get(reale, []):
         return reale, tipo
+    # La parola di stanza puo' essere parte del NOME del dispositivo: "Filtraggio
+    # Piscina" sta in Impianti, non in Piscina, e "attiva filtraggio piscina"
+    # nomina il device. Senza questa eccezione il vincolo scarta la risposta
+    # GIUSTA — il modello aveva scelto bene — e ne ripesca una dentro Piscina.
+    if st.lower() in reale.lower():
+        return reale, tipo
     candidati = [(k, p) for k, p in (probabilita or {}).items()
                  if k in voc["etichette"] and (
                      voc["etichette"][k][0] == st
