@@ -411,10 +411,29 @@ def _verbo_storpiato(testo: str) -> bool:
             return True
     return False
 
+# Comando di CORTESIA: ha la forma di una domanda ma chiede di agire. Il
+# criterio di HOME_CONTROL lo dice a chiare lettere — "vale anche se e' formulato
+# per cortesia ('puoi accendere la tv?')" — e ignorarlo costa caro: 9 delle 12
+# regressioni di intento contro la baseline Jev erano "puoi spegnere X?" finite
+# su SIMPLE_CHAT. Serve un modale di richiesta seguito dall'INFINITO di un verbo
+# di comando, oppure un clitico dativo ("mi accendi...").
+_CORTESIA = re.compile(
+    r"\b(puoi|potresti|riesci a|ti va di|mi fai|per favore|per piacere)\b[^?]{0,30}?"
+    r"\b(accend\w*|spegn\w*|apr\w*|chiud\w*|alz\w*|abbass\w*|mett\w*|avvi\w*|"
+    # "port\w*" NON c'e': catturerebbe il sostantivo "porta" — "puoi controllare
+    # se la porta e' aperta?" e' una domanda, non un comando. In italiano
+    # portare/la porta sono omografi, e qui il sostantivo e' molto piu' frequente.
+    r"ferm\w*|attiv\w*|disattiv\w*|impost\w*|mand\w*|riproduc\w*|"
+    r"suon\w*|regol\w*|stacc\w*|aument\w*|diminu\w*)"
+    r"|^\s*mi\s+(accend|spegn|apr|chiud|alz|abbass|met|avvi|ferm|attiv|disattiv)", re.I)
+
 def natura(testo: str) -> str:
     """'comando' | 'domanda' | 'incerto' — dalla forma della frase, non dal senso."""
     if not testo:
         return "incerto"
+    # la cortesia ha la precedenza sulla forma interrogativa: chiede di agire
+    if _CORTESIA.search(testo):
+        return "comando"
     interroga = bool(_INTERROGATIVO.search(testo)) or testo.strip().endswith("?")
     imperativo = bool(_IMPERATIVO.search(testo))
     if interroga and not (imperativo and not testo.strip().endswith("?")):
