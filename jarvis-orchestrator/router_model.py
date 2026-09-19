@@ -605,3 +605,27 @@ _PLURALE_COLLETTIVO = re.compile(
 def comando_collettivo(testo: str) -> bool:
     """Il comando vale per tutti gli apparecchi di un luogo, non per uno solo."""
     return bool(testo) and bool(_PLURALE_COLLETTIVO.search(testo))
+
+
+# 5. IL VERBO DISTRUTTO DALLO STT. "Spini", "pegni", "spendio", "spennie",
+# "pagnire" sono tutti "spegni", e il classificatore li legge come turn_on:
+# ACCENDE invece di spegnere, che e' il peggior errore possibile per un comando
+# vocale. La firma e' netta — una parola che somiglia foneticamente a "spegni",
+# e nessuna che somigli ad "accendi" — e la confidenza dell'azione in quei casi
+# sta fra 0,32 e 0,53, contro 0,86-0,99 quando il modello ha ragione.
+# Misurato: corregge 6 casi e ne peggiora 0.
+_SPEGNERE = ("spegni", "spegnere", "spegnila", "spegnile", "spegnilo")
+_ACCENDERE = ("accendi", "accendere", "accendila", "accendile", "accendilo")
+
+def _somiglia_a(testo: str, verbi: tuple, soglia: float) -> bool:
+    from difflib import SequenceMatcher
+    for parola in re.findall(r"\b[\w']{4,}\b", testo.lower())[:4]:
+        if any(SequenceMatcher(None, parola, v).ratio() >= soglia for v in verbi):
+            return True
+    return False
+
+def chiede_di_spegnere(testo: str) -> bool:
+    """Il testo chiede di SPEGNERE, anche se lo STT ha distrutto il verbo."""
+    if not testo:
+        return False
+    return _somiglia_a(testo, _SPEGNERE, 0.65) and not _somiglia_a(testo, _ACCENDERE, 0.75)
