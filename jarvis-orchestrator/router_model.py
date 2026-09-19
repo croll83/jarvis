@@ -12,6 +12,7 @@ Distinzione portante (scelta esplicita del proprietario):
 Sono due campi distinti, mai mescolati: "cucina" e "centro block cucina" non
 sono lo stesso tipo di bersaglio.
 """
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
@@ -58,10 +59,14 @@ INTENT_CRITERI: Dict[str, Dict[str, str]] = {
         "breve": "l'utente dice dove si trova",
         "criterio": "L'utente comunica in quale casa o luogo si trova",
     },
-    "IMAGE_GENERATION": {
-        "breve": "generare un'immagine",
-        "criterio": "L'utente chiede di generare o disegnare un'immagine",
-    },
+    # IMAGE_GENERATION non è dichiarato: main.py:5966 lo inoltra ad AI Agent
+    # senza fare nient'altro, quindi come decisione di routing non esiste — è
+    # AI_AGENT con un nome diverso. Offrirlo costa a ogni classificatore
+    # un'opzione in più da soppesare, e le opzioni inutili spostano le
+    # decisioni: aggiungere etichette a una classe la fa vincere. Restano
+    # attivi il ramo di dispatch e la scorciatoia a parole chiave in
+    # ai_engines (che risparmia la chiamata al modello), entrambi scorciatoie
+    # verso AI_AGENT, non un intent da far scegliere.
     "RETRY": {
         "breve": "manca il contesto necessario per decidere",
         "criterio": ("Ambiguo, incomprensibile, oppure manca il contesto per agire in "
@@ -304,3 +309,175 @@ def stanza_valida(location_id: str, nome: Optional[str]) -> Optional[str]:
         return n
     esatto = next((s for s in b.scopes if s.lower() == n.lower()), None)
     return esatto
+
+
+# ─────────────────────────────────────────────────────── coreferenza ──
+# "ora spegnila", "rifallo", "e l'umidità?": frasi che NON nominano il
+# bersaglio perché lo danno per detto. Non sono ambigue per chi parla, e non
+# hanno bisogno di un modello: il bersaglio è quello dell'ultima azione
+# ESEGUITA, che l'orchestrator già conosce.
+#
+# La sorgente è l'ultima azione andata a buon fine, non il turno precedente.
+# Sono due cose diverse quando un turno fallisce:
+#   1. "accendi la strip led del salotto"  → eseguito
+#   2. "ora spegnila" → STT la storpia in "ora spargi qua" → nessuna azione
+#   3. "ora spegnila" → il bersaglio è quello del turno 1, non del 2.
+# Registrando solo gli esiti `ok`, il turno 2 semplicemente non esiste in
+# memoria e il salto avviene da sé.
+
+# Pronome clitico attaccato al verbo (accendi+la, spegni+le): in italiano è il
+# segnale più netto che il bersaglio è già noto.
+_CLITICO = re.compile(
+    r"\b((?:ri)?(?:accend|spegn|speng|apr|chiud|alz|abbass|fall|met|avvi|ferm|stacc|attiv|disattiv)"
+    r"\w*(?:la|lo|le|li|ne)\b|rifall[ao]|ancora una volta|di nuovo|un'altra volta)", re.I)
+# "aprile" è anche il mese: "quanti giorni è 2 aprile" non è una coreferenza.
+_MESE_APRILE = re.compile(r"(?:\d|\bil\b|\bdi\b|\bin\b)\s*aprile\b", re.I)
+# Seguito ellittico: "e l'umidità?" eredita il luogo della domanda precedente.
+_SEGUITO = re.compile(r"^\s*(?:e|ed|invece|ma)\b.{0,40}\?\s*$", re.I)
+
+def riferimento_a_turno_precedente(testo: str, vocabolario: Optional[Set[str]] = None) -> bool:
+    """La frase rimanda a un bersaglio già detto invece di nominarlo.
+
+    `vocabolario` = nomi di stanze e dispositivi della casa: se la frase ne
+    nomina uno, il bersaglio è lì e non va ereditato. "e in camera?" eredita
+    la grandezza (la temperatura), non il luogo — e il luogo è ciò che qui
+    stiamo risolvendo.
+    """
+    if not testo:
+        return False
+    if _CLITICO.search(testo) and not _MESE_APRILE.search(testo):
+        return True
+    if not _SEGUITO.search(testo):
+        return False
+    t = testo.lower()
+    nomi = vocabolario if vocabolario is not None else set()
+    return not any(re.search(rf"\b{re.escape(n.lower())}\b", t) for n in nomi)
+
+# Verbo → azione generica. `normalizza_azione` la adatta poi al dominio reale
+# del bersaglio ereditato, quindi qui bastano le forme neutre.
+_VERBO_AZIONE = [
+    (r"\b(?:ri)?(?:accend|attiv|avvi|riaccend)", "turn_on"),
+    (r"\b(?:ri)?(?:spegn|speng|disattiv|stacc|ferm)", "turn_off"),
+    (r"\b(?:ri)?apr", "open_cover"),
+    (r"\b(?:ri)?chiud", "close_cover"),
+    (r"\b(?:ri)?alz|\bsu\b", "volume_up"),
+    (r"\b(?:ri)?abbass|\bgi[uù]\b", "volume_down"),
+]
+
+def azione_dal_verbo(testo: str, dominio: str, azione_precedente: Optional[str] = None) -> Optional[str]:
+    """Azione espressa dal verbo della frase, adattata al dominio del bersaglio.
+
+    "rifallo" / "di nuovo" non portano un verbo proprio: ripetono l'azione
+    precedente.
+    """
+    t = (testo or "").lower()
+    if re.search(r"\brifall[ao]\b|\bancora una volta\b|\bdi nuovo\b|\bun'altra volta\b", t):
+        return normalizza_azione(azione_precedente, dominio) if azione_precedente else None
+    for pattern, azione in _VERBO_AZIONE:
+        if re.search(pattern, t):
+            if azione in ("volume_up", "volume_down") and dominio != "media_player":
+                azione = "open_cover" if azione == "volume_up" else "close_cover"
+            return normalizza_azione(azione, dominio)
+    return None
+
+
+# ──────────────────────────────────────────── regole di lingua italiana ──
+# Tre cose che un classificatore a similarita' di embedding NON puo' vedere, e
+# che in italiano sono marcate in modo regolare. Misurate sul banco dei 426:
+# portano l'intento da 74,2 a 86,6 e il bersaglio da 77,7 a 83,4.
+
+# 1. COMANDO o DOMANDA. E' il confine fra HOME_CONTROL e SIMPLE_CHAT, e non e'
+# semantico: "accendi la luce della cucina" e "quali luci sono accese in
+# cucina?" nominano le stesse cose con le stesse parole, cambia il modo del
+# verbo. Per un modello che segna similarita' fra embedding sono quasi
+# identiche. In regole: 90,4%.
+_INTERROGATIVO = re.compile(
+    r"^\s*(qual[ei]?|quant[oaie]|com[e']|dove|quando|perch[eé]|chi\b|che\b|cosa|"
+    r"c'[eè]\b|ci sono|mi dici|dimmi|sai\b|puoi dirmi|vorrei sapere)", re.I)
+_IMPERATIVO = re.compile(
+    r"\b(accend|spegn|speng|apr|chiud|alz|abbass|met|avvi|ferm|attiv|disattiv|"
+    r"imposta|porta|fai|manda|riproduc|suona|regola|stacc|azion|aument|diminu)", re.I)
+_STATO = re.compile(r"\b(acces[ao]|spent[ao]|apert[ao]|chius[ao]|attiv[ao]|stato|temperatura|"
+                    r"umidit|consumo|batteria|gradi)\b", re.I)
+_VERBI_INTERI = ("accendi", "spegni", "apri", "chiudi", "alza", "abbassa", "metti", "avvia",
+                 "ferma", "attiva", "disattiva", "imposta", "porta", "fai", "manda",
+                 "riproduci", "suona", "regola", "stacca", "aumenta")
+
+def _verbo_storpiato(testo: str) -> bool:
+    """"spinni", "spaini", "pegni" SONO verbi: lo STT li rovina, non li cancella."""
+    from difflib import SequenceMatcher
+    for parola in re.findall(r"\b\w{4,}\b", testo.lower())[:4]:
+        if any(SequenceMatcher(None, parola, v).ratio() >= 0.72 for v in _VERBI_INTERI):
+            return True
+    return False
+
+def natura(testo: str) -> str:
+    """'comando' | 'domanda' | 'incerto' — dalla forma della frase, non dal senso."""
+    if not testo:
+        return "incerto"
+    interroga = bool(_INTERROGATIVO.search(testo)) or testo.strip().endswith("?")
+    imperativo = bool(_IMPERATIVO.search(testo))
+    if interroga and not (imperativo and not testo.strip().endswith("?")):
+        return "domanda"
+    if imperativo:
+        return "comando"
+    if _STATO.search(testo):
+        return "domanda"
+    return "comando" if _verbo_storpiato(testo) else "incerto"
+
+# 2. AI_AGENT. Il criterio dichiarato sopra ("serve uno strumento esterno o piu'
+# di un passo") ha una firma lessicale, non semantica. Misurato: 21/21 sul
+# banco con 0 falsi positivi su 405, contro il 10% del classificatore.
+_STRUMENTO_ESTERNO = re.compile(
+    r"\b(mail|email|posta|agenda|calendario|appuntament\w+|impegn\w+|riunion\w+|"
+    r"trading|portfolio|portafoglio|crypto|borsa|libreria|discografia)\b", re.I)
+_ELABORAZIONE = re.compile(
+    r"\b(analizz\w+|confront\w+|riassum\w+|organizz\w+|pianific\w+|"
+    r"consigli\w+|suggeris\w+|gener\w+|disegn\w+|scriv\w+)\b", re.I)
+_PRENOTAZIONE = re.compile(
+    r"\b(prenot\w+)\b|\b(cerc\w+|trov\w+)\b.{0,20}\b(volo|voli|albergo|hotel|tavolo)\b", re.I)
+_PLAYLIST = re.compile(r"\bplaylist\b", re.I)
+# lettura AGGREGATA: una grandezza di casa insieme a un periodo. Il criterio
+# manda ad AI_AGENT le domande che richiedono di ELABORARE i dati, non leggerli.
+_GRANDEZZA = re.compile(r"\b(consum\w+|spes[ao]|speso|energia|produzion\w+|kwh|bolletta)\b", re.I)
+_PERIODO = re.compile(r"\b(settimana|mese|mesi|anno|ieri|stanotte|scors\w+|gennaio|febbraio|"
+                      r"marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|"
+                      r"novembre|dicembre)\b", re.I)
+
+def serve_strumento_esterno(testo: str, scopes: Optional[List[str]] = None) -> bool:
+    """La frase richiede uno strumento esterno o piu' di un passo: AI_AGENT."""
+    if not testo:
+        return False
+    if _STRUMENTO_ESTERNO.search(testo) or _ELABORAZIONE.search(testo) or _PRENOTAZIONE.search(testo):
+        return True
+    if _PLAYLIST.search(testo):
+        # "metti una playlist in salotto" e' un comando di casa; senza un luogo
+        # e' musica dalla libreria personale, che il criterio manda ad AI_AGENT
+        t = testo.lower()
+        if not any(re.search(rf"\b{re.escape(s.lower())}\b", t) for s in (scopes or [])):
+            return True
+    return bool(_GRANDEZZA.search(testo) and _PERIODO.search(testo))
+
+# 3. LA STANZA NEL TESTO. E' una stringa letterale, quindi non serve un modello:
+# si cerca con tolleranza alle storpiature. Serve a rifiutare i bersagli che
+# stanno altrove — "spegni luci garage" non puo' dare "Luce Box", che il
+# classificatore scegliera' sette volte su sette perche' l'etichetta e' corta e
+# contiene "luce". Vale +5,7 punti sul bersaglio.
+def stanza_nel_testo(testo: str, scopes: List[str], soglia: float = 0.84) -> Optional[str]:
+    """Il nome di stanza, zona o piano nominato nel testo, anche storpiato."""
+    from difflib import SequenceMatcher
+    if not testo or not scopes:
+        return None
+    pulito = " " + re.sub(r"[^\w\s]", " ", testo.lower()) + " "
+    parole = pulito.split()
+    migliore, punteggio = None, 0.0
+    for s in scopes:
+        sl = s.lower()
+        if f" {sl} " in pulito:
+            return s                                  # esatta: non serve altro
+        n = len(sl.split())
+        for i in range(len(parole) - n + 1):
+            r = SequenceMatcher(None, " ".join(parole[i:i + n]), sl).ratio()
+            if r > punteggio:
+                migliore, punteggio = s, r
+    return migliore if punteggio >= soglia else None

@@ -69,6 +69,38 @@ except FileNotFoundError:
     SYSTEM_RULES = "You are Jarvis, a home assistant."
 
 
+# Regole del router: generate dal modello decisionale (router_model) sulla mappa
+# reale della casa, con cache per location. Il file statico resta come rete di
+# sicurezza se la generazione fallisce, e come comportamento invariato quando
+# ROUTER_PROMPT_GENERATO e' disattivo.
+_regole_cache: dict = {}
+
+def get_system_rules(location_id: Optional[str] = None) -> str:
+    """Regole di sistema per il routing, per casa."""
+    if not getattr(config, "ROUTER_PROMPT_GENERATO", False) or not location_id \
+            or location_id == "unknown":
+        return SYSTEM_RULES
+    if location_id not in _regole_cache:
+        try:
+            import render_flat
+            _regole_cache[location_id] = render_flat.render(location_id)
+            logger.info(f"Regole router generate per '{location_id}': "
+                        f"{len(_regole_cache[location_id])} char")
+        except Exception as e:
+            logger.error(f"Generazione regole fallita per '{location_id}', "
+                         f"uso il file statico: {e}")
+            _regole_cache[location_id] = SYSTEM_RULES
+    return _regole_cache[location_id]
+
+
+def invalida_regole_cache(location_id: Optional[str] = None) -> None:
+    """Da chiamare dopo una sync della mappa: i bersagli sono cambiati."""
+    if location_id:
+        _regole_cache.pop(location_id, None)
+    else:
+        _regole_cache.clear()
+
+
 async def _llm_chat(messages: list, temperature: float = 0.1,
                     max_tokens: int = 200, timeout: float = 15,
                     stop: list = None) -> Optional[str]:
@@ -626,6 +658,20 @@ async def get_routing(text: str, context: dict) -> dict:
     # catena Qwen. Restituisce None quando non se la sente (HTTP/timeout,
     # confidence sotto soglia, entita' incerta, o serve uno slot di testo
     # libero che Jev non sa generare) e in quel caso si prosegue su Qwen.
+    # GLiNER primario quando attivo: e' locale, costa 62ms di p50 contro i 470ms
+    # di Jev, e sul banco dei 426 casi fa 69,1% di payload contro 70,2 —
+    # differenza dentro il rumore di fondo — e 77,2 contro 67,8 sui casi
+    # difficili. Restituisce None quando non se la sente, e allora si prosegue
+    # sulla catena esistente (Jev se attivo, poi Qwen).
+    if config.GLINER_ENABLED:
+        try:
+            from gliner_engine import route as gliner_route
+            gliner_result = await gliner_route(text, context)
+            if gliner_result is not None:
+                return _validate_routing(gliner_result)
+        except Exception as e:
+            logger.warning(f"GLiNER engine error ({type(e).__name__}: {e}) — proseguo")
+
     if config.JEV_ENABLED:
         try:
             from jev_engine import route as jev_route
@@ -803,23 +849,31 @@ async def _qwen_routing_call(text: str, context: dict) -> dict:
     full_prompt = _build_routing_prompt(text, context)
     _rp = get_llm_params("routing")
 
+    _loc = context.get("location")
     if config.ROUTER_ENGINE == "llamacpp":
-        return await _llamacpp_routing_call(full_prompt, _rp)
+        return await _llamacpp_routing_call(full_prompt, _rp, location_id=_loc)
     else:
-        return await _ollama_routing_call(full_prompt, _rp)
+        return await _ollama_routing_call(full_prompt, _rp, location_id=_loc)
 
 
-async def _llamacpp_routing_call(full_prompt: str, _rp: dict) -> dict:
+async def _llamacpp_routing_call(full_prompt: str, _rp: dict,
+                                 location_id: Optional[str] = None) -> dict:
     """Routing via llama-server (OpenAI-compatible API)."""
     payload = {
         "model": config.ROUTER_MODEL,
         "messages": [
-            {"role": "system", "content": SYSTEM_RULES},
+            {"role": "system", "content": get_system_rules(location_id)},
             {"role": "user", "content": full_prompt}
         ],
         "temperature": _rp["temperature"],
         "max_tokens": _rp["max_tokens"],
         "stop": ["<|im_start|>"],
+        # I modelli con reasoning (Qwen3.x) spendono TUTTI i token consentiti in
+        # catena di pensiero e restituiscono `content` VUOTO: misurato sul 4B,
+        # 200 token e 7,5s per una risposta inesistente. llama.cpp con --jinja
+        # attiva il thinking per default, quindi va spento esplicitamente.
+        # Sui modelli senza reasoning (Qwen2.5) il template ignora il parametro.
+        "chat_template_kwargs": {"enable_thinking": False},
         "stream": False
     }
 
@@ -865,7 +919,8 @@ async def _llamacpp_routing_call(full_prompt: str, _rp: dict) -> dict:
         return _fallback_routing()
 
 
-async def _ollama_routing_call(full_prompt: str, _rp: dict) -> dict:
+async def _ollama_routing_call(full_prompt: str, _rp: dict,
+                               location_id: Optional[str] = None) -> dict:
     """Routing via Ollama API (legacy)."""
     payload = {
         "model": config.ROUTER_MODEL,

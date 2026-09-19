@@ -1598,6 +1598,43 @@ def get_last_intent(user_id: int, max_age_seconds: int = 900) -> Optional[Dict]:
     return entry
 
 
+# Ultima azione ESEGUITA, non ultimo intent routato: sono due cose diverse.
+# `save_last_intent` sopra registra ogni turno che passa dal router, anche
+# quelli che poi falliscono; per risolvere "ora spegnila" serve invece il
+# bersaglio dell'ultimo comando che HA ha davvero eseguito, così un turno
+# andato storto (STT rovinato, entità non trovata) non sposta il riferimento.
+_ultima_azione: Dict[int, Dict] = {}
+
+def save_last_action(user_id: int, entity: str, tipo: str, dominio: str,
+                     azione: str, location_id: str = None, entity_ids: List[str] = None):
+    """Registra un comando andato a buon fine. Da chiamare SOLO su esito ok."""
+    if not user_id or not entity:
+        return
+    _ultima_azione[user_id] = {
+        "entity": entity,
+        "tipo": tipo,                      # 'scope' | 'device'
+        "dominio": dominio,
+        "azione": azione,
+        "location_id": location_id,
+        "entity_ids": list(entity_ids or []),
+        "timestamp": time.time(),
+    }
+
+def get_last_action(user_id: int, max_age_seconds: int = 300) -> Optional[Dict]:
+    """Ultima azione eseguita, se abbastanza recente da poterci riferire.
+
+    Cinque minuti: oltre, "ora spegnila" non si riferisce più a niente di
+    plausibile e tirare a indovinare su un bersaglio vecchio è peggio che
+    chiedere di ripetere.
+    """
+    entry = _ultima_azione.get(user_id)
+    if not entry:
+        return None
+    if time.time() - entry["timestamp"] > max_age_seconds:
+        return None
+    return entry
+
+
 def get_recent_context(seconds: int = 3600) -> List[Dict]:
     """
     Versione semplice (backward compatible) - ritorna tutti i messaggi.
