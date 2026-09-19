@@ -206,6 +206,18 @@ def _correggi_bersaglio(voc: dict, testo: str, nome: str, probabilita: dict) -> 
     """
     reale, tipo = voc["etichette"].get(nome, (nome, "device"))
     st = rm.stanza_nel_testo(testo, voc["scopes"])
+
+    # Il PLURALE dice "tutti quelli della stanza": "spegni le luci del garage"
+    # vuole lo scope, non una luce singola. Il vincolo sotto non basta, perche'
+    # "Luce Box" sta dentro Box che sta dentro Garage — formalmente e' nella
+    # stanza giusta. Regola stretta: scatta solo se si e' scelto un DEVICE che
+    # sta nella stanza nominata. Misurata: corregge 6 casi e ne peggiora 1,
+    # bersaglio da 80,0% a 81,7%.
+    if st and tipo == "device" and rm.comando_collettivo(testo) \
+            and st in voc["device_in_scope"].get(reale, []):
+        logger.debug(f"GLiNER: comando collettivo, {reale!r} → lo scope {st!r}")
+        return st, "scope"
+
     if not st or reale == st or st in voc["device_in_scope"].get(reale, []):
         return reale, tipo
     candidati = [(k, p) for k, p in (probabilita or {}).items()

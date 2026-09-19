@@ -590,3 +590,18 @@ def fonte_risposta(testo: str, scopes: List[str], devices: List[str],
     if nomina or _DA_CASA.search(testo):
         return "entity_discover"
     return "none"
+
+
+# 4. IL PLURALE DICE "TUTTI QUELLI DELLA STANZA". "spegni le luci del garage"
+# vuole lo scope Garage, non una luce singola — ma il classificatore sceglieva
+# "Luce Box", e il vincolo di stanza non lo rifiutava perche' Box sta DENTRO
+# Garage, quindi formalmente il device e' "nella stanza giusta".
+# E' la domanda `is_collective` che Jev pone e che qui mancava.
+_PLURALE_COLLETTIVO = re.compile(
+    r"\b(tutt[eiao]\s+)?(le|i|gli|dei|delle|degli)\s+\w*"
+    r"(luci|lampade|tapparelle|tende|prese|faretti|termosifoni|finestre|serrande)\b"
+    r"|\bluci\b|\btapparelle\b", re.I)
+
+def comando_collettivo(testo: str) -> bool:
+    """Il comando vale per tutti gli apparecchi di un luogo, non per uno solo."""
+    return bool(testo) and bool(_PLURALE_COLLETTIVO.search(testo))
