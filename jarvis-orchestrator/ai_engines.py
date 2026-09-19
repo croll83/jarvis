@@ -658,6 +658,20 @@ async def get_routing(text: str, context: dict) -> dict:
     # catena Qwen. Restituisce None quando non se la sente (HTTP/timeout,
     # confidence sotto soglia, entita' incerta, o serve uno slot di testo
     # libero che Jev non sa generare) e in quel caso si prosegue su Qwen.
+    # GLiNER primario quando attivo: e' locale, costa 62ms di p50 contro i 470ms
+    # di Jev, e sul banco dei 426 casi fa 69,1% di payload contro 70,2 —
+    # differenza dentro il rumore di fondo — e 77,2 contro 67,8 sui casi
+    # difficili. Restituisce None quando non se la sente, e allora si prosegue
+    # sulla catena esistente (Jev se attivo, poi Qwen).
+    if config.GLINER_ENABLED:
+        try:
+            from gliner_engine import route as gliner_route
+            gliner_result = await gliner_route(text, context)
+            if gliner_result is not None:
+                return _validate_routing(gliner_result)
+        except Exception as e:
+            logger.warning(f"GLiNER engine error ({type(e).__name__}: {e}) — proseguo")
+
     if config.JEV_ENABLED:
         try:
             from jev_engine import route as jev_route

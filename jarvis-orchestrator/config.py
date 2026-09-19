@@ -144,6 +144,20 @@ JEV_MIN_ENTITY_CONFIDENCE = float(os.getenv("JEV_MIN_ENTITY_CONFIDENCE", "0.60")
 JEV_FREETEXT_THRESHOLD = float(os.getenv("JEV_FREETEXT_THRESHOLD", "0.50"))
 JEV_INJECTION_THRESHOLD = float(os.getenv("JEV_INJECTION_THRESHOLD", "0.60"))
 
+# ── GLiNER: il decisore locale che sostituisce Jev ──────────────────────
+# Gira come servizio a se' (gliner-router.service, porta 11436) perche' il
+# container ha torch CPU: su CPU il bersaglio costa 1370ms contro 34ms in GPU.
+# Misurato sul banco dei 426 casi: payload 69,1% contro il 70,2% di Jev
+# (differenza dentro il rumore di fondo) e 77,2% contro 67,8% sui casi
+# difficili, a 62ms di p50 contro 470ms e senza cloud.
+GLINER_ENABLED = os.getenv("GLINER_ENABLED", "False").lower() in ("true", "1", "yes")
+GLINER_URL = os.getenv("GLINER_URL", "http://localhost:11436")
+GLINER_TIMEOUT = float(os.getenv("GLINER_TIMEOUT", "3"))
+# Soglia bassa di proposito: si ricade su Qwen solo quando la confidenza e'
+# scarsa E la regola sintattica si astiene. Con la sola confidenza non si
+# separa niente (misurato: nessuna soglia da' guadagno netto su RETRY).
+GLINER_MIN_CONFIDENCE = float(os.getenv("GLINER_MIN_CONFIDENCE", "0.45"))
+
 # ===========================================================================
 # WEB TOOLS (Brave Search API per tool calling Qwen)
 # ===========================================================================

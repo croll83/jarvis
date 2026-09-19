@@ -1,0 +1,17 @@
+[Unit]
+Description=GLiNER router scoring service (Jarvis)
+After=network-online.target
+
+[Service]
+Type=simple
+User=jarvis
+WorkingDirectory=/opt/jarvis/gliner-router
+Environment=GLINER_DEVICE=cuda
+Environment=HF_HOME=/home/jarvis/.cache/huggingface
+Environment=OMP_NUM_THREADS=4
+ExecStart=/home/jarvis/gliner-eval/bin/python -m uvicorn server:app --host 127.0.0.1 --port 11436
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

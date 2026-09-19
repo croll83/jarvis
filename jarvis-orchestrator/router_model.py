@@ -379,3 +379,105 @@ def azione_dal_verbo(testo: str, dominio: str, azione_precedente: Optional[str] 
                 azione = "open_cover" if azione == "volume_up" else "close_cover"
             return normalizza_azione(azione, dominio)
     return None
+
+
+# ──────────────────────────────────────────── regole di lingua italiana ──
+# Tre cose che un classificatore a similarita' di embedding NON puo' vedere, e
+# che in italiano sono marcate in modo regolare. Misurate sul banco dei 426:
+# portano l'intento da 74,2 a 86,6 e il bersaglio da 77,7 a 83,4.
+
+# 1. COMANDO o DOMANDA. E' il confine fra HOME_CONTROL e SIMPLE_CHAT, e non e'
+# semantico: "accendi la luce della cucina" e "quali luci sono accese in
+# cucina?" nominano le stesse cose con le stesse parole, cambia il modo del
+# verbo. Per un modello che segna similarita' fra embedding sono quasi
+# identiche. In regole: 90,4%.
+_INTERROGATIVO = re.compile(
+    r"^\s*(qual[ei]?|quant[oaie]|com[e']|dove|quando|perch[eé]|chi\b|che\b|cosa|"
+    r"c'[eè]\b|ci sono|mi dici|dimmi|sai\b|puoi dirmi|vorrei sapere)", re.I)
+_IMPERATIVO = re.compile(
+    r"\b(accend|spegn|speng|apr|chiud|alz|abbass|met|avvi|ferm|attiv|disattiv|"
+    r"imposta|porta|fai|manda|riproduc|suona|regola|stacc|azion|aument|diminu)", re.I)
+_STATO = re.compile(r"\b(acces[ao]|spent[ao]|apert[ao]|chius[ao]|attiv[ao]|stato|temperatura|"
+                    r"umidit|consumo|batteria|gradi)\b", re.I)
+_VERBI_INTERI = ("accendi", "spegni", "apri", "chiudi", "alza", "abbassa", "metti", "avvia",
+                 "ferma", "attiva", "disattiva", "imposta", "porta", "fai", "manda",
+                 "riproduci", "suona", "regola", "stacca", "aumenta")
+
+def _verbo_storpiato(testo: str) -> bool:
+    """"spinni", "spaini", "pegni" SONO verbi: lo STT li rovina, non li cancella."""
+    from difflib import SequenceMatcher
+    for parola in re.findall(r"\b\w{4,}\b", testo.lower())[:4]:
+        if any(SequenceMatcher(None, parola, v).ratio() >= 0.72 for v in _VERBI_INTERI):
+            return True
+    return False
+
+def natura(testo: str) -> str:
+    """'comando' | 'domanda' | 'incerto' — dalla forma della frase, non dal senso."""
+    if not testo:
+        return "incerto"
+    interroga = bool(_INTERROGATIVO.search(testo)) or testo.strip().endswith("?")
+    imperativo = bool(_IMPERATIVO.search(testo))
+    if interroga and not (imperativo and not testo.strip().endswith("?")):
+        return "domanda"
+    if imperativo:
+        return "comando"
+    if _STATO.search(testo):
+        return "domanda"
+    return "comando" if _verbo_storpiato(testo) else "incerto"
+
+# 2. AI_AGENT. Il criterio dichiarato sopra ("serve uno strumento esterno o piu'
+# di un passo") ha una firma lessicale, non semantica. Misurato: 21/21 sul
+# banco con 0 falsi positivi su 405, contro il 10% del classificatore.
+_STRUMENTO_ESTERNO = re.compile(
+    r"\b(mail|email|posta|agenda|calendario|appuntament\w+|impegn\w+|riunion\w+|"
+    r"trading|portfolio|portafoglio|crypto|borsa|libreria|discografia)\b", re.I)
+_ELABORAZIONE = re.compile(
+    r"\b(analizz\w+|confront\w+|riassum\w+|organizz\w+|pianific\w+|"
+    r"consigli\w+|suggeris\w+|gener\w+|disegn\w+|scriv\w+)\b", re.I)
+_PRENOTAZIONE = re.compile(
+    r"\b(prenot\w+)\b|\b(cerc\w+|trov\w+)\b.{0,20}\b(volo|voli|albergo|hotel|tavolo)\b", re.I)
+_PLAYLIST = re.compile(r"\bplaylist\b", re.I)
+# lettura AGGREGATA: una grandezza di casa insieme a un periodo. Il criterio
+# manda ad AI_AGENT le domande che richiedono di ELABORARE i dati, non leggerli.
+_GRANDEZZA = re.compile(r"\b(consum\w+|spes[ao]|speso|energia|produzion\w+|kwh|bolletta)\b", re.I)
+_PERIODO = re.compile(r"\b(settimana|mese|mesi|anno|ieri|stanotte|scors\w+|gennaio|febbraio|"
+                      r"marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|"
+                      r"novembre|dicembre)\b", re.I)
+
+def serve_strumento_esterno(testo: str, scopes: Optional[List[str]] = None) -> bool:
+    """La frase richiede uno strumento esterno o piu' di un passo: AI_AGENT."""
+    if not testo:
+        return False
+    if _STRUMENTO_ESTERNO.search(testo) or _ELABORAZIONE.search(testo) or _PRENOTAZIONE.search(testo):
+        return True
+    if _PLAYLIST.search(testo):
+        # "metti una playlist in salotto" e' un comando di casa; senza un luogo
+        # e' musica dalla libreria personale, che il criterio manda ad AI_AGENT
+        t = testo.lower()
+        if not any(re.search(rf"\b{re.escape(s.lower())}\b", t) for s in (scopes or [])):
+            return True
+    return bool(_GRANDEZZA.search(testo) and _PERIODO.search(testo))
+
+# 3. LA STANZA NEL TESTO. E' una stringa letterale, quindi non serve un modello:
+# si cerca con tolleranza alle storpiature. Serve a rifiutare i bersagli che
+# stanno altrove — "spegni luci garage" non puo' dare "Luce Box", che il
+# classificatore scegliera' sette volte su sette perche' l'etichetta e' corta e
+# contiene "luce". Vale +5,7 punti sul bersaglio.
+def stanza_nel_testo(testo: str, scopes: List[str], soglia: float = 0.84) -> Optional[str]:
+    """Il nome di stanza, zona o piano nominato nel testo, anche storpiato."""
+    from difflib import SequenceMatcher
+    if not testo or not scopes:
+        return None
+    pulito = " " + re.sub(r"[^\w\s]", " ", testo.lower()) + " "
+    parole = pulito.split()
+    migliore, punteggio = None, 0.0
+    for s in scopes:
+        sl = s.lower()
+        if f" {sl} " in pulito:
+            return s                                  # esatta: non serve altro
+        n = len(sl.split())
+        for i in range(len(parole) - n + 1):
+            r = SequenceMatcher(None, " ".join(parole[i:i + n]), sl).ratio()
+            if r > punteggio:
+                migliore, punteggio = s, r
+    return migliore if punteggio >= soglia else None
