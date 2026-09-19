@@ -187,8 +187,14 @@ def classify(r: Generica):
 
     schema = ClassificationSchema()
     for nome, etichette in r.tasks.items():
-        # NON ordinare le etichette: l'ordine nel prompt cambia il risultato
-        schema = schema.single(nome, dict(etichette))
+        # NON ordinare le etichette: l'ordine nel prompt cambia il risultato.
+        # Una descrizione VUOTA non e' una descrizione: `_clean` la rifiuta e il
+        # consumer si prende un 500 per aver fatto la cosa piu' naturale del
+        # mondo, cioe' passare etichette nude. Se nessuna e' valorizzata si
+        # passa la lista; se lo sono solo alcune, si tengono solo quelle.
+        piene = {k: v for k, v in etichette.items() if (v or "").strip()}
+        schema = schema.single(nome, piene if len(piene) == len(etichette)
+                               else list(etichette))
     _OPS = {"implies": C.implies, "iff": C.iff, "excludes": C.excludes}
     if r.vincoli:
         espressioni = []
