@@ -502,6 +502,14 @@ STT_TARGET_ALIASES = {
     "dependance": "depandance",
     "dépendance": "depandance",
     "debondanza": "depandance",
+    # aggiunte 2026-09-20 dopo averle viste sbagliare sul banco: sono tutte
+    # non-parole in italiano, quindi sostituzione sicura
+    "salade bandans": "sala depandance",
+    "bandanza": "depandance",
+    "bandanze": "depandance",
+    "bandanzi": "depandance",
+    "bandans": "depandance",
+    "bandance": "depandance",
     "pandanza": "depandance",
     "pandanze": "depandance",
     "pandanzi": "depandance",

@@ -387,7 +387,18 @@ async def route(text: str, context: dict) -> Optional[dict]:
     if not ber.get("value"):
         return None
     nome, tipo = _correggi_bersaglio(voc, text, ber["value"], ber.get("probabilities"))
-    azione = (dati.get("azione") or {}).get("value") or "toggle"
+    _az = dati.get("azione") or {}
+    azione = _az.get("value") or "toggle"
+    # Il verbo distrutto dallo STT: "Spini la luz del box" usciva turn_on, cioe'
+    # ACCENDEVA invece di spegnere. Si corregge solo quando il modello e' gia'
+    # incerto (sotto 0,70) e il testo somiglia foneticamente a "spegni" senza
+    # somigliare ad "accendi": misurato, corregge 6 casi e non ne peggiora nessuno.
+    if azione == "turn_on" and float(_az.get("confidence", 1.0)) < 0.70 \
+            and rm.chiede_di_spegnere(text):
+        logger.info(f"GLiNER: verbo rovinato dallo STT in {text[:40]!r}, "
+                    f"turn_on → turn_off (conf azione {_az.get('confidence')})")
+        azione = "turn_off"
+
     if azione == "none":
         logger.info("GLiNER: intento domotico ma azione 'none' — fallback su Qwen")
         return None
@@ -426,5 +437,10 @@ async def route(text: str, context: dict) -> Optional[dict]:
         "payload": payload,
         "_gliner": {"elapsed_ms": round(elapsed_ms), "ms": dati.get("ms"),
                     "intento_conf": round(conf, 3),
-                    "bersaglio_conf": round(float(ber.get("confidence", 0)), 3)},
+                    "bersaglio_conf": round(float(ber.get("confidence", 0)), 3),
+                    # l'azione va registrata come le altre due: quando il router
+                    # fa il CONTRARIO di quanto chiesto (turn_on invece di
+                    # turn_off su un verbo rovinato dallo STT) e' questa la
+                    # confidenza che serve guardare, e mancava
+                    "azione_conf": round(float(_az.get("confidence", 0)), 3)},
     }
