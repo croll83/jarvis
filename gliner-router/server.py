@@ -20,6 +20,13 @@ logger = logging.getLogger("gliner-router")
 
 MODELLO = os.getenv("GLINER_MODEL", "fastino/gliner2.5-multi-v1")
 DEVICE = os.getenv("GLINER_DEVICE", "cuda")
+# La NER richiede un SECONDO modello in VRAM: il Classifier non sa estrarre e
+# l'AutoExtractor non sa applicare vincoli, quindi servono entrambi. Misurato:
+# il processo passa da 1908 a 2838 MiB, e insieme al router generativo (4572)
+# restano ~740 MiB su 8151 — troppo pochi perche' llama-server allochi un
+# contesto lungo. Quindi e' SPENTA per default: si accende quando serve e
+# quando c'e' VRAM, non per caso alla prima richiesta che chiede `entita`.
+NER_ATTIVA = os.getenv("GLINER_NER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 
 app = FastAPI(title="GLiNER router", version="1")
 _clf = None
@@ -154,6 +161,87 @@ def route(r: Richiesta):
     return out
 
 
+class Generica(BaseModel):
+    """Classificazione generica: task arbitrari, nessun vincolo cablato.
+
+    `/route` esiste per il router di Jarvis e ha i suoi vincoli dentro
+    (`intent ⇔ natura ∧ argomento`): un consumer che passa etichette proprie se
+    li ritroverebbe applicati alla propria semantica, e otterrebbe sempre la
+    prima etichetta. Questo endpoint non assume niente.
+    """
+    text: str
+    # {nome_task: {etichetta: descrizione}} — la descrizione puo' essere vuota
+    tasks: Dict[str, Dict[str, str]]
+    # vincoli opzionali, espressi in forma dichiarativa:
+    #   {"tipo": "implies"|"iff"|"excludes", "a": [task, etichetta], "b": [task, etichetta]}
+    vincoli: Optional[List[dict]] = None
+    entita: Optional[Dict[str, str]] = None     # {tipo: descrizione} per la NER
+    probabilita: bool = False
+
+
+@app.post("/classify")
+def classify(r: Generica):
+    """Classificazione zero-shot su task arbitrari. Vedi [[gliner-service]]."""
+    from gliner2.classification import ClassificationSchema
+    from gliner2.classification import constraints as C
+
+    schema = ClassificationSchema()
+    for nome, etichette in r.tasks.items():
+        # NON ordinare le etichette: l'ordine nel prompt cambia il risultato.
+        # Una descrizione VUOTA non e' una descrizione: `_clean` la rifiuta e il
+        # consumer si prende un 500 per aver fatto la cosa piu' naturale del
+        # mondo, cioe' passare etichette nude. Se nessuna e' valorizzata si
+        # passa la lista; se lo sono solo alcune, si tengono solo quelle.
+        piene = {k: v for k, v in etichette.items() if (v or "").strip()}
+        schema = schema.single(nome, piene if len(piene) == len(etichette)
+                               else list(etichette))
+    _OPS = {"implies": C.implies, "iff": C.iff, "excludes": C.excludes}
+    if r.vincoli:
+        espressioni = []
+        for v in r.vincoli:
+            op = _OPS.get(v.get("tipo"))
+            if not op:
+                continue
+            espressioni.append(op(tuple(v["a"]), tuple(v["b"])))
+        if espressioni:
+            schema = schema.constrain(*espressioni)
+
+    t0 = time.perf_counter()
+    res = _clf.classify(r.text, schema, config=_CFG_LARGO)
+    d = res.to_dict()
+    out = {}
+    for nome in r.tasks:
+        voce = {"value": d[nome]["value"], "confidence": d[nome]["confidence"]}
+        if r.probabilita:
+            voce["probabilities"] = res.probabilities(nome)
+        out[nome] = voce
+    if r.entita:
+        if not NER_ATTIVA:
+            out["entita"] = None
+            out["avviso"] = ("NER spenta: serve un secondo modello in VRAM (+930 MiB). "
+                             "Accendere con GLINER_NER_ENABLED=true nella unit, "
+                             "dopo aver verificato che ci sia spazio sulla GPU.")
+        else:
+            out["entita"] = _estrattore().extract_entities(
+                r.text, dict(r.entita), include_confidence=True)["entities"]
+    out["ms"] = round((time.perf_counter() - t0) * 1000)
+    return out
+
+
+_ext = None
+
+def _estrattore():
+    """L'estrattore si carica solo se qualcuno chiede entita': e' un secondo
+    modello in VRAM e la maggior parte dei consumer non ne ha bisogno."""
+    global _ext
+    if _ext is None:
+        from gliner2 import AutoExtractor
+        logger.info("carico l'estrattore per la NER")
+        _ext = AutoExtractor.from_pretrained(MODELLO, map_location=DEVICE, quantize=True)
+    return _ext
+
+
 @app.get("/health")
 def health():
-    return {"ok": _clf is not None, "model": MODELLO, "device": DEVICE}
+    return {"ok": _clf is not None, "model": MODELLO, "device": DEVICE,
+            "ner": NER_ATTIVA}
