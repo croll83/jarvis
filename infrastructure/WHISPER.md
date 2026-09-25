@@ -1,7 +1,7 @@
 # ⚠️ DEPRECATO — Whisper (faster-whisper-large-v3-turbo)
 
 > **DEPRECATO**: Whisper è stato sostituito da **Parakeet STT** (nvidia/parakeet-tdt-0.6b-v3)
-> che gira sul **GX10 DGX Spark** (porta 7865, via Tailscale).
+> che gira sul **GX10 DGX Spark** (porta 9000, via Tailscale). La porta 7865 ospita ACE-Step (generazione musicale) — servizio diverso, mai stato STT.
 > Questo file è mantenuto come riferimento storico. Il Dockerfile è in `whisper-custom-deprecated/`.
 >
 > **Nuovo STT**: Parakeet — multilingue, auto-detection, 20x realtime, ~5.1 GiB VRAM su GX10.

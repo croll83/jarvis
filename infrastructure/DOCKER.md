@@ -95,7 +95,7 @@ Host (LXC-JARVIS)
 +-- jarvis_mongo        (:27017)    — Docker
 
 GX10 DGX Spark (100.98.187.12, via Tailscale)
-+-- parakeet-stt        (:7865)     — systemd (STT)
++-- parakeet-stt        (:9000)     — systemd (STT, esteso 2026-09-25 con enhance+diarize)
 +-- cosyvoice3-tts      (:9880)     — systemd (TTS)
 ```
 
@@ -103,7 +103,7 @@ L'orchestrator raggiunge i servizi su `localhost`:
 - `http://localhost:11434` per Ollama
 - `http://localhost:11435` per fastembed (embeddings)
 - `https://your-agent-host:18789` per AI Agent (LXC separato, TLS, via Tailscale MagicDNS)
-- `http://100.98.187.12:7865` per Parakeet STT (GX10, via Tailscale)
+- `http://100.98.187.12:9000` per Parakeet STT (GX10, via Tailscale)
 - `http://100.98.187.12:9880` per CosyVoice3 TTS (GX10, via Tailscale)
 
 > **Nota**: AI Agent gira bare-metal su un **LXC separato** (non in Docker).

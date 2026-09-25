@@ -182,7 +182,7 @@ systemd -> tailscaled.service -> ai-agent-chrome.service (Chrome CDP :18800)
                      deploy indipendente — consumato via MEM0_BASE_URL)
 3. orchestrator    -> aspetta ollama, poi parte (network_mode: host)
                       vede Tailscale direttamente, raggiunge GX10 + AI Agent
-                      STT (Parakeet :7865) e TTS (CosyVoice3 :9880) su GX10
+                      STT (Parakeet :9000) e TTS (CosyVoice3 :9880) su GX10
 4. nginx           -> started (TLS per jarvis.mintwork.it)
 5. cloudflared     -> started (tunnel per jarvis-pub.mintwork.it)
 ```
@@ -558,7 +558,7 @@ MEMORY_HOURLY_MINUTE=5
 MEMORY_DAILY_HOUR=3
 
 # STT/TTS (su GX10 via Tailscale)
-STT_URL=http://100.98.187.12:7865
+STT_URL=http://100.98.187.12:9000
 STT_ENGINE=parakeet
 TTS_ENGINE=cosyvoice3
 COSYVOICE3_TTS_URL=http://100.98.187.12:9880
@@ -631,7 +631,7 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-AI-Agent senza aprir
 |   | gx10-dgx          |           | ha-albani         |        |
 |   | Tailscale (host)  |           | Home Assistant    |        |
 |   |                   |           | Zigbee/Z-Wave     |        |
-|   | Parakeet STT:7865 |           | Automazioni       |        |
+|   | Parakeet STT:9000 |           | Automazioni       |        |
 |   | CosyVoice3  :9880  |           +-------------------+        |
 |   | ACE-Step   :8760  |                                        |
 |   | ComfyUI    :8188  |                                        |
@@ -646,7 +646,7 @@ Permette all'orchestrator di raggiungere HA remoti e il LXC-AI-Agent senza aprir
 |                                                                 |
 |   wagmi -> ai-agent: https://your-agent-host:18789 (TLS)      |
 |   wagmi -> albani: 100.x.x.x:8123 (HA API via Tailscale)     |
-|   wagmi -> gx10: 100.98.187.12:7865/9880 (STT/TTS Tailscale) |
+|   wagmi -> gx10: 100.98.187.12:9000/9880 (STT/TTS Tailscale) |
 |   wagmi -> wakeword: http://jarvis-wakeword-casa1:8200        |
 |   Zero porte aperte, NAT traversal automatico                  |
 +---------------------------------------------------------------+
@@ -678,7 +678,7 @@ Poiche l'orchestrator usa `network_mode: host`, vede l'interfaccia Tailscale dir
 | Porta Host | Servizio | Protocollo | Accesso |
 |------------|----------|------------|---------|
 | 5000 | Orchestrator + Admin UI | HTTP | LAN / Tailscale |
-| — | Parakeet STT (GX10 :7865) | HTTP | Via Tailscale |
+| — | Parakeet STT (GX10 :9000) | HTTP | Via Tailscale |
 | — | CosyVoice3 (GX10 :9880) | HTTP | Via Tailscale |
 | 11434 | Ollama API (LLM) | HTTP | Interno |
 | 11435 | fastembed API (embeddings) | HTTP | Interno / Tailscale |

@@ -11,7 +11,7 @@
 # - fastembed: Embedding server CPU-only (nomic-embed-text-v1.5, ONNX, :11435)
 #
 # AUDIO SERVICES (su GX10 DGX Spark via Tailscale):
-# - Parakeet STT (nvidia/parakeet-tdt-0.6b-v3): STT multilingue, ~5.1 GiB VRAM, :7865
+# - Parakeet STT (nvidia/parakeet-tdt-0.6b-v3): STT multilingue, ~4.1 GiB VRAM, :9000
 # - CosyVoice3 (Fun-CosyVoice3-0.5B): TTS zero-shot voice cloning, ~3.6 GiB VRAM, :9880
 # Nota: Whisper, XTTSv2, Qwen3-TTS DEPRECATI
 #
@@ -33,7 +33,7 @@
 # Installazione: curl -fsSL https://tailscale.com/install.sh | sh
 #
 # NOTA SU GX10 (NVIDIA DGX Spark):
-# STT (Parakeet :7865) e TTS (CosyVoice3 :9880) girano sul GX10 (100.98.187.12)
+# STT (Parakeet :9000) e TTS (CosyVoice3 :9880) girano sul GX10 (100.98.187.12)
 # come servizi systemd. L'orchestrator li raggiunge via Tailscale.
 # Vedi infrastructure/gb10/gx10-full-inventory.md per dettagli.
 #
@@ -108,7 +108,7 @@ services:
   # ===========================================================================
   # SPEECH-TO-TEXT & TTS — Ora su GX10 DGX Spark (via Tailscale)
   # ===========================================================================
-  # STT: Parakeet (nvidia/parakeet-tdt-0.6b-v3) su GX10 :7865
+  # STT: Parakeet (nvidia/parakeet-tdt-0.6b-v3) su GX10 :9000 — dal 2026-09-25 esteso con DeepFilterNet3 (enhance) + Nemotron 3 Diarization (?diarize=true), vedi audiofront in wiki
   # TTS: CosyVoice3 (Fun-CosyVoice3-0.5B) su GX10 :9880
   # Whisper, XTTSv2, Qwen3-TTS DEPRECATI — Dockerfile/script preservati
   # Questo libera ~3.6 GB VRAM sull'Atomman per upgrade router (100K ctx)

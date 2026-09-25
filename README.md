@@ -55,9 +55,9 @@
 
      +--------------------------------------------+
      |    GX10 DGX Spark (via Tailscale)           |
-     |  Canary STT :9000    | CosyVoice3 :9880    |
-     |  (nvidia/canary-1b-  | (0.5B, zero-shot     |
-     |   v2, forced IT)     |  voice cloning, IT)  |
+     |  Parakeet STT :9000  | CosyVoice3 :9880    |
+     |  (0.6B, auto-LID +   | (0.5B, zero-shot     |
+     |   enhance+diarize)   |  voice cloning, IT)  |
      |  Brave Search (web tool)                    |
      +--------------------------------------------+
 
@@ -96,7 +96,7 @@
 | **JARVIS Orchestrator** | Skill / Executor | Voice processing, home control (single + bulk), speaker ID, security enforcement |
 | **Jev** (TypeSafe System One) | Primary router | Cloud, non-generative: one call returns typed+calibrated answers for intent, action, entity, free-text need and prompt injection, all evaluated in parallel. ~280ms vs p50 1044ms for local Qwen. Disabled by default (`JEV_ENABLED`) |
 | **Qwen 2.5 7B Q6_K** | Router fallback + Tool calling | llama-server :30000 (turbo3 KV cache, ngram speculative). Takes over whenever Jev is unavailable, unsure, or when a free-text slot is needed (song name, search query). Also does TTS preprocessing, habit summarisation and tool calling. Keeps the house working with no WAN |
-| **Canary STT** | Speech-to-Text | nvidia/canary-1b-v2 on GX10 DGX Spark (:9000), forced Italian via source_lang (Parakeet's auto-LID misdetected IT→RU on short audio), ~130-180ms per phrase |
+| **Parakeet STT** | Speech-to-Text | nvidia/parakeet-tdt-0.6b-v3 on GX10 DGX Spark (:9000), auto-LID + Cyrillic guard (swapped from Canary back on 2026-09-12). Extended 2026-09-25 with DeepFilterNet3 enhance + Nemotron 3 Diarization upstream — see wiki `audiofront-service` |
 | **CosyVoice3** | Text-to-Speech | Fun-CosyVoice3-0.5B on GX10, zero-shot voice cloning, Italian text normalization via num2words |
 | **Resemblyzer** | Speaker ID | Voice biometric identification (embedded in orchestrator) |
 | **Ontology Server** | Knowledge Graph | Entity/relation graph with speaker-based ACL, SQLite + FastAPI |
@@ -268,7 +268,7 @@ jarvis/
   2. **L2 Short-term — Redis context bus** (`ctx:{user_id}:events`, TTL 30 min, capped 20, source-filtered) shared between orchestrator, `ha_memory_service`, and Hermes.
   3. **L3 Long-term — mem0-stack** (external, repo `croll83/mem0-stack`, accessed via `MEM0_BASE_URL`). Populated by the nightly `habit_extraction` job, which uses a **hybrid SQL + LLM** pipeline: deterministic SQL aggregation over `chat_memory.meta` for domotics habits (entity + action + time window + value), Qwen LLM only for preferences/topics on non-HOME_CONTROL messages. Records are tagged `agent_id=jarvis-habit-extractor` for filtering in the Hermes mem0 dashboard.
 - **Redis context bus**: Shared between orchestrator, HA memory service, and Hermes. Each system writes events tagged with its source and reads only events from other sources, preventing self-duplication. Per-user event lists (`ctx:{user_id}:events`), capped at 20, TTL 30 minutes.
-- **Canary STT on GX10**: nvidia/canary-1b-v2 on GX10 DGX Spark (128 GB unified memory). Replaced Parakeet-TDT v3 (jul 2026): Parakeet's transcribe() exposes no language kwarg and its auto-LID misdetected short Italian audio as Russian; Canary is a multitask model with native source_lang/target_lang forcing (~130-180ms/phrase). A Cyrillic guard in the orchestrator discards residual misdetections and asks the user to repeat (optional Groq whisper rescue if GROQ_API_KEY is set).
+- **Parakeet STT on GX10**: nvidia/parakeet-tdt-0.6b-v3 on GX10 DGX Spark (128 GB unified memory). Swapped to Canary in jul 2026 (Parakeet's transcribe() exposes no language kwarg and its auto-LID misdetected short Italian audio as Russian; Canary offered native source_lang/target_lang forcing), then swapped back to Parakeet on 2026-09-12 (VRAM 8.42->4.14 GiB) with a Cyrillic guard in the orchestrator instead of native language forcing (discards residual misdetections, asks the user to repeat; optional Groq whisper rescue if GROQ_API_KEY is set). Extended 2026-09-25 with DeepFilterNet3 speech enhancement + Nemotron 3 Diarization upstream of transcription — see wiki `audiofront-service`.
 - **CosyVoice3 on GX10**: Fun-CosyVoice3-0.5B with zero-shot voice cloning from reference audio. Server-side Italian text normalization (num2words) for correct number/unit pronunciation. Replaces Qwen3-TTS (deprecated). OpenAI-compatible API, ~0.6x RTF, ~3.6 GiB VRAM.
 - **Nginx + Cloudflare Tunnel**: Public endpoints (Telegram webhook, health) served via Cloudflare Tunnel with no port forwarding. Internal services accessible only through Tailscale mesh.
 - **Speaker biometrics**: Resemblyzer runs inside the orchestrator process -- no separate container needed.

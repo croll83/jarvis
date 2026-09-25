@@ -494,66 +494,82 @@ async def send_exec_approval(approval_id: str, command: str, cwd: str = "", agen
 
 async def denoise_audio(audio_bytes: bytes) -> bytes:
     """
-    Applica noise reduction all'audio usando pyrnnoise.
+    Applica noise reduction all'audio chiamando il servizio audiofront (GB10),
+    endpoint /v1/audio/enhance (DeepFilterNet3).
 
-    pyrnnoise lavora a 48kHz internamente. Il nostro audio è PCM 16kHz int16 mono.
-    Strategia: resample 16k→48k con filtro anti-aliasing, denoise, resample 48k→16k.
-    Se pyrnnoise non è disponibile, restituisce l'audio originale (graceful fallback).
+    Contratto INVARIATO rispetto alla vecchia implementazione RNNoise-locale:
+    input PCM int16 16kHz mono raw bytes, output PCM int16 16kHz mono raw bytes.
+    Fallback graceful all'audio originale se la chiamata fallisce per qualsiasi
+    motivo (rete, servizio giù, formato inatteso) — stesso pattern difensivo
+    di prima, cosi' un guasto del servizio audio non rompe mai la pipeline vocale.
+
+    Sostituisce la precedente implementazione locale basata su pyrnnoise
+    (RNNoise, 2017, ~85k parametri) con DeepFilterNet3 (rete neurale, qualita'
+    nettamente superiore), servito centralmente sul GB10 e riusato anche da
+    Hermes Agent — vedi /opt/jarvis/jarvis/jarvis-orchestrator/config.py:AUDIOFRONT_ENHANCE_URL.
     """
     try:
+        import io
+        import wave
         import numpy as np
-        from pyrnnoise import RNNoise
+        import aiohttp
         from scipy.signal import resample_poly
 
-        denoiser = RNNoise(sample_rate=48000)
+        from config import AUDIOFRONT_ENHANCE_URL, AUDIOFRONT_TIMEOUT_S
 
-        # PCM int16 mono 16kHz → numpy float64 normalizzato
-        audio_16k = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float64) / 32768.0
+        # Impacchetta i raw PCM 16kHz mono in un WAV in memoria (il servizio
+        # audiofront accetta upload multipart, non raw PCM).
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # int16
+            wf.setframerate(16000)
+            wf.writeframes(audio_bytes)
+        wav_buf.seek(0)
 
-        # Resample 16kHz → 48kHz con filtro anti-aliasing (up=3, down=1)
-        audio_48k = resample_poly(audio_16k, up=3, down=1).astype(np.float32)
+        timeout = aiohttp.ClientTimeout(total=AUDIOFRONT_TIMEOUT_S)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            form = aiohttp.FormData()
+            form.add_field("file", wav_buf, filename="audio.wav", content_type="audio/wav")
+            async with session.post(AUDIOFRONT_ENHANCE_URL, data=form) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning(f"audiofront enhance HTTP {resp.status}: {body[:200]}, returning original audio")
+                    return audio_bytes
+                enhanced_wav_bytes = await resp.read()
 
-        # pyrnnoise vuole shape [1, num_samples] per mono (channels, samples)
-        # e valori int16 range (pyrnnoise lavora internamente in int16)
-        audio_48k_int16 = (audio_48k * 32767.0).clip(-32768, 32767).astype(np.int16)
-        audio_48k_2d = audio_48k_int16.reshape(1, -1)
+        # Il servizio ritorna WAV 48kHz mono (frequenza nativa DeepFilterNet3) —
+        # estrai i PCM e riporta a 16kHz per il resto della pipeline.
+        with wave.open(io.BytesIO(enhanced_wav_bytes), "rb") as wf:
+            enhanced_sr = wf.getframerate()
+            n_frames = wf.getnframes()
+            raw = wf.readframes(n_frames)
 
-        # Denoise in chunks — raccoglie l'output
-        denoised_chunks = []
-        for _speech_prob, denoised in denoiser.denoise_chunk(audio_48k_2d):
-            denoised_chunks.append(denoised)
+        enhanced_int16 = np.frombuffer(raw, dtype=np.int16).astype(np.float64) / 32768.0
 
-        if not denoised_chunks:
-            logger.warning("RNNoise returned no chunks, returning original audio")
-            return audio_bytes
+        if enhanced_sr != 16000:
+            # resample_poly vuole rapporti interi; per 48000->16000 e' up=1,down=3.
+            from math import gcd
+            g = gcd(enhanced_sr, 16000)
+            up, down = 16000 // g, enhanced_sr // g
+            enhanced_16k = resample_poly(enhanced_int16, up=up, down=down)
+        else:
+            enhanced_16k = enhanced_int16
 
-        # Concatena e torna a mono 1D float64 normalizzato
-        denoised_48k = np.concatenate(denoised_chunks, axis=-1).flatten()
-        if denoised_48k.dtype == np.int16:
-            denoised_48k = denoised_48k.astype(np.float64) / 32768.0
-        elif denoised_48k.dtype != np.float64:
-            denoised_48k = denoised_48k.astype(np.float64)
+        # Allinea la lunghezza all'originale (stesso pattern difensivo della
+        # vecchia implementazione RNNoise).
+        orig_len = len(audio_bytes) // 2
+        if len(enhanced_16k) > orig_len:
+            enhanced_16k = enhanced_16k[:orig_len]
+        elif len(enhanced_16k) < orig_len:
+            enhanced_16k = np.pad(enhanced_16k, (0, orig_len - len(enhanced_16k)))
 
-        # Resample 48kHz → 16kHz con filtro anti-aliasing (up=1, down=3)
-        denoised_16k = resample_poly(denoised_48k, up=1, down=3)
-
-        # Assicurati che la lunghezza sia compatibile con l'originale
-        orig_len = len(audio_bytes) // 2  # int16 = 2 bytes per sample
-        if len(denoised_16k) > orig_len:
-            denoised_16k = denoised_16k[:orig_len]
-        elif len(denoised_16k) < orig_len:
-            denoised_16k = np.pad(denoised_16k, (0, orig_len - len(denoised_16k)))
-
-        # Converti a int16 con clipping esplicito
-        result = (denoised_16k * 32767.0).clip(-32768, 32767).astype(np.int16)
-        logger.info(f"RNNoise denoised {len(audio_bytes)} bytes of audio (proper resampling)")
+        result = (enhanced_16k * 32767.0).clip(-32768, 32767).astype(np.int16)
+        logger.info(f"DeepFilterNet3 (audiofront) denoised {len(audio_bytes)} bytes of audio")
         return result.tobytes()
 
-    except ImportError:
-        logger.warning("RNNoise not available (pyrnnoise not installed), returning original audio")
-        return audio_bytes
     except Exception as e:
-        logger.error(f"Denoise error: {e}")
+        logger.error(f"Denoise error (audiofront): {e}, returning original audio")
         return audio_bytes
 
 

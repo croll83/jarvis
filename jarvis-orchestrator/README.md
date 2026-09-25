@@ -454,7 +454,7 @@ Definiti in `docker-compose.yml` nella root del progetto:
 | Servizio | Immagine | Porta | Ruolo |
 |----------|----------|-------|-------|
 | `ollama` | ollama/ollama | 11434 | Qwen 7B Q4 + nomic-embed-text (GPU) |
-| Canary STT | GX10 systemd | 9000 | Speech-to-text (nvidia/canary-1b-v2, unit `parakeet-stt`, via Tailscale) |
+| Parakeet STT | GX10 systemd | 9000 | Speech-to-text (nvidia/parakeet-tdt-0.6b-v3, unit `parakeet-stt`, via Tailscale) — esteso 2026-09-25 con DeepFilterNet3 enhance + Nemotron 3 Diarization |
 | CosyVoice3 | GX10 systemd | 9880 | TTS zero-shot voice cloning (Fun-CosyVoice3-0.5B, via Tailscale) |
 | `orchestrator` | build locale | 5000 | JARVIS Skill (questo progetto) |
 | `redis` | redis:7-alpine | 6379 | Context bus cross-system (su LXC Jarvis) |
@@ -583,11 +583,15 @@ cd security && docker compose -f docker-compose.security.yml up -d
 
 ## Novità luglio 2026 (voce & risoluzione)
 
-### STT: Canary-1b-v2 (via Parakeet)
+### STT: Parakeet-TDT-0.6b-v3 (storia degli swap)
 Parakeet-TDT v3 non espone kwargs lingua (`transcribe()` fa solo auto-LID) e su
-audio corti trascriveva l'italiano come russo. Il server su GX10 (`:9000`,
-unit `parakeet-stt` per ragioni storiche) ora carica `nvidia/canary-1b-v2` e
-inoltra `language=it` come `source_lang/target_lang` (nativo del multitask).
+audio corti trascriveva l'italiano come russo, quindi giu-lug 2026 il backend fu
+swappato a `nvidia/canary-1b-v2` (multitask, `source_lang/target_lang` nativi).
+Il 2026-09-12 e' tornato Parakeet (VRAM 8.42->4.14 GiB) con un guard
+anti-cirillico lato orchestrator invece del forcing lingua nativo. Il server su
+GX10 (`:9000`, unit `parakeet-stt` per ragioni storiche) e' esteso dal
+2026-09-25 con DeepFilterNet3 (speech enhancement) e Nemotron 3 Diarization a
+monte della trascrizione — vedi wiki `audiofront-service`.
 Difese residue in `integrations._transcribe_local`: transcript in cirillico con
 lingua forzata → sentinella `__LANG_MISMATCH__` → il WS handler risponde
 "puoi ripetere?" (mai None: il device resterebbe in speaking state); rescue

@@ -36,12 +36,21 @@ SYSTEM_RULES_PATH = BASE_DIR / "config/router_system_prompt.txt"
 # ===========================================================================
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 EMBEDDING_URL = os.getenv("EMBEDDING_URL", OLLAMA_URL)  # fastembed CPU (default: fallback a Ollama)
-STT_URL = os.getenv("STT_URL", os.getenv("WHISPER_URL", "http://100.98.187.12:7865"))
+STT_URL = os.getenv("STT_URL", os.getenv("WHISPER_URL", "http://100.98.187.12:9000"))
 
 # Endpoint derivati
 OLLAMA_CHAT_URL = f"{OLLAMA_URL}/api/chat"
 OLLAMA_GENERATE_URL = f"{OLLAMA_URL}/api/generate"
-STT_TRANSCRIBE_URL = f"{STT_URL}/v1/audio/transcriptions"
+# audiofront (GB10): STT_URL ora punta al servizio esteso con DeepFilterNet3 +
+# Nemotron 3 Diarization davanti a Parakeet. STT_DIARIZE abilita il campo
+# 'segments' (speaker/start/end/text) nella risposta di trascrizione, senza
+# alcun impatto sul contratto esistente se disattivato via env.
+STT_DIARIZE = os.getenv("STT_DIARIZE", "true").lower() in ("1", "true", "yes")
+STT_TRANSCRIBE_URL = f"{STT_URL}/v1/audio/transcriptions" + ("?diarize=true" if STT_DIARIZE else "")
+# Endpoint di solo speech-enhancement (DeepFilterNet3), usato da denoise_audio()
+# al posto della precedente implementazione locale pyrnnoise.
+AUDIOFRONT_ENHANCE_URL = os.getenv("AUDIOFRONT_ENHANCE_URL", f"{STT_URL}/v1/audio/enhance")
+AUDIOFRONT_TIMEOUT_S = float(os.getenv("AUDIOFRONT_TIMEOUT_S", "15"))
 
 # Home Assistant - Configurazione base di fallback
 # NOTA: URL e Token per le location sono nel database (tabella locations)

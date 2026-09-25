@@ -142,8 +142,9 @@ journalctl -u cosyvoice3-tts -f        # log
 ## 4. Parakeet STT (Speech-to-Text)
 
 **Cosa**: Server STT multilingue (25 lingue, auto-detection)
-**Modello**: nvidia/canary-1b-v2 (backend swappato da Parakeet-TDT v3 a Canary, giu-lug 2026: l'auto-LID di Parakeet sbagliava IT→RU su audio corti; unit systemd `parakeet-stt` e porta :9000 invariate)
-**VRAM**: ~5.1 GiB
+**Modello**: nvidia/parakeet-tdt-0.6b-v3 (backend swappato Parakeet->Canary giu-lug 2026 per l'auto-LID che sbagliava IT->RU su audio corti, poi tornato a Parakeet il 2026-09-12; unit systemd `parakeet-stt` e porta :9000 invariate in entrambi gli swap)
+**VRAM**: ~4.1 GiB (BF16)
+**Pipeline (dal 2026-09-25)**: esteso con DeepFilterNet3 (speech enhancement) + Nemotron 3 Diarization a monte della trascrizione — vedi wiki `audiofront-service` per dettagli, endpoint nuovi (`/v1/audio/enhance`, `?diarize=true`) e limiti
 **RTF**: ~0.05 (20x faster than real-time)
 
 **Installazione**:
