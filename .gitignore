@@ -73,3 +73,6 @@ data/
 restore_*.log
 .kotlin/
 
+# env backups hold secrets (handoff §0)
+.env.bak.*
+.env.bak-*

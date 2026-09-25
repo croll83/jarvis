@@ -5,7 +5,9 @@ JARVIS Core Orchestrator
 - Intent routing con fallback a AI Agent per comandi avanzati
 """
 
+from ai_agent_routing import RoutingError, select_target
 import asyncio
+import os
 import time
 import re
 import uuid
@@ -2105,7 +2107,7 @@ async def _run_home_digest():
 
 async def _home_digest_loop():
     """Scheduler del digest notturno (HOME_DIGEST_TIME, Europe/Rome)."""
-    if not config.HOME_DIGEST_ENABLED or not config.AI_AGENT_URL:
+    if not config.HOME_DIGEST_ENABLED or not config.AI_AGENT_ENABLED:
         return
     from datetime import timedelta
     tz = zoneinfo.ZoneInfo("Europe/Rome")
@@ -2124,6 +2126,16 @@ async def _home_digest_loop():
             await _run_home_digest()
         except Exception as e:
             logger.error(f"Home digest fallito: {e}")
+
+
+def select_agent_target(context: dict):
+    """Endpoint + credential for this request (ai_agent_routing.select_target bound to config)."""
+    return select_target(
+        context, mode=config.AI_AGENT_ROUTING_MODE, legacy_url=config.AI_AGENT_URL,
+        legacy_voice_url=config.AI_AGENT_URL_VOICE, legacy_token=config.AI_AGENT_TOKEN,
+        voice_sources=config.VOICE_SOURCES, mux_url=config.AI_AGENT_MUX_URL,
+        speaker_profiles=config.AI_AGENT_SPEAKER_PROFILES,
+        default_profile=config.AI_AGENT_DEFAULT_PROFILE, env=os.environ)
 
 
 async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
@@ -2156,15 +2168,20 @@ async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
     import aiohttp
     import json as _json
 
-    if not config.AI_AGENT_URL:
+    if not config.AI_AGENT_ENABLED:
         logger.warning("AI Agent not configured, falling back to local response")
         return await get_quick_response(text, context), None
 
-    # Corsia voce → profilo hermes veloce (Sonnet): la latenza percepita a voce
-    # non regge il modello deep di default del profilo principale.
-    _agent_url = config.AI_AGENT_URL
-    if config.AI_AGENT_URL_VOICE and context.get("source") in config.VOICE_SOURCES:
-        _agent_url = config.AI_AGENT_URL_VOICE
+    # legacy: corsia voce → profilo hermes veloce (Sonnet), il resto via wa-router.
+    # multiplex: profilo scelto qui per speaker (ai_agent_routing), URL e token insieme.
+    try:
+        _target = select_agent_target(context)
+    except RoutingError as e:
+        logger.error(f"AI Agent routing failed ({config.AI_AGENT_ROUTING_MODE}): {e}")
+        return await get_quick_response(text, context), None
+    _agent_url = _target.base_url
+    if _target.profile:
+        logger.info(f"AI Agent → profile {_target.profile}")
 
     # Build message with context for AI Agent
     speaker_name = context.get("speaker_name", "Sconosciuto")
@@ -2216,8 +2233,8 @@ async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
         )
         async with aiohttp.ClientSession() as session:
             headers = {"Content-Type": "application/json"}
-            if config.AI_AGENT_TOKEN:
-                headers["Authorization"] = f"Bearer {config.AI_AGENT_TOKEN}"
+            if _target.token:
+                headers["Authorization"] = f"Bearer {_target.token}"
             # Multi-turn session via Hermes session header
             if session_user:
                 headers["X-Hermes-Session-Id"] = str(session_user)

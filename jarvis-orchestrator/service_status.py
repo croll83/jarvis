@@ -8,6 +8,7 @@ services are offline.
 Supports multi-location Home Assistant instances.
 """
 
+from ai_agent_routing import health_url
 import asyncio
 import aiohttp
 import logging
@@ -319,10 +320,9 @@ class ServiceStatus:
 
         try:
             async with aiohttp.ClientSession() as session:
-                # AI_AGENT_URL include gia http:// (es: http://localhost:18789)
-                ai_agent_url = config.AI_AGENT_URL.rstrip("/")
+                # AI_AGENT_URL include gia http:// (es: http://localhost:18789); in multiplex il mux
                 async with session.get(
-                    f"{ai_agent_url}/health",
+                    health_url(config.AI_AGENT_ROUTING_MODE, config.AI_AGENT_URL, config.AI_AGENT_MUX_URL),
                     timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS.get("ai_agent", 5))
                 ) as resp:
                     elapsed = (time.time() - start) * 1000
