@@ -511,6 +511,9 @@ async def _handle_approval_update(update: dict):
                 "speaker_name": user_msg.name,
                 "is_admin": user_msg.is_admin,
                 "telegram_id": tg_id_msg,
+                # resolved from the authenticated Telegram sender id (not from a client-supplied name)
+                "speaker_identified": True,
+                "identification_method": "telegram",
             }
 
             asyncio.create_task(_process_telegram_text(text_msg, context))
@@ -677,7 +680,8 @@ async def _handle_approval_update(update: dict):
                     "chat_id": config.JARVIS_APPROVAL_CHAT_ID,
                     "location": location_id,
                     **({"speaker_id": user_cb.id, "speaker_name": user_cb.name,
-                        "is_admin": user_cb.is_admin, "telegram_id": tg_id_cb} if user_cb else
+                        "is_admin": user_cb.is_admin, "telegram_id": tg_id_cb,
+                        "speaker_identified": True, "identification_method": "telegram"} if user_cb else
                        build_speaker_context(None, "Telegram", ""))
                 }
                 asyncio.create_task(process_jarvis_logic(original_text, context))
@@ -2128,6 +2132,10 @@ async def _home_digest_loop():
             logger.error(f"Home digest fallito: {e}")
 
 
+AI_AGENT_UNAVAILABLE_MESSAGE = ("Non riesco a raggiungere l'assistente in questo momento "
+                                "(configurazione di instradamento incompleta). Riprova più tardi.")
+
+
 def select_agent_target(context: dict):
     """Endpoint + credential for this request (ai_agent_routing.select_target bound to config)."""
     return select_target(
@@ -2177,8 +2185,10 @@ async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
     try:
         _target = select_agent_target(context)
     except RoutingError as e:
+        # Explicit unavailability, not the generic local answer: a routing/credential problem must
+        # never look like a real reply (REVIEW v3 N6).
         logger.error(f"AI Agent routing failed ({config.AI_AGENT_ROUTING_MODE}): {e}")
-        return await get_quick_response(text, context), None
+        return AI_AGENT_UNAVAILABLE_MESSAGE, None
     _agent_url = _target.base_url
     if _target.profile:
         logger.info(f"AI Agent → profile {_target.profile}")
