@@ -73,6 +73,12 @@ class FakeAudiofront:
             return web.json_response({"text": ""})
         if mode == "cyrillic":
             return web.json_response({"text": "привет как дела сегодня"})
+        if mode == "diar":  # come audiofront con ?diarize=true e due voci
+            return web.json_response({
+                "text": "accendi la luce della cucina",
+                "segments": [{"speaker": "speaker_0", "start": 0.1, "end": 1.4, "text": "accendi la luce della cucina"},
+                             {"speaker": "speaker_1", "start": 1.5, "end": 2.2, "text": ""}],
+                "text_attribution": "majority_speaker"})
         return web.Response(status=int(mode), text="giu'")
 
 
@@ -345,6 +351,75 @@ class WsTurnAlwaysCloses(_Base):
         finally:
             main._live_session_say_and_listen, main.end_live_session, main.save_chat_message = saved
 
+
+
+class VoiceCorpusRecording(WsTurnAlwaysCloses):
+    """Registrazione dei turni per il banco di prova: WAV + JSON, a turno chiuso."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+        self._corpus = (config.VOICE_CORPUS_ENABLED, config.VOICE_CORPUS_DIR)
+        config.VOICE_CORPUS_ENABLED, config.VOICE_CORPUS_DIR = True, self.tmp
+
+    async def asyncTearDown(self):
+        config.VOICE_CORPUS_ENABLED, config.VOICE_CORPUS_DIR = self._corpus
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        await super().asyncTearDown()
+
+    def saved(self):
+        from pathlib import Path
+        return sorted(Path(self.tmp).rglob("*.wav")), sorted(Path(self.tmp).rglob("*.json"))
+
+    async def test_turn_saved_with_what_we_understood(self):
+        import json, wave
+        self.fake.modes = ["diar"]
+        await self.turn()
+        wavs, jsons = self.saved()
+        self.assertEqual((len(wavs), len(jsons)), (1, 1))
+        with wave.open(str(wavs[0])) as w:
+            self.assertEqual((w.getframerate(), w.getnchannels(), w.getsampwidth()), (16000, 1, 2))
+            self.assertEqual(w.readframes(10**9), PCM)  # l'audio com'e' arrivato
+        rec = json.loads(jsons[0].read_text())
+        self.assertEqual(rec["device_id"], DEV)
+        self.assertEqual(rec["path"], "command")
+        self.assertEqual(rec["stt"]["status"], STT_OK)
+        self.assertEqual(rec["stt"]["text"], "accendi la luce della cucina")
+        self.assertEqual(rec["stt"]["speakers"], 2)  # la telemetria che serve: quante voci
+        self.assertIn("speaker_identified", rec["speaker"])
+        self.assertIsNone(rec["label"])
+        self.assert_closed()
+
+    async def test_failed_turn_is_recorded_too(self):
+        import json
+        config.STT_TRANSCRIBE_URL = f"http://127.0.0.1:{CLOSED_PORT}/v1/audio/transcriptions"
+        await self.turn()
+        _, jsons = self.saved()
+        self.assertEqual(json.loads(jsons[0].read_text())["stt"]["status"], STT_UNAVAILABLE)
+
+    async def test_disabled_writes_nothing(self):
+        config.VOICE_CORPUS_ENABLED = False
+        await self.turn()
+        self.assertEqual(self.saved(), ([], []))
+
+    async def test_size_cap_drops_oldest_first(self):
+        import os, voice_corpus
+        from pathlib import Path
+        d = Path(self.tmp) / "2026-01-01"
+        d.mkdir(parents=True)
+        for i in range(4):  # 4 file da 1 MB, dal piu' vecchio al piu' nuovo
+            f = d / f"{i}.wav"
+            f.write_bytes(b"\0" * 1024 * 1024)
+            os.utime(f, (1000 + i, 1000 + i))
+        saved_cap = config.VOICE_CORPUS_MAX_MB
+        config.VOICE_CORPUS_MAX_MB = 2
+        try:
+            voice_corpus._enforce_size_cap()
+        finally:
+            config.VOICE_CORPUS_MAX_MB = saved_cap
+        self.assertEqual(sorted(p.name for p in d.iterdir()), ["2.wav", "3.wav"])
 
 
 class SpeakerFallbackChain(unittest.IsolatedAsyncioTestCase):

@@ -3124,10 +3124,14 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
     _process_ws_audio_turn; qui c'e' solo la garanzia che il turno si chiuda,
     qualunque ramo si prenda e anche se solleva un'eccezione.
     """
+    import voice_corpus
+    corpus = voice_corpus.start_turn(device_id, audio_bytes)
     try:
         await _process_ws_audio_turn(device_id, audio_bytes)
     finally:
         await _ensure_voice_turn_closed(device_id)
+        # Dopo la chiusura del turno: la risposta e' gia' partita
+        await voice_corpus.finish_turn(corpus)
 
 
 async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
@@ -3141,7 +3145,9 @@ async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
     logger.info(f"WS speech received from {device_id}: {len(audio_bytes)} bytes")
 
     # ── PENDING LIVE SESSION (speaker verification) ──────────────────────
+    import voice_corpus
     if device_id in _pending_live_sessions:
+        voice_corpus.note(path="pending_live_session")
         logger.info(f"🎙️ Pending live session for {device_id} — handling verification response")
         await _handle_pending_live_session(device_id, audio_bytes)
         return
@@ -3150,6 +3156,7 @@ async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
     # If device is in a live session, skip speaker ID, routing, normalize.
     # Only do: audio normalize → STT → deactivation check → AI Agent
     if device_id in _live_sessions:
+        voice_corpus.note(path="live_session")
         logger.info(f"🎙️ Live session active for {device_id} — using simplified pipeline")
         await handle_live_session_turn(device_id, audio_bytes)
         return
@@ -3171,6 +3178,7 @@ async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
             _ai_agent_followup_triggered.discard(device_id)
         else:
             _ai_agent_followup_triggered.discard(device_id)  # Consumato
+            voice_corpus.note(path="agent_followup")
             logger.info(f"🔄 AI Agent follow-up active for {device_id} — bypassing routing")
             try:
                 # Audio normalization
@@ -3330,6 +3338,7 @@ async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
                         )
                     elif result.get("status") == "skipped":
                         logger.debug(f"Auto-enrollment: skipped short audio for user {enroll_uid}")
+                voice_corpus.note(path="enrollment")
                 # Enrollment attivo → audio catturato, skippa routing normale.
                 # Il device va comunque rimesso a riposo: il prossimo campione
                 # lo chiede la dashboard con un nuovo trigger_listen.
@@ -3413,6 +3422,10 @@ async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
             speaker_ctx = await speaker_task
         speaker_elapsed = (time.time() - stt_start) * 1000  # tempo totale dall'inizio
         admin_metrics.record_speaker_id(speaker_elapsed)
+        voice_corpus.note(path="command", device_type=_ws_device_type, room=room_value,
+                          location=location, speaker={
+                              k: speaker_ctx.get(k) for k in ("speaker_id", "speaker_name",
+                              "speaker_identified", "identification_method", "speaker_confidence")})
 
         context = {
             "source": _ws_device_type,

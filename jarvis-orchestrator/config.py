@@ -67,6 +67,14 @@ STT_CONNECT_TIMEOUT_S = float(os.getenv("STT_CONNECT_TIMEOUT_S", "3"))
 # del timeout totale prima di passare ai ripieghi.
 TTS_CONNECT_TIMEOUT_S = float(os.getenv("TTS_CONNECT_TIMEOUT_S", "5"))
 
+# Registrazione dei turni vocali (WAV + JSON), per un banco di prova su audio veri:
+# comandi con altre persone che parlano, bambini, rumore. Spenta per default —
+# sono registrazioni della casa. Vivono sul volume dati (ignorato da git) con un
+# tetto di spazio: oltre, si cancellano i turni piu' vecchi. Vedi voice_corpus.py.
+VOICE_CORPUS_ENABLED = os.getenv("VOICE_CORPUS_ENABLED", "false").lower() in ("1", "true", "yes")
+VOICE_CORPUS_DIR = os.getenv("VOICE_CORPUS_DIR", "/app/data/voice_corpus")
+VOICE_CORPUS_MAX_MB = int(os.getenv("VOICE_CORPUS_MAX_MB", "5000"))
+
 # Home Assistant - Configurazione base di fallback
 # NOTA: URL e Token per le location sono nel database (tabella locations)
 HASS_URL_DEFAULT = os.getenv("HASS_URL", "http://homeassistant:8123")

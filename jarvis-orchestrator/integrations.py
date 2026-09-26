@@ -3,10 +3,12 @@ import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, replace
 from typing import Dict, List, Tuple, Optional, Any
 
 import config
+import voice_corpus
 from database import log_event, get_default_location_id
 
 logger = logging.getLogger("JARVIS_INTEGRATIONS")
@@ -618,6 +620,10 @@ class SttResult:
     text: str = ""
     detail: str = ""        # il motivo, per i log: "Server disconnected", "HTTP 503"…
     retryable: bool = False
+    # Segmenti della diarizzazione cosi' come li manda audiofront. Oggi NESSUNA
+    # logica li usa: finiscono solo nel banco di prova (voice_corpus), per
+    # misurare quante volte nei comandi parla piu' di una persona.
+    segments: Optional[list] = None
 
     @property
     def ok(self) -> bool:
@@ -649,6 +655,7 @@ async def transcribe_audio(audio_bytes: bytes) -> SttResult:
     """
     if audio_bytes[:4] != b'RIFF':
         audio_bytes = _wrap_pcm_as_wav(audio_bytes)
+    t0 = time.monotonic()
 
     if config.AI_BACKEND == "api" and config.GROQ_API_KEY:
         res = await _stt_groq(audio_bytes)
@@ -674,6 +681,7 @@ async def transcribe_audio(audio_bytes: bytes) -> SttResult:
         res = replace(res, text=_clean_stt_text(res.text))
         if not res.text:
             res = replace(res, status=STT_NO_SPEECH)
+    voice_corpus.note_stt(res, (time.monotonic() - t0) * 1000)
     return res
 
 
@@ -732,12 +740,17 @@ async def _stt_local(wav: bytes) -> SttResult:
         return SttResult(STT_UNAVAILABLE, detail=f"risposta non valida ({type(e).__name__}: {e})")
 
     text = (result.get("text") or "").strip()
+    # Con ?diarize=true audiofront mette i segmenti per parlante in
+    # "speaker_segments" (se ci sono anche i segmenti di Parakeet) o in "segments"
+    segs = result.get("speaker_segments")
+    if segs is None and result.get("text_attribution"):
+        segs = result.get("segments")
     if not text:
-        return SttResult(STT_NO_SPEECH)
+        return SttResult(STT_NO_SPEECH, segments=segs)
     if _is_wrong_script(text):
         logger.warning(f"STT scartato (script cirillico con lingua=it): {text[:60]!r}")
-        return SttResult(STT_WRONG_LANGUAGE, detail=text[:60])
-    return SttResult(STT_OK, text=text)
+        return SttResult(STT_WRONG_LANGUAGE, detail=text[:60], segments=segs)
+    return SttResult(STT_OK, text=text, segments=segs)
 
 
 async def send_telegram_photo(
