@@ -45,7 +45,8 @@ from database import (
 from integrations import (
     call_hass_service, call_hass_service_bulk, speak, send_telegram, edit_telegram,
     send_telegram_approval, send_exec_approval, denoise_audio, transcribe_audio,
-    quick_feedback, speak_with_sound, play_feedback_sound
+    quick_feedback, speak_with_sound, play_feedback_sound,
+    SttResult, STT_NO_SPEECH, STT_WRONG_LANGUAGE, STT_UNAVAILABLE,
 )
 from ai_engines import (
     is_safe, get_routing, get_quick_response, pre_route,
@@ -1177,6 +1178,7 @@ class LiveSession:
     started_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     turn_count: int = 0
+    stt_failures: int = 0             # guasti STT consecutivi (vedi handle_live_session_turn)
     max_inactivity_s: float = 300.0   # 5 min silence → auto-close
     max_duration_s: float = 900.0     # 15 min absolute cap
 
@@ -1345,6 +1347,9 @@ async def _handle_pending_live_session(device_id: str, audio_bytes: bytes):
     """
     pending = _pending_live_sessions.get(device_id)
     if not pending:
+        # Sparita fra la consegna dell'audio e adesso: il device aspetta comunque
+        from ws_audio_handler import notify_tts_done
+        await notify_tts_done(device_id)
         return
 
     # Check timeout
@@ -1364,14 +1369,7 @@ async def _handle_pending_live_session(device_id: str, audio_bytes: bytes):
         _raw = (_raw * _gain).clip(-32768, 32767)
     clean_audio = _raw.astype(_np_pend.int16).tobytes()
 
-    text = await transcribe_audio(clean_audio)
-    if not text or not text.strip():
-        logger.info(f"🎙️ Pending live session: no speech, re-triggering listen")
-        await trigger_device_listen(device_id, silent=True)
-        return
-
-    logger.info(f"🎙️ Pending live session response from {device_id}: '{text}'")
-    words = set(text.lower().split())
+    stt = await transcribe_audio(clean_audio)
 
     _use_internal = pending.device_config.get("use_internal_speaker", False) if pending.device_config else False
 
@@ -1412,6 +1410,21 @@ async def _handle_pending_live_session(device_id: str, audio_bytes: bytes):
             use_internal_speaker=_use_internal,
             greeting=greet,
         )
+
+    if not stt.ok:
+        if stt.status == STT_UNAVAILABLE:
+            # Riaprire il microfono in silenzio con la STT giu' e' un loop muto:
+            # l'utente riparla, fallisce di nuovo, e nessuno gli dice perche'.
+            logger.error(f"🎙️ Pending live session: STT non disponibile ({stt.detail}) → avviso")
+            await _pending_tts_and_listen(_VOICE_MSG_STT_UNAVAILABLE)
+        else:
+            logger.info(f"🎙️ Pending live session: nessun parlato ({stt.status}), re-triggering listen")
+            await trigger_device_listen(device_id, silent=True)
+        return
+
+    text = stt.text
+    logger.info(f"🎙️ Pending live session response from {device_id}: '{text}'")
+    words = set(text.lower().split())
 
     # Check for re-identification request ("sono Marco", "riconoscimi", "prova")
     if words & _RETRY_ID:
@@ -1569,6 +1582,9 @@ async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
     """
     session = _live_sessions.get(device_id)
     if not session:
+        # Finita fra la consegna dell'audio e adesso: il device aspetta comunque
+        from ws_audio_handler import notify_tts_done
+        await notify_tts_done(device_id)
         return
 
     session.last_activity = time.time()
@@ -1587,13 +1603,26 @@ async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
     clean_audio = _raw.astype(_np_live.int16).tobytes()
 
     # 2. STT only (no speaker ID, no Qwen normalize)
-    text = await transcribe_audio(clean_audio)
+    stt = await transcribe_audio(clean_audio)
 
-    if not text or text == "__LANG_MISMATCH__" or not text.strip():
-        logger.info(f"🎙️ Live session: no speech detected, re-triggering listen")
+    if not stt.ok:
+        if stt.status == STT_UNAVAILABLE:
+            # Dirlo e riaprire: audiofront torna su in ~10 s e la sessione resta
+            # viva. Ma non all'infinito: dopo qualche guasto di fila la si chiude.
+            session.stt_failures += 1
+            logger.error(f"🎙️ Live session: STT non disponibile ({stt.detail}), "
+                         f"guasto {session.stt_failures}/{_LIVE_MAX_STT_FAILURES}")
+            if session.stt_failures >= _LIVE_MAX_STT_FAILURES:
+                await end_live_session(device_id, reason="stt_unavailable")
+            else:
+                await _live_session_say_and_listen(session, device_id, _VOICE_MSG_STT_UNAVAILABLE)
+            return
+        logger.info(f"🎙️ Live session: nessun parlato ({stt.status}), re-triggering listen")
         # Re-trigger listen (user may have been silent or audio was noise)
         await trigger_device_listen(device_id, silent=True)
         return
+    session.stt_failures = 0
+    text = stt.text
 
     logger.info(f"🎙️ Live session turn #{session.turn_count}: '{text[:120]}'")
 
@@ -2426,11 +2455,11 @@ async def voice_command(request: Request):
         audio_bytes = bytes.fromhex(data["audio"])
         clean_audio = await denoise_audio(audio_bytes)
         stt_start = time.time()
-        text = await transcribe_audio(clean_audio)
+        stt = await transcribe_audio(clean_audio)
         admin_metrics.record_stt((time.time() - stt_start) * 1000)
-        if not text:
-            return {"status": "no_speech_detected"}
-        text = await normalize_stt_text(text)
+        if not stt.ok:
+            return {"status": _HTTP_STT_STATUS[stt.status], "detail": stt.detail}
+        text = await normalize_stt_text(stt.text)
     else:
         text = data.get("text")
 
@@ -2995,9 +3024,115 @@ async def ws_audio(websocket: WebSocket):
     )
 
 
+# ── Turni vocali senza comando ───────────────────────────────────────────
+# Ogni turno vocale si CHIUDE verso il device, anche quando non c'e' niente da
+# eseguire: dopo "speech_end" il device aspetta tts_done (o trigger_listen), e
+# senza resta appeso. Il messaggio cambia con il motivo, perche' "non ti ho
+# sentito" e "il servizio e' giu'" chiedono all'utente cose diverse.
+_VOICE_MSG_STT_UNAVAILABLE = "Il riconoscimento vocale non risponde. Riprova tra qualche secondo."
+_VOICE_MSG_NO_SPEECH = "Non ho sentito niente."
+_VOICE_MSG_WRONG_LANGUAGE = "Scusa, non ho capito bene. Puoi ripetere?"
+_VOICE_MSG_ERROR = "Scusa, qualcosa è andato storto. Riprova."
+
+# Push-to-talk (telefono, watch): l'utente ha toccato il microfono apposta, e
+# merita di sapere che non si e' sentito niente. I device a wake word invece si
+# svegliano anche per il rumore di fondo: parlare a ogni falso risveglio, di
+# notte o con la tv accesa, sarebbe peggio del silenzio — per loro il turno si
+# chiude muto.
+_PUSH_TO_TALK_SOURCES = frozenset({"AndroidPhone", "AndroidWear"})
+
+# Sessione live con la STT giu': dopo tanti guasti di fila la sessione si chiude,
+# invece di ripetere l'avviso a ogni turno.
+_LIVE_MAX_STT_FAILURES = 3
+
+# Endpoint HTTP: "no_speech_detected" resta il valore storico.
+_HTTP_STT_STATUS = {
+    STT_NO_SPEECH: "no_speech_detected",
+    STT_WRONG_LANGUAGE: "stt_language_mismatch",
+    STT_UNAVAILABLE: "stt_unavailable",
+}
+
+
+def _voice_min_context(device_id: str, source: str, room: str, location: str,
+                       device_config: Optional[dict]) -> dict:
+    """Il contesto minimo per rispondere a un device prima di sapere chi parla."""
+    return {"source": source, "room": room, "mic_id": device_id, "device_id": device_id,
+            "location": location, "device_config": device_config}
+
+
+async def _close_failed_voice_turn(stt: SttResult, ctx: dict) -> None:
+    """Chiude un turno in cui la trascrizione non ha prodotto un comando."""
+    device_id = ctx.get("device_id")
+    if stt.status == STT_UNAVAILABLE:
+        logger.error(f"WS: STT non disponibile per {device_id} ({stt.detail}) → avviso l'utente")
+        await deliver_final_response(_VOICE_MSG_STT_UNAVAILABLE, ctx, sound_type="negative")
+    elif stt.status == STT_WRONG_LANGUAGE:
+        # STT spazzatura (es. IT→RU): rispondere COMUNQUE, altrimenti
+        # l'AtomS3R resta in speaking state e va riavviato a mano.
+        logger.info(f"WS: STT lingua errata da {device_id} ({stt.detail!r}) → chiedo di ripetere")
+        await deliver_final_response(_VOICE_MSG_WRONG_LANGUAGE, ctx, sound_type="negative")
+    elif ctx.get("source") in _PUSH_TO_TALK_SOURCES:
+        logger.info(f"WS: nessun parlato da {device_id} (push-to-talk) → lo dico all'utente")
+        await deliver_final_response(_VOICE_MSG_NO_SPEECH, ctx, sound_type="negative")
+    else:
+        logger.info(f"WS: nessun parlato da {device_id} (wake word) → chiudo il turno in silenzio")
+        from ws_audio_handler import notify_tts_done
+        await notify_tts_done(device_id)
+
+
+async def _live_session_say_and_listen(session: "LiveSession", device_id: str, msg: str) -> None:
+    """Dice msg e riapre il microfono, come la fine di un turno live normale."""
+    if session.use_internal_speaker:
+        from internal_tts import speak_to_device
+        await speak_to_device(msg, device_id)
+        await asyncio.sleep(0.15)
+        await trigger_device_listen(device_id, silent=True)
+        return
+    try:
+        await speak(msg, session.media_player_id, session.location_id)
+    except Exception as e:
+        logger.error(f"🎙️ Live session: avviso non pronunciato ({e}), riapro comunque")
+        await trigger_device_listen(device_id, silent=True)
+        return
+    await set_speaking_state(session.room, True, device_id)
+    schedule_post_tts(media_player_id=session.media_player_id, location_id=session.location_id,
+                      room=session.room, device_id=device_id, is_multi_turn=True,
+                      text_length=len(msg))
+
+
+def _voice_reply_pending(device_id: str) -> bool:
+    """Una risposta e' gia' in riproduzione su uno speaker esterno: il post-TTS
+    chiudera' il turno da se' a fine audio."""
+    task = _pending_tts_tasks.get(device_id)
+    return bool(task and not task.done())
+
+
+async def _ensure_voice_turn_closed(device_id: str) -> None:
+    """Rete di sicurezza a fine elaborazione: nessun turno WS resta aperto.
+
+    Se il turno e' ancora aperto e non c'e' un post-TTS in coda, qualche ramo e'
+    uscito senza rispondere al device: lo si chiude qui, e il log lo dice.
+    """
+    from ws_audio_handler import is_turn_open, close_turn_if_open
+    if is_turn_open(device_id) and not _voice_reply_pending(device_id):
+        await close_turn_if_open(device_id, "nessun ramo ha risposto al device")
+
+
 async def _process_ws_audio(device_id: str, audio_bytes: bytes):
     """
-    Callback da WsAudioSession a fine speech.
+    Callback da WsAudioSession a fine speech. L'elaborazione sta in
+    _process_ws_audio_turn; qui c'e' solo la garanzia che il turno si chiuda,
+    qualunque ramo si prenda e anche se solleva un'eccezione.
+    """
+    try:
+        await _process_ws_audio_turn(device_id, audio_bytes)
+    finally:
+        await _ensure_voice_turn_closed(device_id)
+
+
+async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
+    """
+    Un turno vocale arrivato dal WebSocket.
     Stessa pipeline di /voice_stream: device config → denoise → STT →
     restore speaker → speaker ID → pre-route → dispatch.
 
@@ -3060,12 +3195,24 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
                         None, build_speaker_context, audio_bytes, _ws_dt_fu
                     )
 
-                text_fu = await stt_task_fu
-                if not text_fu or not text_fu.strip():
+                stt_fu = await stt_task_fu
+                if not stt_fu.ok:
                     if speaker_task_fu:
                         speaker_task_fu.cancel()
-                    await trigger_device_listen(device_id, silent=True)
+                    if stt_fu.status == STT_NO_SPEECH:
+                        # Silenzio in una conversazione: si riascolta
+                        await trigger_device_listen(device_id, silent=True)
+                    else:
+                        # STT giu' o lingua errata: riaprire in silenzio sarebbe un
+                        # loop muto. Si dice il motivo; il follow-up con la STT giu'
+                        # non ha piu' senso e si chiude.
+                        if stt_fu.status == STT_UNAVAILABLE:
+                            _ai_agent_followup.pop(device_id, None)
+                        await _close_failed_voice_turn(stt_fu, _voice_min_context(
+                            device_id, followup["source"], followup["room"],
+                            followup["location"], followup["device_config"]))
                     return
+                text_fu = stt_fu.text
                 if is_dirty_audio(text_fu):
                     if speaker_task_fu:
                         speaker_task_fu.cancel()
@@ -3183,8 +3330,12 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
                         )
                     elif result.get("status") == "skipped":
                         logger.debug(f"Auto-enrollment: skipped short audio for user {enroll_uid}")
-                # Enrollment attivo → audio catturato, skippa routing normale
+                # Enrollment attivo → audio catturato, skippa routing normale.
+                # Il device va comunque rimesso a riposo: il prossimo campione
+                # lo chiede la dashboard con un nuovo trigger_listen.
                 logger.info(f"🎤 Enrollment mode active — skipping normal voice routing for {device_id}")
+                from ws_audio_handler import notify_tts_done
+                await notify_tts_done(device_id)
                 return
         except Exception as e:
             logger.error(f"Auto-enrollment error: {e}")
@@ -3209,7 +3360,7 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         restore_task = _aio.ensure_future(restore_speaker(device_id))
 
         # Attendi STT (critica per procedere)
-        text = await stt_task
+        stt = await stt_task
         admin_metrics.record_stt((time.time() - stt_start) * 1000)
 
         # Gestisci restore (non bloccante)
@@ -3221,24 +3372,13 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         except Exception as e:
             logger.error(f"Auto-restore fallito per {device_id}: {e}")
 
-        _lang_mismatch = (text == "__LANG_MISMATCH__")
-        if not text or _lang_mismatch:
+        if not stt.ok:
             # Cancella speaker task se non serve
             speaker_task and speaker_task.cancel()
-            if _lang_mismatch:
-                # STT spazzatura (es. IT→RU): rispondere COMUNQUE, altrimenti
-                # l'AtomS3R resta in speaking state e va riavviato a mano.
-                logger.info(f"WS: STT lingua errata da {device_id} → chiedo di ripetere")
-                _ctx_min = {
-                    "source": _ws_device_type, "room": room_value,
-                    "mic_id": device_id, "device_id": device_id,
-                    "location": location, "device_config": device_config,
-                }
-                await deliver_final_response("Scusa, non ho capito bene. Puoi ripetere?",
-                                             _ctx_min, sound_type="negative")
-            else:
-                logger.info(f"WS: no speech detected from {device_id}")
+            await _close_failed_voice_turn(stt, _voice_min_context(
+                device_id, _ws_device_type, room_value, location, device_config))
             return
+        text = stt.text
 
         logger.info(f"WS transcribed: '{text[:120]}...' from {device_id}")
 
@@ -3315,7 +3455,17 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
                 await _handle_ai_agent_voice(text, context, hint="")
 
     except Exception as e:
-        logger.error(f"Error processing WS audio from {device_id}: {e}")
+        logger.error(f"Error processing WS audio from {device_id}: {e}", exc_info=True)
+        # Se una risposta e' gia' partita non se ne aggiunge una seconda; se
+        # invece il turno e' ancora aperto l'utente deve sapere che e' fallito.
+        from ws_audio_handler import is_turn_open
+        if is_turn_open(device_id) and not _voice_reply_pending(device_id):
+            _src = device_config.get("device_type", "AtomS3R") if device_config else "AtomS3R"
+            try:
+                await deliver_final_response(_VOICE_MSG_ERROR, _voice_min_context(
+                    device_id, _src, room_value, location, device_config), sound_type="negative")
+            except Exception as e2:
+                logger.error(f"WS: anche l'avviso d'errore e' fallito per {device_id}: {e2}")
 
 
 @app.post("/voice_stream")
@@ -3412,7 +3562,7 @@ async def voice_stream(
     try:
         clean_audio = await denoise_audio(audio_bytes)
         stt_start = time.time()
-        text = await transcribe_audio(clean_audio)
+        stt = await transcribe_audio(clean_audio)
         admin_metrics.record_stt((time.time() - stt_start) * 1000)
 
         # ── AUTO-RESTORE speaker volume dopo STT ──
@@ -3428,8 +3578,10 @@ async def voice_stream(
             except Exception as e:
                 logger.error(f"Auto-restore fallito per {device_id_value}: {e}")
 
-        if not text:
-            return {"status": "no_speech_detected", "use_local_speaker": False}
+        if not stt.ok:
+            return {"status": _HTTP_STT_STATUS[stt.status], "detail": stt.detail,
+                    "use_local_speaker": False}
+        text = stt.text
 
         logger.info(f"Transcribed from stream: '{text[:120]}...'")
 
@@ -6191,6 +6343,7 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
     # Determina target speaker usando la fallback chain
     target_player = None
     use_local_speaker = False
+    internal_failed = False  # la voce del device ha gia' fallito: inutile riprovarla come ripiego
 
     if device_config:
         # Device configurato - usa la fallback chain configurata
@@ -6218,6 +6371,7 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
                         await notify_tts_done(dev_id)
                     return
                 else:
+                    internal_failed = True
                     logger.error(f"Internal speaker TTS failed for {dev_id}, trying fallbacks")
 
         # 1. Prova speaker principale
@@ -6241,6 +6395,9 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
                 await send_telegram(f"🔊 {text}", chat_id=user.telegram_id)
                 target_player = f"telegram:{user.telegram_id}"
                 logger.info(f"Audio delivered to Telegram user: {user.name}")
+                # La risposta e' andata altrove: il device che ha parlato non ha
+                # audio da aspettare, e senza questo resterebbe in attesa.
+                await _immediate_tts_done()
 
         # 4. Speaker locale voice device (ultimo fallback)
         if not target_player and fallback_local:
@@ -6280,8 +6437,14 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
             text_length=len(text) if text else 0,
         )
 
-    # Fallback a speaker locale del device
-    if use_local_speaker:
+    # Fallback a speaker locale del device. Se e' lo stesso altoparlante che ha
+    # appena fallito come voce interna, riprovarlo raddoppia solo l'attesa (e il
+    # testo sul client mobile): si chiude il turno e basta.
+    if use_local_speaker and internal_failed:
+        logger.error(f"Nessuna uscita audio per {context.get('device_id')}: la voce del device "
+                     f"ha gia' fallito, chiudo il turno")
+        await _immediate_tts_done()
+    elif use_local_speaker:
         dev_id = context.get("device_id")
         if dev_id and dev_id != "unknown":
             from internal_tts import speak_to_device
@@ -6293,6 +6456,8 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
                 await notify_tts_done(dev_id)
             else:
                 logger.error(f"Local speaker fallback also failed for {dev_id}")
+                # Nessuna uscita audio ha funzionato: il turno si chiude lo stesso
+                await _immediate_tts_done()
         else:
             logger.warning(f"Local speaker fallback triggered but no device_id available")
 
@@ -6331,13 +6496,19 @@ async def try_speak(text: str, target_player: str, location: str, sound_type: st
     """
     try:
         if sound_type:
-            await speak_with_sound(text, target_player, sound_type, location)
+            ok, detail = await speak_with_sound(text, target_player, sound_type, location)
         else:
-            await speak(text, target_player, location)
-        return True
+            ok, detail = await speak(text, target_player, location)
     except Exception as e:
         logger.warning(f"Failed to speak to {target_player}: {e}")
         return False
+    # speak() segnala il fallimento col valore di ritorno, non con un'eccezione.
+    # Contarlo come riuscito saltava tutta la catena dei ripieghi e metteva in
+    # coda un post-TTS che interroga il media player fino a 90 s: con Home
+    # Assistant o il GX10 giu' il device restava in attesa di un audio mai partito.
+    if not ok:
+        logger.warning(f"Failed to speak to {target_player}: {detail}")
+    return bool(ok)
 
 
 def normalize_preference(key: str, value: str) -> tuple[str, str]:

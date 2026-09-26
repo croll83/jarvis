@@ -176,6 +176,49 @@ _connections_lock = asyncio.Lock()
 # ---------------------------------------------------------------------------
 # WsAudioSession -- handles one speech utterance within a persistent connection
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Open voice turns
+# ---------------------------------------------------------------------------
+# Dopo "speech_end" il device resta in BUSY finche' non riceve "tts_done" (torna
+# IDLE) o "trigger_listen" (riapre il microfono). Quando il parlato viene
+# consegnato all'orchestrator, chiudere il turno diventa compito suo: se un ramo
+# esce senza farlo il device resta appeso, e il watch si disconnette ~37 s dopo.
+# Qui si tiene nota dei turni aperti, cosi' chi finisce di elaborare puo'
+# verificare di non averne lasciato uno.
+_TURN_CLOSING_COMMANDS = frozenset({"tts_done", "trigger_listen"})
+_open_turns: Dict[str, float] = {}
+
+
+def _turn_key(device_id: str) -> str:
+    return (device_id or "").upper().strip()
+
+
+def open_turn(device_id: str) -> None:
+    _open_turns[_turn_key(device_id)] = time.time()
+
+
+def is_turn_open(device_id: str) -> bool:
+    return _turn_key(device_id) in _open_turns
+
+
+async def close_turn_if_open(device_id: str, reason: str) -> bool:
+    """Chiude con tts_done un turno rimasto aperto. True se ha dovuto farlo.
+
+    E' la rete di sicurezza, non il modo normale di chiudere: ogni volta che
+    scatta il log dice quale ramo ha lasciato il device in attesa.
+    """
+    key = _turn_key(device_id)
+    aperto_da = _open_turns.get(key)
+    if aperto_da is None:
+        return False
+    logger.warning(f"Device {device_id}: turno vocale lasciato aperto ({reason}) dopo "
+                   f"{time.time() - aperto_da:.1f}s → tts_done di sicurezza")
+    sent = await notify_tts_done(device_id)
+    if not sent:
+        _open_turns.pop(key, None)  # device non piu' connesso: niente da chiudere
+    return True
+
+
 class WsAudioSession:
     """
     Gestisce una singola sessione audio (un utterance) all'interno di una
@@ -352,10 +395,14 @@ class WsAudioSession:
         self._speech_frames = 0
         self._silence_frames = 0
 
+        # Da qui il device aspetta una risposta: il turno e' dell'orchestrator
+        open_turn(self.device_id)
         try:
             await self.on_speech_complete(self.device_id, pcm_bytes)
         except Exception as e:
-            logger.error(f"Error in speech callback for session {self.session_id}: {e}")
+            logger.error(f"Error in speech callback for session {self.session_id}: {e}",
+                         exc_info=True)
+            await close_turn_if_open(self.device_id, f"eccezione nella callback: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +434,8 @@ class PersistentDeviceConnection:
             return False
         try:
             await self.websocket.send_json(command)
+            if command.get("type") in _TURN_CLOSING_COMMANDS:
+                _open_turns.pop(_turn_key(self.device_id), None)
             return True
         except Exception as e:
             logger.warning(f"Control WS send failed for {self.device_id}: {e}")
@@ -851,6 +900,7 @@ async def ws_audio_endpoint(
 
         conn._closed = True
         conn.end_audio_session()
+        _open_turns.pop(_turn_key(device_id), None)
 
         # Remove from persistent connections
         async with _connections_lock:

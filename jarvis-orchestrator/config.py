@@ -52,6 +52,21 @@ STT_TRANSCRIBE_URL = f"{STT_URL}/v1/audio/transcriptions" + ("?diarize=true" if 
 AUDIOFRONT_ENHANCE_URL = os.getenv("AUDIOFRONT_ENHANCE_URL", f"{STT_URL}/v1/audio/enhance")
 AUDIOFRONT_TIMEOUT_S = float(os.getenv("AUDIOFRONT_TIMEOUT_S", "15"))
 
+# Guasti di trasporto della STT. Dopo un crash audiofront torna su in ~10 s, e
+# il collegamento Napoli→Milano passa da Starlink: un "Server disconnected" puo'
+# essere un crash come un blip di rete. UN solo nuovo tentativo, a breve: se
+# il servizio e' davvero giu' meglio dirlo subito all'utente che farlo aspettare
+# dieci secondi davanti al watch. Il timeout di CONNESSIONE corto serve quando
+# il GX10 e' spento: su Tailscale non arriva un RST, e senza questo si
+# aspetterebbe l'intero TIMEOUT_STT (30 s) prima di sapere che non c'e'.
+STT_RETRY_ENABLED = os.getenv("STT_RETRY_ENABLED", "true").lower() in ("1", "true", "yes")
+STT_RETRY_BACKOFF_S = float(os.getenv("STT_RETRY_BACKOFF_S", "1.0"))
+STT_CONNECT_TIMEOUT_S = float(os.getenv("STT_CONNECT_TIMEOUT_S", "3"))
+# Stesso discorso per la TTS verso il device, che sta sulla stessa macchina:
+# con il GX10 spento l'avviso "non riesco a sentirti" resterebbe appeso ai 120 s
+# del timeout totale prima di passare ai ripieghi.
+TTS_CONNECT_TIMEOUT_S = float(os.getenv("TTS_CONNECT_TIMEOUT_S", "5"))
+
 # Home Assistant - Configurazione base di fallback
 # NOTA: URL e Token per le location sono nel database (tabella locations)
 HASS_URL_DEFAULT = os.getenv("HASS_URL", "http://homeassistant:8123")

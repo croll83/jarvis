@@ -532,7 +532,7 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
     wav_header_checked = False
 
     try:
-        timeout = aiohttp.ClientTimeout(total=120)
+        timeout = aiohttp.ClientTimeout(total=120, sock_connect=_cfg.TTS_CONNECT_TIMEOUT_S)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, json=payload) as resp:
                 if resp.status != 200:

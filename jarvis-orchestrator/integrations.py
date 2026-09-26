@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import dataclass, replace
 from typing import Dict, List, Tuple, Optional, Any
 
 import config
@@ -600,77 +601,143 @@ def _clean_stt_text(text: str) -> str:
     return cleaned
 
 
-async def transcribe_audio(audio_bytes: bytes) -> Optional[str]:
+# Esito di una trascrizione. Prima era una stringa, e vuota voleva dire tanto
+# "l'utente non ha detto niente" quanto "il server STT e' caduto": il chiamante
+# non poteva scegliere cosa dire, e sul canale voce il device restava appeso
+# (26/09: "Transcribe exception: Server disconnected" → "no speech detected" →
+# nessuna risposta, il watch si disconnette 37 s dopo).
+STT_OK = "ok"
+STT_NO_SPEECH = "no_speech"            # il servizio ha risposto: nessuna parola
+STT_WRONG_LANGUAGE = "wrong_language"  # trascritto in un'altra scrittura (IT→RU)
+STT_UNAVAILABLE = "unavailable"        # trasporto o servizio: non sappiamo cosa ha detto
+
+
+@dataclass(frozen=True)
+class SttResult:
+    status: str
+    text: str = ""
+    detail: str = ""        # il motivo, per i log: "Server disconnected", "HTTP 503"…
+    retryable: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.status == STT_OK
+
+
+# 5xx di passaggio: il servizio c'e' ma non ce la fa adesso. Un 4xx invece e'
+# la richiesta a essere sbagliata, e ripeterla identica non serve.
+_STT_RETRYABLE_HTTP = {502, 503, 504}
+
+
+def _is_wrong_script(text: str) -> bool:
+    """Con lingua forzata "it", un transcript in cirillico e' spazzatura certa
+    (Parakeet scambia IT→RU sugli audio corti): meglio "ripeti" che eseguirlo."""
+    if not text or not str(config.STT_PARAKEET_LANGUAGE or "").startswith("it"):
+        return False
+    cyr = sum(1 for ch in text if "Ѐ" <= ch <= "ӿ")
+    return cyr > max(2, len(text) * 0.3)
+
+
+async def transcribe_audio(audio_bytes: bytes) -> SttResult:
     """
-    Trascrive audio usando faster-whisper locale o Groq API.
-    Il backend è determinato da config.AI_BACKEND.
-    Applica pulizia punteggiatura post-trascrizione.
+    Trascrive l'audio e dice anche PERCHE' non c'e' testo, quando non c'e'.
+
+    Backend: STT locale (Parakeet/audiofront sul GX10), oppure Groq se
+    AI_BACKEND="api". Con la STT locale un guasto di trasporto viene ritentato
+    una volta; se c'e' GROQ_API_KEY, Groq e' l'ultimo ripiego — e' un dominio di
+    guasto diverso (cloud contro GX10), quindi serve proprio quando il GX10 e' giu'.
     """
-    if config.AI_BACKEND == "api":
-        text = await _transcribe_groq(audio_bytes)
+    if audio_bytes[:4] != b'RIFF':
+        audio_bytes = _wrap_pcm_as_wav(audio_bytes)
+
+    if config.AI_BACKEND == "api" and config.GROQ_API_KEY:
+        res = await _stt_groq(audio_bytes)
+        if res.status == STT_UNAVAILABLE:
+            logger.warning(f"STT Groq non disponibile ({res.detail}) → provo la STT locale")
+            res = await _stt_local_with_retry(audio_bytes)
     else:
-        text = await _transcribe_local(audio_bytes)
-    return _clean_stt_text(text) if text else text
+        res = await _stt_local_with_retry(audio_bytes)
+        if res.status == STT_WRONG_LANGUAGE and config.GROQ_API_KEY:
+            # Parakeet-TDT v3 non lascia forzare la lingua: ritrascrivi lo STESSO
+            # audio con whisper (language=it vero) e salva il turno.
+            logger.info("STT rescue: ritrascrivo via Groq whisper (language=it)")
+            g = await _stt_groq(audio_bytes)
+            if g.ok:
+                res = g
+        elif res.status == STT_UNAVAILABLE and config.GROQ_API_KEY:
+            logger.warning(f"STT locale non disponibile ({res.detail}) → ripiego su Groq")
+            g = await _stt_groq(audio_bytes)
+            if g.status != STT_UNAVAILABLE:
+                res = g
+
+    if res.text:
+        res = replace(res, text=_clean_stt_text(res.text))
+        if not res.text:
+            res = replace(res, status=STT_NO_SPEECH)
+    return res
 
 
-async def _transcribe_local(audio_bytes: bytes) -> Optional[str]:
-    """Trascrizione via STT locale (Parakeet su GX10 o Whisper legacy)."""
+async def _stt_local_with_retry(wav: bytes) -> SttResult:
+    res = await _stt_local(wav)
+    if res.status == STT_UNAVAILABLE and res.retryable and config.STT_RETRY_ENABLED:
+        logger.warning(f"STT ({config.STT_ENGINE}) non disponibile: {res.detail} — "
+                       f"nuovo tentativo tra {config.STT_RETRY_BACKOFF_S:g}s")
+        await asyncio.sleep(config.STT_RETRY_BACKOFF_S)
+        res = await _stt_local(wav)
+        if res.status == STT_UNAVAILABLE:
+            logger.error(f"STT ({config.STT_ENGINE}) non disponibile anche al secondo "
+                         f"tentativo: {res.detail}")
+    elif res.status == STT_UNAVAILABLE:
+        logger.error(f"STT ({config.STT_ENGINE}) non disponibile: {res.detail}")
+    return res
+
+
+async def _stt_local(wav: bytes) -> SttResult:
+    """Un tentativo sulla STT locale (Parakeet su GX10, o Whisper legacy)."""
+    data = aiohttp.FormData()
+    data.add_field('file', wav, filename='audio.wav', content_type='audio/wav')
+    # Parakeet: auto-detection multilingue, non serve model/language/prompt
+    # Whisper: necessita model, language e initial_prompt
+    if config.STT_ENGINE != "parakeet":
+        data.add_field('model', config.STT_MODEL)
+        data.add_field('language', config.STT_LANGUAGE)
+        if config.STT_PROMPT:
+            data.add_field('initial_prompt', config.STT_PROMPT)
+    elif config.STT_PARAKEET_LANGUAGE:
+        # Blocca la lingua su Parakeet per evitare misdetection (es. IT→RU)
+        data.add_field('language', config.STT_PARAKEET_LANGUAGE)
+
+    timeout = aiohttp.ClientTimeout(total=config.TIMEOUTS["stt"],
+                                    sock_connect=config.STT_CONNECT_TIMEOUT_S)
     try:
-        # Wrap raw PCM in WAV header se non ha già un RIFF header
-        if not audio_bytes[:4] == b'RIFF':
-            audio_bytes = _wrap_pcm_as_wav(audio_bytes)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(config.STT_TRANSCRIBE_URL, data=data) as resp:
+                if resp.status != 200:
+                    corpo = (await resp.text())[:120]
+                    return SttResult(STT_UNAVAILABLE, detail=f"HTTP {resp.status} {corpo}".strip(),
+                                     retryable=resp.status in _STT_RETRYABLE_HTTP)
+                result = await resp.json()
+    # L'ordine conta: in aiohttp 3.9 ServerTimeoutError (connessione) e' ANCHE
+    # un asyncio.TimeoutError. Quello di connessione si ritenta; il timeout
+    # totale no, ha gia' speso l'intero budget.
+    except aiohttp.ServerTimeoutError as e:
+        return SttResult(STT_UNAVAILABLE, detail=f"timeout di connessione: {e}", retryable=True)
+    except asyncio.TimeoutError:
+        return SttResult(STT_UNAVAILABLE, detail=f"nessuna risposta in {config.TIMEOUTS['stt']}s")
+    except aiohttp.ClientConnectionError as e:
+        # rifiutata, caduta a meta' ("Server disconnected"), reset
+        return SttResult(STT_UNAVAILABLE, detail=f"{type(e).__name__}: {e}", retryable=True)
+    except (aiohttp.ClientError, ValueError) as e:
+        # risposta illeggibile: il servizio c'e' ma sta rispondendo male
+        return SttResult(STT_UNAVAILABLE, detail=f"risposta non valida ({type(e).__name__}: {e})")
 
-        async with aiohttp.ClientSession() as session:
-            data = aiohttp.FormData()
-            data.add_field('file', audio_bytes,
-                          filename='audio.wav',
-                          content_type='audio/wav')
-
-            # Parakeet: auto-detection multilingue, non serve model/language/prompt
-            # Whisper: necessita model, language e initial_prompt
-            if config.STT_ENGINE != "parakeet":
-                data.add_field('model', config.STT_MODEL)
-                data.add_field('language', config.STT_LANGUAGE)
-                if config.STT_PROMPT:
-                    data.add_field('initial_prompt', config.STT_PROMPT)
-            elif config.STT_PARAKEET_LANGUAGE:
-                # Blocca la lingua su Parakeet per evitare misdetection (es. IT→RU)
-                data.add_field('language', config.STT_PARAKEET_LANGUAGE)
-
-            async with session.post(config.STT_TRANSCRIBE_URL,
-                                   data=data, timeout=config.TIMEOUTS["stt"]) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    text = result.get("text", "").strip()
-                    # Guardia anti-misdetection: con lingua forzata "it", un
-                    # transcript in cirillico (Parakeet IT→RU su audio corti)
-                    # è spazzatura certa: meglio "ripeti" che processarlo.
-                    if text and str(config.STT_PARAKEET_LANGUAGE or "").startswith("it"):
-                        _cyr = sum(1 for ch in text if "\u0400" <= ch <= "\u04ff")
-                        if _cyr > max(2, len(text) * 0.3):
-                            logger.warning(f"STT scartato (script cirillico con lingua=it): {text[:60]!r}")
-                            # Parakeet-TDT v3 non permette di forzare la lingua
-                            # (transcribe() non ha kwargs lingua): se c'è Groq,
-                            # ritrascrivi lo STESSO audio con whisper (language=it
-                            # reale) e salva il turno in modo trasparente.
-                            if config.GROQ_API_KEY:
-                                logger.info("STT rescue: ritrascrivo via Groq whisper (language=it)")
-                                _rescued = await _transcribe_groq(audio_bytes)
-                                if _rescued and _rescued != "__LANG_MISMATCH__":
-                                    _rcyr = sum(1 for ch in _rescued if "\u0400" <= ch <= "\u04ff")
-                                    if _rcyr <= max(2, len(_rescued) * 0.3):
-                                        return _rescued
-                            # Sentinella (non None): il chiamante DEVE rispondere
-                            # al device, altrimenti resta in speaking state.
-                            return "__LANG_MISMATCH__"
-                    return text
-                else:
-                    logger.error(f"STT ({config.STT_ENGINE}) error: {resp.status}")
-                    return None
-
-    except Exception as e:
-        logger.error(f"Transcribe exception: {e}")
-        return None
+    text = (result.get("text") or "").strip()
+    if not text:
+        return SttResult(STT_NO_SPEECH)
+    if _is_wrong_script(text):
+        logger.warning(f"STT scartato (script cirillico con lingua=it): {text[:60]!r}")
+        return SttResult(STT_WRONG_LANGUAGE, detail=text[:60])
+    return SttResult(STT_OK, text=text)
 
 
 async def send_telegram_photo(
@@ -751,52 +818,46 @@ def _wrap_pcm_as_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int =
     return header + pcm_bytes
 
 
-async def _transcribe_groq(audio_bytes: bytes) -> Optional[str]:
+async def _stt_groq(wav: bytes) -> SttResult:
     """
-    Trascrizione via Groq API (whisper-large-v3-turbo).
-    Più veloce e accurato di whisper-base locale.
+    Un tentativo su Groq (whisper-large-v3-turbo, language=it).
+
+    Non ricade da sola sulla STT locale: prima lo faceva, e la STT locale
+    ricadeva su Groq in caso di cirillico — con entrambe in errore le due
+    funzioni si chiamavano a vicenda senza fine. L'ordine dei ripieghi lo
+    decide transcribe_audio().
     """
     if not config.GROQ_API_KEY:
-        logger.error("GROQ_API_KEY not configured, falling back to local")
-        return await _transcribe_local(audio_bytes)
+        return SttResult(STT_UNAVAILABLE, detail="GROQ_API_KEY non configurata")
 
-    # Wrap raw PCM in WAV header se non ha già un RIFF header
-    if not audio_bytes[:4] == b'RIFF':
-        audio_bytes = _wrap_pcm_as_wav(audio_bytes)
-
+    data = aiohttp.FormData()
+    data.add_field('file', wav, filename='audio.wav', content_type='audio/wav')
+    data.add_field('model', config.GROQ_WHISPER_MODEL)
+    data.add_field('language', 'it')
+    data.add_field('response_format', 'json')
+    if config.STT_PROMPT:
+        data.add_field('prompt', config.STT_PROMPT)
+    headers = {"Authorization": f"Bearer {config.GROQ_API_KEY}"}
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Bearer {config.GROQ_API_KEY}"}
-
-            data = aiohttp.FormData()
-            data.add_field('file', audio_bytes,
-                          filename='audio.wav',
-                          content_type='audio/wav')
-            data.add_field('model', config.GROQ_WHISPER_MODEL)
-            data.add_field('language', 'it')
-            data.add_field('response_format', 'json')
-            if config.STT_PROMPT:
-                data.add_field('prompt', config.STT_PROMPT)
-
-            url = f"{config.GROQ_API_URL}/audio/transcriptions"
-
-            async with session.post(url, headers=headers, data=data,
-                                   timeout=config.API_TIMEOUT_STT) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    text = result.get("text", "").strip()
-                    logger.debug(f"Groq STT result: {text[:50]}...")
-                    return text
-                else:
-                    error = await resp.text()
-                    logger.error(f"Groq STT error: {resp.status} - {error}")
-                    # Fallback to local if Groq fails
-                    logger.warning("Falling back to local Whisper")
-                    return await _transcribe_local(audio_bytes)
-
+            async with session.post(f"{config.GROQ_API_URL}/audio/transcriptions", headers=headers,
+                                    data=data, timeout=config.API_TIMEOUT_STT) as resp:
+                if resp.status != 200:
+                    corpo = (await resp.text())[:200]
+                    logger.error(f"Groq STT error: {resp.status} - {corpo}")
+                    return SttResult(STT_UNAVAILABLE, detail=f"Groq HTTP {resp.status}")
+                result = await resp.json()
     except asyncio.TimeoutError:
         logger.error(f"Groq STT timeout after {config.API_TIMEOUT_STT}s")
-        return await _transcribe_local(audio_bytes)
-    except Exception as e:
+        return SttResult(STT_UNAVAILABLE, detail=f"Groq: nessuna risposta in {config.API_TIMEOUT_STT}s")
+    except (aiohttp.ClientError, ValueError) as e:
         logger.error(f"Groq transcribe exception: {e}")
-        return await _transcribe_local(audio_bytes)
+        return SttResult(STT_UNAVAILABLE, detail=f"Groq: {type(e).__name__}: {e}")
+
+    text = (result.get("text") or "").strip()
+    logger.debug(f"Groq STT result: {text[:50]}...")
+    if not text:
+        return SttResult(STT_NO_SPEECH)
+    if _is_wrong_script(text):
+        return SttResult(STT_WRONG_LANGUAGE, detail=text[:60])
+    return SttResult(STT_OK, text=text)

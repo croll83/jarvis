@@ -4044,8 +4044,15 @@
                 });
                 const data = await resp.json();
 
-                if (data.status === 'no_speech_detected') {
-                    responseBox.innerHTML = '<div class="vmic-empty">Nessun parlato rilevato, riprova</div>';
+                // Turno senza comando: qualunque esito diverso da questi aspetterebbe
+                // via SSE una risposta che non arriva ("JARVIS sta pensando" per sempre).
+                const VMIC_STT_FAIL = {
+                    'no_speech_detected': 'Nessun parlato rilevato, riprova',
+                    'stt_language_mismatch': 'Non ho capito bene, riprova',
+                    'stt_unavailable': 'Il riconoscimento vocale non risponde, riprova tra qualche secondo',
+                };
+                if (VMIC_STT_FAIL[data.status]) {
+                    responseBox.innerHTML = `<div class="vmic-empty">${VMIC_STT_FAIL[data.status]}</div>`;
                     vmicReset();
                     return;
                 }
