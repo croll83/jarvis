@@ -9,6 +9,7 @@ JARVIS Admin API
 - Live metrics
 """
 
+from ai_agent_routing import health_url
 import asyncio
 import time
 import json
@@ -845,7 +846,7 @@ async def get_all_health_status() -> Dict[str, Any]:
         ("Router LLM", f"{config.ROUTER_URL}/health" if config.ROUTER_ENGINE == "llamacpp" else f"{config.OLLAMA_URL}/api/tags"),
         ("STT", f"{config.STT_URL}/health"),
         ("Home Assistant", f"{config.HASS_URL_DEFAULT}/api/"),
-        ("AI Agent", f"{config.AI_AGENT_URL}/health"),
+        ("AI Agent", health_url(config.AI_AGENT_ROUTING_MODE, config.AI_AGENT_URL, config.AI_AGENT_MUX_URL)),
     ]
 
     # Optional services (might not be configured)
@@ -991,6 +992,8 @@ async def get_config() -> Dict[str, Any]:
             "stt_engine": config.STT_ENGINE,
             "hass_url": config.HASS_URL_DEFAULT,
             "ai_agent_url": config.AI_AGENT_URL,
+            "ai_agent_routing_mode": config.AI_AGENT_ROUTING_MODE,
+            "ai_agent_missing_tokens": config.AI_AGENT_MISSING_TOKENS,   # names only
             "router_model": config.ROUTER_MODEL,
             "reasoning_model": "gemini (via AI Agent)",
             "approval_timeout": config.APPROVAL_TIMEOUT,
@@ -1821,7 +1824,8 @@ async def get_ai_agent_status() -> Dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             start = time.time()
-            response = await client.get(f"{config.AI_AGENT_URL}/health")
+            response = await client.get(health_url(config.AI_AGENT_ROUTING_MODE, config.AI_AGENT_URL,
+                                                   config.AI_AGENT_MUX_URL))
             latency = (time.time() - start) * 1000
 
             if response.status_code < 400:

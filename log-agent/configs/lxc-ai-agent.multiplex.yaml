@@ -1,0 +1,58 @@
+# lxc-ai-agent — log sources AFTER the Hermes multiplex cutover.
+# Installed as ~/log-agent/config.yaml by the cutover controller; the rollback
+# puts lxc-ai-agent.yaml back. Fold into lxc-ai-agent.yaml once the standalone
+# units are removed.
+#
+# One process (hermes-gateway.service) serves every profile, and its journal
+# carries no profile tag. Per-profile attribution comes from each home's
+# errors.log (WARNING+), which Hermes writes per profile under multiplex too:
+# same content class as today's journal, and NOT gateway.log/agent.log,
+# which contain the text of inbound messages.
+host_id: lxc-ai-agent
+collector_url: http://100.88.84.81:5000/api/admin/logs/ingest
+
+batch_interval: 2.0
+batch_size: 100
+
+sources:
+  # process level: startup, crashes, the default (transport-only) home
+  - name: hermes-gateway
+    type: journalctl-user
+    target: hermes-gateway
+
+  - name: hermes-marco
+    type: file
+    target: /home/jarvis/.hermes/profiles/hermes-marco/logs/errors.log
+
+  - name: hermes-ada
+    type: file
+    target: /home/jarvis/.hermes/profiles/hermes-ada/logs/errors.log
+
+  - name: hermes-dark
+    type: file
+    target: /home/jarvis/.hermes/profiles/hermes-dark/logs/errors.log
+
+  - name: hermes-shared
+    type: file
+    target: /home/jarvis/.hermes/profiles/hermes-shared/logs/errors.log
+
+  # new: giorgio now runs inside the same process
+  - name: hermes-giorgio
+    type: file
+    target: /home/jarvis/.hermes/profiles/hermes-giorgio/logs/errors.log
+
+  - name: hermes-billing-proxy
+    type: journalctl-user
+    target: hermes-billing-proxy
+
+  - name: wireproxy-mullvad
+    type: journalctl-user
+    target: wireproxy-mullvad
+
+  - name: nginx
+    type: file
+    target: /var/log/nginx/error.log
+
+  - name: tor
+    type: journalctl
+    target: tor@default

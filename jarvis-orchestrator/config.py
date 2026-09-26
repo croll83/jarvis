@@ -97,6 +97,18 @@ SCENARIO_SWEEP_SLUGS = [s.strip() for s in os.getenv(
 HOME_DIGEST_ENABLED = os.getenv("HOME_DIGEST_ENABLED", "true").lower() in ("1", "true", "yes")
 HOME_DIGEST_TIME = os.getenv("HOME_DIGEST_TIME", "05:45")  # HH:MM Europe/Rome
 AI_AGENT_TOKEN = os.getenv("AI_AGENT_TOKEN", "")
+# Routing verso Hermes (D1, vedi ai_agent_routing.py). "legacy": AI_AGENT_URL(_VOICE) + AI_AGENT_TOKEN,
+# il profilo lo sceglie Hermes (wa-router :3020 / speaker-routing). "multiplex": lo sceglie
+# l'Orchestrator per speaker e chiama AI_AGENT_MUX_URL/p/<profilo> con AI_AGENT_TOKEN_<PROFILO>.
+# Rollback = AI_AGENT_ROUTING_MODE=legacy + `docker compose up -d orchestrator` (recreate, non restart).
+from ai_agent_routing import missing_tokens as _missing_tokens, parse_speaker_profiles as _parse_speaker_profiles
+AI_AGENT_ROUTING_MODE = os.getenv("AI_AGENT_ROUTING_MODE", "legacy").strip().lower()
+AI_AGENT_MUX_URL = os.getenv("AI_AGENT_MUX_URL", "")
+AI_AGENT_SPEAKER_PROFILES = _parse_speaker_profiles(
+    os.getenv("AI_AGENT_SPEAKER_PROFILES", '{"Marco": "hermes-marco", "Ada": "hermes-ada"}'))
+AI_AGENT_DEFAULT_PROFILE = os.getenv("AI_AGENT_DEFAULT_PROFILE", "hermes-shared")
+AI_AGENT_MISSING_TOKENS = (_missing_tokens(AI_AGENT_SPEAKER_PROFILES, AI_AGENT_DEFAULT_PROFILE, os.environ)
+                           if AI_AGENT_ROUTING_MODE == "multiplex" else [])
 AI_AGENT_TIMEOUT = int(os.getenv("AI_AGENT_TIMEOUT", "30"))  # legacy (non-streaming fallback)
 AI_AGENT_TIMEOUT_TOTAL = int(os.getenv("AI_AGENT_TIMEOUT_TOTAL", "300"))  # Max totale streaming SSE (5 min)
 AI_AGENT_TIMEOUT_READ = int(os.getenv("AI_AGENT_TIMEOUT_READ", "90"))     # Max silenzio tra chunk SSE
@@ -354,7 +366,7 @@ API_TIMEOUT_ROUTING = int(os.getenv("API_TIMEOUT_ROUTING", "30"))
 
 # --- Feature Flags ---
 # AI Agent è disponibile se configurato (URL + TOKEN)
-AI_AGENT_ENABLED = bool(AI_AGENT_URL)
+AI_AGENT_ENABLED = bool(AI_AGENT_URL or (AI_AGENT_ROUTING_MODE == "multiplex" and AI_AGENT_MUX_URL))
 # Gemini API diretto (per image generation, indipendente da AI Agent)
 GEMINI_ENABLED = bool(GEMINI_API_KEY)
 
