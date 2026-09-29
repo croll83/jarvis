@@ -8,7 +8,7 @@
 # - Qwen 2.5 3B (Q4_K_M): Pre-routing + tool calling (web_search, web_fetch,
 #     memory_search, home_status) + offline fallback
 # - Ollama: Hosts Qwen 2.5 3B (num_ctx 32768, 37/37 GPU) — solo LLM, no embeddings
-# - fastembed: Embedding server CPU-only (nomic-embed-text-v1.5, ONNX, :11435)
+# - redis: context bus a breve termine (:6379). Memoria ed embedding: jarvis-memory (:8210, repo a parte)
 #
 # AUDIO SERVICES (su GX10 DGX Spark via Tailscale):
 # - Parakeet STT (nvidia/parakeet-tdt-0.6b-v3): STT multilingue, ~4.1 GiB VRAM, :9000
@@ -18,7 +18,7 @@
 # VRAM BUDGET Atomman (RTX 5070 Laptop 8 GB, GPU dedicata — no display):
 #   Ollama Qwen 2.5 3B Q4_K_M (weights+KV): ~2.6 GB  (misurato @ ctx=32768, 37/37 GPU)
 #   Totale:                                   ~2.6 / 8.15 GB (~5.5 GB liberi per router upgrade)
-#   NOTA: Embeddings (nomic-embed-text) su fastembed CPU — zero VRAM.
+#   NOTA: Embeddings serviti da jarvis-memory (CPU, ONNX) — zero VRAM.
 #   NOTA: STT e TTS ora su GX10 (128 GB VRAM) — zero VRAM locale.
 #
 # NOTA SU AI AGENT:
@@ -50,7 +50,7 @@
 
 services:
   # ===========================================================================
-  # AI CORE - Ollama (Qwen 2.5 3B only — embeddings moved to fastembed)
+  # AI CORE - Ollama (Qwen 2.5 3B only — embeddings su jarvis-memory)
   # ===========================================================================
   ollama:
     image: ollama/ollama:latest
@@ -62,7 +62,7 @@ services:
       - "11434:11434"
     environment:
       - OLLAMA_NUM_PARALLEL=1             # Pipeline sequenziale (pre_route→embed→route)
-      - OLLAMA_MAX_LOADED_MODELS=1      # Solo Qwen — embeddings su fastembed :11435
+      - OLLAMA_MAX_LOADED_MODELS=1      # Solo Qwen — embeddings su jarvis-memory :8210
       # Context 32768: XTTS cleanup middleware stabilizza la VRAM (~1854 MB),
       # liberando ~540 MB extra rispetto al leak pre-fix. 32k testato: 37/37 layer
       # su GPU, 140 tok/s, totale ~3473 MiB (con XTTS+Whisper = ~6800 MiB / 8151).
@@ -84,26 +84,25 @@ services:
     # restart gestito da jarvis.sh (ordine VRAM-aware)
 
   # ===========================================================================
-  # EMBEDDINGS - fastembed (nomic-embed-text-v1.5, CPU-only, ONNX)
+  # REDIS — context bus a breve termine (orchestrator ↔ hermes plugin)
   # ===========================================================================
-  # Sostituisce nomic-embed-text su Ollama per eliminare il context switch
-  # CUDA che rallenta Qwen di ~1.3s per ogni embedding call.
-  # API Ollama-compatibile: POST /api/embeddings {"model":"...","prompt":"..."}
-  # Usato da: orchestrator (context_builder.py), AI Agent
-  fastembed:
-    build: ./infrastructure/fastembed
-    container_name: jarvis_fastembed
+  # Era nel compose di mem0-stack (container mem0-redis) fino al 2026-09-29: mem0 è stato spento,
+  # Redis no. Stesso volume dati (appendonly) e stessa porta: REDIS_URL non cambia.
+  # Gli embedding (ex jarvis_fastembed :11435) li serve jarvis-memory (/v1/embed, :8210).
+  redis:
+    image: redis:7-alpine
+    container_name: jarvis_redis
     restart: unless-stopped
+    command: redis-server --appendonly yes
     ports:
-      - "11435:11435"
+      - "6379:6379"
     volumes:
-      - fastembed_cache:/root/.cache    # Cache modello ONNX (~260 MB)
+      - redis_data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:11435/api/tags')"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-    # restart gestito da jarvis.sh
 
   # ===========================================================================
   # SPEECH-TO-TEXT & TTS — Ora su GX10 DGX Spark (via Tailscale)
@@ -261,6 +260,8 @@ services:
 
 volumes:
   ollama_storage:
-  fastembed_cache:
+  redis_data:
+    external: true
+    name: mem0-stack_redis-data   # volume storico di mem0-stack, riusato così com'è
   postgres_data:
   mongo_data:

@@ -183,7 +183,6 @@ cmd_start() {
 
     # ── Fase 2: Verifica servizi audio su GX10 ───────────────────────────
     log "═══ Fase 2: GX10 Audio Services (Parakeet STT + Qwen3-TTS) ═══"
-    dc up -d fastembed
     if wait_for "${PARAKEET_URL}/health" "Parakeet STT (GX10)" 15; then
         ok "Parakeet STT disponibile su GX10"
     else
@@ -197,10 +196,10 @@ cmd_start() {
     echo ""
 
     # ── Fase 3: Servizi non-GPU ───────────────────────────────────────────
-    # NOTA: chromadb e mem0-server NON sono piu' qui — vivono nel repo
-    # croll83/mem0-stack (deploy separato). L'orchestrator li usa via MEM0_BASE_URL.
+    # NOTA: la memoria a lungo termine (ed embedding) è jarvis-memory (repo croll83/jarvis-memory,
+    # deploy separato, :8210). Qui resta solo Redis (context bus).
     log "═══ Fase 3: Orchestrator + DB + Ontology ═══"
-    dc up -d orchestrator postgres mongo adminer
+    dc up -d redis orchestrator postgres mongo adminer
     wait_for "http://localhost:5000/health" "Orchestrator" 60
     echo ""
 
