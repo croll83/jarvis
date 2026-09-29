@@ -19,6 +19,9 @@ RUN python -c "import openwakeword; openwakeword.utils.download_models()"
 # Application code
 COPY *.py .
 
+# Modelli wake word custom versionati (es. ciao_jarvis.onnx): WAKEWORD_MODEL=/app/models/<file>.onnx
+COPY models/ /app/models/
+
 # Data directory (for future model cache etc.)
 RUN mkdir -p /app/data
 

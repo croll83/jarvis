@@ -26,18 +26,26 @@ class DeviceWakeWordEngine:
         self._model: Optional[Model] = None
         self._muted_until: float = 0.0  # timestamp until which detection is suppressed
 
+    def _model_kwargs(self) -> dict:
+        """Argomenti per Model(): un file .onnx custom (es. /app/data/ciao_jarvis.onnx)
+        richiede il backend onnx esplicito; i modelli inclusi si risolvono per nome."""
+        kwargs = {"wakeword_models": [self.model_name]}
+        if self.model_name.endswith(".onnx"):
+            kwargs["inference_framework"] = "onnx"
+        return kwargs
+
     def init(self):
         """Load model (call once per device connection)."""
         global _models_downloaded
         try:
-            self._model = Model(wakeword_models=[self.model_name])
+            self._model = Model(**self._model_kwargs())
         except (ValueError, FileNotFoundError):
             # Model files not present — download them (first run or missing from image)
             if not _models_downloaded:
                 logger.info(f"[{self.device_id}] Model '{self.model_name}' not found, downloading...")
                 openwakeword.utils.download_models()
                 _models_downloaded = True
-            self._model = Model(wakeword_models=[self.model_name])
+            self._model = Model(**self._model_kwargs())
         logger.info(f"[{self.device_id}] openWakeWord model '{self.model_name}' loaded")
 
     def set_threshold(self, threshold: float):
