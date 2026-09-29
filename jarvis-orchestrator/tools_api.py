@@ -2117,14 +2117,17 @@ async def tool_notify_device(
                             silent_hours=hn.in_silent_hours(datetime.now().hour, s_start, s_end))
     if quiet:
         return _fail(quiet)
-    blocked = hn.precheck(target)
+    blocked = hn.precheck(target, can_link=True)
     if blocked:
         return _fail(blocked)
 
     async with _notify_lock(target.device_id):
         if target.use_internal_speaker:
             from internal_tts import speak_to_device
-            from ws_audio_handler import notify_tts_done
+            from ws_audio_handler import notify_tts_done, ensure_device_link
+            linked, why = await ensure_device_link(target.device_id)
+            if not linked:
+                return _fail(why)
             try:
                 ok, duration = await speak_to_device(text, target.device_id)
             finally:

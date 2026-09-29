@@ -140,10 +140,14 @@ def resolve_target(*, device_id: Any = None, name: Any = None, location_id: Any 
     return _target(matches[0], connected)
 
 
-def precheck(target: Target) -> Optional[str]:
+def precheck(target: Target, can_link: bool = False) -> Optional[str]:
     """Motivo per cui l'audio sicuramente non partira', o None se vale la pena
-    provare. Evita di mettere in coda un TTS che finirebbe nel vuoto."""
-    if target.use_internal_speaker and not target.connected:
+    provare. Evita di mettere in coda un TTS che finirebbe nel vuoto.
+
+    `can_link`: il chiamante sa aprire il collegamento via wakeword-server (gli
+    Atom sono collegati li', non all'orchestrator), quindi un device interno non
+    connesso ORA non e' ancora un fallimento."""
+    if target.use_internal_speaker and not target.connected and not can_link:
         return "device non connesso"
     if not target.use_internal_speaker and not target.output_speaker:
         return "device senza uscita audio configurata"

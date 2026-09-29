@@ -83,6 +83,7 @@ class DeviceConnection:
         self.firmware_version: str = "unknown"
         self.device_type: str = "unknown"  # Determined from hello message fw string
         self.live_session: bool = False  # True during live session
+        self.tts_prepare_token = None    # avviso asincrono in corso (prepare_tts)
         self._ws_write_lock = asyncio.Lock()  # Serializza write verso device
 
         # Opus decoder (16 kHz mono, same as firmware encoder)
@@ -298,6 +299,7 @@ async def _handle_binary(conn: DeviceConnection, data: bytes):
 async def _on_wake_detected(conn: DeviceConnection):
     """Handle wake word detection for a device."""
     logger.info(f"[{conn.device_id}] WAKE DETECTED")
+    conn.tts_prepare_token = None
 
     # Multi-room cooldown
     _multiroom.on_wake(conn.device_id)
@@ -373,6 +375,7 @@ async def _open_relay(conn: DeviceConnection):
                 conn.wakeword.reset()
                 logger.info(f"[{conn.device_id}] 🎙️ Live session ENDED (wakeword unmuted)")
             elif msg_type == "tts_done":
+                conn.tts_prepare_token = None
                 conn.state = DeviceState.IDLE
                 conn.wakeword.reset()
                 if not conn.live_session:
@@ -438,6 +441,51 @@ async def trigger_listen(device_id: str, silent: bool = True):
     conn.wakeword.mute(60.0)
     await conn.send_json({"type": "trigger_listen", "silent": silent})
     logger.info(f"[{device_id}] trigger_listen relayed (silent={silent})")
+    return {"status": "ok", "device_id": device_id}
+
+
+# Avvisi asincroni (timer, sveglie, monitor di Hermes): il device e' IDLE e senza
+# relay, ma l'orchestrator deve fargli dire qualcosa. Si apre il relay come per una
+# wake word, stato BUSY e wake word muta (la voce dell'avviso non deve risvegliarlo)
+# finche' l'orchestrator non manda tts_done. Se tts_done non arriva, il watchdog
+# rimette il device in ascolto: un avviso perso non deve lasciarlo sordo.
+_TTS_PREPARE_TIMEOUT_S = 90.0
+
+
+@app.post("/api/prepare_tts/{device_id}")
+async def prepare_tts(device_id: str, request: Request):
+    if DEVICE_API_TOKEN and request.headers.get("Authorization", "") != f"Bearer {DEVICE_API_TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    device_id = device_id.upper().strip()
+    async with _connections_lock:
+        conn = _connections.get(device_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail=f"Device {device_id} not connected")
+    if conn.state != DeviceState.IDLE or conn.live_session:
+        raise HTTPException(status_code=409, detail=f"Device busy ({conn.state.value})")
+    try:
+        await _open_relay(conn)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Relay open failed: {e}")
+    conn.state = DeviceState.BUSY
+    conn.wakeword.mute(_TTS_PREPARE_TIMEOUT_S)
+    token = object()
+    conn.tts_prepare_token = token
+
+    async def _watchdog():
+        await asyncio.sleep(_TTS_PREPARE_TIMEOUT_S)
+        if getattr(conn, "tts_prepare_token", None) is token and conn.state == DeviceState.BUSY \
+                and not conn.live_session:
+            conn.tts_prepare_token = None
+            conn.state = DeviceState.IDLE
+            conn.wakeword.mute(0)
+            conn.wakeword.reset()
+            await conn.close_relay()
+            logger.warning(f"[{device_id}] prepare_tts: nessun tts_done in "
+                           f"{_TTS_PREPARE_TIMEOUT_S:.0f}s, torno IDLE")
+
+    asyncio.create_task(_watchdog())
+    logger.info(f"[{device_id}] prepare_tts: relay aperto, State → BUSY (avviso)")
     return {"status": "ok", "device_id": device_id}
 
 

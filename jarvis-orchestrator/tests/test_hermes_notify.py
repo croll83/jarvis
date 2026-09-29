@@ -42,6 +42,8 @@ class Resolve(unittest.TestCase):
         self.assertIsNone(hn.precheck(t))
         t = resolve(device_id="AA0000000003")
         self.assertEqual(hn.precheck(t), "device non connesso")
+        # con il collegamento via wakeword-server un device non connesso ora si prova lo stesso
+        self.assertIsNone(hn.precheck(t, can_link=True))
 
     def test_media_player_needs_no_websocket(self):
         self.assertIsNone(hn.precheck(resolve(device_id="AA0000000001", connected_ids=[])))

@@ -995,6 +995,54 @@ async def _trigger_via_wakeword_server(device_id: str, silent: bool) -> bool:
         return False
 
 
+async def ensure_device_link(device_id: str, timeout_s: float = 6.0) -> tuple:
+    """Porta un device ad avere il websocket aperto con l'orchestrator, per parlargli
+    fuori da un turno (avvisi di Hermes). Ritorna (ok, motivo).
+
+    Gli Atom tengono il websocket persistente col wakeword-server della loro casa;
+    verso l'orchestrator esiste solo il relay che quel server apre a ogni risveglio.
+    Qui gli si chiede di aprirlo (POST /api/prepare_tts) e si aspetta che il relay
+    si registri. I device collegati direttamente (telefono, orologio) sono gia' pronti.
+    """
+    device_id = device_id.upper().strip()
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id)
+    if conn and not conn._closed:
+        return True, "connesso"
+    try:
+        from config import WAKEWORD_SERVER_URLS, DEVICE_API_TOKEN
+        from database import get_voice_device
+        device = get_voice_device(device_id)
+        url = WAKEWORD_SERVER_URLS.get(device.location_id) if device and device.location_id else None
+        if not url and len(WAKEWORD_SERVER_URLS) == 1:
+            url = next(iter(WAKEWORD_SERVER_URLS.values()))
+        if not url:
+            return False, "device non connesso (nessun wakeword-server per la sua casa)"
+        import httpx
+        headers = {"Authorization": f"Bearer {DEVICE_API_TOKEN}"} if DEVICE_API_TOKEN else {}
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(f"{url}/api/prepare_tts/{device_id}", headers=headers)
+        if resp.status_code == 404 and "not connected" not in resp.text:
+            return False, "wakeword-server senza prepare_tts (da aggiornare)"
+        if resp.status_code == 404:
+            return False, "device non connesso"
+        if resp.status_code == 409:
+            return False, "device occupato"
+        if resp.status_code != 200:
+            return False, f"wakeword-server HTTP {resp.status_code}"
+    except Exception as e:
+        return False, f"wakeword-server non raggiungibile ({type(e).__name__})"
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        async with _connections_lock:
+            conn = _persistent_connections.get(device_id)
+        if conn and not conn._closed:
+            await asyncio.sleep(0.2)   # lascia arrivare il welcome prima dei frame
+            return True, "relay aperto"
+        await asyncio.sleep(0.1)
+    return False, "relay dal wakeword-server non arrivato"
+
+
 async def get_connected_devices() -> list:
     """Return list of currently connected device_ids."""
     async with _connections_lock:
