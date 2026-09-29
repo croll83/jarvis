@@ -4482,11 +4482,11 @@ def _resolve_home_control_target(
         import semantic_discovery
         _hits = semantic_discovery.search_sync(location_id, entity_name, domain=domain, top_k=4,
                                                include_hidden=False)
-        _strong = [h for h in _hits if h.get("score", 0) >= 0.6]
+        _strong = [h for h in _hits if h.get("score", 0) >= config.SEMANTIC_ACT_MIN_SCORE]
         if _strong:
             _top = _strong[0]
             _margin = _top["score"] - (_strong[1]["score"] if len(_strong) > 1 else 0.0)
-            if len(_strong) == 1 or _margin >= 0.04:
+            if len(_strong) == 1 or _margin >= config.SEMANTIC_ACT_MIN_MARGIN:
                 logger.info(
                     f"Entity resolution [semantic]: '{entity_name}' (domain={domain}) → "
                     f"{_top['entity_id']} (score {_top['score']:.2f}, margin {_margin:.2f})"

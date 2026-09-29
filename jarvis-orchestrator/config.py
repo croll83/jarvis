@@ -687,3 +687,9 @@ JARVIS_MEMORY_TOKEN = os.environ["JARVIS_MEMORY_TOKEN"]
 
 def jarvis_memory_headers() -> dict:
     return {"Authorization": f"Bearer {JARVIS_MEMORY_TOKEN}"}
+
+
+# Fallback semantico sulle AZIONI (main.py): agisce solo se il match è netto, altrimenti chiede.
+# Calibrate su e5 (punteggi compressi verso l'alto; con nomic erano 0.60 / 0.04).
+SEMANTIC_ACT_MIN_SCORE = float(os.getenv("SEMANTIC_ACT_MIN_SCORE", "0.80"))
+SEMANTIC_ACT_MIN_MARGIN = float(os.getenv("SEMANTIC_ACT_MIN_MARGIN", "0.01"))

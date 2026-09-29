@@ -28,14 +28,14 @@ from multi_ha import multi_ha
 
 logger = logging.getLogger("JARVIS_SEMANTIC")
 
-# Embeddings from jarvis-memory /v1/embed. Deliberately nomic (not the e5 memory model): on the
-# device discovery bench nomic resolves more voice commands with fewer wrong actions, and the
-# score/margin thresholds in main.py are calibrated on it. Vectors are identical to the old
-# jarvis_fastembed service, so the on-disk cache stays valid.
-_EMBED_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+# Embeddings from jarvis-memory /v1/embed: the same e5 model as the memories (one model in the
+# stack, decided 2026-09-29). e5 scores are compressed towards the top: the thresholds in main.py
+# (SEMANTIC_ACT_MIN_SCORE / _MARGIN) are calibrated on the device discovery bench
+# (jarvis-memory bench/discovery: act-correct 55%, act-wrong 2%, otherwise it asks).
+_EMBED_MODEL = "e5"          # tag of the on-disk vector cache (a model change must not reuse it)
 _EMBED_URL = config.JARVIS_MEMORY_URL
 _INDEX_TTL = 3600  # s — index considered fresh for 1h (periodic loop refreshes hourly)
-_DIM = 768
+_DIM = 1024
 
 # Persisted vector cache dir (mounted volume → survives restarts, avoids re-embed)
 _CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -86,13 +86,11 @@ def _embed(texts: List[str], is_query: bool) -> Optional[np.ndarray]:
     """Embed texts via jarvis-memory; returns L2-normalized (N, D) array or None on error."""
     if not texts:
         return np.zeros((0, _DIM), dtype=np.float32)
-    # nomic-embed asymmetric retrieval prefixes
-    prefix = "search_query: " if is_query else "search_document: "
     chunks: List[np.ndarray] = []
     try:
         for i in range(0, len(texts), _EMBED_BATCH):
             batch = texts[i:i + _EMBED_BATCH]
-            payload = {"model": _EMBED_MODEL, "texts": [prefix + t for t in batch]}
+            payload = {"texts": batch, "kind": "query" if is_query else "passage"}
             req = urllib.request.Request(
                 f"{_EMBED_URL}/v1/embed",
                 data=json.dumps(payload).encode(),
@@ -142,7 +140,7 @@ def _doc_hash(doc: str) -> str:
 
 def _cache_path(location_id: str) -> str:
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in location_id)
-    return os.path.join(_CACHE_DIR, f"sem_index_{safe}.pkl")
+    return os.path.join(_CACHE_DIR, f"sem_index_{_EMBED_MODEL}_{safe}.pkl")
 
 
 def _load_disk(location_id: str) -> Dict[str, tuple]:
