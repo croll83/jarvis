@@ -1,7 +1,7 @@
 """
 JARVIS Context Builder
 - SQLite (strutturato) per memoria utente strutturata
-- Memoria semantica/procedurale tramite mem0-stack (MEM0_BASE_URL) lato consumer
+- Memoria semantica/procedurale tramite jarvis-memory (JARVIS_MEMORY_URL) lato consumer
 - Budget token gestito per routing vs reasoning
 """
 
@@ -76,7 +76,7 @@ async def build_full_context(
 
     # NOTE: Semantica utente (messaggi/fatti) ora gestita da mem0-stack via
     # consumer plugin (hermes-plugin/mem0-selfhosted) e dal tool LLM
-    # memory_search → MEM0_BASE_URL/search. Nessuna chiamata in-process qui.
+    # memory_search → JARVIS_MEMORY_URL/v1/search. Nessuna chiamata in-process qui.
 
     # ===== 3. LOCATION MEMORY - SQL (structured) =====
     _t = time.time()

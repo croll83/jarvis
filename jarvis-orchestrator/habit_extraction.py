@@ -1,8 +1,8 @@
 """
-Habit Extraction — orchestrator -> mem0
+Habit Extraction — orchestrator -> jarvis-memory
 
 Job notturno che analizza la chat history per-utente e crea/aggiorna
-record long-term in mem0 sulle abitudini (sia comandi domotici ricorrenti
+record long-term in jarvis-memory sulle abitudini (sia comandi domotici ricorrenti
 che preferenze conversazionali).
 
 Pipeline (V2 — ibrida SQL + LLM):
@@ -13,13 +13,14 @@ Pipeline (V2 — ibrida SQL + LLM):
   2. Preferenze/topic: LLM (Qwen) sui soli messaggi non-HOME_CONTROL
      (route SIMPLE_CHAT / delegate / null) per rilevare interessi
      ricorrenti e preferenze conversazionali.
-  3. Match/drift/upsert via mem0 (stessa logica V1).
+  3. Match/drift/upsert via jarvis-memory (stessa logica V1).
 
-Tutte le scritture su mem0 usano:
-  - user_id = mem0 namespace (marco|ada|...)
-  - agent_id = "jarvis-habit-extractor"
-  - metadata.type = "habit"
-  - content prefisso "[Habit] ..."
+Tutte le scritture su jarvis-memory usano:
+  - profile = marco|ada|... (token del principal "orchestrator")
+  - source = "habit"; type = "routine" (domotica) o "preference" (preferenze/topic)
+  - evidence.habit = i metadati dell'abitudine (entity, action, time_window, ..., user)
+Le routine sono conoscenza di famiglia (scope shared, regola di jarvis-memory): per non
+confondere le abitudini di persone diverse il match considera solo quelle con habit.user uguale.
 """
 
 import json
@@ -38,8 +39,8 @@ from database import _get_conn, get_all_users
 
 logger = logging.getLogger("JARVIS_HABIT")
 
-MEM0_BASE_URL = config.MEM0_BASE_URL
-MEM0_TIMEOUT = 60.0
+JM_URL = config.JARVIS_MEMORY_URL
+JM_TIMEOUT = 60.0
 HABIT_AGENT_ID = "jarvis-habit-extractor"
 
 # Prompt per la sola parte non-domotica (preferenze/topic).
@@ -59,7 +60,7 @@ Output JSON STRICT, una lista di oggetti, niente testo prima/dopo:
     "weekdays": null,
     "confidence": 0.0..1.0,
     "sample_size": int,
-    "description": "frase in italiano per il record mem0"
+    "description": "frase in italiano per il record in memoria"
   }}
 ]
 
@@ -361,99 +362,88 @@ def _aggregate_home_control_habits(
 
 
 # ===========================================================================
-# MEM0 I/O
+# JARVIS-MEMORY I/O
 # ===========================================================================
 
-async def _mem0_search_habits(user_id: str) -> List[Dict[str, Any]]:
-    """Cerca tutti gli habit esistenti in mem0 per un utente."""
+def _habit_meta(user_id: str, habit: Dict[str, Any], version: int) -> Dict[str, Any]:
+    return {
+        "type": "habit",
+        "user": user_id,
+        "kind": habit.get("kind"),
+        "entity": habit.get("entity"),
+        "action": habit.get("action"),
+        "value": habit.get("value"),
+        "time_window": habit.get("time_window"),
+        "frequency": habit.get("frequency"),
+        "weekdays": habit.get("weekdays"),
+        "confidence": habit.get("confidence"),
+        "sample_size": habit.get("sample_size"),
+        "location": habit.get("location"),                 # dominante (wagmi|albani20|None)
+        "locations_seen": habit.get("locations_seen"),     # tutte le location osservate
+        "last_seen": datetime.now().strftime("%Y-%m-%d"),
+        "version": version,
+    }
+
+
+async def _jm_search_habits(user_id: str) -> List[Dict[str, Any]]:
+    """Tutti gli habit attivi di un utente, nella forma {id, memory, metadata} usata dal match."""
     try:
-        async with httpx.AsyncClient(timeout=MEM0_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=JM_TIMEOUT) as client:
             resp = await client.post(
-                f"{MEM0_BASE_URL}/search_contextual?summarize=false",
-                json={
-                    "query": "abitudini ricorrenti",
-                    "user_id": user_id,
-                    "agent_id": HABIT_AGENT_ID,
-                    "limit": 100,
-                },
+                f"{JM_URL}/v1/search",
+                json={"query": "", "profile": user_id, "sources": ["habit"], "limit": 200},
+                headers=config.jarvis_memory_headers(),
             )
             if resp.status_code != 200:
-                logger.warning(f"mem0 search habits failed: {resp.status_code}")
+                logger.warning(f"jarvis-memory search habits failed: {resp.status_code}")
                 return []
-            data = resp.json()
-            return data.get("results") or data.get("memories") or []
+            out = []
+            for r in resp.json().get("results", []):
+                meta = (json.loads(r.get("evidence") or "{}") or {}).get("habit") or {}
+                if meta.get("user") == user_id:
+                    out.append({"id": r["id"], "memory": r["statement"], "metadata": meta})
+            return out
     except Exception as e:
-        logger.warning(f"mem0 search habits exception: {e}")
+        logger.warning(f"jarvis-memory search habits exception: {e}")
         return []
 
 
-async def _mem0_add_habit(user_id: str, habit: Dict[str, Any]) -> Optional[str]:
-    """Aggiunge un nuovo habit in mem0. Ritorna l'id se ok."""
-    content = f"[Habit] {habit['description']}"
-    metadata = {
-        "type": "habit",
-        "kind": habit.get("kind"),
-        "entity": habit.get("entity"),
-        "action": habit.get("action"),
-        "value": habit.get("value"),
-        "time_window": habit.get("time_window"),
-        "frequency": habit.get("frequency"),
-        "weekdays": habit.get("weekdays"),
-        "confidence": habit.get("confidence"),
-        "sample_size": habit.get("sample_size"),
-        "location": habit.get("location"),                 # dominante (wagmi|albani20|None)
-        "locations_seen": habit.get("locations_seen"),     # tutte le location osservate
-        "last_seen": datetime.now().strftime("%Y-%m-%d"),
-        "version": 1,
-    }
+async def _jm_add_habit(user_id: str, habit: Dict[str, Any]) -> Optional[str]:
+    """Aggiunge un nuovo habit. Ritorna l'id se ok."""
     try:
-        async with httpx.AsyncClient(timeout=MEM0_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=JM_TIMEOUT) as client:
             resp = await client.post(
-                f"{MEM0_BASE_URL}/add",
+                f"{JM_URL}/v1/memories",
                 json={
-                    "messages": [{"role": "system", "content": content}],
-                    "user_id": user_id,
-                    "agent_id": HABIT_AGENT_ID,
-                    "metadata": metadata,
+                    "statement": habit["description"],
+                    "type": "routine" if habit.get("kind") == "domotica" else "preference",
+                    "profile": user_id,
+                    "source": "habit",
+                    "evidence": {"habit": _habit_meta(user_id, habit, 1)},
                 },
+                headers=config.jarvis_memory_headers(),
             )
             resp.raise_for_status()
-            result = resp.json()
-            return (result.get("results") or [{}])[0].get("id")
+            return (resp.json().get("memory") or {}).get("id")
     except Exception as e:
-        logger.error(f"mem0 add habit failed: {e}")
+        logger.error(f"jarvis-memory add habit failed: {e}")
         return None
 
 
-async def _mem0_update_habit(memory_id: str, user_id: str, habit: Dict[str, Any], prev_version: int) -> bool:
-    """Aggiorna un habit esistente (nuova versione)."""
-    content = f"[Habit] {habit['description']}"
-    metadata = {
-        "type": "habit",
-        "kind": habit.get("kind"),
-        "entity": habit.get("entity"),
-        "action": habit.get("action"),
-        "value": habit.get("value"),
-        "time_window": habit.get("time_window"),
-        "frequency": habit.get("frequency"),
-        "weekdays": habit.get("weekdays"),
-        "confidence": habit.get("confidence"),
-        "sample_size": habit.get("sample_size"),
-        "location": habit.get("location"),                 # dominante (wagmi|albani20|None)
-        "locations_seen": habit.get("locations_seen"),     # tutte le location osservate
-        "last_seen": datetime.now().strftime("%Y-%m-%d"),
-        "version": prev_version + 1,
-    }
+async def _jm_update_habit(memory_id: str, user_id: str, habit: Dict[str, Any], prev_version: int) -> bool:
+    """Aggiorna un habit esistente: nuova versione che sostituisce la precedente (storico conservato)."""
     try:
-        async with httpx.AsyncClient(timeout=MEM0_TIMEOUT) as client:
-            resp = await client.put(
-                f"{MEM0_BASE_URL}/memories/{memory_id}",
-                json={"data": content, "metadata": metadata},
+        async with httpx.AsyncClient(timeout=JM_TIMEOUT) as client:
+            resp = await client.post(
+                f"{JM_URL}/v1/memories/{memory_id}/supersede",
+                json={"statement": habit["description"], "source": "habit",
+                      "evidence": {"habit": _habit_meta(user_id, habit, prev_version + 1)}},
+                headers=config.jarvis_memory_headers(),
             )
             resp.raise_for_status()
             return True
     except Exception as e:
-        logger.error(f"mem0 update habit {memory_id} failed: {e}")
+        logger.error(f"jarvis-memory update habit {memory_id} failed: {e}")
         return False
 
 
@@ -560,26 +550,25 @@ async def _process_user(speaker_id: int, speaker_name: str):
         logger.info(f"User {user_id}: no habits detected (events={len(events)})")
         return
 
-    # 3. Match + upsert via mem0.
-    existing = await _mem0_search_habits(user_id)
+    # 3. Match + upsert via jarvis-memory.
+    existing = await _jm_search_habits(user_id)
     added = updated = refreshed = 0
 
     for habit in habits:
         match = _match_existing(habit, existing)
         if match is None:
-            if await _mem0_add_habit(user_id, habit):
+            if await _jm_add_habit(user_id, habit):
                 added += 1
         else:
             ex_meta = match.get("metadata") or {}
             prev_version = int(ex_meta.get("version", 1))
             if _has_drift(habit, ex_meta, config.HABIT_DRIFT_THRESHOLD):
-                if await _mem0_update_habit(match.get("id"), user_id, habit, prev_version):
+                if await _jm_update_habit(match.get("id"), user_id, habit, prev_version):
                     updated += 1
             else:
-                merged = {**habit}
-                merged["sample_size"] = max(habit.get("sample_size", 0), ex_meta.get("sample_size", 0))
-                if await _mem0_update_habit(match.get("id"), user_id, merged, prev_version):
-                    refreshed += 1
+                # Nessun cambiamento: niente nuova versione (una al giorno per abitudine sarebbe solo
+                # rumore nello storico). Il ricordo esistente resta valido così com'è.
+                refreshed += 1
 
     logger.info(
         f"User {user_id} habit extraction: domotica={len(domotica_habits)} "
@@ -593,7 +582,7 @@ async def _process_user(speaker_id: int, speaker_name: str):
 # ===========================================================================
 
 async def run_habit_extraction_job():
-    """Job notturno: itera su utenti attivi e estrae habit -> mem0."""
+    """Job notturno: itera su utenti attivi e estrae habit -> jarvis-memory."""
     users = get_all_users()
     if not users:
         logger.info("No users in DB, skip habit extraction")

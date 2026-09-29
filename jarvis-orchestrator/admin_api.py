@@ -2205,13 +2205,12 @@ async def get_memory_stats() -> Dict[str, Any]:
     conn = _get_conn()
     c = conn.cursor()
 
-    # === MEM0 STATS ===
-    # Lo storage vettoriale e' servito da mem0-stack (repo separato).
-    # Per stats live: dashboard plugin mem0-selfhosted di Hermes,
-    # oppure MEM0_BASE_URL + /jobs/stats.
+    # === MEMORY STATS ===
+    # La memoria a lungo termine e' servita da jarvis-memory (repo separato).
+    # Per stats live: tab Memory della dashboard hermes.
     chromadb_stats = {
-        "status": "external_mem0_stack",
-        "base_url": config.MEM0_BASE_URL,
+        "status": "external_jarvis_memory",
+        "base_url": config.JARVIS_MEMORY_URL,
     }
 
     # === SQL MEMORY STATS (HOT only: chat_memory) ===

@@ -2086,8 +2086,9 @@ async def _prewarm_voice_agent():
 
 async def _run_home_digest():
     """FASE 4: chiede a hermes (corsia voce, sessione dedicata 'digest') il
-    digest comportamentale di ieri e lo salva in mem0 via /add_raw — nessuna
-    fact-extraction, il testo resta integro e ricercabile da memory_search."""
+    digest comportamentale di ieri e lo salva in jarvis-memory come evento di
+    famiglia (profilo shared, source=digest) — testo integro, nessuna estrazione,
+    ricercabile da memory_search e dal prefetch di hermes; escluso dal consolidamento."""
     import httpx
     from datetime import timedelta
     tz = zoneinfo.ZoneInfo("Europe/Rome")
@@ -2126,16 +2127,19 @@ async def _run_home_digest():
     if _mark > 0:
         resp = resp[_mark:]
     payload = {
-        "text": f"[Digest casa {yesterday}] {resp.strip()}",
-        "user_id": "marco",
-        "metadata": {"type": "home_digest", "date": yesterday,
-                     "location": ctx["location"], "agent_id": "jarvis-home-digest"},
+        "statement": f"[Digest casa {ctx['location']} {yesterday}] {resp.strip()}",
+        "type": "event",
+        "profile": "shared",
+        "source": "digest",
+        "valid_from": yesterday,
+        "evidence": {"date": yesterday, "location": ctx["location"], "agent_id": "jarvis-home-digest"},
     }
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(f"{config.MEM0_BASE_URL}/add_raw", json=payload)
+        r = await client.post(f"{config.JARVIS_MEMORY_URL}/v1/memories", json=payload,
+                              headers=config.jarvis_memory_headers())
         r.raise_for_status()
-        logger.info(f"Home digest {yesterday} salvato in mem0 "
-                    f"(id={str(r.json().get('id', '?'))[:8]}) in {time.time()-t0:.0f}s")
+        logger.info(f"Home digest {yesterday} salvato in jarvis-memory "
+                    f"(id={str((r.json().get('memory') or {}).get('id', '?'))[:8]}) in {time.time()-t0:.0f}s")
 
 
 async def _home_digest_loop():

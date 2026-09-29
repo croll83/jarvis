@@ -35,7 +35,6 @@ SYSTEM_RULES_PATH = BASE_DIR / "config/router_system_prompt.txt"
 # NETWORK & API ENDPOINTS (richiedono riavvio)
 # ===========================================================================
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-EMBEDDING_URL = os.getenv("EMBEDDING_URL", OLLAMA_URL)  # fastembed CPU (default: fallback a Ollama)
 STT_URL = os.getenv("STT_URL", os.getenv("WHISPER_URL", "http://100.98.187.12:9000"))
 
 # Endpoint derivati
@@ -116,7 +115,7 @@ VOICE_PREWARM_INTERVAL = int(os.getenv("VOICE_PREWARM_INTERVAL", "18000"))
 SCENARIO_SWEEP_ENABLED = os.getenv("SCENARIO_SWEEP_ENABLED", "true").lower() in ("1", "true", "yes")
 SCENARIO_SWEEP_SLUGS = [s.strip() for s in os.getenv(
     "SCENARIO_SWEEP_SLUGS", "buonanotte,buongiorno,esco,rientro_a_casa").split(",") if s.strip()]
-# FASE 4 — digest comportamentale notturno (hermes → mem0 /add_raw)
+# FASE 4 — digest comportamentale notturno (hermes → jarvis-memory, evento di famiglia)
 HOME_DIGEST_ENABLED = os.getenv("HOME_DIGEST_ENABLED", "true").lower() in ("1", "true", "yes")
 HOME_DIGEST_TIME = os.getenv("HOME_DIGEST_TIME", "05:45")  # HH:MM Europe/Rome
 AI_AGENT_TOKEN = os.getenv("AI_AGENT_TOKEN", "")
@@ -676,7 +675,15 @@ VAD_MIN_SILENCE_MS = int(os.getenv("WEBRTC_VAD_MIN_SILENCE_MS", os.getenv("VAD_M
 VAD_MIN_SPEECH_MS = int(os.getenv("WEBRTC_VAD_MIN_SPEECH_MS", os.getenv("VAD_MIN_SPEECH_MS", "250")))
 
 # ===========================================================================
-# REDIS CONTEXT BUS + MEM0 (cross-system memory)
+# REDIS CONTEXT BUS + JARVIS-MEMORY (cross-system memory)
 # ===========================================================================
 REDIS_URL = os.environ["REDIS_URL"]  # e.g. redis://host:6379/0
-MEM0_BASE_URL = os.environ["MEM0_BASE_URL"]  # e.g. http://host:8200
+# jarvis-memory (sostituisce mem0-stack dal 2026-09-29): memorie, abitudini, digest ed embedding
+# per la discovery dei dispositivi. Il token del principal "orchestrator" può leggere/scrivere
+# solo i profili marco, ada e shared.
+JARVIS_MEMORY_URL = os.getenv("JARVIS_MEMORY_URL", "http://100.88.84.81:8210").rstrip("/")
+JARVIS_MEMORY_TOKEN = os.environ["JARVIS_MEMORY_TOKEN"]
+
+
+def jarvis_memory_headers() -> dict:
+    return {"Authorization": f"Bearer {JARVIS_MEMORY_TOKEN}"}

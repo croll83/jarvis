@@ -240,12 +240,12 @@ def _html_to_text(html: str) -> str:
 
 
 async def execute_memory_search(query: str, user_id=None) -> str:
-    """Cerca nella memoria semantica via mem0-stack.
+    """Cerca nella memoria a lungo termine via jarvis-memory (ricerca ibrida, ~100ms).
 
-    Usa /search_contextual?summarize=false (no LLM re-ranker, ~110ms).
-    SECURITY: user_id puo' essere str (mem0 namespace: marco|ada|shared) o int
+    SECURITY: user_id puo' essere str (profilo: marco|ada|shared) o int
     (speaker_id legacy che viene mappato via speaker_to_user_id). Mai default
-    a un utente specifico: chi non e' identificato finisce in 'shared'.
+    a un utente specifico: chi non e' identificato finisce in 'shared'. La
+    segregazione (profilo + ricordi di famiglia) la applica jarvis-memory.
     """
     try:
         import aiohttp
@@ -264,24 +264,23 @@ async def execute_memory_search(query: str, user_id=None) -> str:
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{config.MEM0_BASE_URL}/search_contextual?summarize=false",
-                json={"query": query, "user_id": mem0_user, "limit": 10},
+                f"{config.JARVIS_MEMORY_URL}/v1/search",
+                json={"query": query, "profile": mem0_user, "limit": 10},
+                headers=config.jarvis_memory_headers(),
                 timeout=aiohttp.ClientTimeout(total=config.TIMEOUTS.get("mem0", 10))
             ) as resp:
                 if resp.status != 200:
-                    logger.error(f"mem0 search error: {resp.status}")
+                    logger.error(f"jarvis-memory search error: {resp.status}")
                     return f"Errore nella ricerca in memoria (HTTP {resp.status})."
                 data = await resp.json()
 
-        items = data.get("results") or data.get("memories") or []
+        items = data.get("results") or []
         if not items:
             return f"Nessun ricordo trovato per '{query}'."
 
         output_parts = ["Ricordi rilevanti:"]
         for item in items[:10]:
-            text = item.get("memory") or item.get("content") or item.get("text", "")
-            score = item.get("score") or item.get("similarity") or 0
-            output_parts.append(f"  - {text} (rilevanza: {score:.2f})")
+            output_parts.append(f"  - {item.get('statement', '')} ({item.get('type', '')})")
         return "\n".join(output_parts)
 
     except Exception as e:

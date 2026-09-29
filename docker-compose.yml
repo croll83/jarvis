@@ -140,10 +140,10 @@ services:
       - ROUTER_DUMP_PROMPT=1
       - AI_BACKEND=${AI_BACKEND:-local}
       - OLLAMA_URL=http://localhost:11434
-      - EMBEDDING_URL=http://localhost:11435   # fastembed (CPU, ONNX) — no GPU context switch
-      # Memory: Redis context bus + mem0 long-term
+      # Memory: Redis context bus + jarvis-memory long-term (also embeddings for device discovery)
       - REDIS_URL=${REDIS_URL}
-      - MEM0_BASE_URL=${MEM0_BASE_URL}
+      - JARVIS_MEMORY_URL=${JARVIS_MEMORY_URL:-http://100.88.84.81:8210}
+      - JARVIS_MEMORY_TOKEN=${JARVIS_MEMORY_TOKEN}
       # STT (Parakeet su GX10 via Tailscale)
       - STT_ENGINE=parakeet
       - STT_URL=http://100.98.187.12:9000
@@ -209,7 +209,7 @@ services:
   # ===========================================================================
   # ChromaDB e mem0-server NON sono piu' in questo compose.
   # Vivono nel repo croll83/mem0-stack (deploy indipendente).
-  # L'orchestrator e ha-memory-service li consumano via MEM0_BASE_URL.
+  # Dal 2026-09-29 sostituiti da jarvis-memory (croll83/jarvis-memory, :8210).
 
   # ===========================================================================
   # DATABASES - Side Projects

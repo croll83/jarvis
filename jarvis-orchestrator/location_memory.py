@@ -154,4 +154,4 @@ def format_locations_memory_for_llm(
 
 # NOTE: vector search per eventi-location era servita dal vector store di
 # ha_memory_service (deprecato). Memoria semantica cross-location e' ora
-# delegata a mem0-stack (MEM0_BASE_URL). Nessuna API qui sopra.
+# delegata a jarvis-memory (JARVIS_MEMORY_URL). Nessuna API qui sopra.

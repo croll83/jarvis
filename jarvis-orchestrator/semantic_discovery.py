@@ -28,8 +28,12 @@ from multi_ha import multi_ha
 
 logger = logging.getLogger("JARVIS_SEMANTIC")
 
-_EMBED_MODEL = "nomic-embed-text"
-_EMBED_URL = (config.EMBEDDING_URL or "http://localhost:11435").rstrip("/")
+# Embeddings from jarvis-memory /v1/embed. Deliberately nomic (not the e5 memory model): on the
+# device discovery bench nomic resolves more voice commands with fewer wrong actions, and the
+# score/margin thresholds in main.py are calibrated on it. Vectors are identical to the old
+# jarvis_fastembed service, so the on-disk cache stays valid.
+_EMBED_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+_EMBED_URL = config.JARVIS_MEMORY_URL
 _INDEX_TTL = 3600  # s — index considered fresh for 1h (periodic loop refreshes hourly)
 _DIM = 768
 
@@ -79,7 +83,7 @@ _EMBED_BATCH = 128  # l'indice ora copre TUTTE le entità (~900): a batch interi
 
 
 def _embed(texts: List[str], is_query: bool) -> Optional[np.ndarray]:
-    """Embed texts via fastembed; returns L2-normalized (N, D) array or None on error."""
+    """Embed texts via jarvis-memory; returns L2-normalized (N, D) array or None on error."""
     if not texts:
         return np.zeros((0, _DIM), dtype=np.float32)
     # nomic-embed asymmetric retrieval prefixes
@@ -88,11 +92,11 @@ def _embed(texts: List[str], is_query: bool) -> Optional[np.ndarray]:
     try:
         for i in range(0, len(texts), _EMBED_BATCH):
             batch = texts[i:i + _EMBED_BATCH]
-            payload = {"model": _EMBED_MODEL, "input": [prefix + t for t in batch]}
+            payload = {"model": _EMBED_MODEL, "texts": [prefix + t for t in batch]}
             req = urllib.request.Request(
-                f"{_EMBED_URL}/api/embed",
+                f"{_EMBED_URL}/v1/embed",
                 data=json.dumps(payload).encode(),
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **config.jarvis_memory_headers()},
             )
             with urllib.request.urlopen(req, timeout=60) as r:
                 data = json.load(r)

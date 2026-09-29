@@ -4,8 +4,8 @@ JARVIS HA Memory Service
 - Summarization con Qwen (locale via Ollama o cloud via OpenRouter)
 - API per orchestrator (riassunti SQL + sintesi event-driven)
 
-NOTA: lo strato semantico (vector search) e' stato spostato in mem0-stack
-(croll83/mem0-stack). Eventi memorabili emergono nel sistema mem0 tramite
+NOTA: lo strato semantico (vector search) e' in jarvis-memory
+(croll83/jarvis-memory). Eventi memorabili emergono nella memoria tramite
 l'orchestrator/hermes-plugin, non piu' qui dentro.
 """
 
@@ -473,38 +473,32 @@ async def run_daily_summary():
         conn.commit()
         logger.info(f"Daily summary: {len(data.get('new_facts', []))} new facts")
 
-        # Push behavioral patterns to mem0 (long-term memory)
+        # Push behavioral patterns to jarvis-memory (long-term memory, family scope).
+        # Needs JARVIS_MEMORY_TOKEN = the villa's token (principal ha-albani / ha-wagmi, write: shared).
         new_facts = data.get("new_facts", [])
         patterns = data.get("patterns", {})
-        if new_facts or patterns:
+        token = os.environ.get("JARVIS_MEMORY_TOKEN", "")
+        if (new_facts or patterns) and token:
             try:
                 import httpx
-                mem0_url = os.environ["MEM0_BASE_URL"]
+                jm_url = os.environ.get("JARVIS_MEMORY_URL", "http://100.88.84.81:8210").rstrip("/")
                 facts_text = f"Location {LOCATION_ID} - pattern giornalieri:\n"
                 if patterns:
                     facts_text += "\n".join(f"- {k}: {v}" for k, v in patterns.items()) + "\n"
                 if new_facts:
                     facts_text += "\n".join(f"- {f}" for f in new_facts)
-                # location metadata = this add-on's LOCATION_ID. Keeps facts
-                # cross-house (user_id=shared) ma permette filtering per
-                # location lato consumer (behavioral analysis per casa).
+                # Background extraction in jarvis-memory decides what is worth remembering.
                 resp = httpx.post(
-                    f"{mem0_url}/add",
-                    json={
-                        "text": facts_text,
-                        "user_id": "shared",
-                        "metadata": {
-                            "source": "ha_memory_service",
-                            "location": LOCATION_ID,
-                        },
-                    },
-                    timeout=120.0,
+                    f"{jm_url}/v1/ingest",
+                    json={"text": facts_text, "profile": "shared",
+                          "session_ref": f"ha_memory_service:{LOCATION_ID}"},
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=30.0,
                 )
                 resp.raise_for_status()
-                result = resp.json()
-                logger.info(f"HA patterns pushed to mem0: {len(result.get('results', []))} facts")
+                logger.info(f"HA patterns queued in jarvis-memory: job {resp.json().get('job_id')}")
             except Exception as e:
-                logger.warning(f"mem0 push failed: {e}")
+                logger.warning(f"jarvis-memory push failed: {e}")
 
     except Exception as e:
         logger.error(f"Daily summary failed: {e}")

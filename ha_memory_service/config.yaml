@@ -3,11 +3,11 @@
 # =============================================================================
 # Ingerisce eventi HA via WebSocket, genera summary con LLM,
 # offre API SQL (hot/warm/cold/longterm) per l'orchestrator JARVIS.
-# La ricerca semantica e' delegata a mem0-stack (esterno).
+# La memoria a lungo termine e' jarvis-memory (esterno): i pattern giornalieri vanno in /v1/ingest.
 # =============================================================================
 
 name: "JARVIS HA Memory"
-version: "1.0.5"
+version: "1.0.6"
 slug: jarvis_ha_memory
 description: "Location memory service for JARVIS — event ingestion, LLM summarization, and semantic search"
 url: "https://github.com/croll83/jarvis/tree/main/ha_memory_service"
@@ -70,7 +70,9 @@ options:
 
   # --- Redis context bus ---
   # redis_url: set via REDIS_URL env var
-  # mem0_base_url: set via MEM0_BASE_URL env var
+  # --- jarvis-memory (pattern giornalieri → memoria di famiglia) ---
+  jarvis_memory_url: "http://100.88.84.81:8210"
+  jarvis_memory_token: ""   # token del principal della villa (ha-albani / ha-wagmi); vuoto = push disattivato
 
   skip_entity_prefixes: "update."
   skip_entity_suffixes: "_battery,_linkquality,_signal"
@@ -92,6 +94,8 @@ schema:
 
   # API mode
   openrouter_api_key: password
+  jarvis_memory_url: str?
+  jarvis_memory_token: password?
   openrouter_summary_model: str
 
   # Tuning
