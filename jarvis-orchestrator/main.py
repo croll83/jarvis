@@ -2251,6 +2251,15 @@ async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
         f"datetime: {datetime.now(zoneinfo.ZoneInfo('Europe/Rome')).strftime('%Y-%m-%d %H:%M %Z')}"
     )
 
+    # device_id: serve a Hermes per "avvisami qui" (timer, sveglie, monitor), che
+    # alla scadenza richiama POST /api/tools/notify_device su questo device.
+    _dev_id = context.get("device_id")
+    if _dev_id and _dev_id != "unknown":
+        voice_instructions += f"\ndevice_id: {_dev_id}"
+        _dev_name = (context.get("device_config") or {}).get("friendly_name")
+        if _dev_name:
+            voice_instructions += f"\ndevice_name: {_dev_name}"
+
     # Add location/room context if available
     if location or room:
         loc_parts = []
@@ -6132,13 +6141,17 @@ async def process_jarvis_logic(text: str, context: dict):
 
     # --- AI_AGENT (reasoning via AI Agent gateway) ---
     elif intent == "AI_AGENT":
-        logger.info("AI_AGENT intent, forwarding to AI Agent")
+        # Timer/sveglie/monitor: hint dedicato, Hermes usa il modello piu' veloce
+        # e risponde con una conferma di una riga (niente sessione live).
+        import router_model as _rm_alerts
+        _agent_hint = "alerts" if _rm_alerts.e_avviso(text) else ""
+        logger.info(f"AI_AGENT intent, forwarding to AI Agent (hint={_agent_hint or '-'})")
         if source in config.VOICE_SOURCES:
             # Voice: usa streaming TTS (sentence-by-sentence) per latenza percepita minima
-            await _handle_ai_agent_voice(text, context, hint="")
+            await _handle_ai_agent_voice(text, context, hint=_agent_hint)
         else:
             # Telegram/altro: non-streaming
-            response, _ = await forward_to_ai_agent(text, context)
+            response, _ = await forward_to_ai_agent(text, context, hint=_agent_hint)
             log_event("AI_AGENT", f"Domanda: {text[:50]}...", speaker_id, speaker_name)
             save_chat_message("assistant", response, "JARVIS", None, "Jarvis")
             await deliver_final_response(response, context, sound_type="neutral")

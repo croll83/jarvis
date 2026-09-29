@@ -16,6 +16,8 @@ All endpoints are behind bearer token authentication (AI_AGENT_TOKEN).
 - media_cast:            Cast media (URL) to Samsung TV
 - media_cast/upload:     Cast uploaded file to Samsung TV
 - media_cast/stop:       Stop active cast on a TV
+- notify_device:         Speak an async notice (timer/alarm/monitor) on a voice device
+- voice_devices:         List configured voice devices with audio path + connection
 """
 
 import asyncio
@@ -2034,3 +2036,148 @@ async def tool_music_players(
             "volume": attrs.get("volume_level"),
         }
     return {"location_id": loc, "players": list(seen.values())}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NOTIFY DEVICE — avvisi asincroni di Hermes (timer, sveglie, monitor)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Logica pura e motivazioni in hermes_notify.py. Qui solo l'I/O: DB, websocket,
+# Home Assistant. L'endpoint ritorna SEMPRE l'esito reale (delivered + motivo):
+# il fallback testuale lo decide Hermes, che conosce il canale dell'utente.
+
+class NotifyDeviceRequest(BaseModel):
+    text: str = Field(..., description="Testo da pronunciare (max 400 caratteri, una riga)")
+    device_id: Optional[str] = Field(default=None, description="MAC del device (AABBCCDDEEFF)")
+    name: Optional[str] = Field(default=None, description="In alternativa: friendly_name del device")
+    location_id: Optional[str] = Field(default=None, description="Disambigua name tra le location")
+    urgent: bool = Field(default=False, description="Timer/sveglia chiesti dall'utente: ignora DND e ore silenziose")
+    sound: Optional[str] = Field(default=None, description="Suono prima del testo, solo media_player: positive|neutral|negative")
+    source: Optional[str] = Field(default=None, description="Chi chiama, per i log (es. hermes-marco:timer)")
+
+
+class NotifyDeviceResponse(BaseModel):
+    delivered: bool
+    audio_path: Optional[str] = None          # internal | media_player | none
+    reason: Optional[str] = None              # motivo se delivered=false
+    device: Optional[Dict[str, Any]] = None
+    duration_s: Optional[float] = None
+
+
+_notify_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _notify_lock(device_id: str) -> asyncio.Lock:
+    # Due avvisi sullo stesso device nello stesso istante (due timer scaduti
+    # insieme) mescolerebbero i frame Opus: si parlano uno dopo l'altro.
+    lock = _notify_locks.get(device_id)
+    if lock is None:
+        lock = _notify_locks[device_id] = asyncio.Lock()
+    return lock
+
+
+@router.post("/notify_device", response_model=NotifyDeviceResponse)
+async def tool_notify_device(
+    req: NotifyDeviceRequest,
+    _: None = Depends(verify_ai_agent_token)
+):
+    """Pronuncia un avviso sul device indicato, con la sua uscita audio reale:
+    speaker integrato (Atom con speaker, telefono, orologio) oppure l'Echo o la
+    soundbar associati. Non riapre il microfono e non ripiega su altri canali:
+    se l'audio non parte ritorna delivered=false e il motivo."""
+    import hermes_notify as hn
+    from database import get_voice_device, get_all_voice_devices, get_global_preference, log_event
+    from ws_audio_handler import get_connected_devices
+
+    try:
+        text = hn.clean_text(req.text)
+        sound = hn.clean_sound(req.sound)
+        target = hn.resolve_target(
+            device_id=req.device_id, name=req.name, location_id=req.location_id,
+            get_device=get_voice_device, all_devices=get_all_voice_devices,
+            connected_ids=await get_connected_devices())
+    except hn.NotifyError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+
+    source = (req.source or "hermes")[:60]
+    label = f"{target.friendly_name} ({target.location_id}, {target.device_id})"
+
+    def _fail(reason: str) -> NotifyDeviceResponse:
+        logger.warning(f"notify_device {label} da {source}: NON consegnato — {reason}")
+        return NotifyDeviceResponse(delivered=False, audio_path=target.audio_path,
+                                    reason=reason, device=target.as_dict())
+
+    try:
+        dnd = get_global_preference("dnd_mode", "False") == "True"
+        s_start = int(get_global_preference("silent_hour_start", str(config.SILENT_START)))
+        s_end = int(get_global_preference("silent_hour_end", str(config.SILENT_END)))
+    except Exception:
+        dnd, s_start, s_end = False, config.SILENT_START, config.SILENT_END
+    from datetime import datetime
+    quiet = hn.quiet_reason(dnd=dnd, urgent=req.urgent,
+                            silent_hours=hn.in_silent_hours(datetime.now().hour, s_start, s_end))
+    if quiet:
+        return _fail(quiet)
+    blocked = hn.precheck(target)
+    if blocked:
+        return _fail(blocked)
+
+    async with _notify_lock(target.device_id):
+        if target.use_internal_speaker:
+            from internal_tts import speak_to_device
+            from ws_audio_handler import notify_tts_done
+            try:
+                ok, duration = await speak_to_device(text, target.device_id)
+            finally:
+                # speak_to_device non chiude il turno (nei turni vocali lo fa
+                # deliver_final_response): senza tts_done il device resta in
+                # "sto parlando" e non torna in ascolto della wake word.
+                try:
+                    await asyncio.sleep(0.15)   # flush del buffer DMA, come nella catena vocale
+                    await notify_tts_done(target.device_id)
+                except Exception as e:
+                    logger.warning(f"notify_device: tts_done fallito per {target.device_id}: {e}")
+            if not ok:
+                return _fail("TTS sul device fallito")
+        else:
+            from integrations import speak, speak_with_sound
+            try:
+                if sound:
+                    ok, detail = await speak_with_sound(text, target.output_speaker, sound, target.location_id)
+                else:
+                    ok, detail = await speak(text, target.output_speaker, target.location_id)
+            except Exception as e:
+                ok, detail = False, str(e)
+            if not ok:
+                return _fail(f"TTS su {target.output_speaker} fallito: {str(detail)[:120]}")
+            duration = None
+
+    logger.info(f"notify_device {label} da {source}: consegnato via {target.audio_path}")
+    try:
+        log_event("NOTIFY", f"{source} → {target.friendly_name}: {text[:80]}")
+    except Exception:
+        pass
+    return NotifyDeviceResponse(delivered=True, audio_path=target.audio_path,
+                                device=target.as_dict(),
+                                duration_s=round(duration, 1) if duration else None)
+
+
+@router.get("/voice_devices")
+async def tool_voice_devices(
+    location_id: Optional[str] = None,
+    _: None = Depends(verify_ai_agent_token)
+):
+    """Elenco dei device vocali configurati, con uscita audio e stato di
+    connessione: serve a Hermes per risolvere "l'Atom di casa", "la cameretta"."""
+    import hermes_notify as hn
+    from database import get_all_voice_devices
+    from ws_audio_handler import get_connected_devices
+
+    connected = {str(c).upper().strip() for c in await get_connected_devices()}
+    out = []
+    for dev in get_all_voice_devices():
+        if not dev.friendly_name or not dev.enabled:
+            continue
+        if location_id and (dev.location_id or "").lower() != location_id.strip().lower():
+            continue
+        out.append(hn._target(dev, connected).as_dict())
+    return {"devices": out}

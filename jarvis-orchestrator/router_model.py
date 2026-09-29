@@ -471,6 +471,20 @@ _ELABORAZIONE = re.compile(
 _PRENOTAZIONE = re.compile(
     r"\b(prenot\w+)\b|\b(cerc\w+|trov\w+)\b.{0,20}\b(volo|voli|albergo|hotel|tavolo)\b", re.I)
 _PLAYLIST = re.compile(r"\bplaylist\b", re.I)
+# Timer, sveglie, promemoria e monitoraggi appartengono a Hermes (cron + canale di
+# notifica). Il nome dell'oggetto basta: nessun comando di casa si chiama cosi'.
+# "sveglia" da sola NON basta: e' anche un Echo (la radiosveglia in camera) e
+# "metti musica sulla sveglia" e' domotica. Conta solo con un'ora o una durata.
+_PROMEMORIA = re.compile(
+    r"\b(timer|countdown|conto alla rovescia|promemoria|ricordami|ricordamelo|"
+    r"avvisami|avvertimi|notificami|monitor(?:a|are|ami|ala|alo|ali|ale|aggi\w*)|"
+    r"tieni d.occhio|sorveglia)\b", re.I)
+# ("monitor" da solo e' lo schermo: "accendi il monitor" resta domotica)
+_SVEGLIA = re.compile(r"\bsveglia\w*\b", re.I)
+# Solo un'ora o una durata: NON "ora" (= adesso), NON "alla", NON numeri nudi
+# ("alza il volume della sveglia a 30" e' domotica).
+_QUANDO = re.compile(r"\b(alle|all['’]|tra|fra|entro|domani|stasera|stanotte|dopodomani|"
+                     r"minut\w+|ore|second\w+|\d{1,2}[:.]\d{2})\b", re.I)
 # lettura AGGREGATA: una grandezza di casa insieme a un periodo. Il criterio
 # manda ad AI_AGENT le domande che richiedono di ELABORARE i dati, non leggerli.
 _GRANDEZZA = re.compile(r"\b(consum\w+|spes[ao]|speso|energia|produzion\w+|kwh|bolletta)\b", re.I)
@@ -478,11 +492,21 @@ _PERIODO = re.compile(r"\b(settimana|mese|mesi|anno|ieri|stanotte|scors\w+|genna
                       r"marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|"
                       r"novembre|dicembre)\b", re.I)
 
+def e_avviso(testo: str) -> bool:
+    """Timer, sveglia, promemoria o monitoraggio: va ad AI_AGENT con hint 'alerts'
+    (Hermes lo instrada sul modello piu' veloce e lo gestisce col cron)."""
+    if not testo:
+        return False
+    return bool(_PROMEMORIA.search(testo) or (_SVEGLIA.search(testo) and _QUANDO.search(testo)))
+
+
 def serve_strumento_esterno(testo: str, scopes: Optional[List[str]] = None) -> bool:
     """La frase richiede uno strumento esterno o piu' di un passo: AI_AGENT."""
     if not testo:
         return False
     if _STRUMENTO_ESTERNO.search(testo) or _ELABORAZIONE.search(testo) or _PRENOTAZIONE.search(testo):
+        return True
+    if e_avviso(testo):
         return True
     if _PLAYLIST.search(testo):
         # "metti una playlist in salotto" e' un comando di casa; senza un luogo
