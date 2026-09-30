@@ -41,7 +41,7 @@ async def memory_scheduler():
                 now.hour == config.MEMORY_DAILY_TRIGGER_HOUR
                 and last_daily_run_date != today
             ):
-                logger.info("Running daily habit extraction -> mem0...")
+                logger.info("Running daily habit extraction -> jarvis-memory...")
                 try:
                     await run_habit_extraction_job()
                 except Exception as e:
