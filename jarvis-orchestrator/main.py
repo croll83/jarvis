@@ -2107,7 +2107,8 @@ async def _run_home_digest():
         "dispositivo sospetto.\n"
         "Chiama i tool ADESSO: non usare numeri che ricordi da conversazioni "
         "precedenti. Output: 6-10 righe in italiano, fatti concreti con numeri, "
-        "evidenzia ciò che è ANOMALO rispetto al giorno precedente. Il digest deve "
+        "evidenzia ciò che è ANOMALO rispetto al giorno precedente. Scrivi i numeri in "
+        "cifre (es. 32,4 kWh), non in lettere: è un testo da archiviare, non da leggere a voce. Il digest deve "
         "iniziare ESATTAMENTE con 'DIGEST CASA' — tutto ciò che scrivi prima verrà "
         "scartato."
     )
@@ -2117,8 +2118,9 @@ async def _run_home_digest():
     resp, _ = await forward_to_ai_agent(prompt, ctx, hint="digest",
                                         session_user=f"digest-{yesterday}")
     # Guardia anti-fallback: se hermes è giù, forward_to_ai_agent ripiega sul
-    # Qwen locale (senza tool) — non salvare un digest inventato.
-    if not resp or len(resp) < 120 or sum(c.isdigit() for c in resp) < 3:
+    # Qwen locale (senza tool) — non salvare un digest inventato. Il marker "DIGEST CASA"
+    # basta come prova (la corsia voce a volte scrive i numeri in lettere: 30/09 scartato così).
+    if not resp or len(resp) < 120 or ("DIGEST CASA" not in resp and sum(c.isdigit() for c in resp) < 3):
         logger.warning(f"Home digest scartato (risposta sospetta): {str(resp)[:100]!r}")
         return
     # Trim della narrazione tra i tool-call (lo stream SSE concatena tutto):
