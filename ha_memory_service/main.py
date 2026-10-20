@@ -61,8 +61,10 @@ WS_RETRY_DELAY = int(os.getenv("WS_RETRY_DELAY", "30"))
 WS_RECONNECT_DELAY = int(os.getenv("WS_RECONNECT_DELAY", "10"))
 SCHEDULER_INITIAL_DELAY = int(os.getenv("SCHEDULER_INITIAL_DELAY", "30"))
 SCHEDULER_INTERVAL = int(os.getenv("SCHEDULER_INTERVAL", "60"))
-SKIP_ENTITY_PREFIXES = os.getenv("SKIP_ENTITY_PREFIXES", "update.").split(",")
-SKIP_ENTITY_SUFFIXES = os.getenv("SKIP_ENTITY_SUFFIXES", "_battery,_linkquality,_signal").split(",")
+# Voci vuote ignorate: una virgola finale nelle opzioni ("…,_segnale_,") produceva il suffisso "" che è
+# contenuto in ogni entity_id, e l'add-on scartava TUTTI gli eventi (Albani, da marzo a ottobre 2026).
+SKIP_ENTITY_PREFIXES = [x.strip() for x in os.getenv("SKIP_ENTITY_PREFIXES", "update.").split(",") if x.strip()]
+SKIP_ENTITY_SUFFIXES = [x.strip() for x in os.getenv("SKIP_ENTITY_SUFFIXES", "_battery,_linkquality,_signal").split(",") if x.strip()]
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("HA_MEMORY")
