@@ -46,8 +46,10 @@ OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "JARVIS HA Memory")
 OPENROUTER_SUMMARY_MODEL = os.getenv("OPENROUTER_SUMMARY_MODEL", "qwen/qwen-2.5-7b-instruct")
 
 # --- Proxy mode (billing proxy Anthropic-compatible, es. hermes :18801) ---
-PROXY_URL = os.getenv("PROXY_URL", "http://100.116.99.9:18801")
-PROXY_MODEL = os.getenv("PROXY_MODEL", "claude-sonnet-4-6")
+# Billing proxy gestito (:18802): una API key per applicazione (opzione proxy_api_key, una per villa).
+PROXY_URL = os.getenv("PROXY_URL", "http://100.116.99.9:18802")
+PROXY_MODEL = os.getenv("PROXY_MODEL", "claude-sonnet-5-5")
+PROXY_API_KEY = os.getenv("PROXY_API_KEY", "")
 ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
 
 # --- Common ---
@@ -290,10 +292,12 @@ async def _call_anthropic_proxy(prompt: str, max_tokens: int = 150) -> str:
         "content-type": "application/json",
         "anthropic-version": ANTHROPIC_VERSION,
     }
+    if PROXY_API_KEY:
+        headers["x-api-key"] = PROXY_API_KEY
+    # niente temperature: Sonnet 5.5 la rifiuta (400 "temperature is deprecated")
     payload = {
         "model": PROXY_MODEL,
         "max_tokens": max_tokens,
-        "temperature": SUMMARY_TEMPERATURE,
         "messages": [{"role": "user", "content": prompt}],
     }
 

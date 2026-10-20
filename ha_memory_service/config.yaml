@@ -7,7 +7,7 @@
 # =============================================================================
 
 name: "JARVIS HA Memory"
-version: "1.0.6"
+version: "1.0.7"
 slug: jarvis_ha_memory
 description: "Location memory service for JARVIS — event ingestion, LLM summarization, and semantic search"
 url: "https://github.com/croll83/jarvis/tree/main/ha_memory_service"
@@ -53,8 +53,9 @@ options:
   ai_backend: "proxy"
 
   # --- Proxy mode (billing proxy Anthropic-compatible, es. hermes) ---
-  proxy_url: "http://100.116.99.9:18801"
-  proxy_model: "claude-sonnet-4-6"
+  proxy_url: "http://100.116.99.9:18802"
+  proxy_model: "claude-sonnet-5-5"
+  proxy_api_key: ""   # chiave della villa nel billing proxy gestito (ha_<villa>_memory_llm_proxy_key nel vault hermes)
 
   # --- Local mode (Ollama) ---
   ollama_url: "http://100.x.x.x:11434"
@@ -87,6 +88,7 @@ schema:
   # Proxy mode
   proxy_url: str
   proxy_model: str
+  proxy_api_key: password?
 
   # Local mode
   ollama_url: str
