@@ -48,7 +48,7 @@ OPENROUTER_SUMMARY_MODEL = os.getenv("OPENROUTER_SUMMARY_MODEL", "qwen/qwen-2.5-
 # --- Proxy mode (billing proxy Anthropic-compatible, es. hermes :18801) ---
 # Billing proxy gestito (:18802): una API key per applicazione (opzione proxy_api_key, una per villa).
 PROXY_URL = os.getenv("PROXY_URL", "http://100.116.99.9:18802")
-PROXY_MODEL = os.getenv("PROXY_MODEL", "claude-sonnet-5-5")
+PROXY_MODEL = os.getenv("PROXY_MODEL", "sonnet-latest")  # alias del proxy per il Sonnet più recente
 PROXY_API_KEY = os.getenv("PROXY_API_KEY", "")
 ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
 

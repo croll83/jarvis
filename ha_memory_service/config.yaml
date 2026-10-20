@@ -54,7 +54,7 @@ options:
 
   # --- Proxy mode (billing proxy Anthropic-compatible, es. hermes) ---
   proxy_url: "http://100.116.99.9:18802"
-  proxy_model: "claude-sonnet-5-5"
+  proxy_model: "sonnet-latest"   # alias del billing proxy per il Sonnet più recente
   proxy_api_key: ""   # chiave della villa nel billing proxy gestito (ha_<villa>_memory_llm_proxy_key nel vault hermes)
 
   # --- Local mode (Ollama) ---
