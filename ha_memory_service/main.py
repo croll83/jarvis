@@ -50,6 +50,7 @@ OPENROUTER_SUMMARY_MODEL = os.getenv("OPENROUTER_SUMMARY_MODEL", "qwen/qwen-2.5-
 PROXY_URL = os.getenv("PROXY_URL", "http://100.116.99.9:18802")
 PROXY_MODEL = os.getenv("PROXY_MODEL", "sonnet-latest")  # alias del proxy per il Sonnet più recente
 PROXY_API_KEY = os.getenv("PROXY_API_KEY", "")
+PROXY_MIN_TOKENS = int(os.getenv("PROXY_MIN_TOKENS", "1500"))
 ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
 
 # --- Common ---
@@ -296,12 +297,17 @@ async def _call_anthropic_proxy(prompt: str, max_tokens: int = 150) -> str:
     }
     if PROXY_API_KEY:
         headers["x-api-key"] = PROXY_API_KEY
-    # niente temperature: Sonnet 5.5 la rifiuta (400 "temperature is deprecated")
+    # niente temperature: Sonnet 5.5 la rifiuta (400 "temperature is deprecated").
+    # Budget ampio: con 150 token Sonnet troncava i riassunti a metà e Haiku 5.5, che ragiona di
+    # default, li spendeva tutti in thinking e non scriveva nulla (2026-10-20). Per Haiku il thinking
+    # è disattivato (riassunto equivalente, ~1/3 dei token); per Sonnet 5.5 "disabled" è un 400.
     payload = {
         "model": PROXY_MODEL,
-        "max_tokens": max_tokens,
+        "max_tokens": max(max_tokens, PROXY_MIN_TOKENS),
         "messages": [{"role": "user", "content": prompt}],
     }
+    if "haiku" in PROXY_MODEL.lower():
+        payload["thinking"] = {"type": "disabled"}
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -312,10 +318,12 @@ async def _call_anthropic_proxy(prompt: str, max_tokens: int = 150) -> str:
         ) as resp:
             if resp.status == 200:
                 result = await resp.json()
-                for block in result.get("content", []):
-                    if block.get("type") == "text":
-                        return block.get("text", "")
-                return ""
+                text = "".join(b.get("text", "") for b in result.get("content", []) if b.get("type") == "text").strip()
+                if not text:
+                    # mai salvare un riassunto vuoto in silenzio: il job lo registra come fallito
+                    raise Exception(f"risposta senza testo (stop_reason={result.get('stop_reason')}, "
+                                    f"blocchi={[b.get('type') for b in result.get('content', [])]})")
+                return text
             else:
                 body = await resp.text()
                 raise Exception(f"Proxy error {resp.status}: {body[:200]}")

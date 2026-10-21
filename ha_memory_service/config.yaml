@@ -7,7 +7,7 @@
 # =============================================================================
 
 name: "JARVIS HA Memory"
-version: "1.0.8"
+version: "1.0.9"
 slug: jarvis_ha_memory
 description: "Location memory service for JARVIS — event ingestion, LLM summarization, and semantic search"
 url: "https://github.com/croll83/jarvis/tree/main/ha_memory_service"
