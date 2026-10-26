@@ -89,16 +89,23 @@ def get_entity_level_override(entity_id: Optional[str]) -> Optional[SecurityLeve
 # ═══════════════════════════════════════════════════════════════════════════════
 # Each channel has a maximum security level it can execute.
 # Voice (Resemblyzer-certified) is fully trusted.
-# AI Agent Telegram is L2 (L3 requires JARVIS approval bot).
 # Email/unknown sources are always blocked.
+#
+# Channels of AI Agent (Hermes) requests are stamped by code, not chosen by the model: the
+# hermes-jarvis plugin `orchestrator-channel` rewrites `source_channel` with the real origin of the
+# turn (Telegram, WhatsApp, cron, voice-live-hub, or `untrusted` when the turn read web/email
+# content). Table decided by Marco on 2026-10-25.
 
 DEFAULT_CHANNEL_PERMISSIONS: Dict[str, SecurityLevel] = {
     "voice": SecurityLevel.L3_PROTECTED,  # Resemblyzer verified — fully trusted
     "telegram": SecurityLevel.L3_PROTECTED,  # Direct JARVIS bot — trusted (owner only)
-    "ai_agent_telegram": SecurityLevel.L2_SENSITIVE,  # Telegram via AI Agent
-    "ai_agent_whatsapp": SecurityLevel.L2_SENSITIVE,  # Whatsapp via AI Agent
+    "ai_agent_telegram": SecurityLevel.L3_PROTECTED,  # Telegram via AI Agent (owner-only bots)
+    "ai_agent_whatsapp": SecurityLevel.L3_PROTECTED,  # WhatsApp via AI Agent (allowlisted numbers)
     "ai_agent_app": SecurityLevel.L3_PROTECTED,  # Mac/desktop app — configurable as trusted
-    "api_tools": SecurityLevel.L2_SENSITIVE,  # Direct API tool calls from AI Agent
+    "voice_live": SecurityLevel.L3_PROTECTED,  # voice-live-hub (Gemini Live): L3 only after a spoken yes
+    "api_tools": SecurityLevel.L2_SENSITIVE,  # Direct API tool calls (default when no channel is given)
+    "cron": SecurityLevel.L2_SENSITIVE,  # Scheduled jobs of the AI Agent: nobody is there to watch
+    "untrusted": SecurityLevel.L4_BLOCKED,  # Turn that read external content (web, email): no access
     "email": SecurityLevel.L4_BLOCKED,  # Always blocked for home control
     "unknown": SecurityLevel.L4_BLOCKED,  # Unknown sources — blocked
 }
@@ -287,9 +294,13 @@ def _channel_description(channel: str) -> str:
     """Human-readable channel descriptions."""
     descriptions = {
         "voice": "Comandi vocali (certificati da Resemblyzer) — completamente trusted",
-        "ai_agent_telegram": "Telegram via AI Agent — trusted per L1-L2",
+        "ai_agent_telegram": "Telegram via AI Agent — L1-L3 (canale timbrato dal plugin Hermes)",
+        "ai_agent_whatsapp": "WhatsApp via AI Agent — L1-L3 (canale timbrato dal plugin Hermes)",
         "ai_agent_app": "App Mac/desktop AI Agent — configurabile come trusted",
+        "voice_live": "Chiamate vocali live (voice-live-hub) — L3 solo dopo conferma vocale",
         "api_tools": "Chiamate API dirette da AI Agent — L1-L2",
+        "cron": "Job pianificati dell'AI Agent — L1-L2",
+        "untrusted": "Turno che ha letto contenuto esterno (web, email) — bloccato",
         "email": "Email — sempre bloccato per controllo domotica",
         "unknown": "Fonte sconosciuta — sempre bloccato",
     }

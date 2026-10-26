@@ -2211,6 +2211,12 @@ async def forward_to_ai_agent(text: str, context: dict, hint: str = "",
     import aiohttp
     import json as _json
 
+    # /api/tools/voice_command never forwards to the AI Agent: the caller (voice-live-hub) is
+    # already talking to it, and would otherwise get Hermes' answer through a second path.
+    if context.get("_capture") is not None:
+        context["_capture"]["not_handled"] = f"ai_agent{':' + hint if hint else ''}"
+        return None, None
+
     if not config.AI_AGENT_ENABLED:
         logger.warning("AI Agent not configured, falling back to local response")
         return await get_quick_response(text, context), None
@@ -2458,6 +2464,78 @@ _flush_tts_sentences.chunks_sent = 0
 # ===========================================================================
 # ENDPOINTS
 # ===========================================================================
+
+from fastapi import Depends  # noqa: E402
+from pydantic import BaseModel as _BaseModel  # noqa: E402
+from tools_api import verify_ai_agent_token  # noqa: E402
+
+
+class VoiceCommandRequest(_BaseModel):
+    text: str
+    speaker: str  # user name as in the users table, e.g. "Marco"
+    location_id: Optional[str] = None
+    confirmed: bool = False  # the caller heard a spoken yes for this exact command
+    # The needs_confirmation the yes was given for: the orchestrator executes only that (A2).
+    confirm_target: Optional[dict] = None
+    timeout_s: float = 20.0
+
+
+@app.post("/api/tools/voice_command")
+async def tool_voice_command(req: VoiceCommandRequest, _: None = Depends(verify_ai_agent_token)):
+    """Synchronous home command for the voice-live-hub (Gemini Live calls).
+
+    Runs the same chain as a voice device (safety check, GLiNER/Jev/Qwen routing, entity
+    resolution, security levels, scenarios, music) on channel `voice_live`, but returns the
+    answer instead of speaking it: the caller says it with its own voice. Only confident
+    HOME_CONTROL is handled; anything else comes back `handled: false` and the caller asks
+    Hermes. An L3 action without `confirmed` comes back as `needs_confirmation`, not executed.
+    """
+    speaker_ctx = build_speaker_context(None, "voice_live", explicit_speaker=req.speaker)
+    if not speaker_ctx.get("speaker_identified"):
+        return {"handled": False, "not_handled": f"utente sconosciuto: {req.speaker}"}
+    location = req.location_id
+    if not location:
+        user_loc = get_user_location(speaker_ctx["speaker_id"])
+        location = user_loc.location_id if user_loc else get_default_location_id()
+    capture = {"responses": [], "closed": False}
+    context = {
+        "source": "voice_live", "room": "Unknown", "mic_id": "voice-live-hub", "chat_id": "voice_live",
+        "location": location, "_capture": capture, "_confirmed": bool(req.confirmed),
+        "_confirm_target": req.confirm_target if isinstance(req.confirm_target, dict) else None, **speaker_ctx,
+    }
+    t0 = time.time()
+    timeout_s = max(1.0, min(float(req.timeout_s), 30.0))
+    task = asyncio.create_task(process_jarvis_logic(req.text[:500], context))
+    done, _ = await asyncio.wait({task}, timeout=timeout_s)
+    capture["closed"] = True
+    if task not in done and not capture.get("executing"):
+        # Still routing or resolving: stop it, nothing has been done yet (A4). A command already
+        # executing is left to finish and reported in_progress.
+        task.cancel()
+        return {"handled": False, "not_handled": "timeout prima dell'esecuzione",
+                "elapsed_ms": int((time.time() - t0) * 1000)}
+    if task in done and (task.cancelled() or task.exception() is not None):
+        err = "cancelled" if task.cancelled() else type(task.exception()).__name__
+        logger.error(f"voice_command failed: {err}")
+        return {"handled": False, "not_handled": f"errore: {err}",
+                "elapsed_ms": int((time.time() - t0) * 1000)}
+    texts = [r["text"] for r in capture["responses"]]
+    result = {
+        "handled": bool(texts or capture.get("needs_confirmation"))
+                   and not capture.get("not_handled") and not capture.get("blocked"),
+        "response_text": " ".join(texts) or None,
+        "needs_confirmation": capture.get("needs_confirmation"),
+        "not_handled": capture.get("not_handled"),
+        "blocked": capture.get("blocked"),
+        "in_progress": task not in done,
+        "intent": context.get("_intent"),
+        "location_id": location,
+        "elapsed_ms": int((time.time() - t0) * 1000),
+    }
+    logger.info(f"voice_command {req.speaker}: {req.text[:60]!r} -> handled={result['handled']} "
+                f"confirm={bool(result['needs_confirmation'])} {result['elapsed_ms']}ms")
+    return result
+
 
 @app.post("/voice_command")
 async def voice_command(request: Request):
@@ -3721,6 +3799,9 @@ async def _handle_ai_agent_voice(text: str, context: dict, hint: str = ""):
     Otherwise, session key = room/device name to group anonymous interactions.
     AI Agent generates: openresponses-main-user:{session_user}
     """
+    if context.get("_capture") is not None:  # voice_command: see forward_to_ai_agent
+        context["_capture"]["not_handled"] = f"ai_agent{':' + hint if hint else ''}"
+        return
     context["_user_text"] = text  # Per VirtualMic response tracking
     context["_intent"] = f"AI_AGENT:{hint}" if hint else "AI_AGENT"
 
@@ -5068,6 +5149,27 @@ async def _execute_entity_status(payload: dict, location: str, context: dict) ->
 # ===========================================================================
 
 
+def _check_target_security(entity_ids, domain, action, source_channel):
+    """check_security over every target entity: (allowed, reason, level, channel_max, domain, l3_ids).
+
+    The first refusal wins; otherwise the entity with the highest level decides. l3_ids lists every
+    target at L3 or above (domain level or per-entity override, e.g. the BTicino gate button).
+    """
+    refused = top = None
+    l3_ids = []
+    for eid in entity_ids:
+        dom = eid.split(".")[0] if "." in eid else (domain or "light")
+        res = check_security(dom, _map_action_for_domain(action, dom), source_channel, entity_id=eid)
+        if res[2] >= SecurityLevel.L3_PROTECTED:
+            l3_ids.append(eid)
+        if not res[0] and refused is None:
+            refused = (res, dom)
+        if top is None or res[2] > top[0][2]:
+            top = (res, dom)
+    (allowed, reason, level, channel_max), dom = refused or top
+    return allowed, reason, level, channel_max, dom, l3_ids
+
+
 def _map_action_for_domain(base_action: str, entity_domain: str) -> str:
     """Action generico del router → action valido per il dominio dell'entità.
 
@@ -5167,7 +5269,8 @@ async def process_jarvis_logic(text: str, context: dict):
         return
 
     # 1. CHECK CACHE
-    cached_response = smart_cache.check(text)
+    # voice_command never answers from the cache: a cached "Fatto!" would skip the command.
+    cached_response = smart_cache.check(text) if context.get("_capture") is None else None
     if cached_response:
         logger.info("Cache hit!")
         admin_metrics.record_cache_hit()
@@ -5226,8 +5329,11 @@ async def process_jarvis_logic(text: str, context: dict):
     is_safe_result, reason = await is_safe(text, source)
     _safety_ms = (time.time() - _t) * 1000
     if not is_safe_result:
-        await send_telegram(f"⚠️ Comando bloccato: {reason}")
         log_event("SECURITY", f"Comando bloccato da {source}: {reason}", speaker_id, speaker_name)
+        if context.get("_capture") is not None:
+            context["_capture"]["blocked"] = reason
+            return
+        await send_telegram(f"⚠️ Comando bloccato: {reason}")
         return
 
     # 3. MEMORIA RECENTE per routing (ultimi N turni, pura SQLite — no vector/embedding)
@@ -5317,6 +5423,13 @@ async def process_jarvis_logic(text: str, context: dict):
 
     # Recupera soglie confidenza da DB
     conf_high, conf_low = get_confidence_thresholds()
+
+    # /api/tools/voice_command handles confident home commands only. Anything else (chat,
+    # questions, AI_AGENT, low confidence) goes back to the caller, which asks Hermes: the later
+    # branches would forward to the AI Agent, which the caller is already talking to.
+    if context.get("_capture") is not None and not (intent == "HOME_CONTROL" and conf >= conf_high):
+        context["_capture"]["not_handled"] = f"intent {intent} conf {conf:.2f}"
+        return
 
     logger.info(f"Routed: intent={intent}, confidence={conf:.2f}, speaker={speaker_name}, payload={router_data.get('payload', {})}")
     context["_intent"] = intent  # Per VirtualMic response tracking
@@ -5708,13 +5821,36 @@ async def process_jarvis_logic(text: str, context: dict):
             await deliver_final_response(response, context, sound_type="negative")
             return
 
-        # L1-L4 security check (domain-level, come entity_bulk)
+        # L1-L4 security check over EVERY target entity. A bulk or a wildcard ("apri tutto") mixes
+        # domains: checking only the first one let a light carry the gate button, the locks and the
+        # cameras through (adversarial review 2026-10-25, A1). Any refusal refuses; otherwise the
+        # highest level decides.
         source_channel = "voice" if source in config.VOICE_SOURCES else source.lower()
-        # Per security check usiamo il primo entity_id; domain potrebbe essere None per multi-domain
-        sec_domain = (domain or target["entity_ids"][0].split(".")[0]) if target["entity_ids"] else "light"
-        allowed, sec_reason, domain_level, channel_max = check_security(
-            sec_domain, action, source_channel, entity_id=target["entity_ids"][0]
-        )
+        allowed, sec_reason, domain_level, channel_max, sec_domain, _l3_ids = _check_target_security(
+            target["entity_ids"], domain, action, source_channel)
+
+        # voice_command: an L3 action (locks, alarm, cameras, gate) runs only after the caller's
+        # spoken yes for THIS action on THESE entities. The confirmed call is routed again, so the
+        # yes is bound to what was described (A2): a re-route that reaches another L3 entity, or a
+        # different action, asks again. No execution, no Telegram.
+        _cap = context.get("_capture")
+        if _cap is not None and allowed and domain_level >= SecurityLevel.L3_PROTECTED:
+            _want = context.get("_confirm_target") or {}
+            _bound = (context.get("_confirmed") and _want.get("action") == action
+                      and set(_l3_ids) <= set(_want.get("entity_ids") or []))
+            if not _bound:
+                _base = target.get("description") or entity
+                if "None" in str(_base):
+                    _base = entity
+                _labels = ", ".join(e.split(".", 1)[-1].replace("_", " ") for e in _l3_ids)
+                _cap["needs_confirmation"] = {
+                    "level": int(domain_level), "domain": sec_domain, "action": action,
+                    "entity_ids": list(target["entity_ids"]), "l3_entity_ids": list(_l3_ids),
+                    "description": _base if len(target["entity_ids"]) == 1 else f"{_base} (compresi: {_labels})",
+                }
+                log_event("APPROVAL", f"voice_command: L3 {sec_domain}.{action} su {_l3_ids} in attesa di conferma vocale",
+                          speaker_id, speaker_name)
+                return
 
         if not allowed:
             if domain_level == SecurityLevel.L3_PROTECTED and channel_max < SecurityLevel.L3_PROTECTED:
@@ -5736,6 +5872,12 @@ async def process_jarvis_logic(text: str, context: dict):
                 await deliver_final_response(response, context, sound_type="negative")
             return
         else:
+            # voice_command: past its timeout the caller was already told; never act behind it (A4).
+            if _cap is not None:
+                if _cap["closed"]:
+                    logger.info("voice_command: timed out before execution, nothing executed")
+                    return
+                _cap["executing"] = True
             hass_start = time.time()
 
             # ── COVER "PREFERITO" (Cherubini): premi il button per-tapparella ──
@@ -6328,6 +6470,17 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
         context: Contesto della richiesta (source, room, location, device_config, etc.)
         sound_type: Tipo di suono introduttivo ("positive", "neutral", "negative", None)
     """
+    # /api/tools/voice_command: the caller (voice-live-hub) speaks the answer itself. A late
+    # answer (scenario watcher, background music task) after the endpoint returned is dropped:
+    # it must never come out of a house speaker or Telegram behind the caller's back.
+    _cap = context.get("_capture")
+    if _cap is not None:
+        if _cap["closed"]:
+            logger.info(f"voice_command: late answer dropped: {str(text)[:80]!r}")
+        elif text:
+            _cap["responses"].append({"text": text, "sound": sound_type})
+        return
+
     source = context.get("source", "unknown")
     room = context.get("room", "salotto").lower()
     location = context.get("location", get_default_location_id())
