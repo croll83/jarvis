@@ -51,6 +51,8 @@ async def test_offer_accept_enters_duplex(conn, hub_on):
     assert hub.offer == {
         "type": "offer", "call_id": "c0ffee01", "profile": "hermes-marco", "name": "Marco",
         "voice": "Charon", "location_id": "napoli", "room": "studio", "deliver": ["orchestrator"],
+        # VAD meno nervoso: il residuo d'eco a inizio frase non deve sembrare l'utente
+        "vad": {"startOfSpeechSensitivity": "START_SENSITIVITY_LOW", "prefixPaddingMs": 300},
     }
     assert conn.ws.json == [{"type": "live_session_start", "duplex": True}]
     assert conn.live_session is True
@@ -284,7 +286,7 @@ async def test_orchestrator_binary_not_forwarded_in_hub_session(conn, hub_on):
     assert conn.ws.binary == []
 
 
-async def test_clear_drops_queued_downlink(conn, hub_on, monkeypatch):
+async def test_clear_drops_queued_downlink_but_keeps_the_aec_reference(conn, hub_on, monkeypatch):
     # speex (se c'e') perche' il passthrough non tiene render in coda
     monkeypatch.setattr(server, "AEC_BACKEND", "speex")
     hub = hub_on
@@ -294,9 +296,12 @@ async def test_clear_drops_queued_downlink(conn, hub_on, monkeypatch):
     if session.aec.backend_name != "off":
         assert session.aec.render_backlog_bytes > 0
     hub.send_json({"type": "clear", "call_id": "c0ffee01"})
+    backlog = session.aec.render_backlog_bytes
     assert await wait_for(lambda: "audio_clear" in conn.ws.types())
     assert session.queued_frames == 0
-    assert session.aec.render_backlog_bytes == 0
+    # L'audio gia' consegnato all'Atom puo' ancora suonare: il suo riferimento resta all'AEC
+    if session.aec.backend_name != "off":
+        assert session.aec.render_backlog_bytes > 0 or backlog == 0
     sent = len(conn.ws.binary)
     await asyncio.sleep(0.2)
     assert len(conn.ws.binary) <= sent + 1  # al massimo il frame gia' in uscita

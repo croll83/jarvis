@@ -62,6 +62,11 @@ HUB_HOST = os.getenv("HUB_HOST", "").strip()
 HUB_PORT = int(os.getenv("HUB_PORT", "0") or "0")
 # Cancellazione d'eco per l'Atom in sessione hub: "webrtc" (AEC3), "speex" oppure "off".
 AEC_BACKEND = os.getenv("AEC_BACKEND", "webrtc").strip().lower()
+# VAD di Gemini chiesto all'hub per le sessioni degli Atom: lo speaker e' a pochi mm dal mic e
+# all'inizio di ogni frase un breve residuo d'eco passa l'AEC; con la sensibilita' di default
+# Gemini lo prendeva per l'utente che interrompe. Vuoto = default dell'hub.
+HUB_VAD_START_SENSITIVITY = os.getenv("HUB_VAD_START_SENSITIVITY", "START_SENSITIVITY_LOW").strip()
+HUB_VAD_PREFIX_PADDING_MS = int(os.getenv("HUB_VAD_PREFIX_PADDING_MS", "300") or "0")
 
 # --- Opus ---
 OPUS_SAMPLE_RATE = 16000

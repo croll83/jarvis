@@ -174,12 +174,16 @@ class HubLiveSession:
             logger.error(f"[{self.device_id}] Hub downlink pacer error: {e!r}")
 
     async def clear(self):
-        """Barge-in dal hub: via tutto il parlato non ancora suonato, subito."""
+        """Barge-in dal hub: via tutto il parlato non ancora mandato all'Atom, subito.
+
+        Il riferimento dell'AEC NON si azzera: l'audio gia' consegnato all'Atom (buffer di
+        playback, ring I2S) puo' ancora uscire dallo speaker per qualche centinaio di ms, e senza
+        riferimento quell'eco arrivava intero a Gemini, che si interrompeva di nuovo (misurato:
+        ~400 ms a -3/-7 dBFS dopo ogni clear, ciclo di auto-interruzioni)."""
         self._down.clear()
         self._down_pcm.clear()
         self._down_tail = b""
         self._due = 0.0
-        self.aec.reset_render()
         await self._send_json({"type": "audio_clear"})
 
     @property

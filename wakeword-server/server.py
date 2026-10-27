@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from config import (
     DEVICE_API_TOKEN, OPUS_SAMPLE_RATE, OPUS_CHANNELS,
     OPUS_FRAME_SAMPLES, WAKEWORD_THRESHOLD, ORCHESTRATOR_URL, LOCATION_ID,
-    HUB_HOST, HUB_PORT, AEC_BACKEND,
+    HUB_HOST, HUB_PORT, AEC_BACKEND, HUB_VAD_START_SENSITIVITY, HUB_VAD_PREFIX_PADDING_MS,
 )
 from wakeword import DeviceWakeWordEngine
 from multiroom import MultiroomCooldown
@@ -592,6 +592,13 @@ async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
             offer[key] = str(msg[key])
     if isinstance(msg.get("deliver"), list) and msg["deliver"]:
         offer["deliver"] = [str(d) for d in msg["deliver"]]
+    vad = {}
+    if HUB_VAD_START_SENSITIVITY:
+        vad["startOfSpeechSensitivity"] = HUB_VAD_START_SENSITIVITY
+    if HUB_VAD_PREFIX_PADDING_MS > 0:
+        vad["prefixPaddingMs"] = HUB_VAD_PREFIX_PADDING_MS
+    if vad:
+        offer["vad"] = vad
 
     relay = HubRelay(conn.device_id, call_id)
     try:
