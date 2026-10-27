@@ -150,18 +150,50 @@ _BACKENDS = {"webrtc": _WebRtcBackend, "speex": _SpeexBackend}
 _PREFERENCE = {"webrtc": ("webrtc", "speex"), "speex": ("speex",), "off": ()}
 
 
-class EchoCanceller:
-    """AEC di una sessione: render() col PCM mandato all'Atom, process() col mic."""
+# Allineamento e stima del ritardo (vedi EchoCanceller)
+_RESYNC_GAP_S = 0.5           # mic fermo oltre questo: si riancora la sua timeline
+_AUTO_DELAY = os.getenv("AEC_AUTO_DELAY", "1").strip().lower() not in ("0", "false", "no", "off")
+_AUTO_MAX_AEC_MS = 400        # fin qui l'AEC3 ce la fa da solo: nessuna linea
+_AUTO_TARGET_MS = 150         # con la linea, ritardo residuo lasciato all'AEC3
+_AUTO_MAX_LINE_MS = 900
+_EST_WINDOW = 400             # 4 s di inviluppi da 10 ms
+_EST_LAGS = 100               # ritardi cercati: 0..990 ms
+_EST_EVERY = 200              # una stima ogni 2 s
+_EST_MIN_CORR = 0.5
+_EST_FAR_ACTIVE = 2.5         # log10 rms: riferimento "attivo" sopra ~-30 dBFS
+_RING_KEEP_S = 3
 
-    def __init__(self, backend, render_delay_ms: int = _RENDER_DELAY_MS):
+
+class EchoCanceller:
+    """AEC di una sessione: render() col PCM mandato all'Atom, process() col mic.
+
+    Allineamento per TEMPO, non per ordine d'arrivo: ogni frame di riferimento va sulla
+    timeline all'istante in cui il pacer l'ha programmato, il mic per conteggio di campioni dal
+    suo arrivo (il jitter del WiFi non sposta nulla). Prima riferimento e mic erano accoppiati in
+    ordine d'arrivo, con silenzio infilato quando il mic arrivava prima: il ritardo eco visto
+    dall'AEC saltava da 70 a 670 ms dentro la stessa sessione e l'AEC3 non si agganciava.
+
+    Con l'allineamento per tempo il ritardo e' stabile; la stima automatica (correlazione degli
+    inviluppi, ogni 2 s) mette una linea di ritardo sul riferimento se supera quello che l'AEC3
+    gestisce da solo (~500 ms). AEC_RENDER_DELAY_MS e' la linea iniziale (la stima parte da
+    li'); AEC_AUTO_DELAY=0 la tiene fissa.
+    """
+
+    def __init__(self, backend, render_delay_ms: int = _RENDER_DELAY_MS, auto_delay: bool = _AUTO_DELAY):
         self._backend = backend
         self._passthrough = isinstance(backend, _PassthroughBackend)
-        self._render = bytearray()
+        self._t0 = None
+        self._ring = bytearray()      # timeline del riferimento a partire da _ring_start (campioni)
+        self._ring_start = 0
+        self._cap = None              # indice (campioni) del prossimo campione di mic
+        self._last_cap_t = 0.0
         self._near = bytearray()
-        # FIFO a lunghezza costante: avanza di 10 ms per ogni 10 ms di mic, anche nei silenzi
-        self._delay_bytes = max(0, render_delay_ms) * SAMPLE_RATE // 1000 * 2
-        self._delay_bytes -= self._delay_bytes % 2
-        self._delay = bytearray(self._delay_bytes)
+        self._line = max(0, render_delay_ms) * SAMPLE_RATE // 1000
+        self._auto = auto_delay  # la linea iniziale e' solo il punto di partenza
+        self._env_far = []            # inviluppi da 10 ms: riferimento senza linea, allineato al mic
+        self._env_near = []
+        self._chunks = 0
+        self._proposal = None
         self._debug = bool(_DEBUG_DIR)
         if self._debug:
             self._dbg = {"near": bytearray(), "far": bytearray(), "out": bytearray()}
@@ -173,25 +205,68 @@ class EchoCanceller:
         return self._backend.name
 
     @property
-    def render_backlog_bytes(self) -> int:
-        return len(self._render)
+    def render_delay_ms(self) -> int:
+        return self._line * 1000 // SAMPLE_RATE
 
-    def render(self, pcm: bytes):
-        """PCM 16 kHz appena mandato al device (riferimento dell'eco)."""
-        if self._passthrough:
+    @property
+    def render_backlog_bytes(self) -> int:
+        """Riferimento in timeline non ancora letto dal mic."""
+        end = self._ring_start + len(self._ring) // 2
+        start = self._ring_start if self._cap is None else max(self._ring_start, self._cap - self._line)
+        return max(0, end - start) * 2
+
+    def _index(self, t: float) -> int:
+        return int(round((t - self._t0) * SAMPLE_RATE))
+
+    def render(self, pcm: bytes, t: float = None):
+        """PCM 16 kHz mandato al device; t = istante programmato dal pacer (default: adesso)."""
+        if self._passthrough or not pcm:
             return
-        self._render += pcm
-        excess = len(self._render) - _RENDER_MAX_BYTES
+        t = time.monotonic() if t is None else t
+        if self._t0 is None:
+            self._t0 = t
+        idx = self._index(t)
+        if not self._ring:
+            self._ring_start = idx
+        off = idx - self._ring_start
+        if off < 0:  # piu' vecchio dell'inizio del ring: resta solo la parte ancora utile
+            pcm = pcm[-off * 2:]
+            off = 0
+            if not pcm:
+                return
+        have = len(self._ring) // 2
+        if off > have:
+            self._ring += bytes((off - have) * 2)  # silenzio tra le frasi
+        # sovrapposizione (ripartenza dopo un clear): scrive sopra, e' quello che suonera'
+        self._ring[off * 2:off * 2 + len(pcm)] = pcm
+        excess = len(self._ring) - _RING_KEEP_S * SAMPLE_RATE * 2
         if excess > 0:
-            del self._render[:excess]
+            excess -= excess % 2
+            del self._ring[:excess]
+            self._ring_start += excess // 2
 
     def reset_render(self):
-        """Barge-in: il device butta l'audio non ancora suonato, quindi anche il riferimento."""
-        self._render.clear()
-        self._delay = bytearray(self._delay_bytes)
+        """Svuota il riferimento (non usato al barge-in: l'audio gia' consegnato suona ancora)."""
+        self._ring.clear()
 
-    def process(self, pcm: bytes) -> bytes:
+    def _read(self, idx: int) -> bytes:
+        off = idx - self._ring_start
+        a, b = max(0, off), max(0, off + CHUNK_SAMPLES)
+        have = len(self._ring) // 2
+        if b <= 0 or a >= have:
+            return _SILENCE
+        chunk = bytes(self._ring[a * 2:min(b, have) * 2])
+        return bytes((a - off) * 2) + chunk + bytes((off + CHUNK_SAMPLES - min(b, have)) * 2)
+
+    def process(self, pcm: bytes, now: float = None) -> bytes:
         """Mic 16 kHz -> mic ripulito; lavora a blocchi da 10 ms, il resto resta in coda."""
+        now = time.monotonic() if now is None else now
+        if self._t0 is None:
+            self._t0 = now
+        if self._cap is None or now - self._last_cap_t > _RESYNC_GAP_S:
+            # (ri)ancoraggio: questi campioni sono appena arrivati
+            self._cap = self._index(now) - (len(self._near) + len(pcm)) // 2
+        self._last_cap_t = now
         self._near += pcm
         n = len(self._near) - len(self._near) % _CHUNK_BYTES
         if n == 0:
@@ -199,22 +274,53 @@ class EchoCanceller:
         out = bytearray()
         for i in range(0, n, _CHUNK_BYTES):
             near = bytes(self._near[i:i + _CHUNK_BYTES])
-            if len(self._render) >= _CHUNK_BYTES:
-                far = bytes(self._render[:_CHUNK_BYTES])
-                del self._render[:_CHUNK_BYTES]
-            else:
-                far = bytes(self._render) + _SILENCE[len(self._render):]
-                self._render.clear()
-            if self._delay_bytes:
-                self._delay += far
-                far = bytes(self._delay[:_CHUNK_BYTES])
-                del self._delay[:_CHUNK_BYTES]
+            far = self._read(self._cap - self._line)
+            if self._auto:
+                self._track(self._read(self._cap), near)
+            self._cap += CHUNK_SAMPLES
             clean = self._backend.process(near, far)
             out += clean
             if self._debug:
                 self._debug_chunk(near, far, clean)
         del self._near[:n]
         return bytes(out)
+
+    def _track(self, far0: bytes, near: bytes):
+        """Stima il ritardo eco (riferimento senza linea -> mic) e, se serve, sposta la linea."""
+        self._env_far.append(math.log10(math.sqrt(_sq_sum(far0) / CHUNK_SAMPLES) + 1))
+        self._env_near.append(math.log10(math.sqrt(_sq_sum(near) / CHUNK_SAMPLES) + 1))
+        keep = _EST_WINDOW + _EST_LAGS
+        if len(self._env_far) > keep:
+            del self._env_far[:-keep]
+            del self._env_near[:-keep]
+        self._chunks += 1
+        if self._chunks % _EST_EVERY or len(self._env_far) < keep:
+            return
+        import numpy as np
+        ef = np.array(self._env_far[:_EST_WINDOW])
+        en = np.array(self._env_near)
+        active = ef > _EST_FAR_ACTIVE
+        if active.mean() < 0.3:
+            return
+        best_c, best_lag = -1.0, 0
+        for lag in range(_EST_LAGS):
+            b = en[lag:lag + _EST_WINDOW]
+            a, bb = ef[active], b[active]
+            if a.std() == 0 or bb.std() == 0:
+                continue
+            c = float(np.corrcoef(a, bb)[0, 1])
+            if c > best_c:
+                best_c, best_lag = c, lag
+        if best_c < _EST_MIN_CORR:
+            return
+        delay_ms = best_lag * 10
+        want = 0 if delay_ms <= _AUTO_MAX_AEC_MS else min(_AUTO_MAX_LINE_MS, delay_ms - _AUTO_TARGET_MS)
+        if self._proposal is not None and abs(want - self._proposal) <= 40:
+            if abs(want - self.render_delay_ms) > 60:
+                logger.info(f"AEC: ritardo eco {delay_ms} ms (corr {best_c:.2f}), linea di ritardo "
+                            f"{self.render_delay_ms} -> {want} ms")
+                self._line = want * SAMPLE_RATE // 1000
+        self._proposal = want
 
     def _debug_chunk(self, near: bytes, far: bytes, clean: bytes):
         for key, pcm in (("near", near), ("far", far), ("out", clean)):
@@ -227,7 +333,7 @@ class EchoCanceller:
             n = self._stats["n"]
             far_db, near_db, out_db = (_dbfs(self._stats[k], n) for k in ("far", "near", "out"))
             logger.info(f"AEC stats: far {far_db:.1f} dBFS, mic {near_db:.1f}, pulito {out_db:.1f} "
-                        f"(tolti {near_db - out_db:.1f} dB), render in coda {len(self._render) // 32} ms")
+                        f"(tolti {near_db - out_db:.1f} dB), riferimento in coda {self.render_backlog_bytes // 32} ms, linea {self.render_delay_ms} ms")
             self._stats = {"near": 0.0, "far": 0.0, "out": 0.0, "n": 0}
             self._stats_t = now
 

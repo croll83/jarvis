@@ -92,9 +92,9 @@ def _echo_scenario(ec, seconds=8, delay=1600, gain=0.5):
     near = np.zeros(n, dtype=np.int16)
     near[delay:] = (far[:-delay] * gain).astype(np.int16)
     out = bytearray()
-    for i in range(0, n - 319, 320):  # 20 ms come i frame dell'Atom
-        ec.render(far[i:i + 320].tobytes())
-        out += ec.process(near[i:i + 320].tobytes())
+    for i in range(0, n - 319, 320):  # 20 ms come i frame dell'Atom, orologio simulato
+        ec.render(far[i:i + 320].tobytes(), t=i / 16000)
+        out += ec.process(near[i:i + 320].tobytes(), now=i / 16000 + 0.02)
     o = np.frombuffer(bytes(out), dtype=np.int16).astype(np.float64)
     half = len(o) // 2
     e_in = np.mean(near[half:len(o)].astype(np.float64) ** 2)
@@ -146,8 +146,8 @@ def test_aec_reset_render_and_cap():
     assert ec.render_backlog_bytes == 640
     ec.reset_render()
     assert ec.render_backlog_bytes == 0
-    ec.render(bytes(16000 * 2 * 3))
-    assert ec.render_backlog_bytes == 16000 * 2  # al massimo 1 s
+    ec.render(bytes(16000 * 2 * 5))
+    assert ec.render_backlog_bytes == 16000 * 2 * aec._RING_KEEP_S  # timeline tenuta al massimo 3 s
     ec.close()
 
 
@@ -176,37 +176,62 @@ async def test_session_start_after_close_has_no_pacer():
     assert s._pacer is None
 
 
-def test_render_delay_line_lags_the_reference_and_survives_silence_and_clear():
-    import aec
+class _Spy:
+    name = "spy"
 
-    class _Spy:
-        name = "spy"
+    def __init__(self):
+        self.fars = []
 
-        def __init__(self):
-            self.fars = []
+    def process(self, near, far):
+        self.fars.append(far)
+        return near
 
-        def process(self, near, far):
-            self.fars.append(far)
-            return near
+    def close(self):
+        pass
 
-        def close(self):
-            pass
 
+def _chunk(v):
+    return bytes([v, 0]) * aec.CHUNK_SAMPLES
+
+
+def test_reference_is_aligned_by_time_not_by_arrival():
+    # riferimento programmato a t=1.00 s; il mic arriva a raffiche irregolari ma i suoi campioni
+    # restano contati: il chunk catturato a t=1.00 incontra il riferimento di t=1.00
     spy = _Spy()
-    e = aec.EchoCanceller(spy, render_delay_ms=20)  # 2 chunk da 10 ms
-    chunk = lambda v: bytes([v, 0]) * aec.CHUNK_SAMPLES
-    e.render(chunk(1) + chunk(2))
-    e.process(bytes(aec._CHUNK_BYTES * 4))  # 40 ms di mic: zeri, zeri, 1, 2
-    assert spy.fars[:2] == [aec._SILENCE, aec._SILENCE]
-    assert spy.fars[2:4] == [chunk(1), chunk(2)]
-    # dopo un silenzio la linea resta lunga uguale (avanza col mic, non si svuota)
-    e.process(bytes(aec._CHUNK_BYTES * 3))
-    e.render(chunk(3))
-    e.process(bytes(aec._CHUNK_BYTES * 3))
-    assert spy.fars[-3:] == [aec._SILENCE, aec._SILENCE, chunk(3)]
-    # barge-in: riferimento e linea azzerati
-    e.render(chunk(4))
-    e.reset_render()
-    spy.fars.clear()
-    e.process(bytes(aec._CHUNK_BYTES * 3))
-    assert spy.fars == [aec._SILENCE] * 3
+    e = aec.EchoCanceller(spy, render_delay_ms=0, auto_delay=False)
+    e.process(bytes(aec._CHUNK_BYTES), now=0.99)          # ancora: questo chunk = 0.98-0.99
+    e.render(_chunk(7), t=1.00)
+    e.render(_chunk(8), t=1.01)
+    # raffica in ritardo: 30 ms di mic arrivano tutti insieme a t=1.05
+    e.process(bytes(aec._CHUNK_BYTES * 3), now=1.05)
+    assert spy.fars == [aec._SILENCE, aec._SILENCE, _chunk(7), _chunk(8)]
+
+
+def test_fixed_delay_line_lags_the_reference():
+    spy = _Spy()
+    e = aec.EchoCanceller(spy, render_delay_ms=20, auto_delay=False)
+    e.process(bytes(aec._CHUNK_BYTES), now=0.01)           # mic ancorato: chunk 0.00-0.01
+    e.render(_chunk(1) + _chunk(2), t=0.01)
+    e.process(bytes(aec._CHUNK_BYTES * 4), now=0.05)
+    assert spy.fars[1:] == [aec._SILENCE, aec._SILENCE, _chunk(1), _chunk(2)]
+
+
+def test_auto_delay_finds_a_long_echo_and_cancels_it():
+    pytest.importorskip("livekit.rtc")
+    rng = np.random.default_rng(1)
+    e = aec.EchoCanceller(aec._WebRtcBackend(), render_delay_ms=0, auto_delay=True)
+    seconds, d = 20, 16 * 700                               # eco a 700 ms: oltre il limite dell'AEC3
+    # parlato a raffiche (come frasi): rumore modulato
+    env = np.repeat(rng.random(seconds * 10) > 0.3, 1600).astype(float)
+    far = (rng.standard_normal(16000 * seconds) * 3000 * env).astype(np.int16)
+    echo = np.concatenate([np.zeros(d, np.int16), (far[:-d] * 0.5).astype(np.int16)])
+    out = bytearray()
+    for i in range(0, len(far) - 319, 320):
+        e.render(far[i:i + 320].tobytes(), t=i / 16000)
+        out += e.process(echo[i:i + 320].tobytes(), now=i / 16000 + 0.02)
+    assert 450 <= e.render_delay_ms <= 650
+    o = np.frombuffer(bytes(out), np.int16).astype(float)
+    n = echo.astype(float)[:len(o)]
+    tail = slice(len(o) - 16000 * 5, len(o))
+    erle = 10 * np.log10(np.mean(n[tail] ** 2) / max(np.mean(o[tail] ** 2), 1e-9))
+    assert erle > 25

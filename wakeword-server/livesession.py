@@ -163,7 +163,7 @@ class HubLiveSession:
                 if not self._down:  # svuotata da un clear durante l'attesa
                     continue
                 frame = self._down.popleft()
-                self.aec.render(frame)
+                self.aec.render(frame, self._due)  # istante programmato: niente jitter
                 await self._send_binary(self._encoder.encode(frame, OPUS_FRAME_SAMPLES))
                 self._due += _FRAME_S
                 # In ritardo di molto (event loop lento): si riallinea invece di sparare a raffica
