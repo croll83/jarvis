@@ -5,3 +5,5 @@ openwakeword>=0.6.0
 opuslib>=3.0.1
 numpy>=1.24,<2
 httpx>=0.25
+# WebRTC APM (AEC3) per le sessioni live hub, importato solo dentro una sessione
+livekit>=1.2,<2

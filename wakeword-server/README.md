@@ -46,6 +46,9 @@ Variabili d'ambiente (`.env` o Docker environment):
 | `WAKEWORD_THRESHOLD` | `0.5` | Soglia di rilevamento (0.1-1.0) |
 | `MULTIROOM_COOLDOWN_S` | `5` | Cooldown multi-room in secondi |
 | `LISTEN_PORT` | `8200` | Porta di ascolto del server |
+| `HUB_PORT` | `0` | Porta TCP del Voice Live Hub per le sessioni live full-duplex (Gemini Live). `0` = funzione spenta, comportamento di oggi |
+| `HUB_HOST` | `""` | Host del Voice Live Hub. Vuoto = funzione spenta, come `HUB_PORT=0` (l'host nel `live_session_start` dell'orchestrator non viene usato) |
+| `AEC_BACKEND` | `webrtc` | Cancellazione d'eco dell'Atom in sessione hub: `webrtc` (AEC3 via pacchetto `livekit`), `speex` (libspeexdsp), `off` |
 
 ## Endpoint
 

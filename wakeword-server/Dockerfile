@@ -5,9 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
-# System deps: libopus for opuslib
+# System deps: libopus for opuslib, libspeexdsp per l'AEC di ripiego (AEC_BACKEND=speex)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libopus0 libopus-dev && rm -rf /var/lib/apt/lists/*
+    libopus0 libopus-dev libspeexdsp1 && rm -rf /var/lib/apt/lists/*
 
 # Python deps (cached layer)
 COPY requirements.txt .

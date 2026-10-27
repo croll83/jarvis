@@ -21,10 +21,14 @@ from pydantic import BaseModel, Field
 from config import (
     DEVICE_API_TOKEN, OPUS_SAMPLE_RATE, OPUS_CHANNELS,
     OPUS_FRAME_SAMPLES, WAKEWORD_THRESHOLD, ORCHESTRATOR_URL, LOCATION_ID,
+    HUB_HOST, HUB_PORT, AEC_BACKEND,
 )
 from wakeword import DeviceWakeWordEngine
 from multiroom import MultiroomCooldown
 from relay import OrchestratorRelay
+from hubrelay import HubRelay, HubRejected, HubUnavailable
+from livesession import HubLiveSession
+from aec import create_echo_canceller
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,6 +99,13 @@ class DeviceConnection:
 
         # VPS relay (created on-demand)
         self.relay: Optional[OrchestratorRelay] = None
+
+        # Sessione live full-duplex sul Voice Live Hub (solo tra accept e fine sessione)
+        self.hub_session: Optional[HubLiveSession] = None
+        # Handshake col hub in corso (connect + offer + attesa accept) e il suo call_id:
+        # se viene abbandonato l'orchestrator va comunque avvisato (live_session_end)
+        self.hub_start_task: Optional[asyncio.Task] = None
+        self.hub_pending_call_id: str = ""
 
     def decode_opus(self, opus_data: bytes) -> Optional[np.ndarray]:
         """Decode Opus frame to int16 PCM."""
@@ -170,6 +181,10 @@ async def ws_audio(ws: WebSocket,
         if old:
             old.close()
         _connections[device_id] = conn
+    if old:
+        # Riconnessione col vecchio WS non ancora caduto: la sua sessione hub va chiusa
+        # subito, non quando il vecchio receive() andra' in errore
+        await _teardown_hub(old)
 
     logger.info(f"[{device_id}] Connected")
 
@@ -190,6 +205,7 @@ async def ws_audio(ws: WebSocket,
     except Exception as e:
         logger.error(f"[{device_id}] WS error: {e}")
     finally:
+        await _teardown_hub(conn)
         await conn.close_relay()
         conn.close()
         async with _connections_lock:
@@ -205,6 +221,11 @@ async def _handle_text(conn: DeviceConnection, raw: str):
         return
 
     msg_type = msg.get("type", "")
+
+    if conn.hub_session is not None and await _handle_hub_device_text(conn, msg_type, msg):
+        return
+    if conn.hub_start_task is not None and await _handle_hub_pending_device_text(conn, msg_type, msg):
+        return
 
     if msg_type == "hello":
         conn.firmware_version = msg.get("fw", "unknown")
@@ -275,6 +296,13 @@ async def _handle_text(conn: DeviceConnection, raw: str):
 
 async def _handle_binary(conn: DeviceConnection, data: bytes):
     """Handle binary Opus frame from device."""
+    if conn.hub_session is not None:
+        # --- Sessione hub: mic sempre aperto (anche WAKING/BUSY), AEC e poi al hub ---
+        pcm = conn.decode_opus(data)
+        if pcm is not None and conn.hub_session is not None:
+            await conn.hub_session.uplink(pcm)
+        return
+
     if conn.state == DeviceState.IDLE:
         # --- Wake word detection mode ---
         pcm = conn.decode_opus(data)
@@ -355,6 +383,20 @@ async def _open_relay(conn: DeviceConnection):
                 return
 
             msg_type = msg.get("type", "")
+            if msg_type == "live_session_start" and msg.get("backend") == "hub":
+                # Sessione Gemini Live: al device arriva il live_session_start duplex
+                # solo dopo l'accept del hub (vedi _start_hub_session)
+                await _begin_hub_session(conn, msg)
+                return
+            if conn.hub_session is not None and msg_type in _HUB_SKIPPED_TURN_MESSAGES:
+                # Il turno lo gestisce il hub: messaggi del loop a turni non per l'Atom
+                logger.info(f"[{conn.device_id}] {msg_type} from orchestrator ignored (hub session)")
+                return
+            if msg_type == "live_session_end":
+                # Prima si ferma il media del hub (pacer, handshake), poi si avvisa il device
+                await _abandon_hub_start(conn)
+                await _end_hub_session(conn, send_ended=True)
+
             # Forward to device
             await conn.send_json(msg)
 
@@ -391,11 +433,311 @@ async def _open_relay(conn: DeviceConnection):
                 logger.info(f"[{conn.device_id}] State → WAKING (trigger_listen)")
 
         elif isinstance(message, bytes):
+            if conn.hub_session is not None:
+                return  # In sessione hub il parlato arriva dal hub, non dall'orchestrator
             # Binary TTS Opus — pass through to device
             await conn.send_binary(message)
 
     conn.relay = OrchestratorRelay(conn.device_id, on_vps_message)
     await conn.relay.connect()
+
+
+# ---------------------------------------------------------------------------
+# Voice Live Hub: sessione live full-duplex (Gemini Live) per l'Atom
+# ---------------------------------------------------------------------------
+# L'orchestrator manda live_session_start con backend "hub" e l'identita' gia' risolta; qui
+# si apre la connessione TCP al hub, e solo dopo l'accept l'Atom entra in modalita' duplex.
+# Da quel momento il media va Atom <-> wakeword-server (AEC) <-> hub e l'orchestrator resta
+# fuori dal loop audio: riceve solo live_session_end in ingresso con call_id e reason.
+# Con HUB_PORT=0 o HUB_HOST vuoto nessuna di queste funzioni apre connessioni e il resto e'
+# quello di oggi.
+
+# Messaggi del loop a turni che l'orchestrator puo' ancora mandare durante una sessione hub
+# (annunci, avvisi): non arrivano all'Atom in duplex e non cambiano lo stato
+_HUB_SKIPPED_TURN_MESSAGES = ("ready", "speech_end", "tts_start", "tts_done", "trigger_listen")
+# Reason che l'Atom puo' mettere nel suo live_session_end (passano tali e quali)
+_DEVICE_END_REASONS = ("button", "error")
+
+
+def _hub_address() -> tuple[str, int]:
+    """Indirizzo del hub, solo dall'env: HUB_PORT<=0 o HUB_HOST vuoto = funzione spenta."""
+    if HUB_PORT <= 0 or not HUB_HOST:
+        return "", 0
+    return HUB_HOST, HUB_PORT
+
+
+async def _notify_orchestrator_live_end(conn: DeviceConnection, call_id: str, reason: str,
+                                        reopen_relay: bool = True):
+    """live_session_end in ingresso all'orchestrator (fine sessione hub lato device)."""
+    if not (conn.relay and conn.relay.is_connected):
+        if not reopen_relay:
+            return
+        try:
+            await _open_relay(conn)
+        except Exception as e:
+            logger.warning(f"[{conn.device_id}] live_session_end ({reason}) not delivered: {e}")
+            return
+    await conn.relay.send_text(json.dumps(
+        {"type": "live_session_end", "call_id": call_id, "reason": reason}))
+
+
+def _hub_start_done(conn: DeviceConnection):
+    """Fine dell'handshake (riuscito o no): da qui non va piu' abbandonato."""
+    if conn.hub_start_task is asyncio.current_task():
+        conn.hub_start_task = None
+        conn.hub_pending_call_id = ""
+
+
+async def _hub_fallback(conn: DeviceConnection, call_id: str, reason: str):
+    """Hub non usabile: si riferisce all'orchestrator e basta. E' l'orchestrator a decidere
+    se convertire la sessione in quella live di oggi (manda il suo live_session_start) o
+    chiudere (live_session_end + tts_done). Intanto il device torna in ascolto, con la
+    wake word muta per poco: se l'orchestrator non risponde non resta sordo."""
+    _hub_start_done(conn)
+    logger.warning(f"[{conn.device_id}] Hub live session not started ({reason}), call {call_id or '-'}")
+    conn.state = DeviceState.IDLE
+    conn.wakeword.mute(5)
+    conn.wakeword.reset()
+    await _notify_orchestrator_live_end(conn, call_id, reason)
+
+
+async def _begin_hub_session(conn: DeviceConnection, msg: dict):
+    """live_session_start "hub" dall'orchestrator: l'handshake col hub gira in un task a
+    parte, cosi' il relay continua a ricevere (es. un live_session_end che lo annulla)."""
+    call_id = str(msg.get("call_id") or "")
+    if call_id and (conn.hub_pending_call_id == call_id
+                    or (conn.hub_session is not None and conn.hub_session.call_id == call_id)):
+        return  # duplicato
+    # Un nuovo start sostituisce quello vecchio: l'orchestrator sa gia' che e' finito, l'Atom
+    # no (se il nuovo handshake fallisce resterebbe in duplex)
+    await _abandon_hub_start(conn)
+    await _end_hub_session(conn, send_ended=True, tell_device=True)
+    conn.hub_pending_call_id = call_id
+    conn.hub_start_task = asyncio.create_task(_start_hub_session(conn, msg))
+
+
+async def _abandon_hub_start(conn: DeviceConnection, orch_reason: Optional[str] = None,
+                             reopen_relay: bool = True) -> bool:
+    """Annulla un handshake col hub in corso; con orch_reason avvisa l'orchestrator, che ha
+    gia' registrato la sessione hub. True se c'era un handshake da annullare."""
+    task = conn.hub_start_task
+    if task is None:
+        return False
+    call_id = conn.hub_pending_call_id
+    conn.hub_start_task = None
+    conn.hub_pending_call_id = ""
+    if not task.done() and task is not asyncio.current_task():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"[{conn.device_id}] Hub handshake error on abort: {e!r}")
+    logger.info(f"[{conn.device_id}] Hub handshake aborted (call {call_id or '-'}, "
+                f"reason {orch_reason or 'orchestrator'})")
+    if orch_reason:
+        await _notify_orchestrator_live_end(conn, call_id, orch_reason, reopen_relay)
+    return True
+
+
+async def _create_aec():
+    """EchoCanceller fuori dall'event loop: il primo import di livekit e la creazione
+    dell'APM costano ~100 ms e bloccherebbero gli altri device."""
+    fut = asyncio.ensure_future(asyncio.to_thread(create_echo_canceller, AEC_BACKEND))
+    try:
+        return await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        # Il thread finisce comunque: l'AEC creato va chiuso, non lasciato appeso
+        def _close(f):
+            if not f.cancelled() and f.exception() is None:
+                f.result().close()
+        fut.add_done_callback(_close)
+        raise
+
+
+async def _start_hub_session(conn: DeviceConnection, msg: dict):
+    try:
+        await _run_hub_handshake(conn, msg)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        # Mai lasciare l'orchestrator con una sessione hub che il device non ha
+        call_id = str(msg.get("call_id") or "")
+        logger.error(f"[{conn.device_id}] Hub session start failed: {e!r}")
+        if conn.hub_start_task is asyncio.current_task():
+            await _hub_fallback(conn, call_id, "hub_unreachable")
+        elif conn.hub_session is not None and conn.hub_session.call_id == call_id:
+            await _end_hub_session(conn, send_ended=True, tell_device=True, orch_reason="error")
+    finally:
+        _hub_start_done(conn)
+
+
+async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
+    call_id = str(msg.get("call_id") or "")
+    profile = str(msg.get("profile") or "")
+    name = str(msg.get("name") or "")
+    if not (call_id and profile and name):
+        logger.warning(f"[{conn.device_id}] Hub live_session_start without call_id/profile/name")
+        await _hub_fallback(conn, call_id, "error")
+        return
+    host, port = _hub_address()
+    if not host or not port:
+        await _hub_fallback(conn, call_id, "hub_unreachable")
+        return
+
+    offer = {"type": "offer", "call_id": call_id, "profile": profile, "name": name}
+    for key in ("voice", "location_id", "room"):
+        if msg.get(key):
+            offer[key] = str(msg[key])
+    if isinstance(msg.get("deliver"), list) and msg["deliver"]:
+        offer["deliver"] = [str(d) for d in msg["deliver"]]
+
+    relay = HubRelay(conn.device_id, call_id)
+    try:
+        await relay.connect(host, port)
+        await relay.send_offer(offer)
+        aec = await _create_aec()
+    except HubRejected as e:
+        await relay.close()
+        logger.warning(f"[{conn.device_id}] Hub rejected call {call_id}: {e}")
+        await _hub_fallback(conn, call_id, "hub_rejected")
+        return
+    except HubUnavailable as e:
+        await relay.close()
+        logger.warning(f"[{conn.device_id}] Hub unavailable for call {call_id}: {e}")
+        await _hub_fallback(conn, call_id, "hub_unreachable")
+        return
+    except asyncio.CancelledError:
+        # Handshake abbandonato (device disconnesso, tap, fine dall'orchestrator):
+        # niente socket appesi; l'orchestrator lo avvisa chi ha annullato
+        await relay.close()
+        raise
+    except Exception as e:
+        await relay.close()
+        logger.warning(f"[{conn.device_id}] Hub handshake failed for call {call_id}: {e!r}")
+        await _hub_fallback(conn, call_id, "hub_unreachable")
+        return
+
+    try:
+        session = HubLiveSession(conn.device_id, call_id, relay, conn.send_json,
+                                 conn.send_binary, AEC_BACKEND, aec=aec)
+    except Exception:
+        aec.close()
+        await relay.send_json({"type": "ended", "call_id": call_id})
+        await relay.close()
+        raise
+    # Accept ricevuto: da qui la sessione e' di conn e si chiude con _end_hub_session
+    _hub_start_done(conn)
+    conn.hub_session = session
+    conn.live_session = True
+    conn.state = DeviceState.BUSY
+    conn.wakeword.mute(3600)
+    # Prima il device in duplex, poi il media: il hub puo' parlare subito
+    await conn.send_json({"type": "live_session_start", "duplex": True})
+    if conn.hub_session is not session:
+        return  # chiusa durante l'invio (device sparito, tap, orchestrator)
+
+    async def on_hub_json(m: dict):
+        if conn.hub_session is not session:
+            return
+        mtype = m.get("type")
+        if mtype == "clear":
+            await session.clear()
+        elif mtype == "hangup":
+            logger.info(f"[{conn.device_id}] Hub hangup (call {call_id})")
+            await _end_hub_session(conn, tell_device=True, orch_reason="hub_hangup")
+
+    async def on_hub_closed():
+        if conn.hub_session is session:
+            await _end_hub_session(conn, tell_device=True, orch_reason="error")
+
+    relay.start(on_hub_json, session.on_hub_audio, on_hub_closed)
+    session.start()
+    logger.info(f"[{conn.device_id}] 🎙️ Hub live session STARTED (call {call_id}, profile {profile})")
+
+
+async def _end_hub_session(conn: DeviceConnection, *, send_ended: bool = False,
+                           tell_device: bool = False, orch_reason: Optional[str] = None,
+                           reopen_relay: bool = True):
+    """Chiude la sessione hub (idempotente) e rimette il device in ascolto wake word."""
+    session = conn.hub_session
+    if session is None:
+        return
+    conn.hub_session = None
+    try:
+        await session.close(send_ended=send_ended)
+    except Exception as e:  # il reset dello stato e gli avvisi sotto devono girare comunque
+        logger.warning(f"[{conn.device_id}] Hub session close error: {e!r}")
+    conn.live_session = False
+    conn.state = DeviceState.IDLE
+    conn.wakeword.mute(0)
+    conn.wakeword.reset()
+    if tell_device:
+        await conn.send_json({"type": "live_session_end"})
+    if orch_reason:
+        await _notify_orchestrator_live_end(conn, session.call_id, orch_reason, reopen_relay)
+    logger.info(f"[{conn.device_id}] 🎙️ Hub live session ENDED (call {session.call_id}, "
+                f"reason {orch_reason or 'orchestrator'})")
+
+
+async def _teardown_hub(conn: DeviceConnection):
+    """Device sparito (WS chiuso o sostituito): handshake o sessione hub chiusi, l'orchestrator
+    avvisato con reason "error" se il relay c'e' ancora. Non deve mai sollevare: dopo c'e'
+    la pulizia del relay e della connessione."""
+    try:
+        await _abandon_hub_start(conn, "error", reopen_relay=False)
+        await _end_hub_session(conn, send_ended=True, orch_reason="error", reopen_relay=False)
+    except Exception as e:
+        logger.warning(f"[{conn.device_id}] Hub teardown error: {e!r}")
+
+
+def _device_end_reason(msg: dict) -> str:
+    reason = msg.get("reason")
+    return reason if reason in _DEVICE_END_REASONS else "button"
+
+
+async def _handle_hub_device_text(conn: DeviceConnection, msg_type: str, msg: dict) -> bool:
+    """Messaggi del device durante una sessione hub. True = gestito qui."""
+    if msg_type == "live_session_end":
+        # Tap singolo ("button") o duplex non avviabile sull'Atom ("error")
+        await _end_hub_session(conn, send_ended=True, orch_reason=_device_end_reason(msg))
+        return True
+    if msg_type == "audio_end":
+        # Ripiego per firmware che non mandano live_session_end: il relay non va chiuso
+        await _end_hub_session(conn, send_ended=True, orch_reason="button")
+        return True
+    if msg_type == "speaker_stop":
+        # Doppio tap = fine sessione come il tap singolo. Lo speaker_stop non va inoltrato
+        # e il relay resta aperto: l'orchestrator deve ricevere il live_session_end
+        await _end_hub_session(conn, send_ended=True, tell_device=True, orch_reason="button")
+        return True
+    if msg_type == "audio_start":
+        # Un Atom in duplex non apre turni: se lo fa non e' piu' nella sessione (desync).
+        # Si chiude il hub senza avvisare l'orchestrator (il suo live_session_end + tts_done
+        # chiuderebbe il turno appena aperto): quando il turno gli arriva, chiude lui la
+        # sessione hub e lo passa alla pipeline normale
+        logger.warning(f"[{conn.device_id}] audio_start during hub session: device left it")
+        await _end_hub_session(conn, send_ended=True)
+        return False
+    return False
+
+
+async def _handle_hub_pending_device_text(conn: DeviceConnection, msg_type: str, msg: dict) -> bool:
+    """Messaggi del device durante l'handshake col hub. True = gestito qui."""
+    if msg_type == "live_session_end":
+        await _abandon_hub_start(conn, _device_end_reason(msg))
+        return True
+    if msg_type in ("audio_end", "speaker_stop"):
+        # Il device lascia perdere prima del duplex: l'orchestrator viene avvisato prima
+        # dello speaker_stop / audio_end di oggi, che poi chiude il relay
+        await _abandon_hub_start(conn, "button")
+        return False
+    if msg_type == "audio_start":
+        # Turno nuovo: come in sessione, niente avviso (ci pensa l'orchestrator col turno)
+        await _abandon_hub_start(conn)
+        return False
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +772,8 @@ async def trigger_listen(device_id: str, silent: bool = True):
 
     if not conn:
         raise HTTPException(status_code=404, detail=f"Device {device_id} not connected")
+    if conn.hub_session is not None:
+        raise HTTPException(status_code=409, detail="Device in hub live session")
 
     # Open relay before sending trigger_listen — device will respond with audio_start
     try:

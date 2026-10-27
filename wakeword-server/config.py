@@ -54,6 +54,15 @@ MULTIROOM_COOLDOWN_S = int(os.getenv("MULTIROOM_COOLDOWN_S", "5"))
 # When set, it is injected into proxied management requests that need it.
 LOCATION_ID = os.getenv("LOCATION_ID", "")
 
+# --- Voice Live Hub (sessione live full-duplex, Fase 2) ---
+# Con HUB_PORT<=0 oppure HUB_HOST vuoto la funzione e' spenta: un live_session_start "hub"
+# dell'orchestrator viene rifiutato con live_session_end reason "hub_unreachable" e tutto
+# resta come oggi. L'indirizzo del hub per gli Atom viene solo da qui, mai dal messaggio.
+HUB_HOST = os.getenv("HUB_HOST", "").strip()
+HUB_PORT = int(os.getenv("HUB_PORT", "0") or "0")
+# Cancellazione d'eco per l'Atom in sessione hub: "webrtc" (AEC3), "speex" oppure "off".
+AEC_BACKEND = os.getenv("AEC_BACKEND", "webrtc").strip().lower()
+
 # --- Opus ---
 OPUS_SAMPLE_RATE = 16000
 OPUS_CHANNELS = 1
