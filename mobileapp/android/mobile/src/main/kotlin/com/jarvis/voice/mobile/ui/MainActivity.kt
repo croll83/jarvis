@@ -266,6 +266,8 @@ private fun HomeScreen(
     val state by controller.state.collectAsState()
     val amplitude by controller.amplitude.collectAsState()
     val errorMsg by controller.statusMessage.collectAsState()
+    val liveHub by controller.liveHub.collectAsState()
+    val jarvisLevel by controller.jarvisLevel.collectAsState()
 
     Box(Modifier.fillMaxSize()) {
         // Barra superiore: wordmark + gear
@@ -306,14 +308,31 @@ private fun HomeScreen(
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                text = if (state == HeadState.ERROR && !errorMsg.isNullOrBlank()) errorMsg!!
-                       else state.label(),
+                text = when {
+                    liveHub -> "Sessione live: parla quando vuoi"
+                    state == HeadState.ERROR && !errorMsg.isNullOrBlank() -> errorMsg!!
+                    else -> state.label()
+                },
                 color = state.labelColor(),
                 fontSize = 17.sp,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(horizontal = 28.dp),
             )
+            // Sessione live hub (full-duplex): corsie JARVIS/TU + chiusura esplicita.
+            if (liveHub) {
+                Spacer(Modifier.height(14.dp))
+                Text("● LIVE", color = JarvisColors.red, fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+                Spacer(Modifier.height(8.dp))
+                LiveLanes(
+                    jarvisLevel = jarvisLevel,
+                    userLevel = amplitude,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(onClick = { controller.endLiveSession() }) { Text("Termina sessione") }
+            }
         }
 
         // Banner permesso microfono negato: senza mic l'app non può funzionare.

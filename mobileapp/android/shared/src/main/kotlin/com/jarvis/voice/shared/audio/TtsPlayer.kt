@@ -8,15 +8,23 @@ import com.jarvis.voice.shared.protocol.AudioFormat
 /**
  * Riproduce PCM 16 kHz mono int16 in streaming (i frame TTS decodificati).
  * Modalità streaming: si scrivono chunk mano a mano che arrivano dall'orchestrator.
+ *
+ * [live] = sessione live full-duplex: stream comms (riferimento dell'AEC) invece di
+ * USAGE_MEDIA, salvo il fallback [LiveAudio.PLAYBACK_MEDIA_USAGE]. [sampleRate] = 24 kHz
+ * quando suona direttamente il parlato del modello. Default = path di oggi.
  */
-class TtsPlayer {
+class TtsPlayer(
+    private val sampleRate: Int = AudioFormat.SAMPLE_RATE,
+    live: Boolean = false,
+) {
 
-    private var track: AudioTrack? = null
+    private val usage = LiveAudio.profile(live).playbackUsage
+    @Volatile private var track: AudioTrack? = null
 
     fun start() {
         if (track != null) return
         val minBuf = AudioTrack.getMinBufferSize(
-            AudioFormat.SAMPLE_RATE,
+            sampleRate,
             AndroidAudioFormat.CHANNEL_OUT_MONO,
             AndroidAudioFormat.ENCODING_PCM_16BIT,
         )
@@ -25,18 +33,18 @@ class TtsPlayer {
                 AudioAttributes.Builder()
                     // USAGE_MEDIA: suona anche con suoneria in vibrazione/silenzioso
                     // (USAGE_ASSISTANT veniva silenziato sul watch).
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setUsage(usage)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
             .setAudioFormat(
                 AndroidAudioFormat.Builder()
-                    .setSampleRate(AudioFormat.SAMPLE_RATE)
+                    .setSampleRate(sampleRate)
                     .setChannelMask(AndroidAudioFormat.CHANNEL_OUT_MONO)
                     .setEncoding(AndroidAudioFormat.ENCODING_PCM_16BIT)
                     .build()
             )
-            .setBufferSizeInBytes(maxOf(minBuf, AudioFormat.FRAME_BYTES * 8))
+            .setBufferSizeInBytes(maxOf(minBuf, sampleRate / 50 * 2 * 8))   // 8 frame da 20 ms
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         t.play()
@@ -50,6 +58,11 @@ class TtsPlayer {
 
     fun write(pcm: ByteArray) {
         track?.write(pcm, 0, pcm.size)
+    }
+
+    /** Barge-in: butta SUBITO l'audio in buffer non ancora suonato, il track resta pronto. */
+    fun clear() {
+        track?.run { runCatching { pause(); flush(); play() } }
     }
 
     fun stop() {

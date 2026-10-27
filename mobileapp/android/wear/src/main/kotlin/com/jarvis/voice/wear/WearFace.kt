@@ -14,6 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -25,6 +26,10 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.wear.compose.material.Text
 import com.jarvis.voice.shared.HeadState
 import kotlin.math.PI
 import kotlin.math.cos
@@ -43,9 +48,16 @@ private val RED = Color(0xFFFF5A6A)
  *   SPEAKING  → waveform verde ritmica
  *   THINKING  → anello glow blu Jarvis
  *   ERROR     → anello glow rosso   |  CONNECTING → oro
+ *   live hub  → due semianelli: sopra JARVIS che parla (blu), sotto l'utente (verde) + LIVE
  */
 @Composable
-fun WearFace(state: HeadState, amplitude: Float, onTap: () -> Unit) {
+fun WearFace(
+    state: HeadState,
+    amplitude: Float,
+    onTap: () -> Unit,
+    live: Boolean = false,
+    jarvisLevel: Float = 0f,
+) {
     Box(
         Modifier
             .fillMaxSize()
@@ -65,8 +77,49 @@ fun WearFace(state: HeadState, amplitude: Float, onTap: () -> Unit) {
         // Batteria: l'overlay animato (transizione infinita + Canvas a 60fps) vive SOLO
         // negli stati attivi. In IDLE esce dalla composizione → il loop di frame si ferma
         // e la CPU/GPU tornano a riposo (prima girava all'infinito anche a schermo fermo).
-        if (state != HeadState.IDLE) {
+        if (live) {
+            LiveOverlay(jarvisLevel, amplitude)
+            Text(
+                "● LIVE", color = RED, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 14.dp),
+            )
+        } else if (state != HeadState.IDLE) {
             StateOverlay(state, amplitude)
+        }
+    }
+}
+
+/** Sessione live full-duplex: semianello alto = JARVIS, semianello basso = utente. */
+@Composable
+private fun LiveOverlay(jarvisLevel: Float, userLevel: Float) {
+    val t = rememberInfiniteTransition(label = "livefx")
+    val wavePhase by t.animateFloat(
+        0f, (2 * PI).toFloat(), infiniteRepeatable(tween(1400, easing = LinearEasing)), "wave",
+    )
+    val jSmoothed by animateFloatAsState(jarvisLevel, tween(90), label = "jamp")
+    val uSmoothed by animateFloatAsState(userLevel, tween(90), label = "uamp")
+
+    Canvas(Modifier.fillMaxSize()) {
+        val c = Offset(size.width / 2f, size.height / 2f)
+        val minD = size.minDimension
+        val bars = 64
+        val inner = minD * 0.36f
+        val barMax = minD * 0.11f
+        val w = minD * 0.012f
+        for (i in 0 until bars) {
+            val ang = i.toFloat() / bars * 2f * PI.toFloat()
+            val sa = sin(ang); val ca = cos(ang)
+            val top = sa < 0f   // y cresce verso il basso: seno negativo = metà alta
+            val level = if (top) jSmoothed else uSmoothed
+            val color = if (top) BLUE else GREEN
+            val live = 0.55f + 0.45f * sin(wavePhase + i * 0.4f)
+            val len = barMax * ((0.12f + 0.88f * level) * live).coerceIn(0f, 1f)
+            drawLine(
+                color.copy(alpha = 0.9f),
+                Offset(c.x + ca * inner, c.y + sa * inner),
+                Offset(c.x + ca * (inner + len), c.y + sa * (inner + len)),
+                strokeWidth = w, cap = StrokeCap.Round,
+            )
         }
     }
 }

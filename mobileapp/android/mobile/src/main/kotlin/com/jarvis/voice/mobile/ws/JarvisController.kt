@@ -2,10 +2,15 @@ package com.jarvis.voice.mobile.ws
 
 import android.util.Log
 import com.jarvis.voice.mobile.audio.OpusDecoderWrapper
-import com.jarvis.voice.mobile.config.JarvisConfig
+import com.jarvis.voice.mobile.config.ControllerConfig
+import com.jarvis.voice.mobile.live.LiveAudioPort
 import com.jarvis.voice.shared.HeadState
+import com.jarvis.voice.shared.audio.LiveAudio
 import com.jarvis.voice.shared.audio.TtsPlayer
+import com.jarvis.voice.shared.hub.HubClient
+import com.jarvis.voice.shared.hub.HubLiveStart
 import com.jarvis.voice.shared.protocol.Codec
+import com.jarvis.voice.shared.protocol.EndReason
 import com.jarvis.voice.shared.protocol.MsgType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,10 +44,18 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Sorgente mic e sink TTS sono commutabili: in modalità standalone il telefono usa
  * il proprio mic/speaker; in modalità relay lo watch fornisce il mic e riceve la TTS.
+ *
+ * Sessione live su Voice Live Hub (`live_session_start` con backend "hub"): l'audio esce
+ * dal turn-loop dell'orchestrator e va full-duplex su un [HubClient] TCP diretto all'hub,
+ * con [liveAudio] come lato audio del target (telefono o watch). La WS resta solo per il
+ * controllo (fine sessione in entrambi i versi). Senza backend "hub" tutto come prima.
  */
 class JarvisController(
-    private val config: JarvisConfig,
+    private val config: ControllerConfig,
     private val deviceIdOverride: String? = null,   // usato dal relay watch (device_id distinto)
+    private val hubClientFactory: (HubLiveStart.Start, HubClient.Listener) -> HubClient =
+        { spec, l -> HubClient(spec.host, spec.port, spec.callId, spec.offerJson(), l) },
+    private val fallbackWaitMs: Long = FALLBACK_WAIT_MS,
 ) {
     private val tag = "JarvisController"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -83,12 +96,30 @@ class JarvisController(
     @Volatile var onLocalMicStart: (() -> Unit)? = null
     @Volatile var onLocalMicStop: (() -> Unit)? = null
 
+    /** Lato audio delle sessioni live hub (telefono: service; watch: WatchRelay). */
+    @Volatile var liveAudio: LiveAudioPort? = null
+
+    private val _liveHub = MutableStateFlow(false)
+    /** true durante una sessione live full-duplex sul Voice Live Hub (UI a due corsie). */
+    val liveHub: StateFlow<Boolean> = _liveHub.asStateFlow()
+
+    private val _jarvisLevel = MutableStateFlow(0f)
+    /** Livello 0..1 del parlato del modello in sessione hub (corsia JARVIS); amplitude = corsia utente. */
+    val jarvisLevel: StateFlow<Float> = _jarvisLevel.asStateFlow()
+
+    private val hubLock = Any()
+    @Volatile private var hub: HubClient? = null
+    @Volatile private var hubAudioOn = false
+    /** live_session_end non consegnato (WS giù): parte al welcome della prossima connessione. */
+    @Volatile private var pendingLiveEnd: String? = null
+
     private var ws: WebSocket? = null
     @Volatile private var streaming = false
     @Volatile private var awaitingReady = false
     @Volatile private var liveSession = false
     private val lastActivity = AtomicLong(System.currentTimeMillis())
     private val stateSince = AtomicLong(System.currentTimeMillis())
+    private val stateSeq = AtomicLong()   // conta le transizioni (attese a tempo che non devono scavalcarle)
 
     init {
         scope.launch { ttlLoop() }
@@ -101,6 +132,8 @@ class JarvisController(
     fun onTap() {
         touch()
         scope.launch {
+            // In sessione hub il tap (telefono o watch) chiude la sessione.
+            if (hub != null) { endHubSession(null, EndReason.BUTTON); return@launch }
             when (_state.value) {
                 HeadState.IDLE, HeadState.ERROR -> startTurn()  // tap su errore = ritenta
                 HeadState.LISTENING -> flush()          // secondo tap
@@ -111,13 +144,39 @@ class JarvisController(
     }
 
     fun stopEverything() {
-        scope.launch { bargeStop() }
+        scope.launch {
+            if (hub != null) endHubSession(null, EndReason.BUTTON) else bargeStop()
+        }
+    }
+
+    /** Azione "Termina" della UI in sessione live hub. */
+    fun endLiveSession() {
+        scope.launch { endHubSession(null, EndReason.BUTTON) }
+    }
+
+    /**
+     * Chiude SUBITO l'eventuale sessione hub perché il lato audio non la regge più (service
+     * distrutto, tunnel watch chiuso, watch senza mic) e avvisa l'orchestrator con [reason].
+     * Senza sessione hub non fa nulla.
+     */
+    fun abortLiveSession(reason: String) {
+        if (hub != null) endHubSession(null, reason)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Frame mic in ingresso (dal mic locale o dallo watch)
     // ─────────────────────────────────────────────────────────────────────────
     fun feedMicFrame(frame: ByteArray) {
+        val h = hub
+        if (h != null) {
+            // Sessione hub: mic continuo verso l'hub, anche mentre il modello parla.
+            if (hubAudioOn) {
+                h.sendAudio(frame)
+                // Mic live senza gain x8: stessa curva, riportata in scala per la corsia utente.
+                _amplitude.value = frameLevel(frame, LiveAudio.LIVE_LEVEL_BOOST)
+            }
+            return
+        }
         if (streaming) {
             ws?.send(frame.toByteString())
             _amplitude.value = frameLevel(frame)
@@ -125,7 +184,7 @@ class JarvisController(
     }
 
     /** RMS del frame PCM int16 LE → 0..1 (con curva per renderlo vivo visivamente). */
-    private fun frameLevel(frame: ByteArray): Float {
+    private fun frameLevel(frame: ByteArray, boost: Float = 1f): Float {
         val n = frame.size / 2
         if (n == 0) return 0f
         var sum = 0.0
@@ -136,7 +195,7 @@ class JarvisController(
             i += 2
         }
         val rms = Math.sqrt(sum / n) / 32768.0
-        return (rms * 9.0).coerceIn(0.0, 1.0).toFloat()  // sensibilità waveform
+        return (rms * 9.0 * boost).coerceIn(0.0, 1.0).toFloat()  // sensibilità waveform
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -215,8 +274,15 @@ class JarvisController(
     private fun handleText(text: String) {
         touch()
         val msg = runCatching { JSONObject(text) }.getOrNull() ?: return
-        when (msg.optString("type")) {
-            MsgType.WELCOME -> {}
+        val type = msg.optString("type")
+        // Sessione hub: il turn-loop dell'orchestrator è fuori dal giro, i suoi eventi di
+        // turno non devono toccare stato/mic (altrimenti tts_done → IDLE e lo watch si chiude).
+        if (hub != null && type in TURN_EVENTS) {
+            Log.w(tag, "'$type' ignorato in sessione hub")
+            return
+        }
+        when (type) {
+            MsgType.WELCOME -> flushPendingLiveEnd()
             MsgType.CONFIG_UPDATE -> {
                 val spk = msg.optString("speaker_type", "internal")
                 if (spk != "internal") Log.w(tag, "speaker_type=$spk — imposta use_internal_speaker=true!")
@@ -259,14 +325,32 @@ class JarvisController(
                 delay(TRIGGER_LISTEN_DELAY_MS)
                 startTurn()
             }
-            MsgType.LIVE_SESSION_START -> { liveSession = true; setState(HeadState.LISTENING) }
-            MsgType.LIVE_SESSION_END -> { liveSession = false; setState(HeadState.IDLE) }
+            MsgType.LIVE_SESSION_START -> when (val start = HubLiveStart.parse(msg)) {
+                HubLiveStart.Legacy -> {
+                    if (hub != null) endHubSession(null, null)
+                    liveSession = true; setState(HeadState.LISTENING)
+                }
+                is HubLiveStart.Invalid -> {
+                    Log.w(tag, "live_session_start hub non valido: ${start.reason}")
+                    if (hub != null) endHubSession(null, null)
+                    sendLiveEnd(start.callId, start.reason)
+                    liveSession = false
+                    afterHubEnd(start.callId, start.reason)
+                }
+                is HubLiveStart.Start -> startHubSession(start)
+            }
+            MsgType.LIVE_SESSION_END -> {
+                // Fine decisa dall'orchestrator: per la sessione hub manda "ended" all'hub e
+                // smonta, senza rispondere con un altro live_session_end.
+                if (hub != null) endHubSession(null, null)
+                else { liveSession = false; setState(HeadState.IDLE) }
+            }
             MsgType.PING -> sendJson(JSONObject().put("type", MsgType.PONG))
             MsgType.ERROR -> {
                 val m = (msg.opt("msg") ?: msg.opt("message"))?.toString()
                 Log.w(tag, "server error: $m")
                 // Non interrompere la riproduzione in corso; altrove segnala l'errore all'utente.
-                if (_state.value != HeadState.SPEAKING) {
+                if (_state.value != HeadState.SPEAKING && hub == null) {
                     flashError(m?.takeIf { it.isNotBlank() } ?: "Errore dall'orchestratore")
                 }
             }
@@ -299,6 +383,7 @@ class JarvisController(
 
     private fun handleBinary(bytes: ByteString) {
         touch()
+        if (hub != null) return   // in sessione hub il parlato arriva dall'hub, non dalla WS
         val pcm = opus.decode(bytes.toByteArray())
         if (pcm.isEmpty()) return
         val remote = remoteTtsWriter
@@ -316,6 +401,9 @@ class JarvisController(
             streaming = false
             awaitingReady = false
             onLocalMicStop?.invoke()
+            // Sessione hub senza WS: l'orchestrator non potrebbe più chiuderla né sapere che
+            // finisce. Si chiude qui; il live_session_end parte alla prossima connessione.
+            if (hub != null) endHubSession(null, EndReason.ERROR)
             val msg = when {
                 code == 401 || code == 403 -> "Accesso negato: token non valido o mancante"
                 code != null && code >= 500 -> "Errore dell'orchestratore ($code)"
@@ -324,8 +412,136 @@ class JarvisController(
             flashError(msg)
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            if (ws === webSocket) { ws = null; streaming = false; awaitingReady = false }
+            if (ws === webSocket) {
+                ws = null; streaming = false; awaitingReady = false
+                if (hub != null) endHubSession(null, EndReason.ERROR)   // come onFailure
+            }
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Sessione live su Voice Live Hub (full-duplex, orchestrator fuori dal loop audio)
+    // ─────────────────────────────────────────────────────────────────────────
+    private fun startHubSession(spec: HubLiveStart.Start) {
+        if (hub != null) endHubSession(null, null)   // sessione precedente orfana
+        // Chiudi il turno half-duplex in corso: da qui il mic lo gestisce la modalità live.
+        streaming = false
+        awaitingReady = false
+        onLocalMicStop?.invoke()
+        localPlayer.stop()
+        if (liveAudio == null) {
+            Log.w(tag, "sessione hub senza lato audio (service/relay non pronti)")
+            sendLiveEnd(spec.callId, EndReason.ERROR)
+            setState(HeadState.IDLE)
+            return
+        }
+        val events = HubEvents()
+        val client = hubClientFactory(spec, events)
+        events.client = client
+        synchronized(hubLock) {
+            hub = client; hubAudioOn = false
+            liveAudio?.prepare()   // watch: modalità live (mic AEC) già prima dell'accept
+        }
+        liveSession = true
+        _liveHub.value = true
+        setState(HeadState.LISTENING)
+        Log.i(tag, "sessione hub ${spec.callId} → ${spec.host}:${spec.port}")
+        client.start()
+    }
+
+    /**
+     * Smonta la sessione hub. [expected] != null: solo se è ancora quella (callback tardivi).
+     * [reason] != null: avvisa l'orchestrator con live_session_end(reason).
+     */
+    private fun endHubSession(expected: HubClient?, reason: String?) {
+        val c: HubClient
+        synchronized(hubLock) {
+            c = hub ?: return
+            if (expected != null && c !== expected) return
+            hub = null
+            hubAudioOn = false
+            c.end()   // "ended" all'hub, no-op se ha già chiuso lui
+            // Sotto hubLock come lo start() dell'accept: uno stop tardivo non può spegnere
+            // il lato audio di una sessione nuova. Idempotente (anche dopo il solo prepare()).
+            liveAudio?.stop()
+        }
+        Log.i(tag, "sessione hub ${c.callId} chiusa (${reason ?: "orchestrator"})")
+        // Stato locale PRIMA di avvisare l'orchestrator: il suo live_session_start di ripiego
+        // non deve trovare ancora liveSession=true ed essere poi sovrascritto
+        if (hub == null) {   // altrimenti nel frattempo è partita una sessione nuova: stato suo
+            _liveHub.value = false
+            _jarvisLevel.value = 0f
+            liveSession = false
+            if (reason != null) afterHubEnd(c.callId, reason) else setState(HeadState.IDLE)
+        }
+        if (reason != null) sendLiveEnd(c.callId, reason)
+    }
+
+    /**
+     * Stato dopo un live_session_end mandato da noi. Se l'orchestrator ripiega sulla sessione
+     * live di oggi (hub che rifiuta / non risponde, error) il device NON entra da
+     * solo nella vecchia modalità: resta in attesa (THINKING, lo watch non si chiude) del
+     * live_session_start semplice. Se non arriva nulla entro [fallbackWaitMs] torna IDLE.
+     */
+    private fun afterHubEnd(callId: String, reason: String) {
+        if (!EndReason.awaitsFallback(callId, reason)) { setState(HeadState.IDLE); return }
+        setState(HeadState.THINKING)
+        val seq = stateSeq.get()
+        scope.launch {
+            delay(fallbackWaitMs)
+            if (stateSeq.get() == seq && hub == null && !liveSession) {
+                Log.w(tag, "nessun ripiego dall'orchestrator dopo $reason")
+                setState(HeadState.IDLE)
+            }
+        }
+    }
+
+    private fun sendLiveEnd(callId: String, reason: String) {
+        val text = JSONObject().put("type", MsgType.LIVE_SESSION_END).put("call_id", callId).put("reason", reason)
+            .toString()
+        if (ws?.send(text) != true) {
+            // WS giù: l'orchestrator deve saperlo comunque (altrimenti tiene una sessione hub
+            // fantasma). Resta solo l'ultimo; parte al welcome della prossima connessione.
+            pendingLiveEnd = text
+            Log.w(tag, "live_session_end ($reason) in attesa della WS")
+        }
+    }
+
+    private fun flushPendingLiveEnd() {
+        val text = pendingLiveEnd ?: return
+        if (ws?.send(text) == true) {
+            pendingLiveEnd = null
+            Log.i(tag, "live_session_end in attesa consegnato")
+        }
+    }
+
+    /** Eventi del HubClient (thread di lettura del socket). */
+    private inner class HubEvents : HubClient.Listener {
+        lateinit var client: HubClient
+
+        override fun onAccepted() {
+            val port = liveAudio
+            val ok = synchronized(hubLock) {
+                if (hub !== client) return
+                val started = port?.start { lvl -> _jarvisLevel.value = lvl } == true
+                hubAudioOn = started
+                started
+            }
+            if (!ok) {
+                Log.w(tag, "modalità live non avviata (permesso mic / watch assente)")
+                endHubSession(client, EndReason.ERROR)
+            }
+        }
+
+        override fun onAudio(pcm: ShortArray) {
+            if (hub === client && hubAudioOn) liveAudio?.play(pcm)
+        }
+
+        override fun onClear() {
+            if (hub === client && hubAudioOn) liveAudio?.clear()
+        }
+
+        override fun onEnded(reason: String) = endHubSession(client, reason)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -335,6 +551,7 @@ class JarvisController(
     private fun setState(s: HeadState) {
         if (s != HeadState.ERROR) _statusMessage.value = null  // il messaggio vive solo in ERROR
         _state.value = s
+        stateSeq.incrementAndGet()
         stateSince.set(System.currentTimeMillis())
         if (s != HeadState.LISTENING) _amplitude.value = 0f
     }
@@ -404,6 +621,12 @@ class JarvisController(
         const val MAX_HISTORY = 10
         const val TRIGGER_LISTEN_DELAY_MS = 800L  // attesa fine coda TTS prima del multiturn
         const val ERROR_FLASH_MS = 3600L          // durata visualizzazione messaggio d'errore
+        const val FALLBACK_WAIT_MS = 5_000L       // attesa del ripiego dell'orchestrator dopo hub_rejected/unreachable
+
+        /** Eventi del turn-loop orchestrator ignorati durante una sessione hub. */
+        val TURN_EVENTS = setOf(
+            MsgType.READY, MsgType.SPEECH_END, MsgType.TTS_START, MsgType.TTS_DONE, MsgType.TRIGGER_LISTEN,
+        )
     }
 }
 

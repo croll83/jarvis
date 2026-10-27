@@ -49,6 +49,8 @@ private fun WearRoot(onClose: () -> Unit) {
     val link = remember { PhoneLink(context) }
     val state by link.state.collectAsState()
     val amp by link.amplitude.collectAsState()
+    val live by link.liveState.collectAsState()
+    val jarvisLevel by link.jarvisLevel.collectAsState()
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -99,6 +101,6 @@ private fun WearRoot(onClose: () -> Unit) {
     }
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        WearFace(state = state, amplitude = amp, onTap = { link.tap() })
+        WearFace(state = state, amplitude = amp, onTap = { link.tap() }, live = live, jarvisLevel = jarvisLevel)
     }
 }

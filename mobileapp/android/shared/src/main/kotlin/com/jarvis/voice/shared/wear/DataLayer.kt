@@ -19,6 +19,25 @@ object DataLayer {
     /** MessageClient watch→phone: stop / barge-in (tap durante la risposta). */
     const val PATH_STOP = "/jarvis/stop"
 
+    /**
+     * Payload di [PATH_STOP] quando lo watch chiude una sessione live perché non riesce a
+     * tenerla (mic o canale audio non partiti): il telefono la chiude con reason "error".
+     * Payload vuoto = stop di oggi (tap / gesto dell'utente).
+     */
+    const val STOP_ERROR = "error"
+
     /** MessageClient phone→watch: aggiornamento HeadState (payload = HeadState.name in UTF-8). */
     const val PATH_STATE = "/jarvis/state"
+
+    /**
+     * MessageClient phone→watch: entra/esci dalla modalità live full-duplex (sessione sul
+     * Voice Live Hub). Payload [LIVE_START] / [LIVE_STOP]. In live il watch tiene il mic
+     * aperto anche mentre suona, con AEC locale; il tunnel audio resta questo ChannelClient.
+     */
+    const val PATH_LIVE = "/jarvis/live"
+    const val LIVE_START = "start"
+    const val LIVE_STOP = "stop"
+
+    /** MessageClient phone→watch: barge-in in sessione live, svuota SUBITO il TtsPlayer. */
+    const val PATH_CLEAR = "/jarvis/clear"
 }

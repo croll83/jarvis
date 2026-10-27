@@ -17,6 +17,7 @@ object MsgType {
     const val SPEAKER_STOP = "speaker_stop" // barge-in
     const val VOLUME_CHANGE = "volume_change"
     const val PONG = "pong"
+    // live_session_end in ingresso: fine di una sessione hub decisa dal device (vedi EndReason)
 
     // ── server → device ──────────────────────────────────────────────
     const val WELCOME = "welcome"
@@ -33,6 +34,23 @@ object MsgType {
     const val ERROR = "error"
     const val TRANSCRIPT = "transcript"  // testo di ciò che ha detto l'utente (storico)
     const val RESPONSE = "response"      // testo della risposta di JARVIS (storico)
+}
+
+/** Motivi di `live_session_end` device → orchestrator per le sessioni sul Voice Live Hub. */
+object EndReason {
+    const val BUTTON = "button"
+    const val HUB_HANGUP = "hub_hangup"
+    const val HUB_REJECTED = "hub_rejected"
+    const val HUB_UNREACHABLE = "hub_unreachable"
+    const val ERROR = "error"
+
+    /**
+     * true se con questo live_session_end l'orchestrator ripiega sulla sessione live di oggi
+     * (hub che rifiuta o non risponde, oppure `error`). Il device NON entra da
+     * solo nella vecchia modalità live: aspetta il live_session_start semplice dell'orchestrator.
+     */
+    fun awaitsFallback(callId: String, reason: String): Boolean =
+        reason == HUB_REJECTED || reason == HUB_UNREACHABLE || reason == ERROR
 }
 
 object Codec {

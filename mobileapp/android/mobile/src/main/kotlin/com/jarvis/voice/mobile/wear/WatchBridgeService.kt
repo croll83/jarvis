@@ -23,7 +23,7 @@ class WatchBridgeService : WearableListenerService() {
         Log.i("WatchBridge", "msg '${event.path}' da ${event.sourceNodeId}")
         when (event.path) {
             DataLayer.PATH_TAP -> WatchRelay.onTap(event.sourceNodeId)
-            DataLayer.PATH_STOP -> WatchRelay.onStop()
+            DataLayer.PATH_STOP -> WatchRelay.onStop(String(event.data))
         }
     }
 
@@ -32,6 +32,6 @@ class WatchBridgeService : WearableListenerService() {
     }
 
     override fun onChannelClosed(channel: ChannelClient.Channel, closeReason: Int, appSpecificErrorCode: Int) {
-        if (channel.path == DataLayer.PATH_AUDIO) WatchRelay.onChannelClosed(channel)
+        if (channel.path == DataLayer.PATH_AUDIO) WatchRelay.onChannelClosed(channel, closeReason)
     }
 }

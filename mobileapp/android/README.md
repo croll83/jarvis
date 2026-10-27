@@ -19,10 +19,11 @@ Progetto Gradle multi-modulo. Apri `mobileapp/android/` in Android Studio (Ladyb
 - `audio/OpusDecoderWrapper.kt` — decode TTS (Concentus).
 - `ui/` — testa robot Compose + tap + impostazioni orchestrator.
 - `widget/` — widget Glance (tap → MainActivity con auto-tap).
+- `live/` + `wear/WatchLiveAudio.kt`: sessione live full-duplex sul Voice Live Hub (`live_session_start` con `backend:"hub"`): `HubClient` TCP diretto all'hub, AEC on-device (telefono) o on-watch (tunnel via telefono). Attiva solo in sessione.
 
 ## Componenti chiave (`:wear`)
 
-- `PhoneLink.kt` — apre il canale audio bidirezionale col telefono, manda i tap, riceve `HeadState`, gestisce mic/playback in base allo stato.
+- `PhoneLink.kt` — apre il canale audio bidirezionale col telefono, manda i tap, riceve `HeadState`, gestisce mic/playback in base allo stato. In sessione live hub (`/jarvis/live`, `/jarvis/clear`) mic comms + AEC locale sempre aperto.
 - `RobotHeadScreen.kt` — testa robot (Canvas) cliccabile.
 - `tile/JarvisTileService.kt` — Tile "widget"; tap → apre MainActivity.
 

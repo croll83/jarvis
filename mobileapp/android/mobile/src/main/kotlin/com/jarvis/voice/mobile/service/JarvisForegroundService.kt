@@ -13,7 +13,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.LifecycleService
 import com.jarvis.voice.mobile.core.JarvisRuntime
+import com.jarvis.voice.mobile.live.LocalLiveAudio
 import com.jarvis.voice.shared.audio.MicRecorder
+import com.jarvis.voice.shared.protocol.EndReason
 
 /**
  * Tiene "calda" la connessione WS nella finestra TTL e possiede il mic locale.
@@ -24,6 +26,7 @@ import com.jarvis.voice.shared.audio.MicRecorder
 class JarvisForegroundService : LifecycleService() {
 
     private val mic = MicRecorder()
+    private var liveAudio: LocalLiveAudio? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -38,6 +41,10 @@ class JarvisForegroundService : LifecycleService() {
         }
         c.onLocalMicStop = { mic.stop() }
 
+        // Sessione live hub sul telefono: mic comms + AEC + player 24 kHz, solo in sessione.
+        liveAudio = LocalLiveAudio(this) { frame -> c.feedMicFrame(frame) }
+        c.liveAudio = liveAudio
+
         startAsForeground()
     }
 
@@ -48,6 +55,13 @@ class JarvisForegroundService : LifecycleService() {
 
     override fun onDestroy() {
         mic.stop()
+        // Senza service la sessione hub del telefono resterebbe sorda e muta fino al timeout
+        // dell'hub: si chiude adesso e l'orchestrator lo sa (no-op fuori sessione).
+        if (JarvisRuntime.controller.liveAudio === liveAudio) {
+            JarvisRuntime.controller.abortLiveSession(EndReason.ERROR)
+            JarvisRuntime.controller.liveAudio = null
+        }
+        liveAudio?.stop()
         JarvisRuntime.controller.onLocalMicStart = null
         JarvisRuntime.controller.onLocalMicStop = null
         super.onDestroy()

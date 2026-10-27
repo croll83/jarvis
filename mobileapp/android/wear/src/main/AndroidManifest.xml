@@ -4,6 +4,9 @@
     <uses-feature android:name="android.hardware.type.watch" />
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Sessione live hub: MODE_IN_COMMUNICATION per l'AEC locale del watch (niente INTERNET:
+         la rete resta il tunnel via telefono) -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application

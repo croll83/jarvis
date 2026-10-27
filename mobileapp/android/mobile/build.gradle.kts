@@ -48,6 +48,10 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    testOptions {
+        // android.util.Log nei test JVM del controller: no-op invece di "Method not mocked"
+        unitTests.isReturnDefaultValues = true
+    }
 
     buildTypes {
         release {
@@ -99,4 +103,10 @@ dependencies {
 
     // Rive — avatar animato interattivo (state machine) per il volto centrale
     implementation(libs.rive.android)
+
+    // Test JVM del controller (sessione hub contro orchestrator e hub finti).
+    // org.json reale: quello di android.jar è uno stub.
+    testImplementation(libs.junit)
+    testImplementation(libs.org.json)
+    testImplementation(libs.okhttp.mockwebserver)
 }

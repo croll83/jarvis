@@ -19,8 +19,16 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    testOptions {
+        // android.util.Log nei test JVM: no-op invece di "Method not mocked"
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
     implementation(libs.androidx.core.ktx)
+
+    // Test JVM (framing hub, HubClient, resampler). org.json reale: quello di android.jar è uno stub.
+    testImplementation(libs.junit)
+    testImplementation(libs.org.json)
 }

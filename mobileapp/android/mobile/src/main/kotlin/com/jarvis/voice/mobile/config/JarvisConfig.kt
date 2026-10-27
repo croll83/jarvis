@@ -9,21 +9,21 @@ import java.util.Locale
  * Configurazione persistente del client (URL orchestrator, token, device_id, TTL).
  * Salvata in SharedPreferences — l'URL/token del tailnet non vanno hardcodati nel repo.
  */
-class JarvisConfig(private val context: Context) {
+class JarvisConfig(private val context: Context) : ControllerConfig {
 
     private val prefs = context.getSharedPreferences("jarvis", Context.MODE_PRIVATE)
 
     /** Base WS senza path, es. ws://100.x.y.z:5000 (l'app appende /ws/audio). */
-    var url: String
+    override var url: String
         get() = prefs.getString(KEY_URL, "") ?: ""
         set(v) = prefs.edit().putString(KEY_URL, v.trim().removeSuffix("/")).apply()
 
-    var token: String
+    override var token: String
         get() = prefs.getString(KEY_TOKEN, "") ?: ""
         set(v) = prefs.edit().putString(KEY_TOKEN, v.trim()).apply()
 
     /** TTL finestra calda in ms (default 10 min). */
-    var ttlMillis: Long
+    override var ttlMillis: Long
         get() = prefs.getLong(KEY_TTL, 600_000L)
         set(v) = prefs.edit().putLong(KEY_TTL, v).apply()
 
@@ -66,7 +66,7 @@ class JarvisConfig(private val context: Context) {
         }
 
     /** device_id effettivamente usato per la connessione. */
-    val deviceId: String
+    override val deviceId: String
         get() = if (deviceIdMode == MODE_CUSTOM && customDeviceId.isNotBlank()) customDeviceId
         else autoDeviceId
 
@@ -87,7 +87,7 @@ class JarvisConfig(private val context: Context) {
         return base.dropLast(1) + newLast
     }
 
-    val isConfigured: Boolean get() = url.isNotBlank()
+    override val isConfigured: Boolean get() = url.isNotBlank()
 
     private fun normalizeId(v: String): String = v.trim().uppercase(Locale.ROOT)
 
