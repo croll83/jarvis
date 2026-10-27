@@ -30,6 +30,8 @@ build/
 # token reali. In repo restano solo i .defaults con i placeholder.
 sdkconfig
 sdkconfig.old
+sdkconfig.wagmi.local
+sdkconfig.albani.local
 
 # ESP-IDF local credentials (non committare!)
 sdkconfig.local
