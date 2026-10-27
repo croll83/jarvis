@@ -80,6 +80,16 @@ static const char *TAG = "WS_AUDIO";
 #define DUPLEX_LEVEL_WINDOW_MS      70      // Peak over this window per display frame
 #define DUPLEX_PLAY_TASK_STACK      6144
 #define DUPLEX_PLAY_TASK_PRIO       5
+// AEC reference uplink (cap "aec_ref"): 0xA5 | format | seq u16 LE | 320 x [mic, ref] s16le.
+// 0xA5 is never the TOC byte of our mono Opus frames (its stereo bit is set). PCM, not
+// Opus: the echo canceller subtracts waveforms, a lossy reference would cap it.
+// Format bit 7 = DAC muted during the packet (barge-in): the speaker is silent even if
+// the loopback still carries the TX ring play-out, so the server drops the reference.
+#define DUPLEX_REF_MAGIC            0xA5
+#define DUPLEX_REF_FMT_PCM          0x01
+#define DUPLEX_REF_FLAG_MUTED       0x80
+#define DUPLEX_REF_HEADER           4
+#define DUPLEX_REF_VALUES           (OPUS_FRAME_SAMPLES * 2)
 
 // =============================================================================
 // CONNECTION STATE MACHINE
@@ -163,6 +173,11 @@ static volatile uint32_t duplex_late_drop_until_ms = 0;
 static volatile uint8_t duplex_mic_vu = 0;
 static volatile uint32_t duplex_mic_vu_ms = 0;       // Last "vu" (session start until the first one)
 static size_t duplex_mic_fill = 0;                   // Samples accumulated in enc_input_buffer
+static bool duplex_fill_ref_layout = false;          // Layout duplex_mic_fill was counted in
+static uint8_t *duplex_ref_pkt = NULL;               // AEC reference packet being filled
+static uint16_t duplex_ref_seq = 0;
+static bool duplex_ref_muted = false;                // DAC muted during the packet being filled
+static bool duplex_mic_scale_changed = false;        // ADC scale set by the server for this session
 
 // Allocated on the first duplex session and kept (PSRAM, no CPU cost when idle)
 static QueueHandle_t duplex_play_q = NULL;
@@ -259,6 +274,11 @@ static bool send_json_hello(const char *device_id, const char *fw_version) {
     cJSON_AddStringToObject(json, "type", "hello");
     cJSON_AddStringToObject(json, "device_id", device_id);
     cJSON_AddStringToObject(json, "fw", fw_version);
+#ifndef USE_LOCAL_WAKEWORD
+    // aec_ref: in duplex the uplink can carry the ES8311 DAC loopback next to the mic
+    cJSON *caps = cJSON_AddArrayToObject(json, "caps");
+    if (caps) cJSON_AddItemToArray(caps, cJSON_CreateString("aec_ref"));
+#endif
 
     char *str = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
@@ -288,14 +308,18 @@ static bool duplex_alloc(void) {
                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     duplex_rx_frame = heap_caps_malloc(sizeof(duplex_frame_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     duplex_play_frame = heap_caps_malloc(sizeof(duplex_frame_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!duplex_play_q_storage || !duplex_rx_frame || !duplex_play_frame) {
+    duplex_ref_pkt = heap_caps_malloc(DUPLEX_REF_HEADER + DUPLEX_REF_VALUES * sizeof(int16_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!duplex_play_q_storage || !duplex_rx_frame || !duplex_play_frame || !duplex_ref_pkt) {
         ESP_LOGE(TAG, "Duplex buffer alloc failed");
         free(duplex_play_q_storage);
         free(duplex_rx_frame);
         free(duplex_play_frame);
+        free(duplex_ref_pkt);
         duplex_play_q_storage = NULL;
         duplex_rx_frame = NULL;
         duplex_play_frame = NULL;
+        duplex_ref_pkt = NULL;
         return false;
     }
 
@@ -471,9 +495,26 @@ static void duplex_play_task(void *arg) {
     vTaskDelete(NULL);
 }
 
+// Session media options from live_session_start: AEC reference (feed task switches
+// the ring layout on its next read) and an optional ADC scale while in duplex.
+static void duplex_media_on(bool aec_ref, int mic_scale_db) {
+    duplex_ref_seq = 0;
+    jarvis_audio_set_aec_ref(aec_ref);
+    duplex_mic_scale_changed = (mic_scale_db >= 0);
+    if (duplex_mic_scale_changed) jarvis_codec_set_mic_scale_db(mic_scale_db);
+}
+
+static void duplex_media_off(void) {
+    jarvis_audio_set_aec_ref(false);
+    if (duplex_mic_scale_changed) {
+        jarvis_codec_set_mic_scale_db(JARVIS_CODEC_MIC_SCALE_DB);
+        duplex_mic_scale_changed = false;
+    }
+}
+
 // Called from the WS event handler. Never waits: a play task still finishing
 // the previous session carries on into this one.
-static bool duplex_start(void) {
+static bool duplex_start(bool aec_ref, int mic_scale_db) {
 #ifdef USE_LOCAL_WAKEWORD
     // The continuous mic stream only exists with server-side wake word
     ESP_LOGW(TAG, "Duplex live session not supported with local wake word");
@@ -489,6 +530,7 @@ static bool duplex_start(void) {
     duplex_mic_fill = 0;
     duplex_late_drop_armed = false;
     opus_decoder_ctl(opus_decoder, OPUS_RESET_STATE);
+    duplex_media_on(aec_ref, mic_scale_db);
 
     portENTER_CRITICAL(&duplex_mux);
     duplex_end_flush = false;
@@ -507,9 +549,11 @@ static bool duplex_start(void) {
         duplex_active = false;
         duplex_play_task_handle = NULL;
         portEXIT_CRITICAL(&duplex_mux);
+        duplex_media_off();
         return false;
     }
-    ESP_LOGI(TAG, "Duplex live session started%s", need_task ? "" : " (play task reused)");
+    ESP_LOGI(TAG, "Duplex live session started%s%s", need_task ? "" : " (play task reused)",
+             aec_ref ? " with AEC reference" : "");
     return true;
 }
 
@@ -525,6 +569,7 @@ static bool duplex_stop(bool flush) {
     }
     portEXIT_CRITICAL(&duplex_mux);
     if (was_active) {
+        duplex_media_off();
         ESP_LOGI(TAG, "Duplex live session stopped (flush=%d)", flush);
     }
     return was_active;
@@ -549,6 +594,7 @@ static bool duplex_end_local(const char *reason) {
     portEXIT_CRITICAL(&duplex_mux);
     if (!was_active) return false;
 
+    duplex_media_off();
     live_session_active = false;
     ESP_LOGI(TAG, "Ending duplex live session (reason=%s)", why);
     send_json("live_session_end", "reason", why);
@@ -582,9 +628,49 @@ static void duplex_on_downlink(const char *data, int len) {
     }
 }
 
+// AEC reference uplink: exact 20ms [mic, ref] packets, PCM (see DUPLEX_REF_MAGIC)
+static void duplex_stream_mic_ref(void) {
+    int16_t *pairs = (int16_t *)(duplex_ref_pkt + DUPLEX_REF_HEADER);
+    for (int i = 0; i < 4; i++) {  // Up to 4 reads per tick to catch up after a stall
+        size_t got = jarvis_audio_read_raw(pairs + duplex_mic_fill,
+                                           DUPLEX_REF_VALUES - duplex_mic_fill,
+                                           i == 0 ? TICK_INTERVAL_MS : 0);
+        if (got == 0) break;
+        duplex_ref_muted |= jarvis_codec_is_muted();
+        duplex_mic_fill += got;
+        if (duplex_mic_fill < DUPLEX_REF_VALUES) continue;
+        duplex_mic_fill = 0;
+
+        duplex_ref_pkt[0] = DUPLEX_REF_MAGIC;
+        duplex_ref_pkt[1] = DUPLEX_REF_FMT_PCM | (duplex_ref_muted ? DUPLEX_REF_FLAG_MUTED : 0);
+        duplex_ref_muted = false;
+        duplex_ref_pkt[2] = (uint8_t)(duplex_ref_seq & 0xFF);
+        duplex_ref_pkt[3] = (uint8_t)(duplex_ref_seq >> 8);
+        duplex_ref_seq++;
+        esp_websocket_client_send_bin(ws_client, (const char *)duplex_ref_pkt,
+                                      DUPLEX_REF_HEADER + DUPLEX_REF_VALUES * sizeof(int16_t),
+                                      pdMS_TO_TICKS(100));
+    }
+}
+
 // Uplink: accumulate exact 20ms frames from the mic ring buffer (ws_persist task).
 // Unlike the idle stream, partial reads are kept, so no audio is lost.
 static void duplex_stream_mic(void) {
+    if (jarvis_audio_aec_ref_pending()) {
+        // Ring layout switching: its contents are neither mono nor pairs for sure
+        jarvis_audio_read_raw(enc_input_buffer, BUFFER_SAMPLES, TICK_INTERVAL_MS);
+        duplex_mic_fill = 0;
+        return;
+    }
+    bool ref_layout = jarvis_audio_aec_ref_active();
+    if (ref_layout != duplex_fill_ref_layout) {
+        duplex_fill_ref_layout = ref_layout;
+        duplex_mic_fill = 0;  // A partial frame in the other layout would misalign mic and ref
+    }
+    if (ref_layout) {
+        duplex_stream_mic_ref();
+        return;
+    }
     for (int i = 0; i < 4; i++) {  // Up to 4 reads per tick to catch up after a stall
         size_t got = jarvis_audio_read_raw(enc_input_buffer + duplex_mic_fill,
                                            OPUS_FRAME_SAMPLES - duplex_mic_fill,
@@ -692,9 +778,12 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
 
                                 } else if (strcmp(type, "live_session_start") == 0) {
                                     bool duplex = cJSON_IsTrue(cJSON_GetObjectItem(msg, "duplex"));
+                                    bool aec_ref = cJSON_IsTrue(cJSON_GetObjectItem(msg, "aec_ref"));
+                                    cJSON *gain = cJSON_GetObjectItem(msg, "mic_gain_db");
+                                    int mic_scale_db = (gain && cJSON_IsNumber(gain)) ? gain->valueint : -1;
                                     ESP_LOGI(TAG, "Server: live_session_start%s", duplex ? " (duplex)" : "");
                                     live_session_active = true;
-                                    if (duplex && !duplex_start()) {
+                                    if (duplex && !duplex_start(aec_ref, mic_scale_db)) {
                                         // Cannot do full-duplex: end it cleanly rather than half-work
                                         send_json("live_session_end", "reason", "error");
                                         live_session_active = false;
@@ -989,7 +1078,7 @@ static void ws_persistent_task(void *arg) {
 
         // === Phase 2: Connected! Send hello ===
         ESP_LOGI(TAG, "Connected! Sending hello...");
-        send_json_hello(device_id_buf, "5.1.0-ws");
+        send_json_hello(device_id_buf, "5.2.0-ws");
 
         // === Phase 3: Main loop (idle + audio sessions) ===
         int64_t last_ping_time = esp_timer_get_time() / 1000;
@@ -1004,6 +1093,11 @@ static void ws_persistent_task(void *arg) {
                 duplex_stream_mic();
             }
             #ifndef USE_LOCAL_WAKEWORD
+            else if (conn_state == CONN_STATE_CONNECTED && !audio_session_requested &&
+                     (jarvis_audio_aec_ref_active() || jarvis_audio_aec_ref_pending())) {
+                // Duplex just ended: drop [mic, ref] pairs until the feed task is back to mono
+                jarvis_audio_read_raw(enc_input_buffer, BUFFER_SAMPLES, TICK_INTERVAL_MS);
+            }
             else if (conn_state == CONN_STATE_CONNECTED && !audio_session_requested) {
                 size_t samples = jarvis_audio_read_raw(enc_input_buffer,
                                                         BUFFER_SAMPLES,

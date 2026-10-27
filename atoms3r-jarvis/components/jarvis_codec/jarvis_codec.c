@@ -78,6 +78,7 @@ static i2c_master_dev_handle_t amp_i2c_dev = NULL;
 static es8311_handle_t es8311_handle = NULL;
 
 static bool initialized = false;
+static volatile bool dac_muted = false;  // REG31 mute (jarvis_codec_set_mute)
 
 // =============================================================================
 // I2C BUS INIT (New master API — compatible with jarvis_display)
@@ -181,7 +182,7 @@ static bool init_es8311(void) {
     // ESPHome: ES8311_MIC_GAIN_42DB (+42dB) — aggressive
     // We use XiaoZhi level: +30dB. Total hardware chain:
     // PGA +30dB (analog) + ADC scale +30dB (digital) + ADC vol 0dB = +60dB
-    ret = es8311_microphone_gain_set(es8311_handle, ES8311_MIC_GAIN_30DB);
+    ret = es8311_microphone_gain_set(es8311_handle, (es8311_mic_gain_t)(JARVIS_CODEC_MIC_SCALE_DB / 6));
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "ES8311 mic gain set failed: %s", esp_err_to_name(ret));
     }
@@ -396,6 +397,30 @@ int jarvis_codec_read(int16_t *buf, size_t num_samples) {
     return (int)mono_count;
 }
 
+// Both slots: with the loopback on (REG44 "ADC + DACR") the left slot is the
+// mic and the right one is the DAC input from the same LRCK frame
+int jarvis_codec_read_pair(int16_t *mic, int16_t *ref, size_t num_samples) {
+    if (!initialized || !mic || !ref || num_samples == 0) return -1;
+
+    size_t stereo_samples_32 = num_samples * 2;
+    int32_t *stereo_buf = ensure_buf(&i2s_read_buf, &i2s_read_buf_size, stereo_samples_32);
+    if (!stereo_buf) return -1;
+
+    size_t bytes_read = 0;
+    esp_err_t ret = i2s_read(I2S_PORT, stereo_buf, stereo_samples_32 * sizeof(int32_t),
+                             &bytes_read, portMAX_DELAY);
+    if (ret != ESP_OK || bytes_read == 0) {
+        return -1;
+    }
+
+    size_t frames = bytes_read / sizeof(int32_t) / 2;
+    for (size_t i = 0; i < frames; i++) {
+        mic[i] = (int16_t)(stereo_buf[i * 2] >> 16);
+        ref[i] = (int16_t)(stereo_buf[i * 2 + 1] >> 16);
+    }
+    return (int)frames;
+}
+
 // Dedicated scratch buffer for the duplex playback stream (see jarvis_codec_write_stream)
 static int32_t *i2s_stream_buf = NULL;
 static size_t i2s_stream_buf_size = 0;  // in int32 elements
@@ -441,9 +466,15 @@ void jarvis_codec_set_mute(bool mute) {
     if (!es8311_handle) return;
 
     esp_err_t ret = es8311_voice_mute(es8311_handle, mute);
-    if (ret != ESP_OK) {
+    if (ret == ESP_OK) {
+        dac_muted = mute;
+    } else {
         ESP_LOGE(TAG, "Failed to %s DAC: %s", mute ? "mute" : "unmute", esp_err_to_name(ret));
     }
+}
+
+bool jarvis_codec_is_muted(void) {
+    return dac_muted;
 }
 
 void jarvis_codec_set_volume(int volume) {
@@ -456,6 +487,35 @@ void jarvis_codec_set_volume(int volume) {
         ESP_LOGI(TAG, "DAC volume set to %d%%", volume);
     } else {
         ESP_LOGE(TAG, "Failed to set volume: %s", esp_err_to_name(ret));
+    }
+}
+
+bool jarvis_codec_set_aec_loopback(bool on) {
+    if (!es8311_handle) return false;
+
+    uint8_t want_sel = on ? 5 : 0;  // 5 = "ADC + DACR", 0 = "ADC + ADC" (reset default)
+    uint8_t reg44 = 0;
+    esp_err_t ret = es8311_adcdat_sel(es8311_handle, want_sel, &reg44);
+    bool ok = (ret == ESP_OK) && (((reg44 >> 4) & 0x07) == want_sel);
+    if (ok) {
+        ESP_LOGI(TAG, "AEC loopback %s (REG44=0x%02X)", on ? "ON" : "OFF", reg44);
+    } else {
+        ESP_LOGE(TAG, "AEC loopback %s failed: %s (REG44=0x%02X)",
+                 on ? "on" : "off", esp_err_to_name(ret), reg44);
+    }
+    return ok;
+}
+
+void jarvis_codec_set_mic_scale_db(int db) {
+    if (!es8311_handle) return;
+    if (db < 0) db = 0;
+    if (db > 42) db = 42;
+
+    esp_err_t ret = es8311_microphone_gain_set(es8311_handle, (es8311_mic_gain_t)(db / 6));
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "ADC scale set to +%ddB", (db / 6) * 6);
+    } else {
+        ESP_LOGE(TAG, "Failed to set ADC scale: %s", esp_err_to_name(ret));
     }
 }
 

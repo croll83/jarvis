@@ -413,6 +413,22 @@ esp_err_t es8311_microphone_gain_set(es8311_handle_t dev, es8311_mic_gain_t gain
     return es8311_write_reg(dev, ES8311_ADC_REG16, gain_db); // ADC gain scale up
 }
 
+esp_err_t es8311_adcdat_sel(es8311_handle_t dev, uint8_t sel, uint8_t *reg44_set)
+{
+    uint8_t reg44;
+    ESP_RETURN_ON_ERROR(es8311_read_reg(dev, ES8311_GPIO_REG44, &reg44), TAG, "I2C read/write error");
+    // bit7 (ADC2DAC_SEL, ADC routed into the DAC) stays off; bit3 is set as esp_codec_dev
+    // does ("I2C noise immunity"), which writes this register twice because the first
+    // write occasionally fails
+    reg44 = (reg44 & 0x07) | BIT(3) | ((sel & 0x07) << 4);
+    es8311_write_reg(dev, ES8311_GPIO_REG44, reg44);
+    ESP_RETURN_ON_ERROR(es8311_write_reg(dev, ES8311_GPIO_REG44, reg44), TAG, "I2C read/write error");
+    if (reg44_set) {
+        ESP_RETURN_ON_ERROR(es8311_read_reg(dev, ES8311_GPIO_REG44, reg44_set), TAG, "I2C read/write error");
+    }
+    return ESP_OK;
+}
+
 esp_err_t es8311_voice_fade(es8311_handle_t dev, const es8311_fade_t fade)
 {
     uint8_t reg37;

@@ -73,6 +73,18 @@ void jarvis_audio_set_streaming(bool enable);
 size_t jarvis_audio_read_raw(int16_t *buf, size_t num_samples, uint32_t timeout_ms);
 
 /**
+ * @brief Request the AEC reference layout for the raw ring buffer.
+ * When active, the ring carries interleaved [mic, ref] int16 pairs (ref = ES8311
+ * digital DAC loopback from the same I2S frame) and jarvis_audio_read_raw()
+ * counts int16 values, two per frame. The feed task switches on its next read
+ * and drains the ring; jarvis_audio_aec_ref_active() tells when the layout changed.
+ */
+void jarvis_audio_set_aec_ref(bool enable);
+bool jarvis_audio_aec_ref_active(void);
+/** True while the feed task has not switched layout yet (ring contents undefined). */
+bool jarvis_audio_aec_ref_pending(void);
+
+/**
  * @brief Process audio (call from main loop or task).
  * No-op — wake word detection runs in dedicated task.
  */

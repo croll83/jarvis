@@ -69,6 +69,9 @@ int jarvis_codec_write_stream(const int16_t *buf, size_t num_samples);
  */
 void jarvis_codec_set_mute(bool mute);
 
+/** True while the DAC is muted: the loopback may still carry audio the speaker does not play. */
+bool jarvis_codec_is_muted(void);
+
 /**
  * Set ES8311 DAC output volume.
  * @param volume 0-100
@@ -84,6 +87,30 @@ void jarvis_codec_set_volume(int volume);
  * @param gain_reg_val Raw register 0x14 value
  */
 void jarvis_codec_set_mic_gain(uint8_t gain_reg_val);
+
+/**
+ * Digital DAC loopback on the right I2S RX slot (ES8311 REG44 "ADC + DACR").
+ * On: every RX frame carries the mic (left) and, sample-aligned, the PCM the
+ * DAC received (right): the echo canceller reference for duplex sessions.
+ * Off: back to the reset default (both slots = mic).
+ * @return true if the register reads back as requested
+ */
+bool jarvis_codec_set_aec_loopback(bool on);
+
+/**
+ * Read both I2S RX slots: even index -> mic, odd index -> ref. With the loopback
+ * on that is mic and DAC input from the same LRCK frame, if the ESP32 maps the
+ * left slot to the even index (the server checks which slot is the loopback).
+ * @return Number of frames read, or -1 on error
+ */
+int jarvis_codec_read_pair(int16_t *mic, int16_t *ref, size_t num_samples);
+
+/**
+ * Set the ES8311 ADC digital scale (REG16), 0-42 dB in 6 dB steps.
+ * The firmware default is JARVIS_CODEC_MIC_SCALE_DB.
+ */
+#define JARVIS_CODEC_MIC_SCALE_DB 30
+void jarvis_codec_set_mic_scale_db(int db);
 
 #ifdef __cplusplus
 }

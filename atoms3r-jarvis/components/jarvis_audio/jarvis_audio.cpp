@@ -115,6 +115,11 @@ static TaskHandle_t mww_detect_task_handle = NULL;
 // Raw audio ring buffer for WS audio streaming
 static RingbufHandle_t raw_ringbuf = NULL;
 static volatile bool streaming_to_ringbuf = false;
+// AEC reference mode (duplex live session): the ring carries [mic, ref] pairs.
+// Requested by jarvis_ws_audio, switched only by the feed task (codec loopback
+// register + ring drain), so a reader never gets mono and pairs mixed up.
+static volatile bool aec_ref_requested = false;
+static volatile bool aec_ref_active = false;
 
 #ifdef USE_LOCAL_WAKEWORD
 // TFLite Micro objects (C++ - allocated statically)
@@ -382,6 +387,15 @@ static SemaphoreHandle_t detect_audio_ready = NULL;
 // AUDIO FEED TASK (reads codec, feeds ring buffer + detection buffer)
 // =============================================================================
 
+static void drain_raw_ringbuf(void) {
+    if (!raw_ringbuf) return;
+    size_t item_size;
+    void *item;
+    while ((item = xRingbufferReceive(raw_ringbuf, &item_size, 0)) != NULL) {
+        vRingbufferReturnItem(raw_ringbuf, item);
+    }
+}
+
 static void audio_feed_task(void* arg) {
     // Read in chunks matching the feature step size
     const int chunk_samples = MWW_STEP_SAMPLES;  // 160 samples = 10ms (V2)
@@ -393,14 +407,35 @@ static void audio_feed_task(void* arg) {
     if (!mono_buff) {
         mono_buff = (int16_t *)malloc(chunk_samples * sizeof(int16_t));
     }
-    if (!mono_buff) {
+    int16_t* ref_buff = (int16_t *)heap_caps_malloc(chunk_samples * sizeof(int16_t),
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int16_t* pair_buff = (int16_t *)heap_caps_malloc(chunk_samples * 2 * sizeof(int16_t),
+                                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!mono_buff || !ref_buff || !pair_buff) {
         ESP_LOGE(TAG, "Failed to allocate audio feed buffer");
         vTaskDelete(NULL);
         return;
     }
 
     while (1) {
-        int samples = jarvis_codec_read(mono_buff, chunk_samples);
+        bool want_ref = aec_ref_requested;
+        if (want_ref != aec_ref_active) {
+            // Loopback register first, then drop what the ring holds in the old layout
+            bool ok = jarvis_codec_set_aec_loopback(want_ref);
+            if (want_ref && !ok) {
+                // Without the loopback the right slot is a copy of the mic: never send
+                // it as a reference. The session goes on with the mono Opus uplink.
+                ESP_LOGW(TAG, "AEC reference unavailable, mono uplink");
+                jarvis_codec_set_aec_loopback(false);
+                aec_ref_requested = false;
+            } else {
+                drain_raw_ringbuf();
+                aec_ref_active = want_ref;
+            }
+        }
+
+        int samples = aec_ref_active ? jarvis_codec_read_pair(mono_buff, ref_buff, chunk_samples)
+                                     : jarvis_codec_read(mono_buff, chunk_samples);
 
         if (samples > 0) {
             // Update audio level
@@ -409,7 +444,14 @@ static void audio_feed_task(void* arg) {
             // PATH 1: Raw ring buffer (when streaming is active)
             // No software gain applied — server-side normalizes peak to ~85%.
             // Hardware gain chain: PGA +30dB + ADC scale +30dB + ADC vol 0dB = +60dB.
-            if (streaming_to_ringbuf && raw_ringbuf) {
+            if (streaming_to_ringbuf && raw_ringbuf && aec_ref_active) {
+                // Interleaved [mic, ref] frames, one ring item per read: both or neither
+                for (int i = 0; i < samples; i++) {
+                    pair_buff[i * 2] = mono_buff[i];
+                    pair_buff[i * 2 + 1] = ref_buff[i];
+                }
+                xRingbufferSend(raw_ringbuf, pair_buff, samples * 2 * sizeof(int16_t), 0);
+            } else if (streaming_to_ringbuf && raw_ringbuf) {
                 int copy_len = (samples <= 320) ? samples : 320;
                 xRingbufferSend(raw_ringbuf, mono_buff,
                                 copy_len * sizeof(int16_t), 0);
@@ -432,6 +474,8 @@ static void audio_feed_task(void* arg) {
     }
 
     free(mono_buff);
+    free(ref_buff);
+    free(pair_buff);
     vTaskDelete(NULL);
 }
 
@@ -762,13 +806,7 @@ bool jarvis_audio_is_listening(void) {
 void jarvis_audio_set_streaming(bool enable) {
     if (enable) {
         // Clear any stale data in ring buffer
-        if (raw_ringbuf) {
-            size_t item_size;
-            void *item;
-            while ((item = xRingbufferReceive(raw_ringbuf, &item_size, 0)) != NULL) {
-                vRingbufferReturnItem(raw_ringbuf, item);
-            }
-        }
+        drain_raw_ringbuf();
 
         streaming_to_ringbuf = true;
         ESP_LOGI(TAG, "Streaming enabled (ring buffer active)");
@@ -776,6 +814,18 @@ void jarvis_audio_set_streaming(bool enable) {
         streaming_to_ringbuf = false;
         ESP_LOGI(TAG, "Streaming disabled (ring buffer inactive)");
     }
+}
+
+void jarvis_audio_set_aec_ref(bool enable) {
+    aec_ref_requested = enable;
+}
+
+bool jarvis_audio_aec_ref_active(void) {
+    return aec_ref_active;
+}
+
+bool jarvis_audio_aec_ref_pending(void) {
+    return aec_ref_requested != aec_ref_active;
 }
 
 size_t jarvis_audio_read_raw(int16_t *buf, size_t num_samples, uint32_t timeout_ms) {

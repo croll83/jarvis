@@ -86,6 +86,9 @@ esp_err_t es8311_voice_volume_get(es8311_handle_t dev, int *volume);
 void es8311_register_dump(es8311_handle_t dev);
 esp_err_t es8311_voice_mute(es8311_handle_t dev, bool enable);
 esp_err_t es8311_microphone_gain_set(es8311_handle_t dev, es8311_mic_gain_t gain_db);
+/* ASDOUT slot source (REG44 ADCDAT_SEL, bits[6:4]): 0 = ADC+ADC (reset default),
+ * 5 = ADC+DACR (left = mic, right = digital DAC loopback, the AEC reference). */
+esp_err_t es8311_adcdat_sel(es8311_handle_t dev, uint8_t sel, uint8_t *reg44_set);
 esp_err_t es8311_microphone_config(es8311_handle_t dev, bool digital_mic);
 esp_err_t es8311_sample_frequency_config(es8311_handle_t dev, int mclk_frequency, int sample_frequency);
 esp_err_t es8311_voice_fade(es8311_handle_t dev, const es8311_fade_t fade);
