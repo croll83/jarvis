@@ -989,7 +989,7 @@ static void ws_persistent_task(void *arg) {
 
         // === Phase 2: Connected! Send hello ===
         ESP_LOGI(TAG, "Connected! Sending hello...");
-        send_json_hello(device_id_buf, "5.0.0-ws");
+        send_json_hello(device_id_buf, "5.1.0-ws");
 
         // === Phase 3: Main loop (idle + audio sessions) ===
         int64_t last_ping_time = esp_timer_get_time() / 1000;
