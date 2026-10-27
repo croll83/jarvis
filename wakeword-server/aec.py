@@ -152,6 +152,11 @@ _PREFERENCE = {"webrtc": ("webrtc", "speex"), "speex": ("speex",), "off": ()}
 
 # Allineamento e stima del ritardo (vedi EchoCanceller)
 _RESYNC_GAP_S = 0.5           # mic fermo oltre questo: si riancora la sua timeline
+# Il mic legge il riferimento con questo margine: frame scritto all'invio e mic letto all'arrivo
+# avvengono quasi nello stesso istante, e senza margine il mic leggeva la zona non ancora scritta
+# (in produzione il riferimento arrivava all'AEC sempre vuoto). Il ritardo eco reale misurato a
+# inizio sessione e' ~80-140 ms: resta positivo anche togliendo il margine.
+_READ_LAG_MS = 40
 _AUTO_DELAY = os.getenv("AEC_AUTO_DELAY", "1").strip().lower() not in ("0", "false", "no", "off")
 _AUTO_MAX_AEC_MS = 400        # fin qui l'AEC3 ce la fa da solo: nessuna linea
 _AUTO_TARGET_MS = 150         # con la linea, ritardo residuo lasciato all'AEC3
@@ -212,33 +217,31 @@ class EchoCanceller:
     def render_backlog_bytes(self) -> int:
         """Riferimento in timeline non ancora letto dal mic."""
         end = self._ring_start + len(self._ring) // 2
-        start = self._ring_start if self._cap is None else max(self._ring_start, self._cap - self._line)
+        lag = _READ_LAG_MS * SAMPLE_RATE // 1000
+        start = self._ring_start if self._cap is None else max(self._ring_start, self._cap - lag - self._line)
         return max(0, end - start) * 2
 
     def _index(self, t: float) -> int:
         return int(round((t - self._t0) * SAMPLE_RATE))
 
     def render(self, pcm: bytes, t: float = None):
-        """PCM 16 kHz mandato al device; t = istante programmato dal pacer (default: adesso)."""
+        """PCM 16 kHz appena mandato al device (t = istante d'invio, default adesso).
+
+        Una frase si ancora all'istante d'invio del suo primo frame e i frame seguenti si accodano
+        di seguito, come l'Atom li suona: il pre-buffer mandato a raffica resta in avanti sulla
+        timeline invece di finire nel passato (dove il mic l'aveva gia' superato)."""
         if self._passthrough or not pcm:
             return
         t = time.monotonic() if t is None else t
         if self._t0 is None:
             self._t0 = t
-        idx = self._index(t)
+        now_idx = self._index(t)
+        end = self._ring_start + len(self._ring) // 2
         if not self._ring:
-            self._ring_start = idx
-        off = idx - self._ring_start
-        if off < 0:  # piu' vecchio dell'inizio del ring: resta solo la parte ancora utile
-            pcm = pcm[-off * 2:]
-            off = 0
-            if not pcm:
-                return
-        have = len(self._ring) // 2
-        if off > have:
-            self._ring += bytes((off - have) * 2)  # silenzio tra le frasi
-        # sovrapposizione (ripartenza dopo un clear): scrive sopra, e' quello che suonera'
-        self._ring[off * 2:off * 2 + len(pcm)] = pcm
+            self._ring_start = now_idx
+        elif end < now_idx:
+            self._ring += bytes((now_idx - end) * 2)  # silenzio tra le frasi: nuova ancora
+        self._ring += pcm
         excess = len(self._ring) - _RING_KEEP_S * SAMPLE_RATE * 2
         if excess > 0:
             excess -= excess % 2
@@ -274,9 +277,10 @@ class EchoCanceller:
         out = bytearray()
         for i in range(0, n, _CHUNK_BYTES):
             near = bytes(self._near[i:i + _CHUNK_BYTES])
-            far = self._read(self._cap - self._line)
+            lag = _READ_LAG_MS * SAMPLE_RATE // 1000
+            far = self._read(self._cap - lag - self._line)
             if self._auto:
-                self._track(self._read(self._cap), near)
+                self._track(self._read(self._cap - lag), near)
             self._cap += CHUNK_SAMPLES
             clean = self._backend.process(near, far)
             out += clean

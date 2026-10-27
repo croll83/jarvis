@@ -194,7 +194,8 @@ def _chunk(v):
     return bytes([v, 0]) * aec.CHUNK_SAMPLES
 
 
-def test_reference_is_aligned_by_time_not_by_arrival():
+def test_reference_is_aligned_by_time_not_by_arrival(monkeypatch):
+    monkeypatch.setattr(aec, "_READ_LAG_MS", 0)
     # riferimento programmato a t=1.00 s; il mic arriva a raffiche irregolari ma i suoi campioni
     # restano contati: il chunk catturato a t=1.00 incontra il riferimento di t=1.00
     spy = _Spy()
@@ -207,7 +208,8 @@ def test_reference_is_aligned_by_time_not_by_arrival():
     assert spy.fars == [aec._SILENCE, aec._SILENCE, _chunk(7), _chunk(8)]
 
 
-def test_fixed_delay_line_lags_the_reference():
+def test_fixed_delay_line_lags_the_reference(monkeypatch):
+    monkeypatch.setattr(aec, "_READ_LAG_MS", 0)
     spy = _Spy()
     e = aec.EchoCanceller(spy, render_delay_ms=20, auto_delay=False)
     e.process(bytes(aec._CHUNK_BYTES), now=0.01)           # mic ancorato: chunk 0.00-0.01
@@ -235,3 +237,47 @@ def test_auto_delay_finds_a_long_echo_and_cancels_it():
     tail = slice(len(o) - 16000 * 5, len(o))
     erle = 10 * np.log10(np.mean(n[tail] ** 2) / max(np.mean(o[tail] ** 2), 1e-9))
     assert erle > 25
+
+
+def test_production_order_mic_before_reference_still_cancels():
+    # Come in produzione: a ogni passo da 20 ms il mic arriva PRIMA che il pacer mandi il frame;
+    # a inizio frase il pacer manda 5 frame di pre-buffer a raffica; l'Atom suona con 60 ms di
+    # cuscinetto e il mic risale con 30 ms di rete. Prima della correzione il riferimento finiva
+    # sempre dietro la lettura del mic e l'AEC riceveva solo zeri.
+    pytest.importorskip("livekit.rtc")
+    rng = np.random.default_rng(2)
+    fs, frame = 16000, 320
+    secs, start_s = 12, 1.0
+    n_frames = secs * fs // frame
+    j0 = int(start_s * fs / frame)
+    far = np.zeros(secs * fs, np.int16)
+    talk = (rng.standard_normal(fs * 8) * 3000).astype(np.int16)
+    far[j0 * frame:j0 * frame + len(talk)] = talk
+    send = {}
+    for j in range(j0, j0 + len(talk) // frame):
+        send[j] = start_s if j < j0 + 5 else start_s + 0.02 * (j - j0 - 4)
+    played = np.zeros(secs * fs + fs, np.float64)
+    for j in send:
+        p = int(round((start_s + 0.06 + 0.02 * (j - j0)) * fs))
+        played[p:p + frame] += far[j * frame:(j + 1) * frame] * 0.5
+    mic = played.astype(np.int16)
+    up = int(0.03 * fs)
+    e = aec.EchoCanceller(aec._WebRtcBackend(), render_delay_ms=0, auto_delay=True)
+    out, sent = bytearray(), set()
+    for n in range(1, n_frames):
+        T = n * 0.02
+        a = int(round((T - 0.02) * fs)) - up
+        b = a + frame
+        chunk = mic[a:b] if a >= 0 else np.zeros(frame, np.int16)
+        out += e.process(chunk.tobytes(), now=T)
+        for j, s_t in send.items():
+            if j not in sent and s_t <= T:
+                e.render(far[j * frame:(j + 1) * frame].tobytes(), t=s_t)
+                sent.add(j)
+    o = np.frombuffer(bytes(out), np.int16).astype(float)
+    m = mic.astype(float)
+    # mic allineato all'uscita: uscita n corrisponde al mic catturato fino a (n*0.02 - up)
+    seg_o = o[fs * 6:fs * 8]
+    seg_m = m[fs * 6 - up:fs * 8 - up]
+    erle = 10 * np.log10(np.mean(seg_m ** 2) / max(np.mean(seg_o ** 2), 1e-9))
+    assert erle > 20
