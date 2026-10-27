@@ -199,5 +199,9 @@ class HubLiveSession:
         if send_ended:
             await self.relay.send_json({"type": "ended", "call_id": self.call_id})
         await self.relay.close()
+        try:
+            await asyncio.to_thread(self.aec.write_debug, f"{self.call_id}_{self.device_id}")
+        except Exception as e:
+            logger.warning(f"[{self.device_id}] AEC debug non salvato: {e!r}")
         self.aec.close()
         self._down.clear()

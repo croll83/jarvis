@@ -174,3 +174,39 @@ async def test_session_start_after_close_has_no_pacer():
     await s.close(send_ended=False)
     s.start()
     assert s._pacer is None
+
+
+def test_render_delay_line_lags_the_reference_and_survives_silence_and_clear():
+    import aec
+
+    class _Spy:
+        name = "spy"
+
+        def __init__(self):
+            self.fars = []
+
+        def process(self, near, far):
+            self.fars.append(far)
+            return near
+
+        def close(self):
+            pass
+
+    spy = _Spy()
+    e = aec.EchoCanceller(spy, render_delay_ms=20)  # 2 chunk da 10 ms
+    chunk = lambda v: bytes([v, 0]) * aec.CHUNK_SAMPLES
+    e.render(chunk(1) + chunk(2))
+    e.process(bytes(aec._CHUNK_BYTES * 4))  # 40 ms di mic: zeri, zeri, 1, 2
+    assert spy.fars[:2] == [aec._SILENCE, aec._SILENCE]
+    assert spy.fars[2:4] == [chunk(1), chunk(2)]
+    # dopo un silenzio la linea resta lunga uguale (avanza col mic, non si svuota)
+    e.process(bytes(aec._CHUNK_BYTES * 3))
+    e.render(chunk(3))
+    e.process(bytes(aec._CHUNK_BYTES * 3))
+    assert spy.fars[-3:] == [aec._SILENCE, aec._SILENCE, chunk(3)]
+    # barge-in: riferimento e linea azzerati
+    e.render(chunk(4))
+    e.reset_render()
+    spy.fars.clear()
+    e.process(bytes(aec._CHUNK_BYTES * 3))
+    assert spy.fars == [aec._SILENCE] * 3

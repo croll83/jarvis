@@ -14,6 +14,8 @@ services:
       - HUB_HOST=${HUB_HOST:-}
       - HUB_PORT=${HUB_PORT:-0}
       - AEC_BACKEND=${AEC_BACKEND:-webrtc}
+      - AEC_DEBUG_DIR=${AEC_DEBUG_DIR:-}
+      - AEC_RENDER_DELAY_MS=${AEC_RENDER_DELAY_MS:-0}
     volumes:
       - wakeword_data:/app/data
     restart: unless-stopped

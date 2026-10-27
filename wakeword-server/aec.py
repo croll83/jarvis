@@ -17,6 +17,11 @@ Backend, in ordine di preferenza:
 import ctypes
 import ctypes.util
 import logging
+import math
+import os
+import struct
+import time
+import wave
 
 logger = logging.getLogger("wakeword-server")
 
@@ -30,6 +35,29 @@ _RENDER_MAX_BYTES = SAMPLE_RATE * 2
 _SPEEX_TAIL_SAMPLES = SAMPLE_RATE // 2  # 500 ms
 # Suggerimento di ritardo per l'APM (AEC3 lo stima comunque da se')
 _WEBRTC_DELAY_HINT_MS = 150
+# Debug (spento di default): con AEC_DEBUG_DIR ogni sessione salva mic grezzo, riferimento e
+# mic pulito cosi' come li vede l'AEC (stessa timeline), per misurare ritardo d'eco e
+# cancellazione e riprovare offline le varianti; e logga i livelli ogni 2 s.
+_DEBUG_DIR = os.getenv("AEC_DEBUG_DIR", "").strip()
+_DEBUG_MAX_BYTES = SAMPLE_RATE * 2 * 300  # 5 minuti per traccia
+_DEBUG_STATS_S = 2.0
+# Linea di ritardo sul riferimento. L'AEC3 stima da solo il ritardo eco solo fin verso i
+# 400-500 ms (misurato: 400 ms -> 65 dB tolti, 600 ms -> nulla), mentre sull'Atom tra anticipo
+# del pacer, coda di playback, ring I2S e WiFi l'eco rientra piu' tardi. Ritardando il
+# riferimento di una quota fissa (sotto il minimo reale, mai sopra: altrimenti arriva dopo
+# l'eco) all'AEC resta solo un residuo piccolo. 0 = nessuna linea.
+_RENDER_DELAY_MS = int(os.getenv("AEC_RENDER_DELAY_MS", "0") or "0")
+
+
+def _dbfs(sq_sum: float, n: int) -> float:
+    if n == 0 or sq_sum <= 0:
+        return -120.0
+    return 10 * math.log10(sq_sum / n / (32768.0 ** 2))
+
+
+def _sq_sum(pcm: bytes) -> float:
+    vals = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+    return float(sum(v * v for v in vals))
 
 
 class _WebRtcBackend:
@@ -125,11 +153,20 @@ _PREFERENCE = {"webrtc": ("webrtc", "speex"), "speex": ("speex",), "off": ()}
 class EchoCanceller:
     """AEC di una sessione: render() col PCM mandato all'Atom, process() col mic."""
 
-    def __init__(self, backend):
+    def __init__(self, backend, render_delay_ms: int = _RENDER_DELAY_MS):
         self._backend = backend
         self._passthrough = isinstance(backend, _PassthroughBackend)
         self._render = bytearray()
         self._near = bytearray()
+        # FIFO a lunghezza costante: avanza di 10 ms per ogni 10 ms di mic, anche nei silenzi
+        self._delay_bytes = max(0, render_delay_ms) * SAMPLE_RATE // 1000 * 2
+        self._delay_bytes -= self._delay_bytes % 2
+        self._delay = bytearray(self._delay_bytes)
+        self._debug = bool(_DEBUG_DIR)
+        if self._debug:
+            self._dbg = {"near": bytearray(), "far": bytearray(), "out": bytearray()}
+            self._stats = {"near": 0.0, "far": 0.0, "out": 0.0, "n": 0}
+            self._stats_t = time.monotonic()
 
     @property
     def backend_name(self) -> str:
@@ -151,6 +188,7 @@ class EchoCanceller:
     def reset_render(self):
         """Barge-in: il device butta l'audio non ancora suonato, quindi anche il riferimento."""
         self._render.clear()
+        self._delay = bytearray(self._delay_bytes)
 
     def process(self, pcm: bytes) -> bytes:
         """Mic 16 kHz -> mic ripulito; lavora a blocchi da 10 ms, il resto resta in coda."""
@@ -167,9 +205,45 @@ class EchoCanceller:
             else:
                 far = bytes(self._render) + _SILENCE[len(self._render):]
                 self._render.clear()
-            out += self._backend.process(near, far)
+            if self._delay_bytes:
+                self._delay += far
+                far = bytes(self._delay[:_CHUNK_BYTES])
+                del self._delay[:_CHUNK_BYTES]
+            clean = self._backend.process(near, far)
+            out += clean
+            if self._debug:
+                self._debug_chunk(near, far, clean)
         del self._near[:n]
         return bytes(out)
+
+    def _debug_chunk(self, near: bytes, far: bytes, clean: bytes):
+        for key, pcm in (("near", near), ("far", far), ("out", clean)):
+            if len(self._dbg[key]) < _DEBUG_MAX_BYTES:
+                self._dbg[key] += pcm
+            self._stats[key] += _sq_sum(pcm)
+        self._stats["n"] += CHUNK_SAMPLES
+        now = time.monotonic()
+        if now - self._stats_t >= _DEBUG_STATS_S:
+            n = self._stats["n"]
+            far_db, near_db, out_db = (_dbfs(self._stats[k], n) for k in ("far", "near", "out"))
+            logger.info(f"AEC stats: far {far_db:.1f} dBFS, mic {near_db:.1f}, pulito {out_db:.1f} "
+                        f"(tolti {near_db - out_db:.1f} dB), render in coda {len(self._render) // 32} ms")
+            self._stats = {"near": 0.0, "far": 0.0, "out": 0.0, "n": 0}
+            self._stats_t = now
+
+    def write_debug(self, name: str):
+        """Con AEC_DEBUG_DIR: salva <name>_{near,far,out}.wav (16 kHz mono)."""
+        if not self._debug:
+            return
+        os.makedirs(_DEBUG_DIR, exist_ok=True)
+        for key, pcm in self._dbg.items():
+            path = os.path.join(_DEBUG_DIR, f"{name}_{key}.wav")
+            with wave.open(path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(SAMPLE_RATE)
+                w.writeframes(bytes(pcm))
+        logger.info(f"AEC debug salvato: {_DEBUG_DIR}/{name}_*.wav")
 
     def close(self):
         self._backend.close()
