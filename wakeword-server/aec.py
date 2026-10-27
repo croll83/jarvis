@@ -51,12 +51,27 @@ _RENDER_DELAY_MS = int(os.getenv("AEC_RENDER_DELAY_MS", "0") or "0")
 # dallo stesso frame del codec, quindi tra riferimento ed eco restano solo pochi ms costanti
 # (filtri del codec, amplificatore, aria) e il suggerimento all'AEC3 scende a ~0.
 _ALIGNED_DELAY_HINT_MS = int(os.getenv("AEC_ALIGNED_DELAY_MS", "0") or "0")
+# Cancello d'eco (solo col riferimento dal device). Sull'Atom lo speaker arriva al mic ~30 dB sopra
+# la voce dell'utente e in modo poco lineare (coerenza ~0.8): anche con 30 dB tolti dall'AEC3 i
+# picchi del residuo (p99 ~ -20 dB sotto il riferimento) superano la voce a un metro (~ -31 dB),
+# e Gemini si interrompeva da solo. Finche' il riferimento e' attivo, piu' una coda, a Gemini va
+# silenzio; passa solo cio' che supera il livello del riferimento + AEC_GATE_BARGE_DB.
+_GATE = os.getenv("AEC_GATE", "1").strip().lower() not in ("0", "false", "no", "off")
+_GATE_HOLD_MS = int(os.getenv("AEC_GATE_HOLD_MS", "200") or "0")
+_GATE_BARGE_DB = float(os.getenv("AEC_GATE_BARGE_DB", "-10") or "-10")
+_GATE_OPEN_HOLD_MS = 300      # un barge-in riconosciuto tiene aperto il cancello per questo tempo
+_GATE_FAR_ACTIVE_DB = -50.0   # riferimento sopra questo livello = Jarvis sta suonando
 
 
 def _dbfs(sq_sum: float, n: int) -> float:
     if n == 0 or sq_sum <= 0:
         return -120.0
     return 10 * math.log10(sq_sum / n / (32768.0 ** 2))
+
+
+def _scale(pcm: bytes, gain: float) -> bytes:
+    vals = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+    return struct.pack(f"<{len(vals)}h", *(max(-32768, min(32767, int(v * gain))) for v in vals))
 
 
 def _sq_sum(pcm: bytes) -> float:
@@ -67,12 +82,12 @@ def _sq_sum(pcm: bytes) -> float:
 class _WebRtcBackend:
     name = "webrtc"
 
-    def __init__(self):
+    def __init__(self, agc: bool = True):
         from livekit import rtc
         self._rtc = rtc
         self._apm = rtc.AudioProcessingModule(
             echo_cancellation=True, noise_suppression=True,
-            high_pass_filter=True, auto_gain_control=True)
+            high_pass_filter=True, auto_gain_control=agc)
         self.delay_ms = _WEBRTC_DELAY_HINT_MS
 
     def process(self, near: bytes, far: bytes) -> bytes:
@@ -174,6 +189,36 @@ _EST_FAR_ACTIVE = 2.5         # log10 rms: riferimento "attivo" sopra ~-30 dBFS
 _RING_KEEP_S = 3
 
 
+class _EchoGate:
+    """Silenzio verso Gemini mentre il riferimento e' attivo (e per _GATE_HOLD_MS dopo), salvo
+    blocchi puliti piu' forti del riferimento + barge_db (una voce molto vicina o forte)."""
+
+    def __init__(self, hold_ms: int = _GATE_HOLD_MS, barge_db: float = _GATE_BARGE_DB):
+        self._hold = max(1, hold_ms // 10)
+        self._barge_db = barge_db
+        self._far_db = []             # livello del riferimento degli ultimi blocchi da 10 ms
+        self._open = 0                # blocchi di apertura residui dopo un barge-in
+        self.gated = 0
+        self.passed = 0
+
+    def apply(self, far: bytes, clean: bytes) -> bytes:
+        self._far_db.append(_dbfs(_sq_sum(far), CHUNK_SAMPLES))
+        if len(self._far_db) > self._hold:
+            del self._far_db[0]
+        env = max(self._far_db)
+        if env < _GATE_FAR_ACTIVE_DB:
+            self._open = 0
+            return clean
+        if _dbfs(_sq_sum(clean), CHUNK_SAMPLES) > env + self._barge_db:
+            self._open = _GATE_OPEN_HOLD_MS // 10
+        if self._open > 0:
+            self._open -= 1
+            self.passed += 1
+            return clean
+        self.gated += 1
+        return _SILENCE
+
+
 class EchoCanceller:
     """AEC di una sessione: render() col PCM mandato all'Atom, process() col mic.
 
@@ -206,6 +251,8 @@ class EchoCanceller:
         self._proposal = None
         self._aligned = False         # process_aligned(): riferimento dal device, niente timeline
         self._far = bytearray()
+        self._gate = _EchoGate() if _GATE else None
+        self._gain = 1.0              # guadagno fisso dopo l'AEC (process_aligned)
         self._debug = bool(_DEBUG_DIR)
         if self._debug:
             self._dbg = {"near": bytearray(), "far": bytearray(), "out": bytearray()}
@@ -223,6 +270,14 @@ class EchoCanceller:
     @property
     def aligned(self) -> bool:
         return self._aligned
+
+    def set_aligned_gain_db(self, db: float):
+        """Guadagno fisso dopo l'AEC, al posto dell'AGC: restituisce quello tolto al mic."""
+        self._gain = 10 ** (db / 20)
+
+    @property
+    def gate_stats(self):
+        return (self._gate.gated, self._gate.passed) if self._gate else (0, 0)
 
     @property
     def render_backlog_bytes(self) -> int:
@@ -323,6 +378,10 @@ class EchoCanceller:
             near_c = bytes(self._near[i:i + _CHUNK_BYTES])
             far_c = bytes(self._far[i:i + _CHUNK_BYTES])
             clean = self._backend.process(near_c, far_c)
+            if self._gate is not None:  # confronto col riferimento prima del guadagno
+                clean = self._gate.apply(far_c, clean)
+            if self._gain != 1.0:
+                clean = _scale(clean, self._gain)
             out += clean
             if self._debug:
                 self._debug_chunk(near_c, far_c, clean)
@@ -380,7 +439,9 @@ class EchoCanceller:
             n = self._stats["n"]
             far_db, near_db, out_db = (_dbfs(self._stats[k], n) for k in ("far", "near", "out"))
             clip = 100.0 * self._stats["clip"] / n
-            where = ("riferimento dal device" if self._aligned else
+            g = self._gate
+            where = ((f"riferimento dal device, cancello {g.gated} chiusi / {g.passed} barge-in" if g
+                      else "riferimento dal device") if self._aligned else
                      f"riferimento in coda {self.render_backlog_bytes // 32} ms, linea {self.render_delay_ms} ms")
             logger.info(f"AEC stats: far {far_db:.1f} dBFS, mic {near_db:.1f} (clip {clip:.1f}%), "
                         f"pulito {out_db:.1f} (tolti {near_db - out_db:.1f} dB), {where}")
@@ -405,15 +466,16 @@ class EchoCanceller:
         self._backend.close()
 
 
-def create_echo_canceller(preferred: str) -> EchoCanceller:
-    """Primo backend disponibile secondo AEC_BACKEND, altrimenti passthrough."""
+def create_echo_canceller(preferred: str, agc: bool = True) -> EchoCanceller:
+    """Primo backend disponibile secondo AEC_BACKEND, altrimenti passthrough. agc=False per il
+    riferimento dal device: l'AGC rialzava il residuo d'eco insieme alla voce (mic abbassato)."""
     order = _PREFERENCE.get(preferred)
     if order is None:
         logger.warning(f"AEC_BACKEND={preferred!r} sconosciuto, uso webrtc")
         order = _PREFERENCE["webrtc"]
     for name in order:
         try:
-            return EchoCanceller(_BACKENDS[name]())
+            return EchoCanceller(_BACKENDS[name](agc=agc) if name == "webrtc" else _BACKENDS[name]())
         except Exception as e:
             logger.warning(f"AEC backend {name} non disponibile: {e!r}")
     if preferred != "off":

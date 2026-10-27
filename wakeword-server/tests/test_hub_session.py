@@ -277,6 +277,7 @@ async def test_aec_ref_cap_asks_the_device_for_the_reference(conn, hub_on, monke
     await start_session(conn, hub_on)
     assert conn.ws.json == [{"type": "live_session_start", "duplex": True, "aec_ref": True,
                              "mic_gain_db": 18}]
+    assert conn.hub_session.aec._gain == pytest.approx(10 ** (12 / 20))  # 30 - 18 dB ridati dopo l'AEC
 
 
 async def test_aligned_uplink_reaches_the_hub_with_the_mic_slot(conn, hub_on, monkeypatch):

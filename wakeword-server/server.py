@@ -550,10 +550,10 @@ async def _abandon_hub_start(conn: DeviceConnection, orch_reason: Optional[str] 
     return True
 
 
-async def _create_aec():
+async def _create_aec(agc: bool = True):
     """EchoCanceller fuori dall'event loop: il primo import di livekit e la creazione
     dell'APM costano ~100 ms e bloccherebbero gli altri device."""
-    fut = asyncio.ensure_future(asyncio.to_thread(create_echo_canceller, AEC_BACKEND))
+    fut = asyncio.ensure_future(asyncio.to_thread(create_echo_canceller, AEC_BACKEND, agc))
     try:
         return await asyncio.shield(fut)
     except asyncio.CancelledError:
@@ -565,17 +565,27 @@ async def _create_aec():
         raise
 
 
+# Scala ADC del firmware Atom fuori dal duplex (JARVIS_CODEC_MIC_SCALE_DB)
+_ATOM_MIC_SCALE_DB = 30
+
+
+def _mic_gain_db() -> Optional[int]:
+    try:
+        return int(HUB_ATOM_MIC_GAIN_DB) if HUB_ATOM_MIC_GAIN_DB else None
+    except ValueError:
+        logger.warning(f"HUB_ATOM_MIC_GAIN_DB={HUB_ATOM_MIC_GAIN_DB!r} non numerico, ignorato")
+        return None
+
+
 def _duplex_start_msg(conn: DeviceConnection) -> dict:
     """live_session_start per il device; ai firmware con la cap "aec_ref" si chiede il
     riferimento AEC dal loopback del codec (ed eventualmente un guadagno mic per il duplex)."""
     start = {"type": "live_session_start", "duplex": True}
     if "aec_ref" in conn.caps:
         start["aec_ref"] = True
-        if HUB_ATOM_MIC_GAIN_DB:
-            try:
-                start["mic_gain_db"] = int(HUB_ATOM_MIC_GAIN_DB)
-            except ValueError:
-                logger.warning(f"HUB_ATOM_MIC_GAIN_DB={HUB_ATOM_MIC_GAIN_DB!r} non numerico, ignorato")
+        gain = _mic_gain_db()
+        if gain is not None:
+            start["mic_gain_db"] = gain
     return start
 
 
@@ -627,7 +637,7 @@ async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
     try:
         await relay.connect(host, port)
         await relay.send_offer(offer)
-        aec = await _create_aec()
+        aec = await _create_aec(agc="aec_ref" not in conn.caps)
     except HubRejected as e:
         await relay.close()
         logger.warning(f"[{conn.device_id}] Hub rejected call {call_id}: {e}")
@@ -657,6 +667,10 @@ async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
         await relay.send_json({"type": "ended", "call_id": call_id})
         await relay.close()
         raise
+    gain = _mic_gain_db() if "aec_ref" in conn.caps else None
+    if gain is not None:
+        # Il guadagno tolto al mic in duplex torna dopo l'AEC, fisso (l'AGC e' spento)
+        session.aec.set_aligned_gain_db(_ATOM_MIC_SCALE_DB - gain)
     # Accept ricevuto: da qui la sessione e' di conn e si chiude con _end_hub_session
     _hub_start_done(conn)
     conn.hub_session = session

@@ -322,6 +322,7 @@ def test_aligned_reference_cancels_from_the_start():
     echo[delay:] = far[:-delay] * 2.0
     mic = np.clip(echo + rng.standard_normal(fs * secs) * 20, -32768, 32767).astype(np.int16)
     ec = aec.EchoCanceller(aec._WebRtcBackend())
+    ec._gate = None  # qui si misura l'AEC, non il cancello
     ec.render(bytes(640))  # ignorato dal primo pacchetto allineato in poi
     out = bytearray()
     for i in range(0, fs * secs - 319, 320):
@@ -333,3 +334,48 @@ def test_aligned_reference_cancels_from_the_start():
     for a, b in ((fs * 1, fs * 3), (fs * 3, fs * 6)):
         erle = 10 * np.log10(np.mean(m[a:b] ** 2) / max(np.mean(o[a:b] ** 2), 1e-9))
         assert erle > 20, (a, erle)
+
+
+class _Pass:
+    name = "pass"
+
+    def process(self, near, far):
+        return near
+
+    def close(self):
+        pass
+
+
+def _level(pcm):
+    x = np.frombuffer(pcm, np.int16).astype(float)
+    return float(np.sqrt(np.mean(x * x))) if len(x) else 0.0
+
+
+def test_gate_silences_residual_echo_while_the_reference_plays():
+    ec = aec.EchoCanceller(_Pass())
+    far = _tone(300, 320, 16000, amp=8000.0)          # Jarvis a ~ -12 dBFS
+    residual = _tone(1000, 320, 16000, amp=300.0)     # residuo ~ -40 dBFS: sotto la soglia
+    out = ec.process_aligned(residual.tobytes(), far.tobytes())
+    assert _level(out) == 0 and ec.gate_stats == (2, 0)
+    # Jarvis tace: il cancello resta chiuso per la coda (200 ms) e poi riapre
+    silence = np.zeros(320, np.int16).tobytes()
+    outs = [ec.process_aligned(residual.tobytes(), silence) for _ in range(12)]
+    assert _level(outs[0]) == 0 and _level(outs[-1]) > 200
+
+
+def test_gate_lets_a_loud_barge_in_through_and_holds_it_open():
+    ec = aec.EchoCanceller(_Pass())
+    far = _tone(300, 320, 16000, amp=3000.0)
+    loud = _tone(1000, 320, 16000, amp=12000.0)       # piu' forte del riferimento: barge-in
+    quiet = _tone(1000, 320, 16000, amp=200.0)
+    assert _level(ec.process_aligned(loud.tobytes(), far.tobytes())) > 5000
+    # il seguito della frase passa anche se piu' debole, per _GATE_OPEN_HOLD_MS
+    assert _level(ec.process_aligned(quiet.tobytes(), far.tobytes())) > 100
+
+
+def test_fixed_gain_applies_after_the_gate_decision():
+    ec = aec.EchoCanceller(_Pass())
+    ec.set_aligned_gain_db(18)
+    x = _tone(1000, 320, 16000, amp=1000.0)
+    out = ec.process_aligned(x.tobytes(), np.zeros(320, np.int16).tobytes())
+    assert abs(_level(out) / _level(x.tobytes()) - 10 ** (18 / 20)) < 0.05
