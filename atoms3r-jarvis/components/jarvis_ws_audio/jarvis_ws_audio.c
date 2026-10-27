@@ -23,11 +23,14 @@
 #include "jarvis_ws_audio.h"
 #include "jarvis_audio.h"
 #include "jarvis_codec.h"
+#include "jarvis_duplex_policy.h"
 
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -61,6 +64,22 @@ static const char *TAG = "WS_AUDIO";
 // Keepalive
 #define PING_INTERVAL_MS        30000   // Ping every 30s if idle
 #define CONNECT_TIMEOUT_MS      10000   // 10s to establish connection
+
+// Full-duplex live session (Voice Live Hub via wakeword-server)
+#define DUPLEX_QUEUE_FRAMES         25      // Downlink jitter queue: 25 x 20ms = 500ms
+#define DUPLEX_ENQUEUE_TIMEOUT_MS   40      // Short: the WS handler holds the client lock (mic sends wait)
+#define DUPLEX_PREBUFFER_FRAMES     3       // Cushion before (re)starting playback (60ms)...
+#define DUPLEX_PREBUFFER_MAX_MS     60      // ...or start anyway after this long
+#define DUPLEX_UNDERRUN_MS          100     // Queue empty this long = talk spurt over, prebuffer again
+#define DUPLEX_RING_MS              320     // I2S TX DMA ring: 8 x 640 frames @16kHz
+#define DUPLEX_UNMUTE_MARGIN_MS     40      // Slack on the playback clock estimate (mute after clear)
+#define DUPLEX_LATE_DROP_MS         1500    // Drop stray downlink frames after a local (button) end
+#define DUPLEX_VU_STALE_MS          400     // "vu" older than this = user level 0
+#define DUPLEX_WATCHDOG_MS          8000    // No "vu" this long = server side gone, end the session
+#define DUPLEX_LEVEL_SLOTS          32      // Speaker level history (32 x 20ms > TX ring latency)
+#define DUPLEX_LEVEL_WINDOW_MS      70      // Peak over this window per display frame
+#define DUPLEX_PLAY_TASK_STACK      6144
+#define DUPLEX_PLAY_TASK_PRIO       5
 
 // =============================================================================
 // CONNECTION STATE MACHINE
@@ -116,6 +135,46 @@ static int reconnect_delay_ms = RECONNECT_MIN_MS;
 
 // Session timing
 static int64_t audio_session_start_ms = 0;
+
+// Full-duplex live session state.
+// The decoder is only ever used from the WS event handler (downlink, clear, start),
+// the play task only reads the queue and writes the codec.
+// Timestamps shared between tasks are uint32_t ms (atomic on Xtensa, wrap-safe compares).
+typedef struct {
+    uint16_t samples;
+    uint32_t gen;       // duplex_clear_gen when queued (older = dropped by barge-in)
+    int16_t pcm[BUFFER_SAMPLES];
+} duplex_frame_t;
+
+typedef struct {
+    uint32_t play_ms;   // When this frame reaches the speaker (estimated)
+    uint8_t level;
+} duplex_level_t;
+
+// Guards duplex_active / duplex_end_flush / duplex_session_gen / duplex_play_task_handle
+// transitions (start, stop, play task exit) across the WS handler, ws_persist and main_task.
+static portMUX_TYPE duplex_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool duplex_active = false;
+static volatile bool duplex_end_flush = false;       // true = stop playback at once on exit
+static volatile uint32_t duplex_session_gen = 0;     // Bumped on every duplex start
+static volatile uint32_t duplex_clear_gen = 0;       // Bumped on every audio_clear
+static volatile bool duplex_late_drop_armed = false;
+static volatile uint32_t duplex_late_drop_until_ms = 0;
+static volatile uint8_t duplex_mic_vu = 0;
+static volatile uint32_t duplex_mic_vu_ms = 0;       // Last "vu" (session start until the first one)
+static size_t duplex_mic_fill = 0;                   // Samples accumulated in enc_input_buffer
+
+// Allocated on the first duplex session and kept (PSRAM, no CPU cost when idle)
+static QueueHandle_t duplex_play_q = NULL;
+static StaticQueue_t duplex_play_q_buf;
+static uint8_t *duplex_play_q_storage = NULL;
+static duplex_frame_t *duplex_rx_frame = NULL;       // WS handler side
+static duplex_frame_t *duplex_play_frame = NULL;     // Play task side
+static duplex_level_t duplex_levels[DUPLEX_LEVEL_SLOTS];
+static int duplex_level_idx = 0;
+
+// Play task exists only during a duplex session
+static volatile TaskHandle_t duplex_play_task_handle = NULL;
 
 // =============================================================================
 // OPUS INIT
@@ -212,6 +271,339 @@ static bool send_json_hello(const char *device_id, const char *fw_version) {
 }
 
 // =============================================================================
+// FULL-DUPLEX LIVE SESSION (Voice Live Hub via wakeword-server)
+// =============================================================================
+//
+// Active only between live_session_start{"duplex":true} and live_session_end.
+//   uplink:   mic ring buffer -> Opus -> WS (continuous, also while playing)
+//   downlink: WS Opus -> decode (WS handler) -> queue -> play task -> I2S
+// The WS handler never blocks on I2S here, so audio_clear is handled as soon
+// as it arrives: queue reset + decoder reset, then the play task mutes the DAC
+// for the time the I2S TX DMA ring needs to play out what it already holds.
+
+static bool duplex_alloc(void) {
+    if (duplex_play_q) return true;
+
+    duplex_play_q_storage = heap_caps_malloc(DUPLEX_QUEUE_FRAMES * sizeof(duplex_frame_t),
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    duplex_rx_frame = heap_caps_malloc(sizeof(duplex_frame_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    duplex_play_frame = heap_caps_malloc(sizeof(duplex_frame_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!duplex_play_q_storage || !duplex_rx_frame || !duplex_play_frame) {
+        ESP_LOGE(TAG, "Duplex buffer alloc failed");
+        free(duplex_play_q_storage);
+        free(duplex_rx_frame);
+        free(duplex_play_frame);
+        duplex_play_q_storage = NULL;
+        duplex_rx_frame = NULL;
+        duplex_play_frame = NULL;
+        return false;
+    }
+
+    duplex_play_q = xQueueCreateStatic(DUPLEX_QUEUE_FRAMES, sizeof(duplex_frame_t),
+                                       duplex_play_q_storage, &duplex_play_q_buf);
+    return duplex_play_q != NULL;
+}
+
+static void duplex_levels_reset(void) {
+    memset(duplex_levels, 0, sizeof(duplex_levels));
+}
+
+// RMS of a PCM frame mapped to 0-255 (sqrt curve, so normal speech fills the lane)
+static uint8_t duplex_pcm_level(const int16_t *pcm, size_t samples) {
+    if (samples == 0) return 0;
+    int64_t sum = 0;
+    for (size_t i = 0; i < samples; i++) {
+        sum += (int32_t)pcm[i] * pcm[i];
+    }
+    float rms = sqrtf((float)sum / (float)samples);
+    int level = (int)(sqrtf(rms / 32768.0f) * 360.0f);
+    return (uint8_t)(level > 255 ? 255 : level);
+}
+
+static inline uint32_t duplex_now_ms(void) {
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+// Mute the DAC until the TX ring has played out what it holds now (lead_ms from
+// the playback clock). Never shortens a mute already running.
+static void duplex_mute_ring(bool *muted, uint32_t *unmute_at_ms, uint32_t now, int32_t lead_ms) {
+    uint32_t at = duplex_unmute_at(now, lead_ms, DUPLEX_RING_MS, DUPLEX_UNMUTE_MARGIN_MS);
+    *unmute_at_ms = duplex_mute_deadline(*muted, *unmute_at_ms, at);
+    if (!*muted) {
+        jarvis_codec_set_mute(true);
+        *muted = true;
+    }
+}
+
+static void duplex_play_task(void *arg) {
+    bool muted = false;
+    uint32_t unmute_at_ms = 0;
+    bool keep_running = true;
+
+    ESP_LOGI(TAG, "Duplex play task started");
+
+    // One iteration per session. A session started while this task is still
+    // finishing the previous one (quick end + restart) is carried on here.
+    while (keep_running) {
+        const uint32_t session = duplex_session_gen;
+        uint32_t seen_gen = duplex_clear_gen;
+        bool prebuffering = true;
+        bool prebuf_timing = false;
+        uint32_t prebuf_since = 0;
+        uint32_t last_write_ms = duplex_now_ms();
+        // Playback clock: how far the DMA ring runs ahead of the speaker
+        bool clock_running = false;
+        uint32_t clock_start_ms = 0;
+        uint32_t written_samples = 0;
+
+        while (duplex_active && session == duplex_session_gen) {
+            uint32_t now = duplex_now_ms();
+
+            // Barge-in: queue already dropped by the WS handler, silence the DMA ring
+            // until what it still holds has played out (playback clock, bounded by the ring)
+            if (seen_gen != duplex_clear_gen) {
+                seen_gen = duplex_clear_gen;
+                int32_t lead_ms = clock_running ?
+                    duplex_play_lead_ms(now, clock_start_ms, written_samples, SAMPLE_RATE / 1000) : 0;
+                duplex_mute_ring(&muted, &unmute_at_ms, now, lead_ms);
+                duplex_levels_reset();
+                prebuffering = true;
+                prebuf_timing = false;
+            }
+            if (muted && duplex_ms_reached(now, unmute_at_ms)) {
+                jarvis_codec_set_mute(false);
+                muted = false;
+            }
+
+            if (prebuffering) {
+                UBaseType_t waiting = uxQueueMessagesWaiting(duplex_play_q);
+                if (waiting == 0) {
+                    prebuf_timing = false;
+                    xQueuePeek(duplex_play_q, duplex_play_frame, pdMS_TO_TICKS(20));
+                    continue;
+                }
+                if (!prebuf_timing) {
+                    prebuf_timing = true;
+                    prebuf_since = now;
+                }
+                if (waiting < DUPLEX_PREBUFFER_FRAMES &&
+                    duplex_ms_diff(now, prebuf_since) < DUPLEX_PREBUFFER_MAX_MS) {
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                    continue;
+                }
+                prebuffering = false;
+            }
+
+            if (xQueueReceive(duplex_play_q, duplex_play_frame, pdMS_TO_TICKS(10)) != pdTRUE) {
+                if (duplex_ms_diff(duplex_now_ms(), last_write_ms) > DUPLEX_UNDERRUN_MS) {
+                    prebuffering = true;
+                    prebuf_timing = false;
+                }
+                continue;
+            }
+            // Queued before the last audio_clear: stale model speech
+            if (duplex_frame_is_stale(duplex_play_frame->gen, duplex_clear_gen)) continue;
+
+            now = duplex_now_ms();
+            int32_t lead_ms = clock_running ?
+                duplex_play_lead_ms(now, clock_start_ms, written_samples, SAMPLE_RATE / 1000) : -1;
+            if (lead_ms < 0) {
+                // Ring ran dry (or first frame): restart the clock
+                clock_running = true;
+                clock_start_ms = now;
+                written_samples = 0;
+                lead_ms = 0;
+            }
+            duplex_levels[duplex_level_idx].play_ms = now + (uint32_t)lead_ms;
+            duplex_levels[duplex_level_idx].level = duplex_pcm_level(duplex_play_frame->pcm,
+                                                                     duplex_play_frame->samples);
+            duplex_level_idx = (duplex_level_idx + 1) % DUPLEX_LEVEL_SLOTS;
+
+            jarvis_codec_write_stream(duplex_play_frame->pcm, duplex_play_frame->samples);
+            written_samples += duplex_play_frame->samples;
+            last_write_ms = duplex_now_ms();
+        }
+
+        // Session over (skipped if a new session already took over)
+        if (session == duplex_session_gen) {
+            if (duplex_end_flush) {
+                // Device-side end: stop talking now
+                xQueueReset(duplex_play_q);
+                uint32_t now = duplex_now_ms();
+                int32_t lead_ms = clock_running ?
+                    duplex_play_lead_ms(now, clock_start_ms, written_samples, SAMPLE_RATE / 1000) : 0;
+                duplex_mute_ring(&muted, &unmute_at_ms, now, lead_ms);
+            } else {
+                // Server-side end (hangup): let the last words (bounded by the queue) play
+                while (!muted && !duplex_active &&
+                       xQueueReceive(duplex_play_q, duplex_play_frame, 0) == pdTRUE) {
+                    if (duplex_frame_is_stale(duplex_play_frame->gen, duplex_clear_gen)) continue;
+                    jarvis_codec_write_stream(duplex_play_frame->pcm, duplex_play_frame->samples);
+                }
+                if (!duplex_active) xQueueReset(duplex_play_q);
+            }
+        }
+
+        // Wait out the mute, unless a new session starts (its loop unmutes on time)
+        while (muted && !duplex_active) {
+            int32_t left = duplex_ms_diff(unmute_at_ms, duplex_now_ms());
+            if (left <= 0) {
+                jarvis_codec_set_mute(false);
+                muted = false;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(left < 20 ? left : 20));
+        }
+
+        // Exit only if no new session started meanwhile: checked atomically with
+        // duplex_start(), which creates a new task only when the handle is NULL
+        if (!duplex_active) duplex_levels_reset();
+        portENTER_CRITICAL(&duplex_mux);
+        keep_running = duplex_active;
+        if (!keep_running) duplex_play_task_handle = NULL;
+        portEXIT_CRITICAL(&duplex_mux);
+        if (keep_running) {
+            ESP_LOGI(TAG, "Duplex play task carries on into the new session");
+        }
+    }
+
+    ESP_LOGI(TAG, "Duplex play task exiting");
+    vTaskDelete(NULL);
+}
+
+// Called from the WS event handler. Never waits: a play task still finishing
+// the previous session carries on into this one.
+static bool duplex_start(void) {
+#ifdef USE_LOCAL_WAKEWORD
+    // The continuous mic stream only exists with server-side wake word
+    ESP_LOGW(TAG, "Duplex live session not supported with local wake word");
+    return false;
+#endif
+    if (duplex_active) return true;
+    if (!opus_encoder || !opus_decoder || !duplex_alloc()) return false;
+
+    xQueueReset(duplex_play_q);
+    duplex_levels_reset();
+    duplex_mic_vu = 0;
+    duplex_mic_vu_ms = duplex_now_ms();  // Watchdog counts from here until the first "vu"
+    duplex_mic_fill = 0;
+    duplex_late_drop_armed = false;
+    opus_decoder_ctl(opus_decoder, OPUS_RESET_STATE);
+
+    portENTER_CRITICAL(&duplex_mux);
+    duplex_end_flush = false;
+    duplex_session_gen++;
+    duplex_active = true;
+    bool need_task = (duplex_play_task_handle == NULL);
+    portEXIT_CRITICAL(&duplex_mux);
+
+    // Handle is stored before the task can run, so its exit always clears it
+    if (need_task &&
+        xTaskCreatePinnedToCore(duplex_play_task, "duplex_play", DUPLEX_PLAY_TASK_STACK,
+                                NULL, DUPLEX_PLAY_TASK_PRIO,
+                                (TaskHandle_t *)&duplex_play_task_handle, 1) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create duplex play task");
+        portENTER_CRITICAL(&duplex_mux);
+        duplex_active = false;
+        duplex_play_task_handle = NULL;
+        portEXIT_CRITICAL(&duplex_mux);
+        return false;
+    }
+    ESP_LOGI(TAG, "Duplex live session started%s", need_task ? "" : " (play task reused)");
+    return true;
+}
+
+// flush=true: drop queued speech at once (device end, disconnect).
+// flush=false: play what is queued, then stop (server end).
+// Returns true if a duplex session was active.
+static bool duplex_stop(bool flush) {
+    portENTER_CRITICAL(&duplex_mux);
+    bool was_active = duplex_active;
+    if (was_active) {
+        duplex_end_flush = flush;
+        duplex_active = false;  // Play task drains/flushes and deletes itself
+    }
+    portEXIT_CRITICAL(&duplex_mux);
+    if (was_active) {
+        ESP_LOGI(TAG, "Duplex live session stopped (flush=%d)", flush);
+    }
+    return was_active;
+}
+
+// Device-side end (button from main_task, watchdog from ws_persist).
+// Leaves duplex mode at once and tells the server; only the caller that
+// actually ended the session sends live_session_end.
+static bool duplex_end_local(const char *reason) {
+    const char *why = duplex_end_reason(reason);
+    uint32_t drop_until = duplex_now_ms() + DUPLEX_LATE_DROP_MS;
+
+    portENTER_CRITICAL(&duplex_mux);
+    bool was_active = duplex_active;
+    if (was_active) {
+        // Armed before leaving duplex, so the WS handler drops in-flight speech
+        duplex_late_drop_until_ms = drop_until;
+        duplex_late_drop_armed = true;
+        duplex_end_flush = true;
+        duplex_active = false;
+    }
+    portEXIT_CRITICAL(&duplex_mux);
+    if (!was_active) return false;
+
+    live_session_active = false;
+    ESP_LOGI(TAG, "Ending duplex live session (reason=%s)", why);
+    send_json("live_session_end", "reason", why);
+    return true;
+}
+
+// Barge-in (WS event handler context)
+static void duplex_clear(void) {
+    duplex_clear_gen++;
+    xQueueReset(duplex_play_q);
+    opus_decoder_ctl(opus_decoder, OPUS_RESET_STATE);
+}
+
+// Downlink Opus frame (WS event handler context)
+static void duplex_on_downlink(const char *data, int len) {
+    static uint32_t dropped = 0;
+    if (!opus_decoder || !duplex_rx_frame) return;
+
+    int samples = opus_decode(opus_decoder, (const unsigned char *)data, len,
+                              duplex_rx_frame->pcm, BUFFER_SAMPLES, 0);
+    if (samples <= 0) return;
+    duplex_rx_frame->samples = (uint16_t)samples;
+    duplex_rx_frame->gen = duplex_clear_gen;
+
+    if (xQueueSend(duplex_play_q, duplex_rx_frame,
+                   pdMS_TO_TICKS(DUPLEX_ENQUEUE_TIMEOUT_MS)) != pdTRUE) {
+        dropped++;
+        if (dropped == 1 || dropped % 50 == 0) {
+            ESP_LOGW(TAG, "Duplex play queue full, frame dropped (total=%lu)", (unsigned long)dropped);
+        }
+    }
+}
+
+// Uplink: accumulate exact 20ms frames from the mic ring buffer (ws_persist task).
+// Unlike the idle stream, partial reads are kept, so no audio is lost.
+static void duplex_stream_mic(void) {
+    for (int i = 0; i < 4; i++) {  // Up to 4 reads per tick to catch up after a stall
+        size_t got = jarvis_audio_read_raw(enc_input_buffer + duplex_mic_fill,
+                                           OPUS_FRAME_SAMPLES - duplex_mic_fill,
+                                           i == 0 ? TICK_INTERVAL_MS : 0);
+        if (got == 0) break;
+        duplex_mic_fill += got;
+        if (duplex_mic_fill < OPUS_FRAME_SAMPLES) continue;
+        duplex_mic_fill = 0;
+
+        int enc_size = opus_encode(opus_encoder, enc_input_buffer, OPUS_FRAME_SAMPLES,
+                                   enc_output_buffer, OPUS_MAX_PACKET_SIZE);
+        if (enc_size > 0) {
+            esp_websocket_client_send_bin(ws_client, (const char *)enc_output_buffer,
+                                          enc_size, pdMS_TO_TICKS(100));
+        }
+    }
+}
+
+// =============================================================================
 // WEBSOCKET EVENT HANDLER
 // =============================================================================
 
@@ -299,12 +691,33 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
                                     }
 
                                 } else if (strcmp(type, "live_session_start") == 0) {
-                                    ESP_LOGI(TAG, "Server: live_session_start");
+                                    bool duplex = cJSON_IsTrue(cJSON_GetObjectItem(msg, "duplex"));
+                                    ESP_LOGI(TAG, "Server: live_session_start%s", duplex ? " (duplex)" : "");
                                     live_session_active = true;
+                                    if (duplex && !duplex_start()) {
+                                        // Cannot do full-duplex: end it cleanly rather than half-work
+                                        send_json("live_session_end", "reason", "error");
+                                        live_session_active = false;
+                                    }
 
                                 } else if (strcmp(type, "live_session_end") == 0) {
                                     ESP_LOGI(TAG, "Server: live_session_end");
                                     live_session_active = false;
+                                    duplex_stop(false);
+
+                                } else if (strcmp(type, "audio_clear") == 0) {
+                                    if (duplex_active) {
+                                        ESP_LOGI(TAG, "Server: audio_clear (barge-in)");
+                                        duplex_clear();
+                                    }
+
+                                } else if (strcmp(type, "vu") == 0) {
+                                    cJSON *mic = cJSON_GetObjectItem(msg, "mic");
+                                    if (duplex_active && mic && cJSON_IsNumber(mic)) {
+                                        int v = mic->valueint;
+                                        duplex_mic_vu = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+                                        duplex_mic_vu_ms = duplex_now_ms();
+                                    }
 
                                 } else if (strcmp(type, "ping") == 0) {
                                     ESP_LOGD(TAG, "Server ping — sending pong");
@@ -328,7 +741,24 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
                 }
             } else if (data->op_code == 0x02) {
                 // Binary frame: TTS Opus playback from server
-                if (opus_decoder && dec_output_buffer && data->data_ptr && data->data_len > 0) {
+                uint32_t rx_now = duplex_now_ms();
+                if (duplex_late_drop_expired(duplex_late_drop_armed, rx_now, duplex_late_drop_until_ms)) {
+                    duplex_late_drop_armed = false;
+                }
+                duplex_rx_route_t route = duplex_rx_route(duplex_active,
+                                                          duplex_play_task_handle != NULL,
+                                                          duplex_late_drop_armed,
+                                                          rx_now,
+                                                          duplex_late_drop_until_ms);
+                if (route == DUPLEX_RX_QUEUE) {
+                    // Duplex live session: model speech goes through the play queue
+                    if (data->data_ptr && data->data_len > 0) {
+                        duplex_on_downlink(data->data_ptr, data->data_len);
+                    }
+                } else if (route == DUPLEX_RX_DROP) {
+                    // Duplex session just ended: its play task still owns the speaker,
+                    // or the device ended it and stray model speech is still in flight
+                } else if (opus_decoder && dec_output_buffer && data->data_ptr && data->data_len > 0) {
                     int decoded_samples = opus_decode(opus_decoder,
                         (const unsigned char *)data->data_ptr, data->data_len,
                         dec_output_buffer, BUFFER_SAMPLES, 0);
@@ -343,12 +773,21 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
             ESP_LOGI(TAG, "WebSocket disconnected");
             conn_state = CONN_STATE_DISCONNECTED;
             audio_session_active = false;
+            if (duplex_active) {
+                // The wakeword-server tears down the hub side when the device drops
+                duplex_stop(true);
+                live_session_active = false;
+            }
             break;
 
         case WEBSOCKET_EVENT_ERROR:
             ESP_LOGE(TAG, "WebSocket error");
             conn_state = CONN_STATE_DISCONNECTED;
             audio_session_active = false;
+            if (duplex_active) {
+                duplex_stop(true);
+                live_session_active = false;
+            }
             break;
 
         default:
@@ -560,8 +999,12 @@ static void ws_persistent_task(void *arg) {
 
             // Continuous Opus stream to server (for server-side wake word detection)
             // Only when idle — during active sessions, run_audio_session handles streaming
+            if (duplex_active && conn_state == CONN_STATE_CONNECTED && !audio_session_requested) {
+                // Duplex live session: same continuous stream, without losing partial reads
+                duplex_stream_mic();
+            }
             #ifndef USE_LOCAL_WAKEWORD
-            if (conn_state == CONN_STATE_CONNECTED && !audio_session_requested) {
+            else if (conn_state == CONN_STATE_CONNECTED && !audio_session_requested) {
                 size_t samples = jarvis_audio_read_raw(enc_input_buffer,
                                                         BUFFER_SAMPLES,
                                                         TICK_INTERVAL_MS);
@@ -579,6 +1022,18 @@ static void ws_persistent_task(void *arg) {
                 }
             }
             #endif
+
+            // Duplex liveness: "vu" stops when the server side of the session is gone
+            if (duplex_active &&
+                duplex_watchdog_expired(duplex_now_ms(), duplex_mic_vu_ms, DUPLEX_WATCHDOG_MS)) {
+                ESP_LOGW(TAG, "Duplex: no vu from server for %dms, ending session", DUPLEX_WATCHDOG_MS);
+                duplex_end_local("error");
+            }
+
+            // Late-drop window over: disarm it even if no frame arrives (see duplex_late_drop_expired)
+            if (duplex_late_drop_expired(duplex_late_drop_armed, duplex_now_ms(), duplex_late_drop_until_ms)) {
+                duplex_late_drop_armed = false;
+            }
 
             // Check if audio session was requested by main_task
             if (audio_session_requested && conn_state == CONN_STATE_CONNECTED) {
@@ -769,6 +1224,34 @@ bool jarvis_ws_audio_is_connected(void) {
 
 bool jarvis_ws_audio_is_live_session(void) {
     return live_session_active;
+}
+
+bool jarvis_ws_audio_is_duplex(void) {
+    return duplex_active;
+}
+
+bool jarvis_ws_audio_end_duplex(const char *reason) {
+    return duplex_end_local(reason);
+}
+
+void jarvis_ws_audio_get_duplex_levels(uint8_t *jarvis_level, uint8_t *user_level) {
+    uint32_t now = duplex_now_ms();
+
+    if (jarvis_level) {
+        // Peak of the frames the speaker is playing in the last display frame
+        uint8_t peak = 0;
+        for (int i = 0; i < DUPLEX_LEVEL_SLOTS; i++) {
+            if (duplex_level_in_window(now, duplex_levels[i].play_ms, DUPLEX_LEVEL_WINDOW_MS) &&
+                duplex_levels[i].level > peak) {
+                peak = duplex_levels[i].level;
+            }
+        }
+        *jarvis_level = duplex_active ? peak : 0;
+    }
+    if (user_level) {
+        bool fresh = duplex_vu_fresh(now, duplex_mic_vu_ms, DUPLEX_VU_STALE_MS);
+        *user_level = (duplex_active && fresh) ? duplex_mic_vu : 0;
+    }
 }
 
 void jarvis_ws_audio_send_state(const char *state_str) {

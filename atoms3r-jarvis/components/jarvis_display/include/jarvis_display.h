@@ -147,4 +147,23 @@ bool jarvis_display_is_rotated(void);
  */
 void jarvis_display_set_live_session(bool active);
 
+/**
+ * @brief Enter/leave the full-duplex live session view
+ * @param active true = two-lane duplex view, false = normal state rendering
+ *
+ * In duplex mode the big icon is replaced by two scrolling level lanes:
+ * top = Jarvis speaking (speaker icon, blue), bottom = user (mic icon, green).
+ * The LIVE badge and the rotation setting still apply.
+ */
+void jarvis_display_set_duplex(bool active);
+
+/**
+ * @brief Push one column of levels into the duplex view and redraw
+ * @param jarvis_level model speech level 0-255
+ * @param user_level   user mic level 0-255
+ *
+ * Call at the duplex frame rate (~14 fps). No-op outside duplex mode.
+ */
+void jarvis_display_duplex_push(uint8_t jarvis_level, uint8_t user_level);
+
 #endif // JARVIS_DISPLAY_H

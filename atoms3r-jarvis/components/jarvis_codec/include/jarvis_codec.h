@@ -56,6 +56,20 @@ int jarvis_codec_read(int16_t *buf, size_t num_samples);
 int jarvis_codec_write(const int16_t *buf, size_t num_samples);
 
 /**
+ * Same as jarvis_codec_write(), but with its own scratch buffer, so a
+ * streaming task (duplex live playback) can write while other writers
+ * (wake sound, TTS in the WS handler) use jarvis_codec_write().
+ */
+int jarvis_codec_write_stream(const int16_t *buf, size_t num_samples);
+
+/**
+ * Mute/unmute the ES8311 DAC output (does not touch the volume setting).
+ * Used on barge-in to silence audio already queued in the I2S TX DMA ring.
+ * @param mute true = mute, false = unmute
+ */
+void jarvis_codec_set_mute(bool mute);
+
+/**
  * Set ES8311 DAC output volume.
  * @param volume 0-100
  */

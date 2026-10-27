@@ -107,6 +107,29 @@ static bool live_session_mode = false;
 static float wave_phase = 0.0f;
 static int64_t last_wave_update = 0;
 
+// Full-duplex live session view: two scrolling level lanes
+#define DUPLEX_ICON_SIZE    22
+#define DUPLEX_ICON_BYTES   (((DUPLEX_ICON_SIZE + 7) / 8) * DUPLEX_ICON_SIZE)
+#define DUPLEX_HIST_LEN     30      // ~2s of history at ~14 fps
+#define DUPLEX_BAR_STEP     3       // px per column (2px bar + 1px gap)
+#define DUPLEX_BAR_W        2
+#define DUPLEX_BARS_X       (DISPLAY_WIDTH - 4 - DUPLEX_HIST_LEN * DUPLEX_BAR_STEP)
+#define DUPLEX_ICON_X       6
+#define DUPLEX_TOP_CY       34      // Lane centers
+#define DUPLEX_BOTTOM_CY    86
+#define DUPLEX_LANE_HALF_H  20
+#define DUPLEX_QUIET_LEVEL  12      // Below this a column is drawn as a dim baseline
+#define COLOR_GREEN_DIM     0x000A  // sent_B=10 (color-rotated green)
+#define COLOR_GREY_DIM      0x4208  // Grey is the same after color rotation
+
+static bool duplex_mode = false;
+static bool duplex_icons_ready = false;
+static uint8_t duplex_icon_speaker[DUPLEX_ICON_BYTES];
+static uint8_t duplex_icon_mic[DUPLEX_ICON_BYTES];
+static uint8_t duplex_hist_jarvis[DUPLEX_HIST_LEN];
+static uint8_t duplex_hist_user[DUPLEX_HIST_LEN];
+static int duplex_hist_head = 0;    // Next slot to write (oldest column)
+
 // Frame buffer (RGB565, 128x128 = 32KB)
 static uint16_t *frame_buffer = NULL;
 
@@ -445,6 +468,76 @@ static void render_error(void) {
     flush_buffer();
 }
 
+// Box-filter downscale of a 1bpp XBM icon (LSB-first rows, same layout as jarvis_icons.h).
+// src_len bounds the reads: the 75x75 arrays are a few bytes shorter than 75 full rows.
+static void icon_downscale(const uint8_t *src, size_t src_len, int sw, int sh,
+                           uint8_t *dst, int dw, int dh) {
+    int src_stride = (sw + 7) / 8;
+    int dst_stride = (dw + 7) / 8;
+    memset(dst, 0, dst_stride * dh);
+
+    for (int dy = 0; dy < dh; dy++) {
+        int y0 = dy * sh / dh;
+        int y1 = (dy + 1) * sh / dh;
+        for (int dx = 0; dx < dw; dx++) {
+            int x0 = dx * sw / dw;
+            int x1 = (dx + 1) * sw / dw;
+            int on = 0, total = 0;
+            for (int y = y0; y < y1; y++) {
+                for (int x = x0; x < x1; x++) {
+                    size_t idx = (size_t)(y * src_stride + x / 8);
+                    total++;
+                    if (idx < src_len && (src[idx] & (1 << (x % 8)))) on++;
+                }
+            }
+            // 30% coverage keeps the ~6px strokes of the 75px icons visible at 22px
+            if (total > 0 && on * 10 >= total * 3) {
+                dst[dy * dst_stride + dx / 8] |= (uint8_t)(1 << (dx % 8));
+            }
+        }
+    }
+}
+
+static void fb_draw_icon_xy(const uint8_t *icon, int width, int height, uint16_t color, int x0, int y0) {
+    int stride = (width + 7) / 8;
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            if (icon[y * stride + x / 8] & (1 << (x % 8))) {
+                fb_set_pixel(x0 + x, y0 + y, color);
+            }
+        }
+    }
+}
+
+// One lane: icon on the left, history bars mirrored around the lane center (oldest left)
+static void draw_duplex_lane(const uint8_t *icon, const uint8_t *hist, int center_y,
+                             uint16_t color, uint16_t dim_color) {
+    fb_draw_icon_xy(icon, DUPLEX_ICON_SIZE, DUPLEX_ICON_SIZE, color,
+                    DUPLEX_ICON_X, center_y - DUPLEX_ICON_SIZE / 2);
+
+    for (int i = 0; i < DUPLEX_HIST_LEN; i++) {
+        uint8_t level = hist[(duplex_hist_head + i) % DUPLEX_HIST_LEN];
+        int x = DUPLEX_BARS_X + i * DUPLEX_BAR_STEP;
+        if (level < DUPLEX_QUIET_LEVEL) {
+            fb_draw_rect(x, center_y, DUPLEX_BAR_W, 1, dim_color);
+        } else {
+            int half = 1 + (level * (DUPLEX_LANE_HALF_H - 1)) / 255;
+            fb_draw_rect(x, center_y - half, DUPLEX_BAR_W, 2 * half + 1, color);
+        }
+    }
+}
+
+static void render_duplex(void) {
+    fb_clear(COLOR_BLACK);
+    draw_duplex_lane(duplex_icon_speaker, duplex_hist_jarvis, DUPLEX_TOP_CY,
+                     JARVIS_BLUE, JARVIS_BLUE_DARK);
+    fb_draw_rect(4, (DUPLEX_TOP_CY + DUPLEX_BOTTOM_CY) / 2, DISPLAY_WIDTH - 8, 1, COLOR_GREY_DIM);
+    draw_duplex_lane(duplex_icon_mic, duplex_hist_user, DUPLEX_BOTTOM_CY,
+                     COLOR_GREEN_BRIGHT, COLOR_GREEN_DIM);
+    draw_live_badge();
+    flush_buffer();
+}
+
 // =============================================================================
 // PUBLIC API
 // =============================================================================
@@ -623,6 +716,10 @@ bool jarvis_display_init(void) {
 }
 
 void jarvis_display_update(void) {
+    if (duplex_mode) {
+        render_duplex();
+        return;
+    }
     switch (current_state) {
         case DISPLAY_STATE_IDLE:
             render_idle(false);
@@ -874,4 +971,33 @@ void jarvis_display_set_live_session(bool active) {
         jarvis_display_update();
         ESP_LOGI(TAG, "Live session display: %s", active ? "ON" : "OFF");
     }
+}
+
+void jarvis_display_set_duplex(bool active) {
+    if (duplex_mode == active) return;
+
+    if (active && !duplex_icons_ready) {
+        // Derived once from the 75x75 icons, on the first duplex session
+        icon_downscale(ICON_SPEAKER, sizeof(ICON_SPEAKER), ICON_SPEAKER_WIDTH, ICON_SPEAKER_HEIGHT,
+                       duplex_icon_speaker, DUPLEX_ICON_SIZE, DUPLEX_ICON_SIZE);
+        icon_downscale(ICON_MIC, sizeof(ICON_MIC), ICON_MIC_WIDTH, ICON_MIC_HEIGHT,
+                       duplex_icon_mic, DUPLEX_ICON_SIZE, DUPLEX_ICON_SIZE);
+        duplex_icons_ready = true;
+    }
+    memset(duplex_hist_jarvis, 0, sizeof(duplex_hist_jarvis));
+    memset(duplex_hist_user, 0, sizeof(duplex_hist_user));
+    duplex_hist_head = 0;
+
+    duplex_mode = active;
+    jarvis_display_update();
+    ESP_LOGI(TAG, "Duplex live view: %s", active ? "ON" : "OFF");
+}
+
+void jarvis_display_duplex_push(uint8_t jarvis_level, uint8_t user_level) {
+    if (!duplex_mode) return;
+
+    duplex_hist_jarvis[duplex_hist_head] = jarvis_level;
+    duplex_hist_user[duplex_hist_head] = user_level;
+    duplex_hist_head = (duplex_hist_head + 1) % DUPLEX_HIST_LEN;
+    render_duplex();
 }

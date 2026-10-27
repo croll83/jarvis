@@ -124,6 +124,9 @@
 #define SCREENSAVER_DURATION_MS   60000   // 60s animazione
 #define SCREENSAVER_FRAME_MS         50   // ~20 FPS
 
+// Full-duplex live session view (two level lanes)
+#define DUPLEX_DISPLAY_FRAME_MS      70   // ~14 FPS
+
 // =============================================================================
 // WEBSOCKET AUDIO + OPUS CONFIGURATION
 // =============================================================================

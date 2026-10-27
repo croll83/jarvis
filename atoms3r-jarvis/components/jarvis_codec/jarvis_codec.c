@@ -396,15 +396,20 @@ int jarvis_codec_read(int16_t *buf, size_t num_samples) {
     return (int)mono_count;
 }
 
+// Dedicated scratch buffer for the duplex playback stream (see jarvis_codec_write_stream)
+static int32_t *i2s_stream_buf = NULL;
+static size_t i2s_stream_buf_size = 0;  // in int32 elements
+
 // Write mono int16 samples as stereo int32 (duplicate L=R, shift to upper bits) for ES8311
-int jarvis_codec_write(const int16_t *buf, size_t num_samples) {
+static int codec_write_with(const int16_t *buf, size_t num_samples,
+                            int32_t **pbuf, size_t *psize) {
     if (!initialized || !buf || num_samples == 0) return -1;
 
     // I2S is 32-bit stereo: each frame = L(32bit) + R(32bit)
     size_t stereo_samples_32 = num_samples * 2;
     size_t bytes_to_write = stereo_samples_32 * sizeof(int32_t);
 
-    int32_t *stereo_buf = ensure_buf(&i2s_write_buf, &i2s_write_buf_size, stereo_samples_32);
+    int32_t *stereo_buf = ensure_buf(pbuf, psize, stereo_samples_32);
     if (!stereo_buf) return -1;
 
     for (size_t i = 0; i < num_samples; i++) {
@@ -422,6 +427,23 @@ int jarvis_codec_write(const int16_t *buf, size_t num_samples) {
     }
 
     return (int)(bytes_written / sizeof(int32_t) / 2);  // return mono sample count
+}
+
+int jarvis_codec_write(const int16_t *buf, size_t num_samples) {
+    return codec_write_with(buf, num_samples, &i2s_write_buf, &i2s_write_buf_size);
+}
+
+int jarvis_codec_write_stream(const int16_t *buf, size_t num_samples) {
+    return codec_write_with(buf, num_samples, &i2s_stream_buf, &i2s_stream_buf_size);
+}
+
+void jarvis_codec_set_mute(bool mute) {
+    if (!es8311_handle) return;
+
+    esp_err_t ret = es8311_voice_mute(es8311_handle, mute);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to %s DAC: %s", mute ? "mute" : "unmute", esp_err_to_name(ret));
+    }
 }
 
 void jarvis_codec_set_volume(int volume) {

@@ -12,6 +12,9 @@
  *   - Device->Server JSON: hello, audio_start, audio_end, state, pong
  *   - Device->Server Binary: Opus frames (20ms each, ~30-80 bytes)
  *   - Server->Device JSON: welcome, ready, speech_end, trigger_listen, tts_done, config_update, ping, error
+ *   - Duplex live session only: live_session_start{duplex}, audio_clear, vu, live_session_end
+ *     (Device->Server: live_session_end{reason:"button"|"error"}, no call_id: the
+ *      wakeword-server adds it and passes the reason through to the orchestrator)
  *
  * Connection lifecycle:
  *   1. jarvis_ws_audio_init()    -- Initialize Opus codec (once at startup)
@@ -153,6 +156,40 @@ void jarvis_ws_audio_send_speaker_stop(void);
  * During live session, audio session timeout is extended and display shows LIVE icon.
  */
 bool jarvis_ws_audio_is_live_session(void);
+
+/**
+ * Full-duplex live session (Voice Live Hub, via the wakeword-server).
+ *
+ * Entered on {"type":"live_session_start","duplex":true}, left on
+ * {"type":"live_session_end"} (or WS disconnect). While active:
+ *   - the mic streams Opus continuously, also while the model speaks
+ *   - downlink Opus (model speech) is played by a dedicated task
+ *   - {"type":"audio_clear"} drops all queued speech immediately (barge-in)
+ *   - {"type":"vu","mic":0..255} carries the post-AEC user level
+ * Outside a duplex session nothing of this runs.
+ *
+ * Device-side ends send {"type":"live_session_end","reason":...}:
+ *   "button": single tap, double tap or long press (see jarvis_duplex_policy.h)
+ *   "error":  duplex start failed, or no "vu" from the server for 8 s
+ *             (the server side of the session is gone)
+ */
+bool jarvis_ws_audio_is_duplex(void);
+
+/**
+ * End the duplex live session from the device (button gestures).
+ * Sends {"type":"live_session_end","reason":reason} ("button" or "error",
+ * anything else is sent as "button"), stops playback at once and leaves
+ * duplex mode. Safe to call from main_task.
+ * @return true if a duplex session was active and is now ended
+ */
+bool jarvis_ws_audio_end_duplex(const char *reason);
+
+/**
+ * Current levels for the duplex display (0-255 each).
+ * @param jarvis_level  model speech level, aligned to what the speaker plays now
+ * @param user_level    post-AEC mic level from the last "vu" message (0 if stale)
+ */
+void jarvis_ws_audio_get_duplex_levels(uint8_t *jarvis_level, uint8_t *user_level);
 
 /**
  * Disconnect and stop the persistent connection task.

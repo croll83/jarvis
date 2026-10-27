@@ -44,6 +44,7 @@ extern "C" {
 #include "jarvis_network.h"
 #include "jarvis_speaker.h"
 #include "jarvis_ws_audio.h"
+#include "jarvis_duplex_policy.h"
 }
 
 static const char *TAG = "JARVIS";
@@ -147,6 +148,10 @@ static volatile float config_new_sensitivity = 0.82f;
 // Live session display tracking (synced from jarvis_ws_audio in main_task)
 static bool live_session_display_active = false;
 
+// Full-duplex live session (Voice Live Hub) tracking, synced like the above
+static bool duplex_display_active = false;
+static int64_t last_duplex_frame = 0;
+
 // Forward declarations
 static void on_wake_word_detected(void);
 static void activate_listening(bool silent);
@@ -160,6 +165,7 @@ static void on_tts_done(void);
 static void on_config_update_ws(float wake_word_sensitivity);
 static void on_server_wake_detected(void);
 static void reset_activity_timer(void);
+static void sync_duplex_mode(void);
 
 // Helper: update state and notify server
 static void set_state(device_state_t new_state) {
@@ -232,6 +238,8 @@ static void update_local_time(void) {
 //     no more taps within 300ms:
 //       tap_count == 2 → DOUBLE TAP (speaker stop)
 //       tap_count == 1 → SINGLE TAP (activate/stop listening)
+//   During a full-duplex live session: single/double tap end the session,
+//   long press ends it and then toggles DND, triple tap unchanged.
 //
 
 #define LONG_PRESS_MS       800
@@ -311,8 +319,24 @@ static void handle_button_up(void) {
 static int64_t activation_time = 0;
 #define MIN_SESSION_LIFETIME_MS  1000
 
+// Full-duplex live session: single/double tap end the session, long press ends
+// it and then toggles DND as today (jarvis_duplex_policy.h).
+// Returns true if the gesture is fully handled.
+static bool handle_duplex_gesture(duplex_gesture_t gesture) {
+    duplex_button_action_t action = duplex_button_action(gesture, jarvis_ws_audio_is_duplex());
+    if (action == DUPLEX_BTN_AS_TODAY) return false;
+
+    ESP_LOGI(TAG, "Button (gesture=%d) during duplex live session - ending session", (int)gesture);
+    jarvis_ws_audio_end_duplex("button");
+    sync_duplex_mode();  // Leave the duplex view now, before any state change below
+    return action == DUPLEX_BTN_END;
+}
+
 static void handle_short_press(void) {
     ESP_LOGI(TAG, "Short press detected!");
+
+    // Full-duplex live session: single tap ends the session (no listening toggle)
+    if (handle_duplex_gesture(DUPLEX_GESTURE_SINGLE_TAP)) return;
 
     // If WS audio session is active, stop it (but only after minimum lifetime)
     if (jarvis_ws_audio_is_active()) {
@@ -349,6 +373,9 @@ static void handle_short_press(void) {
 static void handle_long_press(void) {
     ESP_LOGI(TAG, "Long press detected!");
 
+    // Full-duplex live session: end it first, then toggle DND below
+    handle_duplex_gesture(DUPLEX_GESTURE_LONG_PRESS);
+
     if (jarvis_ws_audio_is_active()) {
         int64_t now = esp_timer_get_time() / 1000;
         int64_t elapsed = now - activation_time;
@@ -384,6 +411,10 @@ static void handle_long_press(void) {
 
 static void handle_double_tap(void) {
     ESP_LOGI(TAG, "🛑 DOUBLE TAP — SPEAKER STOP");
+
+    // Full-duplex live session: double tap ends the session like a single tap
+    // (no speaker_stop: the session end already stops the model speech)
+    if (handle_duplex_gesture(DUPLEX_GESTURE_DOUBLE_TAP)) return;
 
     // Flash red for visual feedback
     jarvis_display_flash_red();
@@ -441,6 +472,12 @@ static void suppress_speaker_task(void* arg) {
 // =============================================================================
 
 static void activate_listening(bool silent) {
+    // Duplex live session: mic already streams continuously, no turn to start
+    if (jarvis_ws_audio_is_duplex()) {
+        ESP_LOGW(TAG, "Activation ignored (duplex live session)");
+        return;
+    }
+
     if (dnd_mode) {
         ESP_LOGI(TAG, "Activation ignored (DND mode)");
         jarvis_ws_audio_send_state("dnd");
@@ -636,6 +673,29 @@ static void heartbeat_task(void* arg) {
 }
 
 // =============================================================================
+// FULL-DUPLEX LIVE SESSION SYNC (main_task context only)
+// =============================================================================
+
+static void sync_duplex_mode(void) {
+    bool ws_duplex = jarvis_ws_audio_is_duplex();
+    if (ws_duplex == duplex_display_active) return;
+
+    duplex_display_active = ws_duplex;
+    ESP_LOGI(TAG, "Duplex live session: %s", ws_duplex ? "ON" : "OFF");
+    // LISTENING for the whole session: mic and speaker overlap, wake/trigger
+    // activations are refused and the screensaver stays off.
+    // Order avoids drawing one frame of the old view in between.
+    if (ws_duplex) {
+        jarvis_display_set_duplex(true);
+        set_state(STATE_LISTENING);
+    } else {
+        set_state(dnd_mode ? STATE_DND : STATE_IDLE);
+        jarvis_display_set_duplex(false);
+    }
+    last_duplex_frame = 0;
+}
+
+// =============================================================================
 // MAIN TASK
 // =============================================================================
 
@@ -719,6 +779,17 @@ static void main_task(void* arg) {
             ESP_LOGI(TAG, "Live session display: %s", ws_live ? "ON" : "OFF");
         }
 
+        // Sync full-duplex live mode from ws_audio module
+        sync_duplex_mode();
+
+        // Duplex view: one column of levels per frame (~14 fps)
+        if (duplex_display_active && now - last_duplex_frame >= DUPLEX_DISPLAY_FRAME_MS) {
+            last_duplex_frame = now;
+            uint8_t jarvis_level = 0, user_level = 0;
+            jarvis_ws_audio_get_duplex_levels(&jarvis_level, &user_level);
+            jarvis_display_duplex_push(jarvis_level, user_level);
+        }
+
         // Deferred display state update (from callbacks running in other tasks)
         if (display_state_dirty) {
             display_state_dirty = false;
@@ -733,7 +804,7 @@ static void main_task(void* arg) {
         }
 
         // Screensaver: activate after inactivity (only in IDLE, not DND)
-        if (!screensaver_active && current_state == STATE_IDLE &&
+        if (!screensaver_active && current_state == STATE_IDLE && !duplex_display_active &&
             last_activity_time > 0 && (now - last_activity_time > SCREENSAVER_TIMEOUT_MS)) {
             screensaver_active = true;
             screensaver_start_time = now;
@@ -756,7 +827,8 @@ static void main_task(void* arg) {
         }
 
         // Update display in IDLE/DND (skip if screensaver is running)
-        if (!screensaver_active && (current_state == STATE_IDLE || current_state == STATE_DND)) {
+        if (!screensaver_active && !duplex_display_active &&
+            (current_state == STATE_IDLE || current_state == STATE_DND)) {
             if (now - last_display_update > DISPLAY_UPDATE_IDLE_MS) {
                 last_display_update = now;
                 update_local_time();
@@ -766,8 +838,9 @@ static void main_task(void* arg) {
             }
         }
 
-        // Continuous display update for animations
-        if (current_state == STATE_LISTENING || current_state == STATE_PROCESSING) {
+        // Continuous display update for animations (duplex view has its own frame rate)
+        if (!duplex_display_active &&
+            (current_state == STATE_LISTENING || current_state == STATE_PROCESSING)) {
             jarvis_display_update();
         }
 
@@ -797,7 +870,8 @@ static void main_task(void* arg) {
         // Fetch temperature periodically
         if (now - last_temp_fetch > TEMP_REFRESH_MS) {
             last_temp_fetch = now;
-            if (!jarvis_ws_audio_is_active() && device_config.friendly_name[0] != '\0') {
+            if (!jarvis_ws_audio_is_active() && !duplex_display_active &&
+                device_config.friendly_name[0] != '\0') {
                 float new_temp;
                 if (jarvis_network_fetch_temperature(device_config.friendly_name, &new_temp)) {
                     cached_temperature = new_temp;
