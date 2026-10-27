@@ -16,6 +16,7 @@ services:
       - AEC_BACKEND=${AEC_BACKEND:-webrtc}
       - AEC_DEBUG_DIR=${AEC_DEBUG_DIR:-}
       - AEC_RENDER_DELAY_MS=${AEC_RENDER_DELAY_MS:-0}
+      - HUB_ATOM_MIC_GAIN_DB=${HUB_ATOM_MIC_GAIN_DB:-}
     volumes:
       - wakeword_data:/app/data
     restart: unless-stopped

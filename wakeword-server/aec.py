@@ -47,6 +47,10 @@ _DEBUG_STATS_S = 2.0
 # riferimento di una quota fissa (sotto il minimo reale, mai sopra: altrimenti arriva dopo
 # l'eco) all'AEC resta solo un residuo piccolo. 0 = nessuna linea.
 _RENDER_DELAY_MS = int(os.getenv("AEC_RENDER_DELAY_MS", "0") or "0")
+# Riferimento allineato (firmware con loopback ES8311, cap "aec_ref"): mic e riferimento escono
+# dallo stesso frame del codec, quindi tra riferimento ed eco restano solo pochi ms costanti
+# (filtri del codec, amplificatore, aria) e il suggerimento all'AEC3 scende a ~0.
+_ALIGNED_DELAY_HINT_MS = int(os.getenv("AEC_ALIGNED_DELAY_MS", "0") or "0")
 
 
 def _dbfs(sq_sum: float, n: int) -> float:
@@ -69,13 +73,14 @@ class _WebRtcBackend:
         self._apm = rtc.AudioProcessingModule(
             echo_cancellation=True, noise_suppression=True,
             high_pass_filter=True, auto_gain_control=True)
+        self.delay_ms = _WEBRTC_DELAY_HINT_MS
 
     def process(self, near: bytes, far: bytes) -> bytes:
         rtc = self._rtc
         far_frame = rtc.AudioFrame(bytearray(far), SAMPLE_RATE, 1, CHUNK_SAMPLES)
         self._apm.process_reverse_stream(far_frame)
         near_frame = rtc.AudioFrame(bytearray(near), SAMPLE_RATE, 1, CHUNK_SAMPLES)
-        self._apm.set_stream_delay_ms(_WEBRTC_DELAY_HINT_MS)
+        self._apm.set_stream_delay_ms(self.delay_ms)
         self._apm.process_stream(near_frame)
         return near_frame.data.tobytes()
 
@@ -199,10 +204,12 @@ class EchoCanceller:
         self._env_near = []
         self._chunks = 0
         self._proposal = None
+        self._aligned = False         # process_aligned(): riferimento dal device, niente timeline
+        self._far = bytearray()
         self._debug = bool(_DEBUG_DIR)
         if self._debug:
             self._dbg = {"near": bytearray(), "far": bytearray(), "out": bytearray()}
-            self._stats = {"near": 0.0, "far": 0.0, "out": 0.0, "n": 0}
+            self._stats = {"near": 0.0, "far": 0.0, "out": 0.0, "n": 0, "clip": 0}
             self._stats_t = time.monotonic()
 
     @property
@@ -214,8 +221,14 @@ class EchoCanceller:
         return self._line * 1000 // SAMPLE_RATE
 
     @property
+    def aligned(self) -> bool:
+        return self._aligned
+
+    @property
     def render_backlog_bytes(self) -> int:
         """Riferimento in timeline non ancora letto dal mic."""
+        if self._aligned:
+            return 0
         end = self._ring_start + len(self._ring) // 2
         lag = _READ_LAG_MS * SAMPLE_RATE // 1000
         start = self._ring_start if self._cap is None else max(self._ring_start, self._cap - lag - self._line)
@@ -230,7 +243,7 @@ class EchoCanceller:
         Una frase si ancora all'istante d'invio del suo primo frame e i frame seguenti si accodano
         di seguito, come l'Atom li suona: il pre-buffer mandato a raffica resta in avanti sulla
         timeline invece di finire nel passato (dove il mic l'aveva gia' superato)."""
-        if self._passthrough or not pcm:
+        if self._passthrough or self._aligned or not pcm:
             return
         t = time.monotonic() if t is None else t
         if self._t0 is None:
@@ -289,6 +302,34 @@ class EchoCanceller:
         del self._near[:n]
         return bytes(out)
 
+    def process_aligned(self, near: bytes, far: bytes) -> bytes:
+        """Mic e riferimento letti dallo stesso frame del codec (loopback ES8311), stessa
+        lunghezza: vanno all'AEC cosi' come sono, a blocchi da 10 ms, il resto resta in coda.
+        Dal primo pacchetto allineato render() non serve piu' e la timeline viene ignorata."""
+        if not self._aligned:
+            self._aligned = True
+            self._near.clear()
+            self._ring.clear()
+            if hasattr(self._backend, "delay_ms"):
+                self._backend.delay_ms = _ALIGNED_DELAY_HINT_MS
+        self._near += near
+        self._far += far
+        n = min(len(self._near), len(self._far))
+        n -= n % _CHUNK_BYTES
+        if n == 0:
+            return b""
+        out = bytearray()
+        for i in range(0, n, _CHUNK_BYTES):
+            near_c = bytes(self._near[i:i + _CHUNK_BYTES])
+            far_c = bytes(self._far[i:i + _CHUNK_BYTES])
+            clean = self._backend.process(near_c, far_c)
+            out += clean
+            if self._debug:
+                self._debug_chunk(near_c, far_c, clean)
+        del self._near[:n]
+        del self._far[:n]
+        return bytes(out)
+
     def _track(self, far0: bytes, near: bytes):
         """Stima il ritardo eco (riferimento senza linea -> mic) e, se serve, sposta la linea."""
         self._env_far.append(math.log10(math.sqrt(_sq_sum(far0) / CHUNK_SAMPLES) + 1))
@@ -332,13 +373,18 @@ class EchoCanceller:
                 self._dbg[key] += pcm
             self._stats[key] += _sq_sum(pcm)
         self._stats["n"] += CHUNK_SAMPLES
+        self._stats["clip"] += sum(1 for v in struct.unpack(f"<{CHUNK_SAMPLES}h", near)
+                                   if v >= 32767 or v <= -32768)
         now = time.monotonic()
         if now - self._stats_t >= _DEBUG_STATS_S:
             n = self._stats["n"]
             far_db, near_db, out_db = (_dbfs(self._stats[k], n) for k in ("far", "near", "out"))
-            logger.info(f"AEC stats: far {far_db:.1f} dBFS, mic {near_db:.1f}, pulito {out_db:.1f} "
-                        f"(tolti {near_db - out_db:.1f} dB), riferimento in coda {self.render_backlog_bytes // 32} ms, linea {self.render_delay_ms} ms")
-            self._stats = {"near": 0.0, "far": 0.0, "out": 0.0, "n": 0}
+            clip = 100.0 * self._stats["clip"] / n
+            where = ("riferimento dal device" if self._aligned else
+                     f"riferimento in coda {self.render_backlog_bytes // 32} ms, linea {self.render_delay_ms} ms")
+            logger.info(f"AEC stats: far {far_db:.1f} dBFS, mic {near_db:.1f} (clip {clip:.1f}%), "
+                        f"pulito {out_db:.1f} (tolti {near_db - out_db:.1f} dB), {where}")
+            self._stats = {"near": 0.0, "far": 0.0, "out": 0.0, "n": 0, "clip": 0}
             self._stats_t = now
 
     def write_debug(self, name: str):

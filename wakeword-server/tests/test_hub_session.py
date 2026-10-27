@@ -262,6 +262,54 @@ async def test_uplink_with_real_aec_backend(conn, hub_on, monkeypatch):
     assert await wait_for(lambda: len(hub.audio) >= len(frames) * 640)
 
 
+def aligned_packets(mic, ref, swap=False):
+    """Pacchetti come il firmware con cap aec_ref: 0xA5 0x01 seq, coppie [pari, dispari]."""
+    out = []
+    for k, i in enumerate(range(0, len(mic) - 319, 320)):
+        pairs = np.stack((ref[i:i + 320], mic[i:i + 320]) if swap else (mic[i:i + 320], ref[i:i + 320]), axis=1)
+        out.append(bytes([0xA5, 0x01, k & 0xFF, k >> 8]) + pairs.astype("<i2").tobytes())
+    return out
+
+
+async def test_aec_ref_cap_asks_the_device_for_the_reference(conn, hub_on, monkeypatch):
+    monkeypatch.setattr(server, "HUB_ATOM_MIC_GAIN_DB", "18")
+    conn.caps = {"aec_ref"}
+    await start_session(conn, hub_on)
+    assert conn.ws.json == [{"type": "live_session_start", "duplex": True, "aec_ref": True,
+                             "mic_gain_db": 18}]
+
+
+async def test_aligned_uplink_reaches_the_hub_with_the_mic_slot(conn, hub_on, monkeypatch):
+    hub = hub_on
+    conn.caps = {"aec_ref"}
+    session = await start_session(conn, hub)
+    rng = np.random.default_rng(3)
+    mic = tone(440, 0.6, 16000) + (rng.standard_normal(9600) * 50).astype(np.int16)
+    ref = np.zeros_like(mic)  # Atom muto: il loopback e' zero digitale
+    packets = aligned_packets(mic, ref, swap=True)  # slot scambiati: il voto deve accorgersene
+    for p in packets:
+        await server._handle_binary(conn, p)
+    assert await wait_for(lambda: len(hub.audio) >= len(packets) * 640)
+    assert session.aec.aligned and session._slots.locked and session._slots.ref == 0
+    pcm = np.frombuffer(bytes(hub.audio), dtype=np.int16)
+    assert abs(peak_hz(pcm[3200:], 16000) - 440) < 20  # e' arrivato il mic, non il loopback
+    assert session._seq_lost == 0
+
+
+async def test_muted_packets_drop_the_reference_and_do_not_vote(conn, hub_on):
+    conn.caps = {"aec_ref"}
+    session = await start_session(conn, hub_on)
+    seen = []
+    session.aec.process_aligned = lambda near, far: seen.append(far) or near
+    mic = (np.random.default_rng(6).standard_normal(320) * 50).astype(np.int16)
+    loud = tone(300, 0.02, 16000)
+    pkt = bytes([0xA5, 0x81, 0, 0]) + np.stack((mic, loud), axis=1).astype("<i2").tobytes()
+    for _ in range(20):
+        await server._handle_binary(conn, pkt)
+    assert session._slots.votes == [0, 0]
+    assert all(f == bytes(640) for f in seen)
+
+
 async def test_downlink_resampled_paced_opus(conn, hub_on):
     hub = hub_on
     await start_session(conn, hub)

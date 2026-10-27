@@ -8,7 +8,7 @@ import pytest
 
 import aec
 import hubrelay
-from livesession import Resampler24kTo16k, vu_level
+from livesession import Resampler24kTo16k, SlotPicker, parse_aligned, vu_level
 
 HUB_IPC = ("/home/jarvis/sviluppo/hermes-jarvis/services/voice-live-hub/"
            "voice_live_hub/ipc.py")
@@ -281,3 +281,55 @@ def test_production_order_mic_before_reference_still_cancels():
     seg_m = m[fs * 6 - up:fs * 8 - up]
     erle = 10 * np.log10(np.mean(seg_m ** 2) / max(np.mean(seg_o ** 2), 1e-9))
     assert erle > 20
+
+
+# --- riferimento allineato dal device (loopback ES8311) ----------------------
+
+def test_parse_aligned_packets_and_opus_frames():
+    pairs = np.array([[1, -2], [3, -4]], dtype="<i2")
+    seq, got, muted = parse_aligned(bytes([0xA5, 0x01, 0x34, 0x12]) + pairs.tobytes())
+    assert seq == 0x1234 and got.tolist() == [[1, -2], [3, -4]] and not muted
+    assert parse_aligned(bytes([0xA5, 0x81, 0, 0]) + pairs.tobytes())[2] is True
+    import opuslib
+    enc = opuslib.Encoder(16000, 1, opuslib.APPLICATION_VOIP)
+    assert parse_aligned(enc.encode(_tone(440, 320, 16000).tobytes(), 320)) is None
+    assert parse_aligned(bytes([0xA5, 0x01, 0, 0, 1, 2])) is None  # coppia monca
+    assert parse_aligned(bytes([0xA5, 0x02, 0, 0]) + pairs.tobytes()) is None  # formato ignoto
+
+
+def test_slot_picker_finds_the_digitally_silent_loopback():
+    rng = np.random.default_rng(4)
+    mic = (rng.standard_normal((320, 1)) * 30).astype(np.int16)
+    silent = np.zeros((320, 1), np.int16)
+    loud = (rng.standard_normal((320, 1)) * 3000).astype(np.int16)
+    for ref_slot in (0, 1):
+        p = SlotPicker()
+        for k in range(30):
+            ref = silent if k % 2 else loud
+            p.feed(np.hstack((ref, mic)) if ref_slot == 0 else np.hstack((mic, ref)))
+        assert p.locked and p.ref == ref_slot
+
+
+def test_aligned_reference_cancels_from_the_start():
+    # Riferimento letto nello stesso frame del mic: l'eco segue di 2 ms, e' piu' forte del
+    # riferimento (+60 dB di catena mic) e si cancella senza stime di ritardo ne' render().
+    pytest.importorskip("livekit.rtc")
+    rng = np.random.default_rng(5)
+    fs, secs, delay = 16000, 6, 32
+    far = (rng.standard_normal(fs * secs) * 1500 * (np.sin(np.arange(fs * secs) / fs * 2 * np.pi * 1.5) > 0))
+    far = far.astype(np.int16)
+    echo = np.zeros(fs * secs)
+    echo[delay:] = far[:-delay] * 2.0
+    mic = np.clip(echo + rng.standard_normal(fs * secs) * 20, -32768, 32767).astype(np.int16)
+    ec = aec.EchoCanceller(aec._WebRtcBackend())
+    ec.render(bytes(640))  # ignorato dal primo pacchetto allineato in poi
+    out = bytearray()
+    for i in range(0, fs * secs - 319, 320):
+        out += ec.process_aligned(mic[i:i + 320].tobytes(), far[i:i + 320].tobytes())
+    ec.close()
+    assert ec.aligned and ec.render_backlog_bytes == 0
+    o = np.frombuffer(bytes(out), np.int16).astype(float)
+    m = mic[:len(o)].astype(float)
+    for a, b in ((fs * 1, fs * 3), (fs * 3, fs * 6)):
+        erle = 10 * np.log10(np.mean(m[a:b] ** 2) / max(np.mean(o[a:b] ** 2), 1e-9))
+        assert erle > 20, (a, erle)

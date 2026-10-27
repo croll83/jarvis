@@ -67,6 +67,10 @@ AEC_BACKEND = os.getenv("AEC_BACKEND", "webrtc").strip().lower()
 # Gemini lo prendeva per l'utente che interrompe. Vuoto = default dell'hub.
 HUB_VAD_START_SENSITIVITY = os.getenv("HUB_VAD_START_SENSITIVITY", "START_SENSITIVITY_LOW").strip()
 HUB_VAD_PREFIX_PADDING_MS = int(os.getenv("HUB_VAD_PREFIX_PADDING_MS", "300") or "0")
+# Guadagno digitale del mic dell'Atom (ADC scale ES8311, 0-42 dB a passi di 6) durante la sessione
+# live con riferimento dal device: a +30 dB (default del firmware) l'eco dello speaker satura
+# l'ADC e la parte saturata non si cancella. Vuoto = guadagno del firmware.
+HUB_ATOM_MIC_GAIN_DB = os.getenv("HUB_ATOM_MIC_GAIN_DB", "").strip()
 
 # --- Opus ---
 OPUS_SAMPLE_RATE = 16000

@@ -22,12 +22,13 @@ from config import (
     DEVICE_API_TOKEN, OPUS_SAMPLE_RATE, OPUS_CHANNELS,
     OPUS_FRAME_SAMPLES, WAKEWORD_THRESHOLD, ORCHESTRATOR_URL, LOCATION_ID,
     HUB_HOST, HUB_PORT, AEC_BACKEND, HUB_VAD_START_SENSITIVITY, HUB_VAD_PREFIX_PADDING_MS,
+    HUB_ATOM_MIC_GAIN_DB,
 )
 from wakeword import DeviceWakeWordEngine
 from multiroom import MultiroomCooldown
 from relay import OrchestratorRelay
 from hubrelay import HubRelay, HubRejected, HubUnavailable
-from livesession import HubLiveSession
+from livesession import HubLiveSession, parse_aligned
 from aec import create_echo_canceller
 
 logging.basicConfig(
@@ -86,6 +87,7 @@ class DeviceConnection:
         self.state = DeviceState.IDLE
         self.firmware_version: str = "unknown"
         self.device_type: str = "unknown"  # Determined from hello message fw string
+        self.caps: set[str] = set()      # Dall'hello; "aec_ref" = riferimento AEC dal codec
         self.live_session: bool = False  # True during live session
         self.tts_prepare_token = None    # avviso asincrono in corso (prepare_tts)
         self._ws_write_lock = asyncio.Lock()  # Serializza write verso device
@@ -229,13 +231,16 @@ async def _handle_text(conn: DeviceConnection, raw: str):
 
     if msg_type == "hello":
         conn.firmware_version = msg.get("fw", "unknown")
+        caps = msg.get("caps")
+        conn.caps = {str(c) for c in caps} if isinstance(caps, list) else set()
         # Determine device type from firmware version string
         fw_lower = conn.firmware_version.lower()
         if "voicepe" in fw_lower or "nabuvoice" in fw_lower:
             conn.device_type = "NabuVoice"
         else:
             conn.device_type = "AtomS3R"
-        logger.info(f"[{conn.device_id}] Hello (fw={conn.firmware_version}, type={conn.device_type})")
+        logger.info(f"[{conn.device_id}] Hello (fw={conn.firmware_version}, type={conn.device_type}"
+                    f"{', caps=' + ','.join(sorted(conn.caps)) if conn.caps else ''})")
         # Send welcome
         await conn.send_json({"type": "welcome",
                               "server_time": int(time.time())})
@@ -298,6 +303,10 @@ async def _handle_binary(conn: DeviceConnection, data: bytes):
     """Handle binary Opus frame from device."""
     if conn.hub_session is not None:
         # --- Sessione hub: mic sempre aperto (anche WAKING/BUSY), AEC e poi al hub ---
+        aligned = parse_aligned(data)
+        if aligned is not None:
+            await conn.hub_session.uplink_aligned(*aligned)
+            return
         pcm = conn.decode_opus(data)
         if pcm is not None and conn.hub_session is not None:
             await conn.hub_session.uplink(pcm)
@@ -556,6 +565,20 @@ async def _create_aec():
         raise
 
 
+def _duplex_start_msg(conn: DeviceConnection) -> dict:
+    """live_session_start per il device; ai firmware con la cap "aec_ref" si chiede il
+    riferimento AEC dal loopback del codec (ed eventualmente un guadagno mic per il duplex)."""
+    start = {"type": "live_session_start", "duplex": True}
+    if "aec_ref" in conn.caps:
+        start["aec_ref"] = True
+        if HUB_ATOM_MIC_GAIN_DB:
+            try:
+                start["mic_gain_db"] = int(HUB_ATOM_MIC_GAIN_DB)
+            except ValueError:
+                logger.warning(f"HUB_ATOM_MIC_GAIN_DB={HUB_ATOM_MIC_GAIN_DB!r} non numerico, ignorato")
+    return start
+
+
 async def _start_hub_session(conn: DeviceConnection, msg: dict):
     try:
         await _run_hub_handshake(conn, msg)
@@ -641,7 +664,7 @@ async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
     conn.state = DeviceState.BUSY
     conn.wakeword.mute(3600)
     # Prima il device in duplex, poi il media: il hub puo' parlare subito
-    await conn.send_json({"type": "live_session_start", "duplex": True})
+    await conn.send_json(_duplex_start_msg(conn))
     if conn.hub_session is not session:
         return  # chiusa durante l'invio (device sparito, tap, orchestrator)
 
