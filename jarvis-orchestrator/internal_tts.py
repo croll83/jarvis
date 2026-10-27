@@ -499,6 +499,16 @@ async def speak_to_device(text: str, device_id: str) -> Tuple[bool, float]:
         logger.warning("speak_to_device: testo vuoto, skip")
         return False, 0.0
 
+    # Device in una sessione live sull'hub (full-duplex con Gemini): la sua cassa e'
+    # della sessione, un annuncio si sovrapporrebbe. Il chiamante ripiega (testo).
+    try:
+        from main import has_hub_live_session
+        if has_hub_live_session(device_id):
+            logger.warning(f"speak_to_device({device_id}): sessione live hub in corso, skip")
+            return False, 0.0
+    except Exception:
+        pass
+
     # Storico conversazione (client mobile): invia il testo "umano" della risposta
     # PRIMA del preprocessing TTS (che manipola markdown/numeri per la sintesi).
     try:

@@ -762,6 +762,11 @@ async def ws_audio_endpoint(
                     elif msg_type == "audio_start":
                         # Device wants to start an audio session
                         is_persistent = True  # Confirm persistent mode
+                        # Un turno durante una sessione hub vuol dire che il device ne e' uscito:
+                        # chiusa in silenzio, il turno prosegue normale (D2, prima che arrivi il parlato)
+                        from main import has_hub_live_session, end_live_session
+                        if has_hub_live_session(device_id):
+                            await end_live_session(device_id, reason="turn_during_hub", close_turn=False)
                         if conn.audio_session and not conn.audio_session._closed:
                             logger.warning(f"Device {device_id}: audio_start while session active — ending previous")
                             # Don't send tts_done here — device is already starting a new session
@@ -858,6 +863,17 @@ async def ws_audio_endpoint(
                             logger.error(f"speaker_stop failed for device {device_id}: {e}")
                         # Tell device to go back to IDLE
                         await conn.send_command({"type": "tts_done"})
+
+                    elif msg_type == "live_session_end":
+                        # Sessione live sull'hub chiusa dal device o dal suo wakeword-server
+                        # (tap, hangup dell'hub, hub che rifiuta o non risponde).
+                        reason = str(ctrl.get("reason") or "unknown")
+                        logger.info(f"Device {device_id}: live_session_end ({reason}, call_id={ctrl.get('call_id')})")
+                        try:
+                            from main import handle_device_live_session_end
+                            await handle_device_live_session_end(device_id, ctrl.get("call_id"), reason)
+                        except Exception as e:
+                            logger.error(f"live_session_end failed for device {device_id}: {e}")
 
                     elif msg_type == "state":
                         state = ctrl.get("state", "unknown")
@@ -1272,24 +1288,39 @@ async def _flush_volume(device_id: str, immediate: bool = False):
 # ---------------------------------------------------------------------------
 
 def _is_device_in_live_session(device_id: str) -> bool:
-    """Check if a device is currently in a live session (non-async, no import cycle)."""
+    """Check if a device is currently in a live session (non-async, no import cycle).
+
+    Conta solo le sessioni del turn-loop di oggi: in una sessione hub il device non
+    fa turni con l'orchestrator, e rilanciargli trigger_listen lo terrebbe in un loop
+    di ascolto inutile.
+    """
     try:
         from main import get_live_session
-        return get_live_session(device_id) is not None
+        session = get_live_session(device_id)
+        return session is not None and session.backend != "hub"
     except Exception:
         return False
 
 
-async def notify_live_session_start(device_id: str) -> bool:
-    """Notify device (and relay) that a live session is starting."""
+async def notify_live_session_start(device_id: str, payload: Optional[dict] = None) -> bool:
+    """Notify device (and relay) that a live session is starting.
+
+    payload: messaggio arricchito del backend hub (backend/call_id/profile/.../hub);
+    None = il {"type": "live_session_start"} di oggi.
+    """
     device_id = device_id.upper().strip()
     async with _connections_lock:
         conn = _persistent_connections.get(device_id)
     if not conn:
         return False
-    result = await conn.send_command({"type": "live_session_start"})
+    result = await conn.send_command(payload or {"type": "live_session_start"})
     if result:
-        logger.info(f"notify_live_session_start({device_id}): sent")
+        if payload and payload.get("backend") == "hub":
+            # Il device lascia il turno di attivazione ed entra in full-duplex con
+            # l'hub: niente tts_done/trigger_listen da mandargli per chiuderlo.
+            _open_turns.pop(_turn_key(device_id), None)
+        logger.info(f"notify_live_session_start({device_id}): sent"
+                    + (f" (hub, call_id={payload.get('call_id')})" if payload else ""))
     return result
 
 

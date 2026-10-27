@@ -2121,6 +2121,12 @@ async def tool_notify_device(
     if blocked:
         return _fail(blocked)
 
+    from main import has_hub_live_session
+    if has_hub_live_session(target.device_id):
+        # Il device e' in full-duplex con Gemini via hub: niente TTS sopra la sessione,
+        # Hermes ripiega sul testo.
+        return _fail("sessione live in corso sul device")
+
     async with _notify_lock(target.device_id):
         if target.use_internal_speaker:
             from internal_tts import speak_to_device

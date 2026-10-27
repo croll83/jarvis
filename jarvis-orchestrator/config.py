@@ -103,6 +103,17 @@ if WAKEWORD_SERVER_URLS_RAW:
     except Exception:
         pass
 
+# Voice Live Hub (Fase 2): la sessione live sui device con speaker incorporato gira
+# full-duplex su Gemini Live via hub, fuori dal turn-loop STT->Hermes->TTS. L'orchestrator
+# apre la sessione e passa al device l'indirizzo dell'hub nel live_session_start.
+# VOICE_LIVE_HUB_PORT=0 = feature spenta (rollback): sessione live identica a oggi.
+VOICE_LIVE_HUB_HOST = os.getenv("VOICE_LIVE_HUB_HOST", "100.116.99.9")
+VOICE_LIVE_HUB_PORT = int(os.getenv("VOICE_LIVE_HUB_PORT", "0") or 0)
+VOICE_LIVE_HUB_DEVICE_TYPES = {t.strip() for t in os.getenv(
+    "VOICE_LIVE_HUB_DEVICE_TYPES", "AtomS3R,AndroidPhone,AndroidWear").split(",") if t.strip()}
+# Tetto di sicurezza lato orchestrator: i timeout veri (silenzio, durata) li applica l'hub.
+VOICE_LIVE_HUB_MAX_S = float(os.getenv("VOICE_LIVE_HUB_MAX_S", "3600"))
+
 # AI Agent (AI Brain - Cloud LLM)
 AI_AGENT_URL = os.getenv("AI_AGENT_URL", "")
 # Corsia VOCE: profilo hermes veloce (Sonnet) — la voce non può aspettare Opus.

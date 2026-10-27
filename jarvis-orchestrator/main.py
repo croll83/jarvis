@@ -1181,6 +1181,10 @@ class LiveSession:
     stt_failures: int = 0             # guasti STT consecutivi (vedi handle_live_session_turn)
     max_inactivity_s: float = 300.0   # 5 min silence → auto-close
     max_duration_s: float = 900.0     # 15 min absolute cap
+    # "orchestrator" = turn-loop di oggi; "hub" = full-duplex su Gemini Live via Voice Live Hub
+    # (l'audio non passa di qui, vedi _live_session_backend)
+    backend: str = "orchestrator"
+    hub_call_id: Optional[str] = None
 
 
 _live_sessions: Dict[str, LiveSession] = {}
@@ -1463,6 +1467,58 @@ async def _handle_pending_live_session(device_id: str, audio_bytes: bytes):
     await _start_with_ctx(pending.speaker_ctx, "Sessione live anonima attivata.")
 
 
+def _live_session_backend(device_id: str, use_internal_speaker: bool) -> str:
+    """Decide UNA volta all'apertura chi conduce la sessione live.
+
+    "hub" solo se l'hub e' configurato (porta != 0), il device ha lo speaker incorporato
+    (mic e cassa vicini: l'AEC e' possibile) ed e' di un tipo abilitato. Atom/NabuVoice che
+    suonano su un Echo/soundbar esterno restano sul turn-loop di oggi.
+    """
+    if not config.VOICE_LIVE_HUB_PORT or not config.VOICE_LIVE_HUB_HOST or not use_internal_speaker:
+        return "orchestrator"
+    device_cfg = get_device_speaker_config(device_id)
+    device_type = device_cfg.get("device_type") if device_cfg else None
+    return "hub" if device_type in config.VOICE_LIVE_HUB_DEVICE_TYPES else "orchestrator"
+
+
+# Nomi segnaposto di uno speaker non riconosciuto (build_speaker_context, sessione
+# pending): con questi lo speaker e' ignoto anche se speaker_id e' valorizzato
+# (es. device forzato su un utente cancellato).
+_UNKNOWN_SPEAKER_NAMES = {"sconosciuto", "anonimo"}
+
+
+def _speaker_known(speaker_id: Optional[str], speaker_name: str) -> bool:
+    name = (speaker_name or "").strip()
+    return speaker_id is not None and bool(name) and name.lower() not in _UNKNOWN_SPEAKER_NAMES
+
+
+def _hub_identity(speaker_id: Optional[str], speaker_name: str) -> Tuple[str, str]:
+    """(profilo Hermes, nome) per l'offer all'hub. L'hub non sceglie mai il profilo:
+    speaker ignoto -> AI_AGENT_DEFAULT_PROFILE e nome "Famiglia"."""
+    name = (speaker_name or "").strip()
+    if _speaker_known(speaker_id, name):
+        profile = config.AI_AGENT_SPEAKER_PROFILES.get(name.lower()) or config.AI_AGENT_DEFAULT_PROFILE
+        return profile, name
+    return config.AI_AGENT_DEFAULT_PROFILE, "Famiglia"
+
+
+def _hub_live_session_payload(session: LiveSession) -> dict:
+    """live_session_start arricchito per il backend hub (contratto Fase 2)."""
+    profile, name = _hub_identity(session.user_id, session.speaker_name)
+    return {
+        "type": "live_session_start",
+        "backend": "hub",
+        "call_id": session.hub_call_id,
+        "profile": profile,
+        "name": name,
+        "voice": "",  # vuoto = voce di default dell'hub
+        "location_id": session.location_id or "",
+        "room": session.room or "",
+        "deliver": ["orchestrator"],  # come il default dell'hub per i peer di rete
+        "hub": {"host": config.VOICE_LIVE_HUB_HOST, "port": config.VOICE_LIVE_HUB_PORT},
+    }
+
+
 async def start_live_session(
     device_id: str,
     speaker_id: Optional[str],
@@ -1472,8 +1528,13 @@ async def start_live_session(
     media_player_id: Optional[str],
     use_internal_speaker: bool = False,
     greeting: Optional[str] = None,
+    backend: Optional[str] = None,
 ) -> LiveSession:
-    """Create and register a new live session for a device."""
+    """Create and register a new live session for a device.
+
+    backend=None decide qui (_live_session_backend); "orchestrator" forza il turn-loop
+    di oggi (ripiego quando l'hub rifiuta o non e' raggiungibile).
+    """
     # Clean up any pending session for this device
     _pending_live_sessions.pop(device_id, None)
 
@@ -1494,14 +1555,28 @@ async def start_live_session(
         use_internal_speaker=use_internal_speaker,
         ai_agent_session_user=session_user,
     )
+    if backend is None:
+        backend = _live_session_backend(device_id, use_internal_speaker)
+    if backend == "hub":
+        session.backend = "hub"
+        session.hub_call_id = uuid.uuid4().hex[:8]
+        session.max_duration_s = config.VOICE_LIVE_HUB_MAX_S
     _live_sessions[device_id] = session
 
     logger.info(f"🎙️ Live session STARTED: device={device_id}, room={room}, "
                 f"speaker={speaker_name}, session_user={session_user}, "
-                f"internal_speaker={use_internal_speaker}")
+                f"internal_speaker={use_internal_speaker}, backend={session.backend}"
+                + (f", call_id={session.hub_call_id}" if session.hub_call_id else ""))
 
     # Notify device + wakeword server relay
     from ws_audio_handler import notify_live_session_start
+    if session.backend == "hub":
+        # Saluto, ascolto e turni li fa Gemini via hub: qui solo il comando al device
+        # (o al suo wakeword-server), che apre la connessione all'hub.
+        if not await notify_live_session_start(device_id, _hub_live_session_payload(session)):
+            logger.warning(f"🎙️ Live session hub: {device_id} non raggiungibile, sessione annullata")
+            _live_sessions.pop(device_id, None)
+        return session
     await notify_live_session_start(device_id)
 
     # Confirm via TTS
@@ -1527,8 +1602,14 @@ async def start_live_session(
     return session
 
 
-async def end_live_session(device_id: str, reason: str = "unknown"):
-    """End a live session and notify the user."""
+async def end_live_session(device_id: str, reason: str = "unknown", close_turn: bool = True):
+    """End a live session and notify the user.
+
+    close_turn vale solo per le sessioni hub: True = dopo il live_session_end anche
+    tts_done, cosi' ogni peer chiude il turno e torna IDLE (il wakeword-server torna in
+    ascolto della wake word solo su tts_done). False solo se il chiamante prosegue
+    sullo stesso turno (turno arrivato durante la sessione hub, vedi _process_ws_audio_turn).
+    """
     session = _live_sessions.pop(device_id, None)
     if not session:
         return
@@ -1538,6 +1619,16 @@ async def end_live_session(device_id: str, reason: str = "unknown"):
     # Notify device + wakeword server relay
     from ws_audio_handler import notify_live_session_end
     await notify_live_session_end(device_id)
+
+    if session.backend == "hub":
+        # Nessun commiato: la voce della sessione e' Gemini. Il live_session_end appena
+        # mandato fa chiudere al device (o al wakeword-server) la connessione all'hub.
+        if close_turn:
+            from ws_audio_handler import notify_tts_done
+            await notify_tts_done(device_id)
+        logger.info(f"🎙️ Live session ENDED (hub): device={device_id}, reason={reason}, "
+                    f"call_id={session.hub_call_id}, duration={duration:.0f}s")
+        return
 
     # Notify user based on reason
     goodbye_messages = {
@@ -1572,6 +1663,67 @@ async def end_live_session(device_id: str, reason: str = "unknown"):
 
     logger.info(f"🎙️ Live session ENDED: device={device_id}, reason={reason}, "
                 f"duration={duration:.0f}s, turns={session.turn_count}")
+
+
+# Il device (o il wakeword-server) non e' riuscito ad aprire o tenere la sessione sull'hub
+# (hub che rifiuta o non risponde, Atom che non entra in duplex, app senza microfono):
+# si ripiega sulla sessione live di oggi invece di lasciare l'utente senza risposta.
+# Solo "button" (scelta dell'utente) e "hub_hangup" (chiusura da Gemini) la chiudono.
+_HUB_FALLBACK_REASONS = {"hub_rejected", "hub_unreachable", "error"}
+
+
+async def handle_device_live_session_end(device_id: str, call_id: Optional[str], reason: str):
+    """live_session_end in ingresso dal device: chiude una sessione hub.
+
+    reason: "button" | "hub_hangup" | "hub_rejected" | "hub_unreachable" | "error".
+    Vale solo per le sessioni hub (le altre si chiudono come oggi, speaker_stop o voce);
+    un call_id diverso da quello della sessione in corso e' un residuo e si ignora.
+
+    Su hub_rejected/hub_unreachable/error il peer si limita a riferire, e la sessione si converte
+    qui sul posto: niente live_session_end, subito il live_session_start di oggi con
+    saluto e trigger_listen. Senza ripiego (device sparito, altri motivi) la sessione
+    si chiude con live_session_end + tts_done.
+    """
+    session = _live_sessions.get(device_id)
+    if not session or session.backend != "hub":
+        logger.info(f"🎙️ live_session_end da {device_id} ({reason}) senza sessione hub: ignorato")
+        return
+    if call_id and call_id != session.hub_call_id:
+        logger.info(f"🎙️ live_session_end da {device_id} per call_id={call_id} "
+                    f"(in corso {session.hub_call_id}): ignorato")
+        return
+
+    fallback = reason in _HUB_FALLBACK_REASONS
+    if fallback and device_id.upper().strip() not in await get_connected_devices():
+        logger.warning(f"🎙️ Hub non disponibile ({reason}) e {device_id} disconnesso: niente ripiego")
+        fallback = False
+    if not fallback:
+        await end_live_session(device_id, reason=f"device_{reason or 'unknown'}")
+        return
+
+    _live_sessions.pop(device_id, None)
+    logger.info(f"🎙️ Hub non disponibile ({reason}, call_id={session.hub_call_id}) per {device_id}: "
+                f"ripiego sulla sessione live di oggi")
+    greeting = (f"Ciao {session.speaker_name}, sessione live attivata."
+                if _speaker_known(session.user_id, session.speaker_name) else "Sessione live anonima attivata.")
+    await start_live_session(
+        device_id=device_id,
+        speaker_id=session.user_id,
+        speaker_name=session.speaker_name,
+        location_id=session.location_id,
+        room=session.room,
+        media_player_id=session.media_player_id,
+        use_internal_speaker=session.use_internal_speaker,
+        greeting=greeting,
+        backend="orchestrator",
+    )
+
+
+def has_hub_live_session(device_id: str) -> bool:
+    """True se il device e' in una sessione live sull'hub (full-duplex con Gemini):
+    gli annunci sullo speaker interno vanno rifiutati, il device non e' nostro."""
+    session = _live_sessions.get(device_id) or _live_sessions.get((device_id or "").upper().strip())
+    return session is not None and session.backend == "hub"
 
 
 async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
@@ -1709,6 +1861,13 @@ async def live_session_monitor():
 
         # Active live sessions
         for device_id, session in list(_live_sessions.items()):
+            # Sessioni hub: i turni non passano di qui (last_activity resta ferma),
+            # silenzio e durata li gestisce l'hub. Qui solo il tetto di sicurezza.
+            if session.backend == "hub":
+                if now - session.started_at > session.max_duration_s:
+                    logger.info(f"🎙️ Live session hub timeout (tetto di sicurezza): {device_id}")
+                    await end_live_session(device_id, reason="max_duration")
+                continue
             if now - session.last_activity > session.max_inactivity_s:
                 logger.info(f"🎙️ Live session timeout (inactivity): {device_id}")
                 await end_live_session(device_id, reason="inactivity_timeout")
@@ -3248,6 +3407,15 @@ async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
     # ── LIVE SESSION BYPASS ──────────────────────────────────────────────
     # If device is in a live session, skip speaker ID, routing, normalize.
     # Only do: audio normalize → STT → deactivation check → AI Agent
+    if device_id in _live_sessions and _live_sessions[device_id].backend == "hub":
+        # In una sessione hub l'audio va diretto all'hub: se un turno arriva qui il
+        # device non e' piu' nella sessione (desync: fine persa, app o firmware che non
+        # gestiscono il backend hub). Si chiude la sessione in silenzio, senza chiudere
+        # il turno, e il turno prosegue sulla pipeline normale ("apri la porta del box").
+        logger.warning(f"🎙️ Turno audio da {device_id} durante una sessione hub: "
+                       f"il device ne e' uscito, chiudo la sessione e proseguo")
+        await end_live_session(device_id, reason="turn_during_hub", close_turn=False)
+
     if device_id in _live_sessions:
         voice_corpus.note(path="live_session")
         logger.info(f"🎙️ Live session active for {device_id} — using simplified pipeline")
@@ -6521,6 +6689,14 @@ async def deliver_final_response(text: str, context: dict, sound_type: str = Non
     if source == "Telegram":
         await send_telegram(text)
         await _immediate_tts_done()
+        return
+
+    # Device in sessione live sull'hub (full-duplex con Gemini): la voce non e' nostra.
+    # Niente audio sugli speaker di stanza ne' tts_done, la risposta va su Telegram.
+    hub_dev = context.get("device_id")
+    if hub_dev and hub_dev != "unknown" and has_hub_live_session(hub_dev):
+        logger.info(f"🎧 {hub_dev} in sessione hub: risposta su Telegram invece che a voce")
+        await send_telegram(f"🎧 {text}")
         return
 
     # === FALLBACK CHAIN per voice devices ===
