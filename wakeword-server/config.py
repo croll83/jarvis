@@ -71,6 +71,11 @@ HUB_VAD_PREFIX_PADDING_MS = int(os.getenv("HUB_VAD_PREFIX_PADDING_MS", "300") or
 # live con riferimento dal device: a +30 dB (default del firmware) l'eco dello speaker satura
 # l'ADC e la parte saturata non si cancella. Vuoto = guadagno del firmware.
 HUB_ATOM_MIC_GAIN_DB = os.getenv("HUB_ATOM_MIC_GAIN_DB", "").strip()
+# Cosa chiedere ai firmware con la cap "aec_ref": "level" (mic Opus + livello dello speaker,
+# il server chiude il canale verso Gemini mentre l'Atom suona) oppure "pcm" (mic e loopback in
+# PCM per l'AEC, ~512 kbit/s: sul WiFi dell'Atom faceva cadere la sessione). "level" ignora
+# HUB_ATOM_MIC_GAIN_DB: l'eco non arriva comunque a Gemini.
+HUB_AEC_REF_MODE = os.getenv("HUB_AEC_REF_MODE", "level").strip().lower()
 
 # --- Opus ---
 OPUS_SAMPLE_RATE = 16000

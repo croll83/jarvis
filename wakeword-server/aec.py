@@ -22,6 +22,7 @@ import os
 import struct
 import time
 import wave
+from typing import Optional
 
 logger = logging.getLogger("wakeword-server")
 
@@ -57,7 +58,7 @@ _ALIGNED_DELAY_HINT_MS = int(os.getenv("AEC_ALIGNED_DELAY_MS", "0") or "0")
 # e Gemini si interrompeva da solo. Finche' il riferimento e' attivo, piu' una coda, a Gemini va
 # silenzio; passa solo cio' che supera il livello del riferimento + AEC_GATE_BARGE_DB.
 _GATE = os.getenv("AEC_GATE", "1").strip().lower() not in ("0", "false", "no", "off")
-_GATE_HOLD_MS = int(os.getenv("AEC_GATE_HOLD_MS", "200") or "0")
+_GATE_HOLD_MS = int(os.getenv("AEC_GATE_HOLD_MS", "300") or "0")
 _GATE_BARGE_DB = float(os.getenv("AEC_GATE_BARGE_DB", "-10") or "-10")
 _GATE_OPEN_HOLD_MS = 300      # un barge-in riconosciuto tiene aperto il cancello per questo tempo
 _GATE_FAR_ACTIVE_DB = -50.0   # riferimento sopra questo livello = Jarvis sta suonando
@@ -193,7 +194,7 @@ class _EchoGate:
     """Silenzio verso Gemini mentre il riferimento e' attivo (e per _GATE_HOLD_MS dopo), salvo
     blocchi puliti piu' forti del riferimento + barge_db (una voce molto vicina o forte)."""
 
-    def __init__(self, hold_ms: int = _GATE_HOLD_MS, barge_db: float = _GATE_BARGE_DB):
+    def __init__(self, hold_ms: int = _GATE_HOLD_MS, barge_db: Optional[float] = _GATE_BARGE_DB):
         self._hold = max(1, hold_ms // 10)
         self._barge_db = barge_db
         self._far_db = []             # livello del riferimento degli ultimi blocchi da 10 ms
@@ -202,14 +203,18 @@ class _EchoGate:
         self.passed = 0
 
     def apply(self, far: bytes, clean: bytes) -> bytes:
-        self._far_db.append(_dbfs(_sq_sum(far), CHUNK_SAMPLES))
+        return self.apply_db(_dbfs(_sq_sum(far), CHUNK_SAMPLES), clean)
+
+    def apply_db(self, far_db: float, clean: bytes) -> bytes:
+        """Come apply() col livello del riferimento gia' misurato (barge_db None = mai barge-in)."""
+        self._far_db.append(far_db)
         if len(self._far_db) > self._hold:
             del self._far_db[0]
         env = max(self._far_db)
         if env < _GATE_FAR_ACTIVE_DB:
             self._open = 0
             return clean
-        if _dbfs(_sq_sum(clean), CHUNK_SAMPLES) > env + self._barge_db:
+        if self._barge_db is not None and _dbfs(_sq_sum(clean), CHUNK_SAMPLES) > env + self._barge_db:
             self._open = _GATE_OPEN_HOLD_MS // 10
         if self._open > 0:
             self._open -= 1

@@ -86,8 +86,14 @@ static const char *TAG = "WS_AUDIO";
 // Opus: the echo canceller subtracts waveforms, a lossy reference would cap it.
 // Format bit 7 = DAC muted during the packet (barge-in): the speaker is silent even if
 // the loopback still carries the TX ring play-out, so the server drops the reference.
+// Level format (aec_ref "level"): 0xA5 | 0x03 | seq | 2 x u16 LE loopback RMS (10 ms each)
+// | mic Opus. ~35 kbit/s instead of 512: the PCM stream stalled the Atom's WiFi for >1 s and
+// dropped the session, and on the Echo Base acoustics the waveform buys little (echo vs
+// reference coherence ~0.8); the server gates the uplink on the exact playback level.
 #define DUPLEX_REF_MAGIC            0xA5
 #define DUPLEX_REF_FMT_PCM          0x01
+#define DUPLEX_REF_FMT_LEVEL        0x03
+#define DUPLEX_LEVEL_HEADER         (DUPLEX_REF_HEADER + 4)
 #define DUPLEX_REF_FLAG_MUTED       0x80
 #define DUPLEX_REF_HEADER           4
 #define DUPLEX_REF_VALUES           (OPUS_FRAME_SAMPLES * 2)
@@ -181,6 +187,7 @@ static size_t duplex_mic_fill = 0;                   // Samples accumulated in e
 static bool duplex_fill_ref_layout = false;          // Layout duplex_mic_fill was counted in
 static uint8_t *duplex_ref_pkt = NULL;               // AEC reference packet being filled
 static uint16_t duplex_ref_seq = 0;
+static bool duplex_ref_level = false;                // Level format instead of PCM pairs
 static bool duplex_ref_muted = false;                // DAC muted during the packet being filled
 static bool duplex_mic_scale_changed = false;        // ADC scale set by the server for this session
 static wifi_ps_type_t duplex_saved_ps = WIFI_PS_MIN_MODEM;
@@ -504,7 +511,7 @@ static void duplex_play_task(void *arg) {
 
 // Session media options from live_session_start: AEC reference (feed task switches
 // the ring layout on its next read) and an optional ADC scale while in duplex.
-static void duplex_media_on(bool aec_ref, int mic_scale_db) {
+static void duplex_media_on(bool aec_ref, bool ref_level, int mic_scale_db) {
     // Modem sleep holds the server's TCP ACKs until the next beacon (100-300 ms): fine
     // for 30 kbit/s Opus, not for the continuous duplex uplink. Only while in session.
     if (esp_wifi_get_ps(&duplex_saved_ps) == ESP_OK && duplex_saved_ps != WIFI_PS_NONE &&
@@ -513,6 +520,7 @@ static void duplex_media_on(bool aec_ref, int mic_scale_db) {
         ESP_LOGI(TAG, "WiFi power save OFF for the live session");
     }
     duplex_ref_seq = 0;
+    duplex_ref_level = ref_level;
     jarvis_audio_set_aec_ref(aec_ref);
     duplex_mic_scale_changed = (mic_scale_db >= 0);
     if (duplex_mic_scale_changed) jarvis_codec_set_mic_scale_db(mic_scale_db);
@@ -533,7 +541,7 @@ static void duplex_media_off(void) {
 
 // Called from the WS event handler. Never waits: a play task still finishing
 // the previous session carries on into this one.
-static bool duplex_start(bool aec_ref, int mic_scale_db) {
+static bool duplex_start(bool aec_ref, bool ref_level, int mic_scale_db) {
 #ifdef USE_LOCAL_WAKEWORD
     // The continuous mic stream only exists with server-side wake word
     ESP_LOGW(TAG, "Duplex live session not supported with local wake word");
@@ -549,7 +557,7 @@ static bool duplex_start(bool aec_ref, int mic_scale_db) {
     duplex_mic_fill = 0;
     duplex_late_drop_armed = false;
     opus_decoder_ctl(opus_decoder, OPUS_RESET_STATE);
-    duplex_media_on(aec_ref, mic_scale_db);
+    duplex_media_on(aec_ref, ref_level, mic_scale_db);
 
     portENTER_CRITICAL(&duplex_mux);
     duplex_end_flush = false;
@@ -572,7 +580,7 @@ static bool duplex_start(bool aec_ref, int mic_scale_db) {
         return false;
     }
     ESP_LOGI(TAG, "Duplex live session started%s%s", need_task ? "" : " (play task reused)",
-             aec_ref ? " with AEC reference" : "");
+             aec_ref ? (ref_level ? " with playback level" : " with AEC reference") : "");
     return true;
 }
 
@@ -647,6 +655,43 @@ static void duplex_on_downlink(const char *data, int len) {
     }
 }
 
+// Level format: mic to Opus, loopback reduced to one RMS per 10 ms (see DUPLEX_REF_FMT_LEVEL).
+// pairs lives inside duplex_ref_pkt, so mic and levels are taken out before the header is written.
+static void duplex_send_level_packet(const int16_t *pairs) {
+    uint16_t rms[2];
+    for (int h = 0; h < 2; h++) {
+        uint64_t sum = 0;
+        for (int i = h * (OPUS_FRAME_SAMPLES / 2); i < (h + 1) * (OPUS_FRAME_SAMPLES / 2); i++) {
+            int32_t r = pairs[i * 2 + 1];
+            sum += (uint64_t)(r * r);
+        }
+        rms[h] = (uint16_t)sqrtf((float)sum / (OPUS_FRAME_SAMPLES / 2));
+    }
+    for (int i = 0; i < OPUS_FRAME_SAMPLES; i++) {
+        enc_input_buffer[i] = pairs[i * 2];
+    }
+    int enc_size = opus_encode(opus_encoder, enc_input_buffer, OPUS_FRAME_SAMPLES,
+                               enc_output_buffer, OPUS_MAX_PACKET_SIZE);
+    if (enc_size <= 0 ||
+        enc_size > (int)(DUPLEX_REF_HEADER + DUPLEX_REF_VALUES * sizeof(int16_t)) - DUPLEX_LEVEL_HEADER) {
+        return;
+    }
+    duplex_ref_pkt[0] = DUPLEX_REF_MAGIC;
+    duplex_ref_pkt[1] = DUPLEX_REF_FMT_LEVEL | (duplex_ref_muted ? DUPLEX_REF_FLAG_MUTED : 0);
+    duplex_ref_muted = false;
+    duplex_ref_pkt[2] = (uint8_t)(duplex_ref_seq & 0xFF);
+    duplex_ref_pkt[3] = (uint8_t)(duplex_ref_seq >> 8);
+    duplex_ref_seq++;
+    for (int h = 0; h < 2; h++) {
+        duplex_ref_pkt[4 + h * 2] = (uint8_t)(rms[h] & 0xFF);
+        duplex_ref_pkt[5 + h * 2] = (uint8_t)(rms[h] >> 8);
+    }
+    memcpy(duplex_ref_pkt + DUPLEX_LEVEL_HEADER, enc_output_buffer, enc_size);
+    esp_websocket_client_send_bin(ws_client, (const char *)duplex_ref_pkt,
+                                  DUPLEX_LEVEL_HEADER + enc_size,
+                                  pdMS_TO_TICKS(DUPLEX_REF_SEND_TIMEOUT_MS));
+}
+
 // AEC reference uplink: exact 20ms [mic, ref] packets, PCM (see DUPLEX_REF_MAGIC)
 static void duplex_stream_mic_ref(void) {
     int16_t *pairs = (int16_t *)(duplex_ref_pkt + DUPLEX_REF_HEADER);
@@ -660,6 +705,10 @@ static void duplex_stream_mic_ref(void) {
         if (duplex_mic_fill < DUPLEX_REF_VALUES) continue;
         duplex_mic_fill = 0;
 
+        if (duplex_ref_level) {
+            duplex_send_level_packet(pairs);
+            continue;
+        }
         duplex_ref_pkt[0] = DUPLEX_REF_MAGIC;
         duplex_ref_pkt[1] = DUPLEX_REF_FMT_PCM | (duplex_ref_muted ? DUPLEX_REF_FLAG_MUTED : 0);
         duplex_ref_muted = false;
@@ -797,12 +846,15 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
 
                                 } else if (strcmp(type, "live_session_start") == 0) {
                                     bool duplex = cJSON_IsTrue(cJSON_GetObjectItem(msg, "duplex"));
-                                    bool aec_ref = cJSON_IsTrue(cJSON_GetObjectItem(msg, "aec_ref"));
+                                    // aec_ref: true = PCM [mic, ref] pairs, "level" = mic Opus + loopback level
+                                    cJSON *ref = cJSON_GetObjectItem(msg, "aec_ref");
+                                    bool ref_level = cJSON_IsString(ref) && strcmp(ref->valuestring, "level") == 0;
+                                    bool aec_ref = cJSON_IsTrue(ref) || ref_level;
                                     cJSON *gain = cJSON_GetObjectItem(msg, "mic_gain_db");
                                     int mic_scale_db = (gain && cJSON_IsNumber(gain)) ? gain->valueint : -1;
                                     ESP_LOGI(TAG, "Server: live_session_start%s", duplex ? " (duplex)" : "");
                                     live_session_active = true;
-                                    if (duplex && !duplex_start(aec_ref, mic_scale_db)) {
+                                    if (duplex && !duplex_start(aec_ref, ref_level, mic_scale_db)) {
                                         // Cannot do full-duplex: end it cleanly rather than half-work
                                         send_json("live_session_end", "reason", "error");
                                         live_session_active = false;
@@ -1097,7 +1149,7 @@ static void ws_persistent_task(void *arg) {
 
         // === Phase 2: Connected! Send hello ===
         ESP_LOGI(TAG, "Connected! Sending hello...");
-        send_json_hello(device_id_buf, "5.2.0-ws");
+        send_json_hello(device_id_buf, "5.2.1-ws");
 
         // === Phase 3: Main loop (idle + audio sessions) ===
         int64_t last_ping_time = esp_timer_get_time() / 1000;

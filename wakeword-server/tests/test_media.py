@@ -8,7 +8,7 @@ import pytest
 
 import aec
 import hubrelay
-from livesession import Resampler24kTo16k, SlotPicker, parse_aligned, vu_level
+from livesession import Resampler24kTo16k, SlotPicker, parse_aligned, parse_level, vu_level
 
 HUB_IPC = ("/home/jarvis/sviluppo/hermes-jarvis/services/voice-live-hub/"
            "voice_live_hub/ipc.py")
@@ -357,9 +357,9 @@ def test_gate_silences_residual_echo_while_the_reference_plays():
     residual = _tone(1000, 320, 16000, amp=300.0)     # residuo ~ -40 dBFS: sotto la soglia
     out = ec.process_aligned(residual.tobytes(), far.tobytes())
     assert _level(out) == 0 and ec.gate_stats == (2, 0)
-    # Jarvis tace: il cancello resta chiuso per la coda (200 ms) e poi riapre
+    # Jarvis tace: il cancello resta chiuso per la coda (300 ms) e poi riapre
     silence = np.zeros(320, np.int16).tobytes()
-    outs = [ec.process_aligned(residual.tobytes(), silence) for _ in range(12)]
+    outs = [ec.process_aligned(residual.tobytes(), silence) for _ in range(18)]
     assert _level(outs[0]) == 0 and _level(outs[-1]) > 200
 
 
@@ -379,3 +379,10 @@ def test_fixed_gain_applies_after_the_gate_decision():
     x = _tone(1000, 320, 16000, amp=1000.0)
     out = ec.process_aligned(x.tobytes(), np.zeros(320, np.int16).tobytes())
     assert abs(_level(out) / _level(x.tobytes()) - 10 ** (18 / 20)) < 0.05
+
+
+def test_parse_level_packets():
+    seq, rms, opus, muted = parse_level(bytes([0xA5, 0x83, 1, 0, 0x10, 0x27, 0, 0]) + b"\x08xyz")
+    assert (seq, rms, opus, muted) == (1, [10000, 0], b"\x08xyz", True)
+    assert parse_level(bytes([0xA5, 0x01, 0, 0, 1, 2, 3, 4])) is None  # PCM, non livelli
+    assert parse_aligned(bytes([0xA5, 0x03, 0, 0, 1, 2, 3, 4])) is None

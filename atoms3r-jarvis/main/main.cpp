@@ -50,7 +50,7 @@ extern "C" {
 static const char *TAG = "JARVIS";
 
 // Firmware version
-#define FIRMWARE_VERSION "5.2.0-ws"
+#define FIRMWARE_VERSION "5.2.1-ws"
 
 // =============================================================================
 // GLOBAL STATE

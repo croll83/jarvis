@@ -273,6 +273,7 @@ def aligned_packets(mic, ref, swap=False):
 
 async def test_aec_ref_cap_asks_the_device_for_the_reference(conn, hub_on, monkeypatch):
     monkeypatch.setattr(server, "HUB_ATOM_MIC_GAIN_DB", "18")
+    monkeypatch.setattr(server, "HUB_AEC_REF_MODE", "pcm")
     conn.caps = {"aec_ref"}
     await start_session(conn, hub_on)
     assert conn.ws.json == [{"type": "live_session_start", "duplex": True, "aec_ref": True,
@@ -309,6 +310,51 @@ async def test_muted_packets_drop_the_reference_and_do_not_vote(conn, hub_on):
         await server._handle_binary(conn, pkt)
     assert session._slots.votes == [0, 0]
     assert all(f == bytes(640) for f in seen)
+
+
+def level_packets(mic, ref_rms, muted=False):
+    """Pacchetti come il firmware con aec_ref "level": 0xA5 0x03 seq, 2 RMS u16, mic Opus."""
+    out = []
+    for k, f in enumerate(opus_frames(mic)):
+        r = ref_rms[k] if k < len(ref_rms) else 0
+        out.append(bytes([0xA5, 0x83 if muted else 0x03, k & 0xFF, k >> 8, r & 0xFF, r >> 8, r & 0xFF, r >> 8]) + f)
+    return out
+
+
+async def test_aec_ref_cap_gets_the_level_mode_by_default(conn, hub_on):
+    conn.caps = {"aec_ref"}
+    await start_session(conn, hub_on)
+    assert conn.ws.json == [{"type": "live_session_start", "duplex": True, "aec_ref": "level"}]
+    assert conn.hub_session.aec._gain == 1.0
+
+
+async def test_level_uplink_is_silenced_while_the_speaker_plays(conn, hub_on):
+    hub = hub_on
+    conn.caps = {"aec_ref"}
+    session = await start_session(conn, hub)
+    mic = tone(440, 1.0, 16000)
+    # primi 25 pacchetti (0,5 s) con lo speaker a ~ -12 dBFS, poi muto
+    packets = level_packets(mic, [8000] * 25)
+    for p in packets:
+        await server._handle_binary(conn, p)
+    assert await wait_for(lambda: len(hub.audio) >= len(packets) * 640)
+    pcm = np.frombuffer(bytes(hub.audio), dtype=np.int16)
+    assert not pcm[:8000].any()                  # Jarvis parla: a Gemini solo silenzio
+    assert not pcm[8000:8000 + 4000].any()       # coda di 300 ms dopo l'ultimo audio
+    assert abs(peak_hz(pcm[13000:], 16000) - 440) < 20  # poi il mic passa
+    assert session._seq_lost == 0 and session._level_packets == len(packets)
+
+
+async def test_level_uplink_muted_flag_opens_the_gate(conn, hub_on):
+    hub = hub_on
+    conn.caps = {"aec_ref"}
+    await start_session(conn, hub)
+    packets = level_packets(tone(440, 0.4, 16000), [8000] * 20, muted=True)
+    for p in packets:
+        await server._handle_binary(conn, p)
+    assert await wait_for(lambda: len(hub.audio) >= len(packets) * 640)
+    pcm = np.frombuffer(bytes(hub.audio), dtype=np.int16)
+    assert np.abs(pcm[1600:]).max() > 1000  # DAC in mute: lo speaker tace, il mic passa
 
 
 async def test_downlink_resampled_paced_opus(conn, hub_on):

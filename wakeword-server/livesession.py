@@ -19,7 +19,7 @@ from typing import Awaitable, Callable, Optional
 import numpy as np
 import opuslib
 
-from aec import EchoCanceller, create_echo_canceller
+from aec import EchoCanceller, _EchoGate, create_echo_canceller
 from config import OPUS_SAMPLE_RATE, OPUS_CHANNELS, OPUS_FRAME_SAMPLES
 from hubrelay import HubRelay
 
@@ -43,6 +43,12 @@ _VU_FLOOR_DB = -60.0
 ALIGNED_MAGIC = 0xA5
 ALIGNED_PCM = 0x01
 ALIGNED_MUTED = 0x80
+# Formato a livelli (aec_ref "level"): 0xA5 | 0x03 | seq | 2 x u16 LE RMS del loopback (10 ms
+# l'uno) | mic Opus. Il PCM a 512 kbit/s faceva stallare il WiFi dell'Atom oltre 1 s e cadeva la
+# sessione; e sull'Echo Base la forma d'onda serve a poco (coerenza eco/riferimento ~0,8): basta
+# sapere quando e quanto forte suona lo speaker per chiudere il canale verso Gemini.
+LEVEL_FMT = 0x03
+_LEVEL_HEADER = 8
 _ALIGNED_HEADER = 4
 # Slot del loopback a zero digitale quando l'Atom non suona; il mic a +60 dB non ci arriva mai
 _DIGITAL_SILENCE = 4
@@ -57,6 +63,19 @@ def parse_aligned(data: bytes):
     seq = data[2] | (data[3] << 8)
     pairs = np.frombuffer(data, dtype="<i2", offset=_ALIGNED_HEADER).reshape(-1, 2)
     return seq, pairs, bool(data[1] & ALIGNED_MUTED)
+
+
+def parse_level(data: bytes):
+    """Pacchetto a livelli -> (seq, [rms 10 ms, rms 10 ms], opus, muted); None se non lo e'."""
+    if len(data) <= _LEVEL_HEADER or data[0] != ALIGNED_MAGIC or data[1] & ~ALIGNED_MUTED != LEVEL_FMT:
+        return None
+    seq = data[2] | (data[3] << 8)
+    rms = [data[4] | (data[5] << 8), data[6] | (data[7] << 8)]
+    return seq, rms, bytes(data[_LEVEL_HEADER:]), bool(data[1] & ALIGNED_MUTED)
+
+
+def _rms_db(rms: int) -> float:
+    return 20 * math.log10(rms / 32768.0) if rms > 0 else -120.0
 
 
 class SlotPicker:
@@ -145,6 +164,10 @@ class HubLiveSession:
         self._slots = SlotPicker()
         self._seq = None
         self._seq_lost = 0
+        # Formato a livelli: niente AEC, solo il cancello sul livello reale dello speaker. Senza
+        # barge-in: lo speaker arriva al mic ben sopra la voce, nessuna soglia li distingue.
+        self._level_gate = _EchoGate(barge_db=None)
+        self._level_packets = 0
         self._closed = False
         logger.info(f"[{device_id}] Hub live media ready (call {call_id}, AEC {self.aec.backend_name})")
 
@@ -179,6 +202,22 @@ class HubLiveSession:
         mic = np.ascontiguousarray(pairs[:, 1 - ref])
         far = np.zeros(len(pairs), np.int16) if muted else np.ascontiguousarray(pairs[:, ref])
         await self._forward(self.aec.process_aligned(mic.tobytes(), far.tobytes()))
+
+    async def uplink_level(self, seq: int, rms: list, pcm16k: np.ndarray, muted: bool = False):
+        """Pacchetto a livelli (parse_level): mic gia' decodificato + livello dello speaker."""
+        if self._closed:
+            return
+        if self._seq is not None:
+            self._seq_lost += (seq - self._seq - 1) & 0xFFFF
+        self._seq = seq
+        self._level_packets += 1
+        pcm = pcm16k.tobytes()
+        half = len(pcm) // 2
+        out = b""
+        for k, chunk in enumerate((pcm[:half], pcm[half:])):
+            far_db = -120.0 if muted else _rms_db(rms[k] if k < len(rms) else 0)
+            out += self._level_gate.apply_db(far_db, chunk)
+        await self._forward(out)
 
     async def _forward(self, clean: bytes):
         if clean:
@@ -276,6 +315,10 @@ class HubLiveSession:
         if self.aec.aligned:
             logger.info(f"[{self.device_id}] AEC allineato: slot rif. {self._slots.ref} "
                         f"(voti {self._slots.votes}), pacchetti persi {self._seq_lost}")
+        if self._level_packets:
+            g = self._level_gate
+            logger.info(f"[{self.device_id}] Livello speaker: {self._level_packets} pacchetti, persi "
+                        f"{self._seq_lost}, cancello chiuso {g.gated} blocchi da 10 ms su {2 * self._level_packets}")
         try:
             await asyncio.to_thread(self.aec.write_debug, f"{self.call_id}_{self.device_id}")
         except Exception as e:

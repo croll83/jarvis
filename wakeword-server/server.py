@@ -22,13 +22,13 @@ from config import (
     DEVICE_API_TOKEN, OPUS_SAMPLE_RATE, OPUS_CHANNELS,
     OPUS_FRAME_SAMPLES, WAKEWORD_THRESHOLD, ORCHESTRATOR_URL, LOCATION_ID,
     HUB_HOST, HUB_PORT, AEC_BACKEND, HUB_VAD_START_SENSITIVITY, HUB_VAD_PREFIX_PADDING_MS,
-    HUB_ATOM_MIC_GAIN_DB,
+    HUB_ATOM_MIC_GAIN_DB, HUB_AEC_REF_MODE,
 )
 from wakeword import DeviceWakeWordEngine
 from multiroom import MultiroomCooldown
 from relay import OrchestratorRelay
 from hubrelay import HubRelay, HubRejected, HubUnavailable
-from livesession import HubLiveSession, parse_aligned
+from livesession import HubLiveSession, parse_aligned, parse_level
 from aec import create_echo_canceller
 
 logging.basicConfig(
@@ -303,6 +303,13 @@ async def _handle_binary(conn: DeviceConnection, data: bytes):
     """Handle binary Opus frame from device."""
     if conn.hub_session is not None:
         # --- Sessione hub: mic sempre aperto (anche WAKING/BUSY), AEC e poi al hub ---
+        level = parse_level(data)
+        if level is not None:
+            seq, rms, opus, muted = level
+            pcm = conn.decode_opus(opus)
+            if pcm is not None and conn.hub_session is not None:
+                await conn.hub_session.uplink_level(seq, rms, pcm, muted)
+            return
         aligned = parse_aligned(data)
         if aligned is not None:
             await conn.hub_session.uplink_aligned(*aligned)
@@ -581,7 +588,9 @@ def _duplex_start_msg(conn: DeviceConnection) -> dict:
     """live_session_start per il device; ai firmware con la cap "aec_ref" si chiede il
     riferimento AEC dal loopback del codec (ed eventualmente un guadagno mic per il duplex)."""
     start = {"type": "live_session_start", "duplex": True}
-    if "aec_ref" in conn.caps:
+    if "aec_ref" in conn.caps and HUB_AEC_REF_MODE == "level":
+        start["aec_ref"] = "level"
+    elif "aec_ref" in conn.caps:
         start["aec_ref"] = True
         gain = _mic_gain_db()
         if gain is not None:
@@ -667,7 +676,7 @@ async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
         await relay.send_json({"type": "ended", "call_id": call_id})
         await relay.close()
         raise
-    gain = _mic_gain_db() if "aec_ref" in conn.caps else None
+    gain = _mic_gain_db() if "aec_ref" in conn.caps and HUB_AEC_REF_MODE != "level" else None
     if gain is not None:
         # Il guadagno tolto al mic in duplex torna dopo l'AEC, fisso (l'AGC e' spento)
         session.aec.set_aligned_gain_db(_ATOM_MIC_SCALE_DB - gain)
