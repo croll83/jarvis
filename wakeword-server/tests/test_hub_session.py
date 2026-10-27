@@ -357,6 +357,20 @@ async def test_level_uplink_muted_flag_opens_the_gate(conn, hub_on):
     assert np.abs(pcm[1600:]).max() > 1000  # DAC in mute: lo speaker tace, il mic passa
 
 
+async def test_device_interrupt_clears_and_tells_the_hub(conn, hub_on):
+    hub = hub_on
+    session = await start_session(conn, hub)
+    hub.send_audio(tone(1000, 2.0, 24000).tobytes())
+    assert await wait_for(lambda: session.queued_frames > 10)
+    await server._handle_text(conn, json.dumps({"type": "live_interrupt"}))
+    assert session.queued_frames == 0
+    assert conn.ws.json[-1] == {"type": "audio_clear"}
+    assert await wait_for(lambda: any(m.get("type") == "interrupt" and m.get("call_id") == "c0ffee01"
+                                      for m in hub.json))
+    assert conn.hub_session is session  # la sessione continua
+    assert conn.relay.ends() == []
+
+
 async def test_downlink_resampled_paced_opus(conn, hub_on):
     hub = hub_on
     await start_session(conn, hub)

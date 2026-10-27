@@ -753,8 +753,17 @@ def _device_end_reason(msg: dict) -> str:
 async def _handle_hub_device_text(conn: DeviceConnection, msg_type: str, msg: dict) -> bool:
     """Messaggi del device durante una sessione hub. True = gestito qui."""
     if msg_type == "live_session_end":
-        # Tap singolo ("button") o duplex non avviabile sull'Atom ("error")
+        # Doppio tap / pressione lunga ("button") o duplex non avviabile sull'Atom ("error")
         await _end_hub_session(conn, send_ended=True, orch_reason=_device_end_reason(msg))
+        return True
+    if msg_type == "live_interrupt":
+        # Tap singolo: zittire Jarvis. Qui si butta il parlato non ancora mandato e l'Atom
+        # riceve audio_clear (svuota coda e ring come a un barge-in); il hub scarta il resto
+        # della risposta in corso di Gemini. La sessione continua.
+        session = conn.hub_session
+        logger.info(f"[{conn.device_id}] Hub session: interrupt from the device (call {session.call_id})")
+        await session.clear()
+        await session.relay.send_json({"type": "interrupt", "call_id": session.call_id})
         return True
     if msg_type == "audio_end":
         # Ripiego per firmware che non mandano live_session_end: il relay non va chiuso

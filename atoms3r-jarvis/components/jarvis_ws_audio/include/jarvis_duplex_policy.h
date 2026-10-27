@@ -49,14 +49,18 @@ typedef enum {
     DUPLEX_BTN_AS_TODAY = 0,        // Not in a duplex session (or gesture unaffected)
     DUPLEX_BTN_END,                 // End the session, nothing else
     DUPLEX_BTN_END_THEN_AS_TODAY,   // End the session, then the usual action
+    DUPLEX_BTN_INTERRUPT,           // Silence Jarvis, the session goes on
 } duplex_button_action_t;
 
-// Single and double tap end the session; long press ends it and then toggles
-// DND as today; triple tap (rotate display) is unchanged.
+// Single tap silences Jarvis (voice barge-in is not possible on the Echo Base:
+// the speaker reaches the mic far above the user's voice, so the server keeps the
+// uplink closed while it plays); double tap ends the session; long press ends it
+// and then toggles DND as today; triple tap (rotate display) is unchanged.
 static inline duplex_button_action_t duplex_button_action(duplex_gesture_t gesture, bool duplex) {
     if (!duplex) return DUPLEX_BTN_AS_TODAY;
     switch (gesture) {
         case DUPLEX_GESTURE_SINGLE_TAP:
+            return DUPLEX_BTN_INTERRUPT;
         case DUPLEX_GESTURE_DOUBLE_TAP:
             return DUPLEX_BTN_END;
         case DUPLEX_GESTURE_LONG_PRESS:

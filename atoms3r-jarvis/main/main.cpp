@@ -319,12 +319,16 @@ static void handle_button_up(void) {
 static int64_t activation_time = 0;
 #define MIN_SESSION_LIFETIME_MS  1000
 
-// Full-duplex live session: single/double tap end the session, long press ends
-// it and then toggles DND as today (jarvis_duplex_policy.h).
+// Full-duplex live session: single tap silences Jarvis, double tap ends the
+// session, long press ends it and then toggles DND as today (jarvis_duplex_policy.h).
 // Returns true if the gesture is fully handled.
 static bool handle_duplex_gesture(duplex_gesture_t gesture) {
     duplex_button_action_t action = duplex_button_action(gesture, jarvis_ws_audio_is_duplex());
     if (action == DUPLEX_BTN_AS_TODAY) return false;
+    if (action == DUPLEX_BTN_INTERRUPT) {
+        jarvis_ws_audio_interrupt_duplex();
+        return true;
+    }
 
     ESP_LOGI(TAG, "Button (gesture=%d) during duplex live session - ending session", (int)gesture);
     jarvis_ws_audio_end_duplex("button");
@@ -335,7 +339,7 @@ static bool handle_duplex_gesture(duplex_gesture_t gesture) {
 static void handle_short_press(void) {
     ESP_LOGI(TAG, "Short press detected!");
 
-    // Full-duplex live session: single tap ends the session (no listening toggle)
+    // Full-duplex live session: single tap silences Jarvis (no listening toggle)
     if (handle_duplex_gesture(DUPLEX_GESTURE_SINGLE_TAP)) return;
 
     // If WS audio session is active, stop it (but only after minimum lifetime)

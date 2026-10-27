@@ -1399,6 +1399,14 @@ bool jarvis_ws_audio_end_duplex(const char *reason) {
     return duplex_end_local(reason);
 }
 
+bool jarvis_ws_audio_interrupt_duplex(void) {
+    if (!duplex_active) return false;
+    ESP_LOGI(TAG, "Duplex: interrupting Jarvis (button)");
+    // The flush itself comes back as audio_clear: the WS handler owns the play
+    // queue and the Opus decoder, so main_task never touches them
+    return send_json("live_interrupt", NULL, NULL);
+}
+
 void jarvis_ws_audio_get_duplex_levels(uint8_t *jarvis_level, uint8_t *user_level) {
     uint32_t now = duplex_now_ms();
 

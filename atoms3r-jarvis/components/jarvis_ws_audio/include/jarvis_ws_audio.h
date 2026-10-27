@@ -169,7 +169,7 @@ bool jarvis_ws_audio_is_live_session(void);
  * Outside a duplex session nothing of this runs.
  *
  * Device-side ends send {"type":"live_session_end","reason":...}:
- *   "button": single tap, double tap or long press (see jarvis_duplex_policy.h)
+ *   "button": double tap or long press (see jarvis_duplex_policy.h)
  *   "error":  duplex start failed, or no "vu" from the server for 8 s
  *             (the server side of the session is gone)
  */
@@ -183,6 +183,15 @@ bool jarvis_ws_audio_is_duplex(void);
  * @return true if a duplex session was active and is now ended
  */
 bool jarvis_ws_audio_end_duplex(const char *reason);
+
+/**
+ * Silence Jarvis in the duplex live session (single tap). Sends
+ * {"type":"live_interrupt"}: the server drops the speech not played yet, answers
+ * with audio_clear (handled like a barge-in) and the hub discards the rest of the
+ * model's current answer. Safe to call from main_task.
+ * @return true if a duplex session was active
+ */
+bool jarvis_ws_audio_interrupt_duplex(void);
 
 /**
  * Current levels for the duplex display (0-255 each).

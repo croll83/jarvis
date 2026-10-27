@@ -28,9 +28,9 @@ static void test_button_gestures(void) {
     CHECK(duplex_button_action(DUPLEX_GESTURE_TRIPLE_TAP, false) == DUPLEX_BTN_AS_TODAY);
     CHECK(duplex_button_action(DUPLEX_GESTURE_LONG_PRESS, false) == DUPLEX_BTN_AS_TODAY);
 
-    // Single tap ends the session (contract 18.1)
-    CHECK(duplex_button_action(DUPLEX_GESTURE_SINGLE_TAP, true) == DUPLEX_BTN_END);
-    // D6: double tap ends the session like a single tap (no speaker_stop)
+    // Single tap silences Jarvis, the session goes on (no voice barge-in on the Echo Base)
+    CHECK(duplex_button_action(DUPLEX_GESTURE_SINGLE_TAP, true) == DUPLEX_BTN_INTERRUPT);
+    // Double tap ends the session (no speaker_stop)
     CHECK(duplex_button_action(DUPLEX_GESTURE_DOUBLE_TAP, true) == DUPLEX_BTN_END);
     // D7: long press ends the session, then toggles DND as today
     CHECK(duplex_button_action(DUPLEX_GESTURE_LONG_PRESS, true) == DUPLEX_BTN_END_THEN_AS_TODAY);
