@@ -37,6 +37,7 @@
 #include "esp_heap_caps.h"
 #include "esp_event.h"
 #include "esp_websocket_client.h"
+#include "esp_wifi.h"
 #include "cJSON.h"
 #include <opus.h>
 
@@ -90,6 +91,10 @@ static const char *TAG = "WS_AUDIO";
 #define DUPLEX_REF_FLAG_MUTED       0x80
 #define DUPLEX_REF_HEADER           4
 #define DUPLEX_REF_VALUES           (OPUS_FRAME_SAMPLES * 2)
+// 64 KB/s fills the 5.7 KB lwIP send buffer in ~90 ms: a short WiFi stall must block the
+// sender (the ring holds 500 ms of pairs), not time out, since esp_websocket_client drops
+// the whole connection when a write times out
+#define DUPLEX_REF_SEND_TIMEOUT_MS  1000
 
 // =============================================================================
 // CONNECTION STATE MACHINE
@@ -178,6 +183,8 @@ static uint8_t *duplex_ref_pkt = NULL;               // AEC reference packet bei
 static uint16_t duplex_ref_seq = 0;
 static bool duplex_ref_muted = false;                // DAC muted during the packet being filled
 static bool duplex_mic_scale_changed = false;        // ADC scale set by the server for this session
+static wifi_ps_type_t duplex_saved_ps = WIFI_PS_MIN_MODEM;
+static bool duplex_ps_changed = false;               // WiFi power save turned off for this session
 
 // Allocated on the first duplex session and kept (PSRAM, no CPU cost when idle)
 static QueueHandle_t duplex_play_q = NULL;
@@ -498,6 +505,13 @@ static void duplex_play_task(void *arg) {
 // Session media options from live_session_start: AEC reference (feed task switches
 // the ring layout on its next read) and an optional ADC scale while in duplex.
 static void duplex_media_on(bool aec_ref, int mic_scale_db) {
+    // Modem sleep holds the server's TCP ACKs until the next beacon (100-300 ms): fine
+    // for 30 kbit/s Opus, not for the continuous duplex uplink. Only while in session.
+    if (esp_wifi_get_ps(&duplex_saved_ps) == ESP_OK && duplex_saved_ps != WIFI_PS_NONE &&
+        esp_wifi_set_ps(WIFI_PS_NONE) == ESP_OK) {
+        duplex_ps_changed = true;
+        ESP_LOGI(TAG, "WiFi power save OFF for the live session");
+    }
     duplex_ref_seq = 0;
     jarvis_audio_set_aec_ref(aec_ref);
     duplex_mic_scale_changed = (mic_scale_db >= 0);
@@ -506,6 +520,11 @@ static void duplex_media_on(bool aec_ref, int mic_scale_db) {
 
 static void duplex_media_off(void) {
     jarvis_audio_set_aec_ref(false);
+    if (duplex_ps_changed) {
+        esp_wifi_set_ps(duplex_saved_ps);
+        duplex_ps_changed = false;
+        ESP_LOGI(TAG, "WiFi power save restored");
+    }
     if (duplex_mic_scale_changed) {
         jarvis_codec_set_mic_scale_db(JARVIS_CODEC_MIC_SCALE_DB);
         duplex_mic_scale_changed = false;
@@ -649,7 +668,7 @@ static void duplex_stream_mic_ref(void) {
         duplex_ref_seq++;
         esp_websocket_client_send_bin(ws_client, (const char *)duplex_ref_pkt,
                                       DUPLEX_REF_HEADER + DUPLEX_REF_VALUES * sizeof(int16_t),
-                                      pdMS_TO_TICKS(100));
+                                      pdMS_TO_TICKS(DUPLEX_REF_SEND_TIMEOUT_MS));
     }
 }
 
