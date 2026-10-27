@@ -151,8 +151,10 @@ void jarvis_display_set_live_session(bool active);
  * @brief Enter/leave the full-duplex live session view
  * @param active true = two-lane duplex view, false = normal state rendering
  *
- * In duplex mode the big icon is replaced by two scrolling level lanes:
- * top = Jarvis speaking (speaker icon, blue), bottom = user (mic icon, green).
+ * In duplex mode the screen shows two panels, each an icon over an animated
+ * sinusoid driven by its level: the party whose turn it is takes the top 3/4
+ * (blue wave, bright icon), the waiting one the bottom 1/4 (grey). Robot head =
+ * Jarvis, mic = user; the turn follows the Jarvis level with a ~400 ms hold.
  * The LIVE badge and the rotation setting still apply.
  */
 void jarvis_display_set_duplex(bool active);

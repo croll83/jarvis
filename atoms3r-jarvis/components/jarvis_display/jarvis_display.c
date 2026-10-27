@@ -107,28 +107,70 @@ static bool live_session_mode = false;
 static float wave_phase = 0.0f;
 static int64_t last_wave_update = 0;
 
-// Full-duplex live session view: two scrolling level lanes
-#define DUPLEX_ICON_SIZE    22
-#define DUPLEX_ICON_BYTES   (((DUPLEX_ICON_SIZE + 7) / 8) * DUPLEX_ICON_SIZE)
-#define DUPLEX_HIST_LEN     30      // ~2s of history at ~14 fps
-#define DUPLEX_BAR_STEP     3       // px per column (2px bar + 1px gap)
-#define DUPLEX_BAR_W        2
-#define DUPLEX_BARS_X       (DISPLAY_WIDTH - 4 - DUPLEX_HIST_LEN * DUPLEX_BAR_STEP)
-#define DUPLEX_ICON_X       6
-#define DUPLEX_TOP_CY       34      // Lane centers
-#define DUPLEX_BOTTOM_CY    86
-#define DUPLEX_LANE_HALF_H  20
-#define DUPLEX_QUIET_LEVEL  12      // Below this a column is drawn as a dim baseline
-#define COLOR_GREEN_DIM     0x000A  // sent_B=10 (color-rotated green)
-#define COLOR_GREY_DIM      0x4208  // Grey is the same after color rotation
+// Full-duplex live session view: two panels, the party whose turn it is gets the
+// top 3/4 (big icon over a big sinusoid), the waiting party the bottom 1/4.
+#define DUPLEX_SPLIT_Y          96      // Top panel rows 0..95, bottom panel 97..127
+#define DUPLEX_BIG_CY           48      // Panel centers
+#define DUPLEX_SMALL_CY         112
+#define DUPLEX_BIG_AMP          38      // Max sinusoid half-height (px)
+#define DUPLEX_SMALL_AMP        11
+#define DUPLEX_BIG_THICK        2       // Line thickness (px)
+#define DUPLEX_SMALL_THICK      1
+#define DUPLEX_BIG_CYCLES       2.0f    // Sinusoid periods across the screen width
+#define DUPLEX_SMALL_CYCLES     3.0f
+#define DUPLEX_ENV_TAPER        36      // Columns over which the amplitude fades to 0 at each edge
+#define DUPLEX_IDLE_AMP         0.08f   // Ripple left when the party is silent (fraction of max)
+#define DUPLEX_FULL_LEVEL       160.0f  // Level (sqrt-RMS 0-255) drawn at full amplitude
+#define DUPLEX_ATTACK           0.55f   // Amplitude smoothing per frame (rise / fall)
+#define DUPLEX_RELEASE          0.18f
+#define DUPLEX_PHASE_STEP       0.25f   // Phase advance per frame (rad), plus up to
+#define DUPLEX_PHASE_STEP_LOUD  0.45f   // this much more at full amplitude
+
+// Turn detection: Jarvis holds the turn while its level crossed DUPLEX_TURN_OFF_LEVEL
+// in the last DUPLEX_TURN_HOLD_MS; it takes it after DUPLEX_TURN_ON_FRAMES consecutive
+// frames above DUPLEX_TURN_ON_LEVEL. Otherwise it is the user's turn (listening).
+#define DUPLEX_TURN_ON_LEVEL    24
+#define DUPLEX_TURN_OFF_LEVEL   12
+#define DUPLEX_TURN_ON_FRAMES   2
+#define DUPLEX_TURN_HOLD_MS     700  // above Gemini Live pauses between sentences
+
+// Icons: rasterized once (procedural shapes) with a black halo that cuts the wave behind
+#define DUPLEX_BIG_ICON         40
+#define DUPLEX_SMALL_ICON       20
+#define DUPLEX_BIG_HALO         2
+#define DUPLEX_SMALL_HALO       1
+#define DUPLEX_BIG_SIDE         (DUPLEX_BIG_ICON + 2 * DUPLEX_BIG_HALO)
+#define DUPLEX_SMALL_SIDE       (DUPLEX_SMALL_ICON + 2 * DUPLEX_SMALL_HALO)
+#define DUPLEX_MASK_BYTES(side) ((((side) + 7) / 8) * (side))
+
+// Neutral greys survive the GC9107 channel rotation unchanged (R5 == B5, G6 == 2*R5)
+#define COLOR_GREY_DIM          0x4208  // Panel separator
+#define DUPLEX_WAVE_GREY        0x528A  // Waiting party's sinusoid
+#define DUPLEX_ICON_GREY        0x9CD3  // Waiting party's icon
+#define DUPLEX_ICON_ACTIVE      COLOR_WHITE
+
+typedef struct {
+    uint8_t big_icon[DUPLEX_MASK_BYTES(DUPLEX_BIG_SIDE)];
+    uint8_t big_halo[DUPLEX_MASK_BYTES(DUPLEX_BIG_SIDE)];
+    uint8_t small_icon[DUPLEX_MASK_BYTES(DUPLEX_SMALL_SIDE)];
+    uint8_t small_halo[DUPLEX_MASK_BYTES(DUPLEX_SMALL_SIDE)];
+} duplex_glyph_t;
+
+typedef struct {
+    float amp;      // Smoothed level, 0..1
+    float phase;    // Sinusoid phase (rad)
+} duplex_wave_t;
 
 static bool duplex_mode = false;
-static bool duplex_icons_ready = false;
-static uint8_t duplex_icon_speaker[DUPLEX_ICON_BYTES];
-static uint8_t duplex_icon_mic[DUPLEX_ICON_BYTES];
-static uint8_t duplex_hist_jarvis[DUPLEX_HIST_LEN];
-static uint8_t duplex_hist_user[DUPLEX_HIST_LEN];
-static int duplex_hist_head = 0;    // Next slot to write (oldest column)
+static bool duplex_assets_ready = false;
+static duplex_glyph_t duplex_glyph_robot;
+static duplex_glyph_t duplex_glyph_mic;
+static float duplex_env[DISPLAY_WIDTH];     // Edge taper of the sinusoid amplitude
+static duplex_wave_t duplex_wave_jarvis;
+static duplex_wave_t duplex_wave_user;
+static bool duplex_jarvis_turn = false;
+static int duplex_jarvis_on_frames = 0;
+static int64_t duplex_jarvis_voice_ms = 0;  // Last frame Jarvis was above the OFF level
 
 // Frame buffer (RGB565, 128x128 = 32KB)
 static uint16_t *frame_buffer = NULL;
@@ -468,74 +510,201 @@ static void render_error(void) {
     flush_buffer();
 }
 
-// Box-filter downscale of a 1bpp XBM icon (LSB-first rows, same layout as jarvis_icons.h).
-// src_len bounds the reads: the 75x75 arrays are a few bytes shorter than 75 full rows.
-static void icon_downscale(const uint8_t *src, size_t src_len, int sw, int sh,
-                           uint8_t *dst, int dw, int dh) {
-    int src_stride = (sw + 7) / 8;
-    int dst_stride = (dw + 7) / 8;
-    memset(dst, 0, dst_stride * dh);
+// -----------------------------------------------------------------------------
+// Full-duplex view
+// -----------------------------------------------------------------------------
 
-    for (int dy = 0; dy < dh; dy++) {
-        int y0 = dy * sh / dh;
-        int y1 = (dy + 1) * sh / dh;
-        for (int dx = 0; dx < dw; dx++) {
-            int x0 = dx * sw / dw;
-            int x1 = (dx + 1) * sw / dw;
-            int on = 0, total = 0;
-            for (int y = y0; y < y1; y++) {
-                for (int x = x0; x < x1; x++) {
-                    size_t idx = (size_t)(y * src_stride + x / 8);
-                    total++;
-                    if (idx < src_len && (src[idx] & (1 << (x % 8)))) on++;
+// 1bpp masks, LSB-first rows (same layout as jarvis_icons.h)
+static inline bool mask_get(const uint8_t *mask, int side, int x, int y) {
+    return (mask[y * ((side + 7) / 8) + x / 8] >> (x % 8)) & 1;
+}
+
+static inline void mask_set(uint8_t *mask, int side, int x, int y) {
+    mask[y * ((side + 7) / 8) + x / 8] |= (uint8_t)(1 << (x % 8));
+}
+
+// Shape tests in normalized icon space: u right, v down, both 0..1
+static bool in_circle(float u, float v, float cx, float cy, float r) {
+    float dx = u - cx, dy = v - cy;
+    return dx * dx + dy * dy <= r * r;
+}
+
+static bool in_round_rect(float u, float v, float x0, float y0, float x1, float y1, float r) {
+    if (u < x0 || u > x1 || v < y0 || v > y1) return false;
+    float cx = u < x0 + r ? x0 + r : (u > x1 - r ? x1 - r : u);
+    float cy = v < y0 + r ? y0 + r : (v > y1 - r ? y1 - r : v);
+    return in_circle(u, v, cx, cy, r);
+}
+
+// Robot head: antenna, rounded head with ears, eyes and mouth cut out
+static bool shape_robot(float u, float v) {
+    bool on = in_circle(u, v, 0.50f, 0.11f, 0.075f)                    // Antenna ball
+           || in_round_rect(u, v, 0.465f, 0.11f, 0.535f, 0.30f, 0.0f)   // Antenna stem
+           || in_round_rect(u, v, 0.12f, 0.28f, 0.88f, 0.94f, 0.14f)    // Head
+           || in_round_rect(u, v, 0.03f, 0.50f, 0.15f, 0.72f, 0.03f)    // Ears
+           || in_round_rect(u, v, 0.85f, 0.50f, 0.97f, 0.72f, 0.03f);
+    if (!on) return false;
+    if (in_circle(u, v, 0.35f, 0.55f, 0.09f) || in_circle(u, v, 0.65f, 0.55f, 0.09f)) return false;
+    return !in_round_rect(u, v, 0.33f, 0.74f, 0.67f, 0.82f, 0.03f);
+}
+
+// Microphone: capsule, U holder, stem and base
+static bool shape_mic(float u, float v) {
+    if (in_round_rect(u, v, 0.33f, 0.04f, 0.67f, 0.58f, 0.17f)) return true;
+    float dx = u - 0.50f, dy = v - 0.40f, d2 = dx * dx + dy * dy;
+    if (dy >= 0.0f && d2 <= 0.30f * 0.30f && d2 >= 0.23f * 0.23f) return true;
+    if (in_round_rect(u, v, 0.465f, 0.69f, 0.535f, 0.88f, 0.0f)) return true;
+    return in_round_rect(u, v, 0.28f, 0.87f, 0.72f, 0.95f, 0.04f);
+}
+
+// Rasterize a shape into a size x size icon (4x4 supersampling, done once) centered in a
+// mask with a halo margin, plus the halo: the icon dilated by a disk of radius margin.
+static void duplex_rasterize(bool (*shape)(float, float), int size, int margin,
+                             uint8_t *icon, uint8_t *halo) {
+    int side = size + 2 * margin;
+    size_t bytes = (size_t)DUPLEX_MASK_BYTES(side);
+    memset(icon, 0, bytes);
+    memset(halo, 0, bytes);
+
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            int hits = 0;
+            for (int sy = 0; sy < 4; sy++) {
+                for (int sx = 0; sx < 4; sx++) {
+                    float u = (x + (sx + 0.5f) / 4.0f) / size;
+                    float v = (y + (sy + 0.5f) / 4.0f) / size;
+                    if (shape(u, v)) hits++;
                 }
             }
-            // 30% coverage keeps the ~6px strokes of the 75px icons visible at 22px
-            if (total > 0 && on * 10 >= total * 3) {
-                dst[dy * dst_stride + dx / 8] |= (uint8_t)(1 << (dx % 8));
+            if (hits >= 7) mask_set(icon, side, x + margin, y + margin);
+        }
+    }
+
+    for (int y = 0; y < side; y++) {
+        for (int x = 0; x < side; x++) {
+            if (!mask_get(icon, side, x, y)) continue;
+            for (int dy = -margin; dy <= margin; dy++) {
+                for (int dx = -margin; dx <= margin; dx++) {
+                    int hx = x + dx, hy = y + dy;
+                    if (dx * dx + dy * dy <= margin * margin + 1 &&
+                        hx >= 0 && hx < side && hy >= 0 && hy < side) {
+                        mask_set(halo, side, hx, hy);
+                    }
+                }
             }
         }
     }
 }
 
-static void fb_draw_icon_xy(const uint8_t *icon, int width, int height, uint16_t color, int x0, int y0) {
-    int stride = (width + 7) / 8;
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            if (icon[y * stride + x / 8] & (1 << (x % 8))) {
+static void duplex_build_glyph(duplex_glyph_t *g, bool (*shape)(float, float)) {
+    duplex_rasterize(shape, DUPLEX_BIG_ICON, DUPLEX_BIG_HALO, g->big_icon, g->big_halo);
+    duplex_rasterize(shape, DUPLEX_SMALL_ICON, DUPLEX_SMALL_HALO, g->small_icon, g->small_halo);
+}
+
+static void duplex_build_assets(void) {
+    duplex_build_glyph(&duplex_glyph_robot, shape_robot);
+    duplex_build_glyph(&duplex_glyph_mic, shape_mic);
+    // Raised-cosine taper at both edges, flat in the middle
+    for (int x = 0; x < DISPLAY_WIDTH; x++) {
+        float d = (float)(x < DISPLAY_WIDTH / 2 ? x : DISPLAY_WIDTH - 1 - x) + 0.5f;
+        duplex_env[x] = d >= DUPLEX_ENV_TAPER ? 1.0f
+                      : 0.5f - 0.5f * cosf((float)M_PI * d / DUPLEX_ENV_TAPER);
+    }
+}
+
+// Icon pixels in color, halo pixels black (cuts the wave around the icon)
+static void draw_duplex_glyph(const uint8_t *icon, const uint8_t *halo, int side,
+                              int cy, uint16_t color) {
+    int x0 = (DISPLAY_WIDTH - side) / 2;
+    int y0 = cy - side / 2;
+    for (int y = 0; y < side; y++) {
+        for (int x = 0; x < side; x++) {
+            if (mask_get(icon, side, x, y)) {
                 fb_set_pixel(x0 + x, y0 + y, color);
+            } else if (mask_get(halo, side, x, y)) {
+                fb_set_pixel(x0 + x, y0 + y, COLOR_BLACK);
             }
         }
     }
 }
 
-// One lane: icon on the left, history bars mirrored around the lane center (oldest left)
-static void draw_duplex_lane(const uint8_t *icon, const uint8_t *hist, int center_y,
-                             uint16_t color, uint16_t dim_color) {
-    fb_draw_icon_xy(icon, DUPLEX_ICON_SIZE, DUPLEX_ICON_SIZE, color,
-                    DUPLEX_ICON_X, center_y - DUPLEX_ICON_SIZE / 2);
-
-    for (int i = 0; i < DUPLEX_HIST_LEN; i++) {
-        uint8_t level = hist[(duplex_hist_head + i) % DUPLEX_HIST_LEN];
-        int x = DUPLEX_BARS_X + i * DUPLEX_BAR_STEP;
-        if (level < DUPLEX_QUIET_LEVEL) {
-            fb_draw_rect(x, center_y, DUPLEX_BAR_W, 1, dim_color);
-        } else {
-            int half = 1 + (level * (DUPLEX_LANE_HALF_H - 1)) / 255;
-            fb_draw_rect(x, center_y - half, DUPLEX_BAR_W, 2 * half + 1, color);
+// One continuous sinusoid across the panel: one sinf per column, consecutive
+// columns joined by vertical spans so steep slopes stay connected.
+static void draw_duplex_wave(const duplex_wave_t *w, int cy, int y_min, int y_max,
+                             float max_amp, float cycles, int thick, uint16_t color) {
+    float amp = max_amp * (DUPLEX_IDLE_AMP + (1.0f - DUPLEX_IDLE_AMP) * w->amp);
+    float k = 2.0f * (float)M_PI * cycles / DISPLAY_WIDTH;
+    int prev = cy;
+    for (int x = 0; x < DISPLAY_WIDTH; x++) {
+        int y = (int)floorf(cy + amp * duplex_env[x] * sinf(k * x + w->phase) + 0.5f);
+        if (x == 0) prev = y;
+        int lo = (prev < y ? prev : y) - (thick - 1) / 2;
+        int hi = (prev > y ? prev : y) + thick / 2;
+        if (lo < y_min) lo = y_min;
+        if (hi > y_max) hi = y_max;
+        for (int yy = lo; yy <= hi; yy++) {
+            frame_buffer[yy * DISPLAY_WIDTH + x] = color;
         }
+        prev = y;
     }
 }
 
 static void render_duplex(void) {
+    if (!frame_buffer) return;
+    if (!duplex_assets_ready) {
+        duplex_build_assets();
+        duplex_assets_ready = true;
+    }
+
+    const duplex_wave_t *top_wave = duplex_jarvis_turn ? &duplex_wave_jarvis : &duplex_wave_user;
+    const duplex_wave_t *bot_wave = duplex_jarvis_turn ? &duplex_wave_user : &duplex_wave_jarvis;
+    const duplex_glyph_t *top_glyph = duplex_jarvis_turn ? &duplex_glyph_robot : &duplex_glyph_mic;
+    const duplex_glyph_t *bot_glyph = duplex_jarvis_turn ? &duplex_glyph_mic : &duplex_glyph_robot;
+
     fb_clear(COLOR_BLACK);
-    draw_duplex_lane(duplex_icon_speaker, duplex_hist_jarvis, DUPLEX_TOP_CY,
-                     JARVIS_BLUE, JARVIS_BLUE_DARK);
-    fb_draw_rect(4, (DUPLEX_TOP_CY + DUPLEX_BOTTOM_CY) / 2, DISPLAY_WIDTH - 8, 1, COLOR_GREY_DIM);
-    draw_duplex_lane(duplex_icon_mic, duplex_hist_user, DUPLEX_BOTTOM_CY,
-                     COLOR_GREEN_BRIGHT, COLOR_GREEN_DIM);
+
+    // Top (current turn): blue wave, bright icon
+    draw_duplex_wave(top_wave, DUPLEX_BIG_CY, 0, DUPLEX_SPLIT_Y - 1, DUPLEX_BIG_AMP,
+                     DUPLEX_BIG_CYCLES, DUPLEX_BIG_THICK, JARVIS_BLUE);
+    draw_duplex_glyph(top_glyph->big_icon, top_glyph->big_halo, DUPLEX_BIG_SIDE,
+                      DUPLEX_BIG_CY, DUPLEX_ICON_ACTIVE);
+
+    fb_draw_rect(8, DUPLEX_SPLIT_Y, DISPLAY_WIDTH - 16, 1, COLOR_GREY_DIM);
+
+    // Bottom (waiting): grey wave, dim icon
+    draw_duplex_wave(bot_wave, DUPLEX_SMALL_CY, DUPLEX_SPLIT_Y + 1, DISPLAY_HEIGHT - 1,
+                     DUPLEX_SMALL_AMP, DUPLEX_SMALL_CYCLES, DUPLEX_SMALL_THICK, DUPLEX_WAVE_GREY);
+    draw_duplex_glyph(bot_glyph->small_icon, bot_glyph->small_halo, DUPLEX_SMALL_SIDE,
+                      DUPLEX_SMALL_CY, DUPLEX_ICON_GREY);
+
+    if (live_session_mode) {
+        // Keep the badge readable over the bottom wave
+        fb_draw_rect(DISPLAY_WIDTH - 30, DISPLAY_HEIGHT - 14, 28, 11, COLOR_BLACK);
+    }
     draw_live_badge();
     flush_buffer();
+}
+
+static void duplex_wave_step(duplex_wave_t *w, uint8_t level) {
+    float target = level / DUPLEX_FULL_LEVEL;
+    if (target > 1.0f) target = 1.0f;
+    w->amp += (target - w->amp) * (target > w->amp ? DUPLEX_ATTACK : DUPLEX_RELEASE);
+    w->phase += DUPLEX_PHASE_STEP + DUPLEX_PHASE_STEP_LOUD * w->amp;
+    if (w->phase > 2.0f * (float)M_PI) w->phase -= 2.0f * (float)M_PI;
+}
+
+static void duplex_update_turn(uint8_t jarvis_level, int64_t now_ms) {
+    if (jarvis_level >= DUPLEX_TURN_OFF_LEVEL) duplex_jarvis_voice_ms = now_ms;
+
+    if (!duplex_jarvis_turn) {
+        duplex_jarvis_on_frames = jarvis_level >= DUPLEX_TURN_ON_LEVEL ? duplex_jarvis_on_frames + 1 : 0;
+        if (duplex_jarvis_on_frames >= DUPLEX_TURN_ON_FRAMES) {
+            duplex_jarvis_turn = true;
+            duplex_jarvis_on_frames = 0;
+        }
+    } else if (now_ms - duplex_jarvis_voice_ms > DUPLEX_TURN_HOLD_MS) {
+        duplex_jarvis_turn = false;
+    }
 }
 
 // =============================================================================
@@ -976,17 +1145,13 @@ void jarvis_display_set_live_session(bool active) {
 void jarvis_display_set_duplex(bool active) {
     if (duplex_mode == active) return;
 
-    if (active && !duplex_icons_ready) {
-        // Derived once from the 75x75 icons, on the first duplex session
-        icon_downscale(ICON_SPEAKER, sizeof(ICON_SPEAKER), ICON_SPEAKER_WIDTH, ICON_SPEAKER_HEIGHT,
-                       duplex_icon_speaker, DUPLEX_ICON_SIZE, DUPLEX_ICON_SIZE);
-        icon_downscale(ICON_MIC, sizeof(ICON_MIC), ICON_MIC_WIDTH, ICON_MIC_HEIGHT,
-                       duplex_icon_mic, DUPLEX_ICON_SIZE, DUPLEX_ICON_SIZE);
-        duplex_icons_ready = true;
-    }
-    memset(duplex_hist_jarvis, 0, sizeof(duplex_hist_jarvis));
-    memset(duplex_hist_user, 0, sizeof(duplex_hist_user));
-    duplex_hist_head = 0;
+    // Each session starts on the user's turn (listening), waves at rest
+    memset(&duplex_wave_jarvis, 0, sizeof(duplex_wave_jarvis));
+    memset(&duplex_wave_user, 0, sizeof(duplex_wave_user));
+    duplex_wave_user.phase = 1.0f;
+    duplex_jarvis_turn = false;
+    duplex_jarvis_on_frames = 0;
+    duplex_jarvis_voice_ms = 0;
 
     duplex_mode = active;
     jarvis_display_update();
@@ -996,8 +1161,8 @@ void jarvis_display_set_duplex(bool active) {
 void jarvis_display_duplex_push(uint8_t jarvis_level, uint8_t user_level) {
     if (!duplex_mode) return;
 
-    duplex_hist_jarvis[duplex_hist_head] = jarvis_level;
-    duplex_hist_user[duplex_hist_head] = user_level;
-    duplex_hist_head = (duplex_hist_head + 1) % DUPLEX_HIST_LEN;
+    duplex_update_turn(jarvis_level, esp_timer_get_time() / 1000);
+    duplex_wave_step(&duplex_wave_jarvis, jarvis_level);
+    duplex_wave_step(&duplex_wave_user, user_level);
     render_duplex();
 }
