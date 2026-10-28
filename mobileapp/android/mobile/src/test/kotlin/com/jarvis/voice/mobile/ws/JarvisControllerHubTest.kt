@@ -193,6 +193,30 @@ class JarvisControllerHubTest {
         assertNull(port.calls.poll())
     }
 
+    // ── VAD nell'offer: solo per lo watch ────────────────────────────────────
+
+    private fun offerVad(relay: Boolean): JSONObject? {
+        c.relayMode = relay
+        connect()
+        orch.send(hubStart())
+        hubServer.soTimeout = 3_000
+        val hub = HubPeer(hubServer.accept().also { it.soTimeout = 3_000 })
+        val offer = hub.json()
+        assertEquals("offer", offer.getString("type"))
+        hub.sock.close()
+        return offer.optJSONObject("vad")
+    }
+
+    @Test fun watchOffer_hasLowSensitivityVad() {
+        val vad = offerVad(relay = true)!!
+        assertEquals("START_SENSITIVITY_LOW", vad.getString("startOfSpeechSensitivity"))
+        assertEquals(300, vad.getInt("prefixPaddingMs"))
+    }
+
+    @Test fun phoneOffer_hasNoVad() {
+        assertNull(offerVad(relay = false))
+    }
+
     // ── sessione completa + D8 + fine col tap ────────────────────────────────
 
     @Test fun tapEndsSession_withButton_andTurnEventsIgnored() {

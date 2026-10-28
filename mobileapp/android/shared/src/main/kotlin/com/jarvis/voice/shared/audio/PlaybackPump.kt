@@ -21,6 +21,11 @@ import kotlin.concurrent.thread
  *
  * La coda è limitata a [maxQueuedMs] di audio: se il sink si pianta (tunnel fermo) si
  * buttano i chunk più vecchi invece di crescere senza limite per tutta la risposta.
+ *
+ * [orderedClear] = true (tunnel watch): ogni chiamata al sink avviene sotto un lock con il
+ * controllo della generazione, e [clear] esegue il suo `afterClear` sotto lo stesso lock.
+ * Garanzia: nessun pezzo di prima del clear arriva al sink dopo `afterClear` (il marker di
+ * clear in banda resta in ordine con l'audio). Default false = comportamento di sempre.
  */
 class PlaybackPump(
     private val sampleRate: Int,
@@ -28,8 +33,14 @@ class PlaybackPump(
     private val paceLeadMs: Int = 0,
     private val onLevel: (Float) -> Unit = {},
     maxQueuedMs: Int = 30_000,
+    private val orderedClear: Boolean = false,
 ) {
-    private val queue = LinkedBlockingQueue<ShortArray>()
+    private val sinkLock = Any()
+    // Ogni chunk porta la generazione in cui è stato offerto: un chunk preso dalla coda
+    // appena prima di un clear (poll → clear → lettura della generazione) resta vecchio e
+    // non può uscire dopo il marker del clear.
+    private class Chunk(val pcm: ShortArray, val gen: Int)
+    private val queue = LinkedBlockingQueue<Chunk>()
     private val queuedSamples = AtomicInteger()
     private val maxQueuedSamples = (sampleRate.toLong() * maxQueuedMs / 1000).toInt().coerceAtLeast(1)
     private val generation = AtomicInteger()
@@ -44,23 +55,29 @@ class PlaybackPump(
 
     fun offer(pcm: ShortArray) {
         if (!running.get() || pcm.isEmpty()) return
-        queue.offer(pcm)
+        queue.offer(Chunk(pcm, generation.get()))
         var total = queuedSamples.addAndGet(pcm.size)
         // Oltre il tetto: via i chunk più vecchi (mai quello appena arrivato).
         while (total > maxQueuedSamples && queue.size > 1) {
             val old = queue.poll() ?: break
-            total = queuedSamples.addAndGet(-old.size)
+            total = queuedSamples.addAndGet(-old.pcm.size)
         }
     }
 
     /** Campioni in coda non ancora passati al sink (escluso il chunk in corso). */
     val queued: Int get() = queuedSamples.get().coerceAtLeast(0)
 
-    /** Barge-in: scarta tutto ciò che non è ancora passato al sink. */
-    fun clear() {
+    /**
+     * Barge-in: scarta tutto ciò che non è ancora passato al sink. [afterClear] gira dopo lo
+     * scarto; con [orderedClear] anche dopo l'eventuale pezzo vecchio in consegna al sink.
+     */
+    fun clear(afterClear: (() -> Unit)? = null) {
         generation.incrementAndGet()
         queue.clear()
         queuedSamples.set(0)
+        if (afterClear != null) {
+            if (orderedClear) synchronized(sinkLock) { afterClear() } else afterClear()
+        }
     }
 
     fun stop() {
@@ -78,14 +95,16 @@ class PlaybackPump(
         var idle = true
         try {
             while (running.get()) {
-                val chunk = queue.poll(IDLE_POLL_MS, TimeUnit.MILLISECONDS)
-                if (chunk == null) {
+                val item = queue.poll(IDLE_POLL_MS, TimeUnit.MILLISECONDS)
+                if (item == null) {
                     if (!idle) { onLevel(0f); idle = true }
                     continue
                 }
-                queuedSamples.addAndGet(-chunk.size)
+                queuedSamples.addAndGet(-item.pcm.size)
+                val gen = item.gen
+                if (gen != generation.get()) continue   // offerto prima di un clear: via
+                val chunk = item.pcm
                 idle = false
-                val gen = generation.get()
                 if (gen != lastGen) { deadline = 0L; lastGen = gen }
                 var off = 0
                 while (off < chunk.size && running.get() && gen == generation.get()) {
@@ -99,7 +118,14 @@ class PlaybackPump(
                         deadline += n * 1_000_000_000L / sampleRate
                     }
                     val piece = chunk.copyOfRange(off, off + n)
-                    sink(piece)
+                    if (orderedClear) {
+                        val sent = synchronized(sinkLock) {
+                            if (gen != generation.get()) false else { sink(piece); true }
+                        }
+                        if (!sent) break
+                    } else {
+                        sink(piece)
+                    }
                     onLevel(Pcm.level(piece))
                     off += n
                 }

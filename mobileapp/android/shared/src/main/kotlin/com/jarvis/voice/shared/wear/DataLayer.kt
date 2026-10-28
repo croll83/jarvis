@@ -13,6 +13,14 @@ object DataLayer {
     /** ChannelClient bidirezionale: watch→phone = mic PCM, phone→watch = TTS PCM (16k mono int16). */
     const val PATH_AUDIO = "/jarvis/audio"
 
+    /**
+     * Stesso canale bidirezionale, ma il verso phone→watch è a frame ([WatchStream]): TTS,
+     * parlato live (con rate e stream) e clear del barge-in IN ORDINE con l'audio. Lo watch
+     * da 0.3.0 apre questo; il telefono accetta entrambi (PATH_AUDIO = watch vecchio, PCM
+     * grezzo + PATH_CLEAR). Il verso watch→phone (mic) resta PCM grezzo in entrambi.
+     */
+    const val PATH_AUDIO_FRAMED = "/jarvis/audio2"
+
     /** MessageClient watch→phone: l'utente ha toccato la testa (tap). */
     const val PATH_TAP = "/jarvis/tap"
 
@@ -38,6 +46,9 @@ object DataLayer {
     const val LIVE_START = "start"
     const val LIVE_STOP = "stop"
 
-    /** MessageClient phone→watch: barge-in in sessione live, svuota SUBITO il TtsPlayer. */
+    /**
+     * MessageClient phone→watch: barge-in in sessione live, svuota SUBITO il TtsPlayer.
+     * Solo verso gli watch sul canale legacy [PATH_AUDIO]: sul canale a frame il clear è in banda.
+     */
     const val PATH_CLEAR = "/jarvis/clear"
 }

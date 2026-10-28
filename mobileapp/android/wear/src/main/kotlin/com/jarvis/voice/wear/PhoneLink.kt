@@ -8,18 +8,17 @@ import com.google.android.gms.wearable.Wearable
 import com.jarvis.voice.shared.HeadState
 import com.jarvis.voice.shared.audio.LiveAudio
 import com.jarvis.voice.shared.audio.LiveAudioRouting
+import com.jarvis.voice.shared.audio.LivePlayout
 import com.jarvis.voice.shared.audio.MicRecorder
-import com.jarvis.voice.shared.audio.Pcm
 import com.jarvis.voice.shared.audio.TtsPlayer
-import com.jarvis.voice.shared.protocol.AudioFormat
 import com.jarvis.voice.shared.wear.DataLayer
+import com.jarvis.voice.shared.wear.WatchStream
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,8 +37,10 @@ import java.io.OutputStream
  *  TTS PCM ← canale → TtsPlayer
  *
  * Sessione live hub: PATH_LIVE start/stop dal telefono. In live il mic è VOICE_COMMUNICATION
- * con AEC LOCALE (cancella lo speaker del watch dal mic del watch), resta aperto anche mentre
- * suona e il player è sullo stream comms; PATH_CLEAR = barge-in. La rete resta il tunnel via
+ * con AEC LOCALE (cancella lo speaker del watch dal mic del watch) e resta aperto anche mentre
+ * suona. Il parlato live arriva a frame nel canale ([WatchStream]) e lo suona [LivePlayout]:
+ * buffer anti-jitter + silenzio continuo, formato (rate, stream media/comms) deciso dal
+ * telefono, barge-in = frame CLEAR in ordine con l'audio. La rete resta il tunnel via
  * telefono. Fuori sessione tutto come prima (half-duplex guidato da HeadState).
  */
 class PhoneLink(private val context: Context) {
@@ -54,7 +55,7 @@ class PhoneLink(private val context: Context) {
     private val channelMutex = Mutex()
 
     private val mic = MicRecorder()
-    @Volatile private var player = TtsPlayer()
+    private val player = TtsPlayer()   // path di oggi (TTS dell'orchestrator), spento in live
 
     // Solo durante una sessione live hub. liveWanted = ultima richiesta del telefono (PATH_LIVE),
     // live = modalità davvero attiva; liveLock serializza entrata/uscita e i cambi di mic.
@@ -65,8 +66,6 @@ class PhoneLink(private val context: Context) {
     @Volatile private var liveNode: String? = null   // telefono che ha chiesto la live
     private var liveMic: MicRecorder? = null
     private var routing: LiveAudioRouting? = null
-    private var liveTick: Job? = null
-    @Volatile private var lastPlayNanos = 0L
 
     private var nodeId: String? = null
     private var channel: ChannelClient.Channel? = null
@@ -88,6 +87,9 @@ class PhoneLink(private val context: Context) {
     /** Livello 0..1 del parlato del modello suonato qui (corsia JARVIS), solo in live. */
     val jarvisLevel: StateFlow<Float> = _jarvisLevel.asStateFlow()
 
+    /** Parlato della sessione live: thread audio suo, acceso solo in live (open/close). */
+    private val livePlayout = LivePlayout(onLevel = { if (live) _jarvisLevel.value = it })
+
     private val stateListener = MessageClient.OnMessageReceivedListener { event ->
         when (event.path) {
             DataLayer.PATH_STATE -> {
@@ -102,7 +104,7 @@ class PhoneLink(private val context: Context) {
                 Log.i(tag, "live ← ${String(event.data)}")
                 scope.launch { syncLive() }
             }
-            DataLayer.PATH_CLEAR -> if (live) player.clear()
+            // PATH_CLEAR non arriva più: sul canale a frame il clear è in banda.
         }
     }
 
@@ -114,9 +116,9 @@ class PhoneLink(private val context: Context) {
         synchronized(liveLock) {
             stopped = true
             liveWanted = false
-            exitLive()
+            exitLive(drainMs = 0)   // Activity che muore: niente drain a bloccare il main thread
         }
-        mic.stop(); player.stop(); readJob?.cancel()
+        mic.stop(); player.stop(); livePlayout.close(drainMs = 0); readJob?.cancel()
         channel?.let { channelClient.close(it) }
         scope.cancel()
     }
@@ -167,7 +169,9 @@ class PhoneLink(private val context: Context) {
             if (stopped) return
             // Live mai entrato (start e stop arrivati insieme): exitLive non farebbe nulla,
             // lo stato saltato va riapplicato comunque
-            if (liveWanted) enterLive() else if (live) exitLive() else applyState(_state.value)
+            if (liveWanted) enterLive()
+            else if (live) exitLive()
+            else { livePlayout.close(); applyState(_state.value) }   // via il parlato arrivato senza live
         }
     }
 
@@ -181,7 +185,7 @@ class PhoneLink(private val context: Context) {
         }
     }
 
-    /** Entra in live: mic comms + AEC locale continuo sul canale, player sullo stream comms. Sotto liveLock. */
+    /** Entra in live: mic comms + AEC locale continuo sul canale, playout live continuo. Sotto liveLock. */
     private fun enterLive() {
         if (live) return
         // Sessione sorda: meglio chiuderla subito che lasciarla aperta fino al timeout dell'hub.
@@ -190,14 +194,9 @@ class PhoneLink(private val context: Context) {
         live = true
         _live.value = true
         routing = LiveAudioRouting(context).also { it.enter() }   // prima del record (AEC)
-        swapPlayer(TtsPlayer(live = true))
-        liveTick = scope.launch {
-            // Il modello tace → nessun frame dal canale: azzera la corsia JARVIS.
-            while (live) {
-                delay(100)
-                if (System.nanoTime() - lastPlayNanos > 150_000_000L) _jarvisLevel.value = 0f
-            }
-        }
+        // Il track live parte subito (silenzio): l'uscita è già calda alla prima risposta.
+        livePlayout.open()
+        player.stop()
         val m = MicRecorder(live = true)
         val ok = m.start { frame ->
             runCatching { out.write(frame); out.flush() }
@@ -213,26 +212,19 @@ class PhoneLink(private val context: Context) {
     }
 
     /** Esce dalla live e torna al path di oggi. Idempotente. Sotto liveLock. */
-    private fun exitLive() {
+    private fun exitLive(drainMs: Long = 600) {
         if (!live) return
         live = false
-        liveTick?.cancel(); liveTick = null
         liveMic?.stop(); liveMic = null
-        swapPlayer(TtsPlayer())
+        livePlayout.close(drainMs)   // finisce di suonare la coda (se c'è) prima di fermare il track
         routing?.exit(); routing = null
+        player.start()        // warm-up del path di oggi, come all'apertura del canale
         _live.value = false
         _amplitude.value = 0f
         _jarvisLevel.value = 0f
         // Gli stati arrivati durante la live sono stati saltati: riallinea mic e player a
         // quello corrente (es. il LISTENING della sessione di oggi dopo un ripiego).
         applyState(_state.value)
-    }
-
-    private fun swapPlayer(next: TtsPlayer) {
-        val old = player
-        next.start()
-        player = next
-        old.stop()
     }
 
     /** RMS del frame PCM int16 LE → 0..1 (con guadagno per una waveform viva). */
@@ -254,35 +246,23 @@ class PhoneLink(private val context: Context) {
             if (channel != null) return
             val node = pickNode() ?: run { Log.w(tag, "nessun telefono connesso"); return }
             nodeId = node
-            val ch = channelClient.openChannel(node, DataLayer.PATH_AUDIO).await()
+            val ch = channelClient.openChannel(node, DataLayer.PATH_AUDIO_FRAMED).await()
             channel = ch
             micOut = channelClient.getOutputStream(ch).await()
             val input: InputStream = channelClient.getInputStream(ch).await()
             player.start()   // warm-up: AudioTrack pronto PRIMA dei frame TTS (evita testa troncata)
 
-            // TTS PCM dal telefono → player
+            // Frame dal telefono: TTS di oggi → player; parlato live e clear → playout live.
+            // Solo il TTS di oggi scrive bloccando qui: il live va in coda e lo suona il suo thread.
             readJob = scope.launch {
-                val buf = ByteArray(AudioFormat.FRAME_BYTES)
-                val shorts = ShortArray(AudioFormat.FRAME_SAMPLES)
+                val reader = WatchStream.Reader(input)
                 try {
                     while (true) {
-                        var off = 0
-                        while (off < buf.size) {
-                            val n = input.read(buf, off, buf.size - off)
-                            if (n < 0) return@launch
-                            off += n
-                        }
-                        var i = 0
-                        while (i < AudioFormat.FRAME_SAMPLES) {
-                            val lo = buf[i * 2].toInt() and 0xFF
-                            val hi = buf[i * 2 + 1].toInt()
-                            shorts[i] = ((hi shl 8) or lo).toShort()
-                            i++
-                        }
-                        player.write(shorts)
-                        if (live) {
-                            _jarvisLevel.value = Pcm.level(shorts)
-                            lastPlayNanos = System.nanoTime()
+                        when (val f = reader.next() ?: return@launch) {
+                            is WatchStream.Frame.Tts -> runCatching { player.write(f.pcm) }
+                            is WatchStream.Frame.Live -> livePlayout.push(f.pcm, f.sampleRate, f.comms)
+                            WatchStream.Frame.Clear -> livePlayout.clear()
+                            is WatchStream.Frame.Unknown -> Log.w(tag, "frame sconosciuto ${f.type}")
                         }
                     }
                 } catch (e: Exception) {

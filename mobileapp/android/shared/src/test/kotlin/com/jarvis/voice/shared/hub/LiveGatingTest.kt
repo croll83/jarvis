@@ -78,6 +78,16 @@ class LiveGatingTest {
         assertEquals("orchestrator", offer.getJSONArray("deliver").getString(0))
     }
 
+    @Test fun offer_vadOnlyWhenSet() {
+        val r = HubLiveStart.parse(msg("""
+            {"type":"live_session_start","backend":"hub","call_id":"c1","hub":{"host":"h","port":1}}
+        """.trimIndent())) as HubLiveStart.Start
+        assertFalse(JSONObject(r.offerJson()).has("vad"))   // telefono: default dell'hub
+        val vad = JSONObject(r.copy(vad = HubLiveStart.SPEAKER_NEAR_MIC_VAD).offerJson()).getJSONObject("vad")
+        assertEquals("START_SENSITIVITY_LOW", vad.getString("startOfSpeechSensitivity"))
+        assertEquals(300, vad.getInt("prefixPaddingMs"))
+    }
+
     @Test fun audioProfile_normalIsTodays() {
         val p = LiveAudio.profile(live = false)
         assertEquals(MediaRecorder.AudioSource.VOICE_RECOGNITION, p.micSource)

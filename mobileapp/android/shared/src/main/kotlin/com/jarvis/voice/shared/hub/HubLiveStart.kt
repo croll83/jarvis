@@ -27,6 +27,8 @@ sealed class HubLiveStart {
         val deliver: List<String>,
         val host: String,
         val port: Int,
+        /** Campo `vad` dell'offer (automaticActivityDetection di Gemini). Vuoto = default dell'hub. */
+        val vad: Map<String, Any> = emptyMap(),
     ) : HubLiveStart() {
         /** Primo frame verso l'hub; i campi opzionali vuoti non vengono mandati. */
         fun offerJson(): String {
@@ -39,6 +41,7 @@ sealed class HubLiveStart {
             if (locationId.isNotEmpty()) o.put("location_id", locationId)
             if (room.isNotEmpty()) o.put("room", room)
             if (deliver.isNotEmpty()) o.put("deliver", JSONArray(deliver))
+            if (vad.isNotEmpty()) o.put("vad", JSONObject(vad))
             return o.toString()
         }
     }
@@ -48,6 +51,17 @@ sealed class HubLiveStart {
         const val REASON_ERROR = EndReason.ERROR
         const val REASON_UNREACHABLE = EndReason.HUB_UNREACHABLE
         const val MAX_CALL_ID_BYTES = 255
+
+        /**
+         * VAD meno sensibile per lo watch: speaker a pochi cm dal mic e AEC del watch debole,
+         * un residuo d'eco a inizio frase non deve contare come l'utente che interrompe (falso
+         * barge-in = risposta tagliata). Stesse chiavi e valori di default del wakeword-server
+         * per l'Atom (HUB_VAD_START_SENSITIVITY / HUB_VAD_PREFIX_PADDING_MS).
+         */
+        val SPEAKER_NEAR_MIC_VAD: Map<String, Any> = mapOf(
+            "startOfSpeechSensitivity" to "START_SENSITIVITY_LOW",
+            "prefixPaddingMs" to 300,
+        )
 
         fun parse(msg: JSONObject): HubLiveStart {
             if (msg.optString("backend") != BACKEND_HUB) return Legacy

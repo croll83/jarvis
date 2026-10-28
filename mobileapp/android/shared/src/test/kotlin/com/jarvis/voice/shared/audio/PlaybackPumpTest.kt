@@ -82,4 +82,36 @@ class PlaybackPumpTest {
         assertTrue("sent=$sent", sent in 3_200..9_600)
         pump.stop()
     }
+
+    /** Tunnel watch: il marker del clear non può finire prima di un pezzo vecchio in consegna. */
+    @Test fun orderedClear_markerAfterInFlightPiece_noOldAudioAfter() {
+        val log = mutableListOf<String>()
+        val inSink = CountDownLatch(1)
+        val gate = CountDownLatch(1)
+        val pump = PlaybackPump(1_000, sink = { p ->
+            if (p[0] == 1.toShort() && inSink.count > 0L) { inSink.countDown(); gate.await() }
+            synchronized(log) { log += "a${p[0]}" }
+        }, orderedClear = true)
+        pump.start()
+        pump.offer(ShortArray(200) { 1 })
+        assertTrue(inSink.await(1, TimeUnit.SECONDS))   // primo pezzo bloccato nel sink
+        val cleared = CountDownLatch(1)
+        val t = Thread { pump.clear { synchronized(log) { log += "clear" } }; cleared.countDown() }
+        t.start()
+        Thread.sleep(100)
+        assertEquals(1L, cleared.count)                 // il clear aspetta il pezzo in consegna
+        gate.countDown()
+        assertTrue(cleared.await(1, TimeUnit.SECONDS))
+        pump.offer(ShortArray(20) { 2 })
+        Thread.sleep(200)
+        pump.stop()
+        assertEquals(listOf("a1", "clear", "a2"), synchronized(log) { log.toList() })
+    }
+
+    @Test fun defaultClear_runsAfterClearImmediately() {
+        var ran = false
+        val pump = PlaybackPump(1_000, sink = {})
+        pump.clear { ran = true }
+        assertTrue(ran)
+    }
 }

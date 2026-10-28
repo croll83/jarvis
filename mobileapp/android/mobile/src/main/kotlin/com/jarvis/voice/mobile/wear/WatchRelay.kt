@@ -8,6 +8,7 @@ import com.jarvis.voice.mobile.core.JarvisRuntime
 import com.jarvis.voice.shared.protocol.EndReason
 import com.jarvis.voice.shared.protocol.AudioFormat
 import com.jarvis.voice.shared.wear.DataLayer
+import com.jarvis.voice.shared.wear.WatchStream
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +32,7 @@ import java.nio.ByteOrder
 object WatchRelay {
 
     private const val TAG = "WatchRelay"
+    private const val TTS_FRAME_MAX_SAMPLES = WatchStream.MAX_PAYLOAD / 2
     private lateinit var appCtx: Context
     private val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.IO +
@@ -38,14 +40,49 @@ object WatchRelay {
     )
 
     @Volatile private var nodeId: String? = null
-    @Volatile private var ttsOut: OutputStream? = null
+    @Volatile private var tunnel: Tunnel? = null
     private var readJob: Job? = null
     private var stateJob: Job? = null
 
-    /** Sessione live sul Voice Live Hub per il watch: tunnel continuo + PATH_LIVE/PATH_CLEAR. */
+    /**
+     * Verso phone→watch del canale audio. [framed] = watch nuovo ([DataLayer.PATH_AUDIO_FRAMED]):
+     * ogni scrittura è un frame [WatchStream]; altrimenti PCM grezzo come prima. Le scritture
+     * sono serializzate: TTS, parlato live e clear non si mescolano a metà frame.
+     */
+    private class Tunnel(private val out: OutputStream, val framed: Boolean) {
+        @Synchronized fun write(bytes: ByteArray) {
+            runCatching { out.write(bytes); out.flush() }
+        }
+    }
+
+    private fun rawPcm(pcm: ShortArray): ByteArray {
+        val bb = ByteBuffer.allocate(pcm.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (s in pcm) bb.putShort(s)
+        return bb.array()
+    }
+
+    private val liveTunnel = object : WatchLiveAudio.Tunnel {
+        override val framed: Boolean get() = tunnel?.framed ?: true
+        override fun live(pcm: ShortArray, sampleRate: Int, comms: Boolean) {
+            val t = tunnel ?: return
+            if (t.framed) t.write(WatchStream.live(pcm, sampleRate, comms))
+            // Watch legacy: suona solo 16 kHz grezzi (rate deciso con il tunnel non ancora aperto)
+            else if (sampleRate == AudioFormat.SAMPLE_RATE) t.write(rawPcm(pcm))
+        }
+        override fun clear(): Boolean {
+            val t = tunnel ?: return false
+            if (!t.framed) return false
+            t.write(WatchStream.clear())
+            return true
+        }
+    }
+
+    /** Sessione live sul Voice Live Hub per il watch: tunnel continuo + PATH_LIVE, clear in banda. */
     private val liveAudio = WatchLiveAudio(
         send = ::sendToWatch,
-        sink = { pcm -> JarvisRuntime.relayController.remoteTtsWriter?.invoke(pcm) },
+        tunnel = liveTunnel,
+        fullRate = { JarvisRuntime.config.watchLive24k },
+        mediaUsage = { JarvisRuntime.config.watchLiveMediaUsage },
     )
 
     fun init(context: Context) {
@@ -91,15 +128,21 @@ object WatchRelay {
             runCatching {
                 val input = cc.getInputStream(channel).await()
                 val output = cc.getOutputStream(channel).await()
-                ttsOut = output
-                Log.i(TAG, "canale audio aperto (node=${channel.nodeId})")
+                val framed = channel.path == DataLayer.PATH_AUDIO_FRAMED
+                tunnel = Tunnel(output, framed)
+                Log.i(TAG, "canale audio aperto (node=${channel.nodeId}, ${if (framed) "a frame" else "legacy PCM"})")
 
                 // TTS decodificata dal relayController → PCM (LE) verso lo watch
                 c.remoteTtsWriter = writer@{ pcm ->
-                    val out = ttsOut ?: return@writer
-                    val bb = ByteBuffer.allocate(pcm.size * 2).order(ByteOrder.LITTLE_ENDIAN)
-                    for (s in pcm) bb.putShort(s)
-                    runCatching { out.write(bb.array()); out.flush() }
+                    val t = tunnel ?: return@writer
+                    if (!t.framed) { t.write(rawPcm(pcm)); return@writer }
+                    // Un frame porta al massimo MAX_PAYLOAD byte: chunk lunghi spezzati
+                    var off = 0
+                    while (off < pcm.size) {
+                        val n = minOf(TTS_FRAME_MAX_SAMPLES, pcm.size - off)
+                        t.write(WatchStream.tts(if (off == 0 && n == pcm.size) pcm else pcm.copyOfRange(off, off + n)))
+                        off += n
+                    }
                 }
 
                 // Mic dallo watch → relayController.feedMicFrame()
@@ -126,7 +169,7 @@ object WatchRelay {
 
     fun onChannelClosed(channel: ChannelClient.Channel, closeReason: Int) {
         readJob?.cancel(); readJob = null
-        ttsOut = null
+        tunnel = null
         JarvisRuntime.relayController.remoteTtsWriter = null
         // nodeId lo teniamo: serve al collector di stato tra un turno e l'altro.
         // Sessione live del watch senza tunnel = sorda e muta: si chiude e si avvisa

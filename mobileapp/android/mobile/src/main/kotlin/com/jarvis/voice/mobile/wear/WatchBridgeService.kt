@@ -28,10 +28,14 @@ class WatchBridgeService : WearableListenerService() {
     }
 
     override fun onChannelOpened(channel: ChannelClient.Channel) {
-        if (channel.path == DataLayer.PATH_AUDIO) WatchRelay.onChannelOpened(channel)
+        if (isAudio(channel)) WatchRelay.onChannelOpened(channel)
     }
 
     override fun onChannelClosed(channel: ChannelClient.Channel, closeReason: Int, appSpecificErrorCode: Int) {
-        if (channel.path == DataLayer.PATH_AUDIO) WatchRelay.onChannelClosed(channel, closeReason)
+        if (isAudio(channel)) WatchRelay.onChannelClosed(channel, closeReason)
     }
+
+    // Watch nuovo: canale a frame; watch legacy (< 0.3.0): PCM grezzo.
+    private fun isAudio(channel: ChannelClient.Channel) =
+        channel.path == DataLayer.PATH_AUDIO_FRAMED || channel.path == DataLayer.PATH_AUDIO
 }

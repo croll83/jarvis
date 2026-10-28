@@ -23,7 +23,9 @@ Progetto Gradle multi-modulo. Apri `mobileapp/android/` in Android Studio (Ladyb
 
 ## Componenti chiave (`:wear`)
 
-- `PhoneLink.kt` — apre il canale audio bidirezionale col telefono, manda i tap, riceve `HeadState`, gestisce mic/playback in base allo stato. In sessione live hub (`/jarvis/live`, `/jarvis/clear`) mic comms + AEC locale sempre aperto.
+- `PhoneLink.kt` — apre il canale audio bidirezionale col telefono (`/jarvis/audio2`), manda i tap, riceve `HeadState`, gestisce mic/playback in base allo stato. In sessione live hub (`/jarvis/live`) mic comms + AEC locale sempre aperto; il parlato live lo suona `LivePlayout` (buffer anti-jitter + silenzio continuo, il track non si spegne tra una risposta e l'altra).
+
+**Canale audio watch ↔ telefono.** Dalla 0.3.0 il verso telefono→watch è a frame (`shared/wear/WatchStream.kt`): TTS di oggi, parlato live (rate 16/24 kHz e stream media/comms nel frame) e clear del barge-in in ordine con l'audio. Il telefono 0.3.0 accetta anche il canale vecchio `/jarvis/audio` (PCM grezzo + `/jarvis/clear`), ma un watch 0.3.0 richiede il telefono 0.3.0: aggiornare sempre entrambe le APK. Le impostazioni del telefono ("Watch in sessione live") scelgono stream media/comms e 16/24 kHz senza reinstallare il watch.
 - `RobotHeadScreen.kt` — testa robot (Canvas) cliccabile.
 - `tile/JarvisTileService.kt` — Tile "widget"; tap → apre MainActivity.
 

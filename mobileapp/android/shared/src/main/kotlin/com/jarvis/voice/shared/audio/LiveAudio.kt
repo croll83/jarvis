@@ -19,9 +19,17 @@ object LiveAudio {
     const val MODEL_SAMPLE_RATE = 24_000
 
     /**
-     * Fallback: playback live su USAGE_MEDIA invece dello stream comms. Lo stream comms è
-     * quello che l'AEC usa come riferimento, ma sul watch USAGE_ASSISTANT veniva silenziato:
-     * se succede anche con USAGE_VOICE_COMMUNICATION, mettere true.
+     * Rate del parlato live verso lo watch nel tunnel Data Layer (default): 16 kHz wideband
+     * (banda fino a ~7.5 kHz). 24 kHz pieni costano +50% di banda Bluetooth (384 kbit/s giù
+     * più 256 su per il mic): si attivano dalle impostazioni del telefono per provarli.
+     */
+    const val WATCH_DEFAULT_RATE = 16_000
+
+    /**
+     * Fallback: playback live su USAGE_MEDIA invece dello stream comms (TtsPlayer live, cioè
+     * il telefono). Lo stream comms è quello che l'AEC usa come riferimento. Lo watch NON
+     * passa di qui: lo stream del suo parlato live lo sceglie il telefono per frame
+     * (impostazione "Audio a banda piena", vedi WatchStream / LivePlayout).
      */
     const val PLAYBACK_MEDIA_USAGE = false
 

@@ -27,7 +27,10 @@ class Downsampler24To16Test {
     @Test fun length_independentOfChunking() {
         val d = Downsampler24To16()
         val total = listOf(100, 7, 1, 2, 373, 959).sumOf { d.process(ShortArray(it)).size }
-        assertEquals((100 + 7 + 1 + 2 + 373 + 959) * 2 / 3, total)
+        val n = 100 + 7 + 1 + 2 + 373 + 959
+        // l'uscita m esce appena arriva l'ingresso floor(1.5·m): ceil(2N/3) campioni
+        assertEquals(Downsampler24To16().process(ShortArray(n)).size, total)
+        assertEquals((2 * n + 2) / 3, total)
     }
 
     @Test fun chunked_equalsOneShot() {
@@ -59,5 +62,34 @@ class Downsampler24To16Test {
     @Test fun fullScale_clipsWithoutWrap() {
         val out = Downsampler24To16().process(ShortArray(3000) { if ((it / 6) % 2 == 0) 32767 else -32768 })
         assertTrue(out.isNotEmpty())   // nessuna eccezione e valori nel range short per costruzione
+    }
+
+    /** Ampiezza (picco) della componente a [freq] in [x] campionato a [rate] (Goertzel). */
+    private fun tone(x: ShortArray, freq: Double, rate: Double, from: Int = 200): Double {
+        val n = x.size - from
+        val w = 2 * PI * freq / rate
+        var re = 0.0; var im = 0.0
+        for (i in 0 until n) {
+            re += x[from + i] * kotlin.math.cos(w * i)
+            im -= x[from + i] * sin(w * i)
+        }
+        return 2 * sqrt(re * re + im * im) / n
+    }
+
+    /** La versione vecchia rimandava f su 8 kHz − f a ~-20 dB: qui niente immagini in banda. */
+    @Test fun noInBandImages() {
+        for (f in listOf(5_000.0, 6_000.0, 7_000.0)) {
+            val out = Downsampler24To16().process(sine(f, 24_000))
+            val image = tone(out, 8_000.0 - f, 16_000.0)
+            assertTrue("immagine di $f Hz: $image", image < 10_000.0 * 0.001)   // < -60 dB
+        }
+    }
+
+    @Test fun passband_flatTo6k() {
+        for (f in listOf(300.0, 3_000.0, 5_000.0, 6_000.0)) {
+            val out = Downsampler24To16().process(sine(f, 24_000))
+            val g = tone(out, f, 16_000.0) / 10_000.0
+            assertTrue("$f Hz guadagno $g", g in 0.97..1.03)
+        }
     }
 }

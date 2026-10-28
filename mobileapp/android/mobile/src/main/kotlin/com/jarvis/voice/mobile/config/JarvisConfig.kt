@@ -87,6 +87,20 @@ class JarvisConfig(private val context: Context) : ControllerConfig {
         return base.dropLast(1) + newLast
     }
 
+    /**
+     * Sessione live sul watch: parlato su USAGE_MEDIA (banda piena) invece dello stream
+     * comms (catena voce del watch, suono "telefonico"). Il mic resta VOICE_COMMUNICATION
+     * + AEC. Da spegnere se con media l'eco fa interrompere Jarvis da solo.
+     */
+    var watchLiveMediaUsage: Boolean
+        get() = prefs.getBoolean(KEY_WATCH_LIVE_MEDIA, true)
+        set(v) = prefs.edit().putBoolean(KEY_WATCH_LIVE_MEDIA, v).apply()
+
+    /** Sessione live sul watch: parlato a 24 kHz pieni invece di 16 kHz (più banda Bluetooth). */
+    var watchLive24k: Boolean
+        get() = prefs.getBoolean(KEY_WATCH_LIVE_24K, false)
+        set(v) = prefs.edit().putBoolean(KEY_WATCH_LIVE_24K, v).apply()
+
     override val isConfigured: Boolean get() = url.isNotBlank()
 
     private fun normalizeId(v: String): String = v.trim().uppercase(Locale.ROOT)
@@ -102,5 +116,7 @@ class JarvisConfig(private val context: Context) : ControllerConfig {
         private const val KEY_CUSTOM_ID = "custom_device_id"
         private const val KEY_WEAR_ID = "wear_device_id"
         private const val KEY_GEN_ID = "gen_device_id"
+        private const val KEY_WATCH_LIVE_MEDIA = "watch_live_media_usage"
+        private const val KEY_WATCH_LIVE_24K = "watch_live_24k"
     }
 }

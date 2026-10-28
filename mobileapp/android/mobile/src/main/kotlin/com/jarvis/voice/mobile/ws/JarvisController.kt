@@ -436,7 +436,9 @@ class JarvisController(
             return
         }
         val events = HubEvents()
-        val client = hubClientFactory(spec, events)
+        // Watch: VAD meno sensibile all'eco del suo speaker (il telefono resta al default dell'hub).
+        val offerSpec = if (relayMode) spec.copy(vad = HubLiveStart.SPEAKER_NEAR_MIC_VAD) else spec
+        val client = hubClientFactory(offerSpec, events)
         events.client = client
         synchronized(hubLock) {
             hub = client; hubAudioOn = false

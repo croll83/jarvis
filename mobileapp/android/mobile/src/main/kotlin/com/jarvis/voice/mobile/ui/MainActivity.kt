@@ -42,6 +42,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -360,6 +361,8 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
     var customId by remember { mutableStateOf(config.customDeviceId) }
     val autoId = remember { config.autoDeviceId }
     var wearId by remember { mutableStateOf(config.wearDeviceId) }
+    var watchMedia by remember { mutableStateOf(config.watchLiveMediaUsage) }
+    var watch24k by remember { mutableStateOf(config.watchLive24k) }
 
     Column(
         Modifier.fillMaxSize().statusBarsPadding().padding(20.dp).verticalScroll(rememberScrollState()),
@@ -441,6 +444,22 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
             color = JarvisColors.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
         )
 
+        Spacer(Modifier.height(18.dp))
+        Text("Watch in sessione live", color = JarvisColors.textPrimary,
+            fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        SwitchOption(
+            checked = watchMedia, onChange = { watchMedia = it },
+            title = "Audio a banda piena (media)",
+            subtitle = "Spento = stream chiamata del watch (suono telefonico, AEC più forte). " +
+                "Spegnilo se Jarvis si interrompe da solo sentendo la sua eco.",
+        )
+        SwitchOption(
+            checked = watch24k, onChange = { watch24k = it },
+            title = "24 kHz verso il watch",
+            subtitle = "Spento = 16 kHz. Acceso = qualità piena ma +50% di banda Bluetooth: " +
+                "se l'audio si spezza, spegnilo.",
+        )
+
         Spacer(Modifier.height(24.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             OutlinedButton(onClick = onDone) { Text("Annulla") }
@@ -451,6 +470,8 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
                     config.deviceIdMode = idMode
                     if (idMode == JarvisConfig.MODE_CUSTOM) config.customDeviceId = customId
                     if (wearId.isNotBlank()) config.wearDeviceId = wearId
+                    config.watchLiveMediaUsage = watchMedia
+                    config.watchLive24k = watch24k
                     ttlMin.toLongOrNull()?.let { if (it > 0) config.ttlMillis = it * 60_000L }
                     onDone()
                 },
@@ -458,6 +479,20 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
                 modifier = Modifier.padding(start = 12.dp),
             ) { Text("Salva") }
         }
+    }
+}
+
+@Composable
+private fun SwitchOption(checked: Boolean, onChange: (Boolean) -> Unit, title: String, subtitle: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = JarvisColors.textPrimary, fontSize = 14.sp)
+            Text(subtitle, color = JarvisColors.textMuted, fontSize = 12.sp)
+        }
+        Switch(checked = checked, onCheckedChange = onChange, modifier = Modifier.padding(start = 12.dp))
     }
 }
 
