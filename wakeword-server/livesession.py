@@ -20,7 +20,7 @@ from typing import Awaitable, Callable, Optional
 import numpy as np
 import opuslib
 
-from aec import EchoCanceller, _EchoGate, create_echo_canceller
+from aec import _DEBUG_DIR as _AEC_DEBUG_DIR, EchoCanceller, _EchoGate, create_echo_canceller
 from config import OPUS_SAMPLE_RATE, OPUS_CHANNELS, OPUS_FRAME_SAMPLES
 from hubrelay import HubRelay
 
@@ -135,6 +135,38 @@ def vu_level(rms: float) -> int:
     return int(round(max(0.0, min(1.0, (db - _VU_FLOOR_DB) / -_VU_FLOOR_DB)) * 255))
 
 
+class _TimelineDump:
+    """Debug (AEC_DEBUG_DIR): mic in uplink e voce in downlink sulla stessa linea del tempo
+    (istante di arrivo / di invio), per misurare quanta eco c'e' nel mic di un device con l'AEC
+    a bordo. Due WAV 16 kHz: <name>_up.wav e <name>_down.wav."""
+
+    _MAX_S = 300
+
+    def __init__(self):
+        self._t0 = time.monotonic()
+        self.tracks = {"up": bytearray(), "down": bytearray()}
+
+    def add(self, key: str, pcm: bytes):
+        track = self.tracks[key]
+        pos = int((time.monotonic() - self._t0) * OPUS_SAMPLE_RATE) * 2
+        if pos > self._MAX_S * OPUS_SAMPLE_RATE * 2:
+            return
+        if len(track) < pos:
+            track += bytes(pos - len(track))
+        track += pcm
+
+    def write(self, directory: str, name: str):
+        import os
+        import wave
+        os.makedirs(directory, exist_ok=True)
+        for key, pcm in self.tracks.items():
+            with wave.open(os.path.join(directory, f"{name}_{key}.wav"), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(OPUS_SAMPLE_RATE)
+                w.writeframes(bytes(pcm))
+
+
 class HubLiveSession:
     """Pipeline audio di una sessione hub; i controlli restano in server.py."""
 
@@ -171,6 +203,7 @@ class HubLiveSession:
         self._level_packets = 0
         self._pcm_tail = b""          # byte dispari in sospeso del PCM grezzo (uplink_pcm)
         self._pcm_bytes = 0
+        self._dump = _TimelineDump() if _AEC_DEBUG_DIR else None
         self._closed = False
         logger.info(f"[{device_id}] Hub live media ready (call {call_id}, AEC {self.aec.backend_name})")
 
@@ -234,6 +267,8 @@ class HubLiveSession:
         else:
             self._pcm_tail = b""
         self._pcm_bytes += len(data)
+        if self._dump is not None:
+            self._dump.add("up", data)
         await self._forward(data)
 
     async def _forward(self, clean: bytes):
@@ -291,6 +326,8 @@ class HubLiveSession:
                 frame = self._down.popleft()
                 self.aec.render(frame)  # ancorata all'invio reale (vedi EchoCanceller.render)
                 await self._send_binary(self._encoder.encode(frame, OPUS_FRAME_SAMPLES))
+                if self._dump is not None:
+                    self._dump.add("down", frame)
                 self._due += _FRAME_S
                 # In ritardo di molto (event loop lento): si riallinea invece di sparare a raffica
                 self._due = max(self._due, time.monotonic() - _DOWNLINK_PREBUFFER_FRAMES * _FRAME_S)
@@ -340,6 +377,8 @@ class HubLiveSession:
             logger.info(f"[{self.device_id}] Uplink PCM (AEC sul device): {self._pcm_bytes // 32} ms")
         try:
             await asyncio.to_thread(self.aec.write_debug, f"{self.call_id}_{self.device_id}")
+            if self._dump is not None:
+                await asyncio.to_thread(self._dump.write, _AEC_DEBUG_DIR, f"{self.call_id}_{self.device_id}")
         except Exception as e:
             logger.warning(f"[{self.device_id}] AEC debug non salvato: {e!r}")
         self.aec.close()
