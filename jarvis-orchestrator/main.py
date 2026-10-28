@@ -836,10 +836,19 @@ async def lifespan(app: FastAPI):
 
     # Live session timeout monitor
     _keep(asyncio.create_task(live_session_monitor()))
+    # Speaker rimasti muti da una sessione hub interrotta dal riavvio
+    import live_room_mute
+    _keep(asyncio.create_task(live_room_mute.restore_leftovers()))
 
     logger.info("✅ JARVIS Core ready!")
     yield
     logger.info("👋 JARVIS Core shutting down...")
+    # Le sessioni live non sopravvivono al riavvio: si smutano le stanze adesso
+    # (se HA non risponde, il file di stato le fa ripristinare al prossimo avvio).
+    try:
+        await asyncio.wait_for(live_room_mute.release_all("shutdown"), timeout=10)
+    except Exception as e:
+        logger.warning(f"Live mute: ripristino allo spegnimento incompleto: {e}")
     if config.JEV_ENABLED:
         try:
             from jev_engine import close as jev_close
@@ -1291,13 +1300,30 @@ async def _activate_live_session(
             room_speakers_map = get_room_speakers(location)
             target_speaker = room_speakers_map.get(room, None)
 
-    if not (target_speaker or _use_internal):
+    if not (target_speaker or _use_internal or _live_session_backend(device_id) == "hub"):
         logger.warning(f"Live session: no speaker found for {device_id}, cannot activate")
         from ws_audio_handler import notify_tts_done
         await notify_tts_done(device_id)
         return
 
-    # Speaker recognized → immediate start with greeting
+    # Speaker recognized → immediate start with greeting.
+    # Device idoneo all'hub senza alcuno speaker per i turni normali: la domanda
+    # "vuoi una sessione anonima?" non avrebbe dove suonare (speak su None) e il device
+    # resterebbe appeso, quindi si parte subito come anonimo (l'hub saluta lui).
+    if not speaker_ctx.get("speaker_identified") and not (target_speaker or _use_internal):
+        logger.info(f"🎙️ Live session: speaker non riconosciuto su {device_id} senza speaker "
+                    f"per la conferma, avvio anonimo sull'hub")
+        await start_live_session(
+            device_id=device_id,
+            speaker_id=speaker_ctx.get("speaker_id"),
+            speaker_name=speaker_ctx.get("speaker_name", "Anonimo"),
+            location_id=location,
+            room=room,
+            media_player_id=None,
+            use_internal_speaker=False,
+            greeting="Sessione live anonima attivata.",
+        )
+        return
     if speaker_ctx.get("speaker_identified"):
         name = speaker_ctx.get("speaker_name", "")
         greeting = f"Ciao {name}, sessione live attivata."
@@ -1467,14 +1493,18 @@ async def _handle_pending_live_session(device_id: str, audio_bytes: bytes):
     await _start_with_ctx(pending.speaker_ctx, "Sessione live anonima attivata.")
 
 
-def _live_session_backend(device_id: str, use_internal_speaker: bool) -> str:
+def _live_session_backend(device_id: str, use_internal_speaker: bool = False) -> str:
     """Decide UNA volta all'apertura chi conduce la sessione live.
 
-    "hub" solo se l'hub e' configurato (porta != 0), il device ha lo speaker incorporato
-    (mic e cassa vicini: l'AEC e' possibile) ed e' di un tipo abilitato. Atom/NabuVoice che
-    suonano su un Echo/soundbar esterno restano sul turn-loop di oggi.
+    "hub" se l'hub e' configurato (porta != 0) e il device e' di un tipo abilitato e non
+    escluso, a prescindere da use_internal_speaker: la sessione hub suona sempre sul device
+    stesso (Atom+Echo Base, NabuVoice col suo DAC, telefono, orologio), e per tutta la
+    sessione gli speaker della stanza restano muti (live_room_mute). use_internal_speaker
+    continua a decidere l'uscita dei turni normali e del ripiego sul turn-loop di oggi.
     """
-    if not config.VOICE_LIVE_HUB_PORT or not config.VOICE_LIVE_HUB_HOST or not use_internal_speaker:
+    if not config.VOICE_LIVE_HUB_PORT or not config.VOICE_LIVE_HUB_HOST:
+        return "orchestrator"
+    if (device_id or "").upper().strip() in config.VOICE_LIVE_HUB_EXCLUDE_DEVICES:
         return "orchestrator"
     device_cfg = get_device_speaker_config(device_id)
     device_type = device_cfg.get("device_type") if device_cfg else None
@@ -1557,6 +1587,9 @@ async def start_live_session(
     )
     if backend is None:
         backend = _live_session_backend(device_id, use_internal_speaker)
+    _prev = _live_sessions.get(device_id)
+    if _prev is not None and _prev.backend == "hub" and backend != "hub":
+        await _end_room_mute(device_id, "session_replaced")
     if backend == "hub":
         session.backend = "hub"
         session.hub_call_id = uuid.uuid4().hex[:8]
@@ -1576,6 +1609,13 @@ async def start_live_session(
         if not await notify_live_session_start(device_id, _hub_live_session_payload(session)):
             logger.warning(f"🎙️ Live session hub: {device_id} non raggiungibile, sessione annullata")
             _live_sessions.pop(device_id, None)
+            if _prev is not None and _prev.backend == "hub":
+                # La sessione hub sostituita teneva la stanza muta: senza sessione si smuta
+                await _end_room_mute(device_id, "session_replaced")
+            return session
+        # Gli speaker della stanza restano muti per tutta la sessione (in background:
+        # l'apertura non aspetta Home Assistant).
+        _start_room_mute(session)
         return session
     await notify_live_session_start(device_id)
 
@@ -1628,6 +1668,7 @@ async def end_live_session(device_id: str, reason: str = "unknown", close_turn: 
             await notify_tts_done(device_id)
         logger.info(f"🎙️ Live session ENDED (hub): device={device_id}, reason={reason}, "
                     f"call_id={session.hub_call_id}, duration={duration:.0f}s")
+        await _end_room_mute(device_id, reason)
         return
 
     # Notify user based on reason
@@ -1697,6 +1738,11 @@ async def handle_device_live_session_end(device_id: str, call_id: Optional[str],
     if fallback and device_id.upper().strip() not in await get_connected_devices():
         logger.warning(f"🎙️ Hub non disponibile ({reason}) e {device_id} disconnesso: niente ripiego")
         fallback = False
+    if fallback and not (session.media_player_id or session.use_internal_speaker):
+        # Device ammesso all'hub senza speaker per il turn-loop: il ripiego non avrebbe
+        # dove parlare (speak su None) e il device resterebbe in una sessione muta.
+        logger.warning(f"🎙️ Hub non disponibile ({reason}) e {device_id} senza speaker: niente ripiego")
+        fallback = False
     if not fallback:
         await end_live_session(device_id, reason=f"device_{reason or 'unknown'}")
         return
@@ -1704,6 +1750,9 @@ async def handle_device_live_session_end(device_id: str, call_id: Optional[str],
     _live_sessions.pop(device_id, None)
     logger.info(f"🎙️ Hub non disponibile ({reason}, call_id={session.hub_call_id}) per {device_id}: "
                 f"ripiego sulla sessione live di oggi")
+    # Il ripiego parla sull'Echo/soundbar se il device non ha lo speaker interno: prima si
+    # smuta la stanza.
+    await _end_room_mute(device_id, f"fallback_{reason}")
     greeting = (f"Ciao {session.speaker_name}, sessione live attivata."
                 if _speaker_known(session.user_id, session.speaker_name) else "Sessione live anonima attivata.")
     await start_live_session(
@@ -1724,6 +1773,61 @@ def has_hub_live_session(device_id: str) -> bool:
     gli annunci sullo speaker interno vanno rifiutati, il device non e' nostro."""
     session = _live_sessions.get(device_id) or _live_sessions.get((device_id or "").upper().strip())
     return session is not None and session.backend == "hub"
+
+
+# Stanza muta durante la sessione hub (live_room_mute): il mute parte in background
+# all'apertura; ogni chiusura aspetta il mute in volo e poi ripristina.
+_room_mute_tasks: Dict[str, asyncio.Task] = {}
+
+
+def _start_room_mute(session: "LiveSession") -> None:
+    import live_room_mute
+    device_id = session.device_id
+
+    async def _run():
+        try:
+            await live_room_mute.mute_room(device_id, session.location_id, session.room)
+        except Exception as e:
+            logger.error(f"🔇 Live mute {device_id} fallito: {e}")
+        # Sessione finita mentre si mutava (la chiusura puo' essere passata prima che
+        # il mute partisse): niente stanza muta senza sessione.
+        if not has_hub_live_session(device_id):
+            try:
+                await live_room_mute.unmute_room(device_id, "ended_while_muting")
+            except Exception as e:
+                logger.error(f"🔊 Live unmute {device_id} fallito: {e}")
+
+    _room_mute_tasks[device_id] = asyncio.create_task(_run())
+
+
+async def _end_room_mute(device_id: str, reason: str) -> None:
+    """Ripristina la stanza del device. Non solleva mai: la chiusura non deve fallire per HA."""
+    import live_room_mute
+    task = _room_mute_tasks.pop(device_id, None)
+    if task is not None and not task.done():
+        try:
+            await task
+        except Exception:
+            pass
+    try:
+        await live_room_mute.unmute_room(device_id, reason)
+    except Exception as e:
+        logger.error(f"🔊 Live unmute {device_id} ({reason}) fallito: {e}")
+
+
+async def handle_hub_device_disconnect(device_id: str, call_id: Optional[str]) -> None:
+    """Il device (o il suo wakeword-server) si e' disconnesso durante una sessione hub.
+    Se torna entro la grazia l'hello chiude la sessione (device_reconnect); se non torna,
+    la si chiude qui, cosi' la stanza non resta muta fino al tetto di sicurezza."""
+    await asyncio.sleep(config.VOICE_LIVE_HUB_DISCONNECT_GRACE_S)
+    session = _live_sessions.get(device_id)
+    if not session or session.backend != "hub" or session.hub_call_id != call_id:
+        return
+    if device_id.upper().strip() in await get_connected_devices():
+        return
+    logger.warning(f"🎙️ {device_id} disconnesso da {config.VOICE_LIVE_HUB_DISCONNECT_GRACE_S:.0f}s "
+                   f"durante la sessione hub {call_id}: la chiudo")
+    await end_live_session(device_id, reason="device_disconnect")
 
 
 async def handle_live_session_turn(device_id: str, audio_bytes: bytes):
@@ -2962,6 +3066,13 @@ async def speaker_restore_endpoint(request: Request):
 async def speaker_suppressed_status():
     """Debug endpoint: mostra tutti gli speaker attualmente soppressi."""
     return get_suppressed_speakers()
+
+
+@app.get("/speaker/live_muted")
+async def speaker_live_muted_status():
+    """Debug endpoint: stanze mutate dalle sessioni live hub in corso."""
+    from live_room_mute import get_live_muted
+    return get_live_muted()
 
 
 @app.post("/speaker/volume_change")

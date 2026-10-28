@@ -170,6 +170,8 @@ def _new_vad_instance() -> SileroVADOnnx:
 # Persistent connections registry
 # ---------------------------------------------------------------------------
 _persistent_connections: Dict[str, "PersistentDeviceConnection"] = {}
+# Task di chiusura differita delle sessioni hub su disconnessione (riferimento forte)
+_disconnect_tasks: set = set()
 _connections_lock = asyncio.Lock()
 
 
@@ -919,9 +921,24 @@ async def ws_audio_endpoint(
         _open_turns.pop(_turn_key(device_id), None)
 
         # Remove from persistent connections
+        _was_current = False
         async with _connections_lock:
             if _persistent_connections.get(device_id) is conn:
                 del _persistent_connections[device_id]
+                _was_current = True
+
+        # Sessione hub ancora aperta su un device sparito: se non torna entro la grazia
+        # la si chiude (e la stanza si smuta), vedi main.handle_hub_device_disconnect.
+        if _was_current:
+            try:
+                from main import get_live_session, handle_hub_device_disconnect
+                _hub = get_live_session(device_id)
+                if _hub is not None and _hub.backend == "hub":
+                    _t = asyncio.create_task(handle_hub_device_disconnect(device_id, _hub.hub_call_id))
+                    _disconnect_tasks.add(_t)
+                    _t.add_done_callback(_disconnect_tasks.discard)
+            except Exception as e:
+                logger.debug(f"Device {device_id}: hub session check on disconnect: {e}")
 
         # Clean up AI Agent follow-up tracker
         try:

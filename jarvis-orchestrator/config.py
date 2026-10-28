@@ -109,10 +109,35 @@ if WAKEWORD_SERVER_URLS_RAW:
 # VOICE_LIVE_HUB_PORT=0 = feature spenta (rollback): sessione live identica a oggi.
 VOICE_LIVE_HUB_HOST = os.getenv("VOICE_LIVE_HUB_HOST", "100.116.99.9")
 VOICE_LIVE_HUB_PORT = int(os.getenv("VOICE_LIVE_HUB_PORT", "0") or 0)
+# Idoneita' per tipo, a prescindere da use_internal_speaker: la sessione hub suona sempre
+# sul device stesso (Atom+Echo Base, NabuVoice, telefono, orologio hanno tutti una cassa).
 VOICE_LIVE_HUB_DEVICE_TYPES = {t.strip() for t in os.getenv(
-    "VOICE_LIVE_HUB_DEVICE_TYPES", "AtomS3R,AndroidPhone,AndroidWear").split(",") if t.strip()}
+    "VOICE_LIVE_HUB_DEVICE_TYPES", "AtomS3R,NabuVoice,AndroidPhone,AndroidWear").split(",") if t.strip()}
+# Opt-out per device (device_id MAC, separati da virgola): restano sul turn-loop di oggi.
+VOICE_LIVE_HUB_EXCLUDE_DEVICES = {d.strip().upper() for d in os.getenv(
+    "VOICE_LIVE_HUB_EXCLUDE_DEVICES", "").split(",") if d.strip()}
 # Tetto di sicurezza lato orchestrator: i timeout veri (silenzio, durata) li applica l'hub.
 VOICE_LIVE_HUB_MAX_S = float(os.getenv("VOICE_LIVE_HUB_MAX_S", "3600"))
+# Device che si disconnette dall'orchestrator durante una sessione hub: se non torna entro
+# questi secondi la sessione si chiude (e la stanza si smuta). Se torna, l'hello la chiude.
+VOICE_LIVE_HUB_DISCONNECT_GRACE_S = float(os.getenv("VOICE_LIVE_HUB_DISCONNECT_GRACE_S", "15"))
+
+# Stanza muta durante la sessione hub (live_room_mute.py): ogni media_player della stanza
+# del device (entity_maps, come speaker_suppress) si muta all'apertura e torna allo stato
+# esatto di prima alla chiusura. SCOPE=location muta tutti i media_player della location.
+VOICE_LIVE_MUTE_ENABLED = os.getenv("VOICE_LIVE_MUTE_ENABLED", "true").lower() in ("1", "true", "yes")
+VOICE_LIVE_MUTE_SCOPE = (os.getenv("VOICE_LIVE_MUTE_SCOPE", "room") or "room").strip().lower()
+# Ripristino di sicurezza se la fine sessione non arriva mai (default: tetto hub + 2 min).
+VOICE_LIVE_MUTE_MAX_S = float(os.getenv("VOICE_LIVE_MUTE_MAX_S", str(VOICE_LIVE_HUB_MAX_S + 120)))
+# media_player da non toccare mai: entity_id esatti, oppure sottostringhe dell'entity_id
+# (default: il media_player del Voice PE stesso, che e' la cassa della sessione).
+VOICE_LIVE_MUTE_EXCLUDE_ENTITIES = {e.strip().lower() for e in os.getenv(
+    "VOICE_LIVE_MUTE_EXCLUDE_ENTITIES", "").split(",") if e.strip()}
+VOICE_LIVE_MUTE_EXCLUDE_PATTERNS = [p.strip().lower() for p in os.getenv(
+    "VOICE_LIVE_MUTE_EXCLUDE_PATTERNS", "jarvis_voice,voice_pe,home_assistant_voice").split(",") if p.strip()]
+# File di stato (sopravvive al riavvio: all'avvio si ripristina quello rimasto mutato).
+# Vuoto = accanto al DB (/app/data/live_room_mute.json).
+VOICE_LIVE_MUTE_STATE_FILE = os.getenv("VOICE_LIVE_MUTE_STATE_FILE", "")
 
 # AI Agent (AI Brain - Cloud LLM)
 AI_AGENT_URL = os.getenv("AI_AGENT_URL", "")

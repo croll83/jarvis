@@ -2,8 +2,9 @@
 
 A device with a built-in speaker of an enabled type gets the enriched live_session_start
 (backend "hub", call_id, profile, name, hub address) and nothing else: no greeting, no
-trigger_listen, no turn loop. External-speaker devices and VOICE_LIVE_HUB_PORT=0 keep
-today's session. The device ends a hub session with an inbound live_session_end; every end
+trigger_listen, no turn loop. Devices that play on an Echo/soundbar go to the hub too (the
+session plays on the device itself, the room is muted: tests.test_live_room_mute);
+VOICE_LIVE_HUB_PORT=0 keeps today's session. The device ends a hub session with an inbound live_session_end; every end
 also closes the turn with tts_done, so the peers go back to IDLE. When the hub refused or
 was unreachable the session is converted in place to today's Hermes live session (no
 live_session_end). An audio turn that reaches the orchestrator during a hub session means
@@ -128,8 +129,13 @@ class ForkDecision(_Base):
             self.device_type = device_type
             self.assertEqual(main._live_session_backend(DEV, True), "hub", device_type)
 
-    def test_external_speaker_stays_on_todays_session(self):
-        self.assertEqual(main._live_session_backend(DEV, False), "orchestrator")
+    def test_external_speaker_goes_to_the_hub_too(self):
+        self.assertEqual(main._live_session_backend(DEV, False), "hub")
+
+    def test_nabuvoice_when_enabled(self):
+        self.device_type = "NabuVoice"
+        config.VOICE_LIVE_HUB_DEVICE_TYPES = {"AtomS3R", "NabuVoice"}
+        self.assertEqual(main._live_session_backend(DEV, False), "hub")
 
     def test_device_type_not_enabled_stays_on_todays_session(self):
         self.device_type = "NabuVoice"
@@ -232,8 +238,27 @@ class FeatureOffIsUnchanged(_Base):
         self.assertEqual(self.spoken[-1], "Sessione live terminata.")
 
 
-class ExternalSpeakerIsUnchanged(_Base):
-    async def test_external_speaker_with_the_hub_on_keeps_todays_session(self):
+class ExternalSpeaker(_Base):
+    async def test_external_speaker_with_the_hub_on_opens_a_hub_session(self):
+        session = await self.start(internal=False)
+        self.assertEqual(session.backend, "hub")
+        self.assertEqual(self.ws.types(), ["live_session_start"])
+        self.assertEqual(self.ws.sent[0]["backend"], "hub")
+        self.assertEqual(self.spoken, [])  # nothing on the Echo
+
+    async def test_fallback_of_an_external_speaker_device_speaks_on_the_echo(self):
+        hub = await self.start(internal=False)
+        self.ws.sent.clear()
+        await main.handle_device_live_session_end(DEV, hub.hub_call_id, "hub_rejected")
+        session = main._live_sessions[DEV]
+        self.assertEqual(session.backend, "orchestrator")
+        self.assertFalse(session.use_internal_speaker)
+        self.assertEqual(session.media_player_id, "media_player.echo_studio")
+        self.assertEqual(self.ws.sent[0], {"type": "live_session_start"})
+        self.assertEqual(self.spoken, ["Ciao Marco, sessione live attivata."])
+
+    async def test_external_speaker_with_the_hub_off_keeps_todays_session(self):
+        config.VOICE_LIVE_HUB_PORT = 0
         session = await self.start(internal=False)
         self.assertEqual(session.backend, "orchestrator")
         self.assertEqual(self.ws.sent[0], {"type": "live_session_start"})

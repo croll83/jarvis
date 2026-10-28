@@ -30,6 +30,22 @@ _suppressed_devices: Dict[str, dict] = {}
 # Lock per-device per evitare race condition
 _device_locks: Dict[str, asyncio.Lock] = {}
 
+# Volumi originali ripristinati di recente: (location_id, entity_id) -> (volume, ts).
+# Servono alla stanza muta della sessione live (live_room_mute): parte subito dopo lo STT
+# del turno di attivazione, e HA puo' riportare ancora il 10% appena rimesso a posto.
+_recent_restores: Dict[tuple, tuple] = {}
+RECENT_RESTORE_TTL_S = 120.0
+
+
+def _held_by_live_mute(location_id: str, entity_id: str) -> bool:
+    """True se lo speaker e' mutato da una sessione live hub: non va abbassato ne'
+    rialzato da qui (il restore lo riporterebbe udibile a sessione in corso)."""
+    try:
+        from live_room_mute import is_entity_held
+        return is_entity_held(location_id, entity_id)
+    except Exception:
+        return False
+
 
 def _get_device_lock(device_id: str) -> asyncio.Lock:
     """Ottiene (o crea) un lock per uno specifico device."""
@@ -120,6 +136,9 @@ async def suppress_speaker(device_id: str) -> dict:
         for entity_id in room_players:
             speaker_state = states.get(entity_id)
             if not speaker_state:
+                continue
+            if _held_by_live_mute(location_id, entity_id):
+                logger.debug(f"Suppress: {entity_id} mutato dalla sessione live, skip")
                 continue
 
             state_value = (speaker_state.get("state") or "").lower()
@@ -228,6 +247,7 @@ async def restore_speaker(device_id: str) -> dict:
 
             if success:
                 restored_count += 1
+                _recent_restores[(location_id, entity_id)] = (original_volume, time.time())
             else:
                 logger.error(f"Restore: volume_set fallito su {entity_id}: {msg}")
 
@@ -276,6 +296,52 @@ async def _safety_restore(device_id: str, timeout: float):
     except asyncio.CancelledError:
         # Il restore è stato fatto normalmente prima del timeout
         pass
+
+
+async def release_for_live_mute(location_id: str, entity_ids: List[str]) -> Dict[str, float]:
+    """Cede alla stanza muta della sessione live gli speaker che il suppress tiene al 10%.
+
+    Toglie quegli speaker dallo stato del suppress (di qualunque device), cosi' ne' il
+    restore dopo lo STT ne' il safety timer li rialzano a sessione in corso; ritorna
+    {entity_id: volume originale} e da qui in poi il ripristino tocca a live_room_mute.
+    Prende i lock di tutti i device: aspetta i suppress/restore in volo, cosi' il volume
+    letto dopo e' quello vero e non il 10%.
+    """
+    wanted = set(entity_ids)
+    taken: Dict[str, float] = {}
+    for dev_id in list(dict.fromkeys(list(_device_locks) + list(_suppressed_devices))):
+        async with _get_device_lock(dev_id):
+            info = _suppressed_devices.get(dev_id)
+            if not info or info.get("location_id") != location_id:
+                continue
+            keep = []
+            for speaker in info["speakers"]:
+                if speaker["entity_id"] in wanted:
+                    taken[speaker["entity_id"]] = speaker["original_volume"]
+                else:
+                    keep.append(speaker)
+            if len(keep) == len(info["speakers"]):
+                continue
+            if keep:
+                info["speakers"] = keep
+            else:
+                _suppressed_devices.pop(dev_id, None)
+                task = info.get("safety_task")
+                if task and not task.done():
+                    task.cancel()
+            logger.info(f"Suppress: {dev_id} cede alla sessione live {sorted(wanted & set(taken))}")
+    return taken
+
+
+def recent_original_volumes(location_id: str, entity_ids: List[str],
+                            max_age: float = RECENT_RESTORE_TTL_S) -> Dict[str, float]:
+    """{entity_id: volume originale} degli speaker ripristinati da meno di max_age secondi."""
+    now = time.time()
+    for key, (_vol, ts) in list(_recent_restores.items()):
+        if now - ts > max_age:
+            _recent_restores.pop(key, None)
+    return {e: _recent_restores[(location_id, e)][0]
+            for e in entity_ids if (location_id, e) in _recent_restores}
 
 
 def get_suppressed_speakers() -> dict:
