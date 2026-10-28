@@ -371,6 +371,22 @@ async def test_device_interrupt_clears_and_tells_the_hub(conn, hub_on):
     assert conn.relay.ends() == []
 
 
+@pytest.mark.parametrize("fw,dtype,caps", [("5.0.0-ws", "AtomS3R", set()),
+                                            ("1.0.0-nabuvoice", "NabuVoice", set())])
+async def test_firmware_without_duplex_falls_back(conn, hub_on, fw, dtype, caps):
+    conn.firmware_version, conn.device_type, conn.caps = fw, dtype, caps
+    await orch_hub_start(conn)
+    assert conn.hub_session is None and hub_on.connections == 0
+    assert [m.get("reason") for m in conn.relay.ends()] == ["error"]
+
+
+async def test_onboard_aec_device_keeps_gemini_default_vad(conn, hub_on):
+    conn.firmware_version, conn.device_type = "1.1.0-nabuvoice", "NabuVoice"
+    conn.caps = {"duplex", "pcm_uplink", "aec_onboard"}
+    await start_session(conn, hub_on)
+    assert hub_on.offer["vad"] == {"prefixPaddingMs": 300}
+
+
 async def test_downlink_resampled_paced_opus(conn, hub_on):
     hub = hub_on
     await start_session(conn, hub)
@@ -750,3 +766,172 @@ async def test_clear_restarts_prebuffer_burst(conn, hub_on):
     # il reset si ripartirebbe al ritmo di prima (un frame ogni 20 ms)
     assert await wait_for(lambda: len(conn.ws.binary) >= sent + 5, timeout=0.035, step=0.002)
     assert session.queued_frames > 0
+
+
+# --- NabuVoice: AEC sul device (cap aec_onboard), uplink PCM grezzo ----------
+
+NABU_CAPS = {"duplex", "pcm_uplink", "aec_onboard"}
+
+
+def pcm_frames(pcm16k, size=640):
+    raw = pcm16k.astype("<i2").tobytes()
+    return [raw[i:i + size] for i in range(0, len(raw), size)]
+
+
+@pytest.fixture
+def nabu(conn, monkeypatch):
+    conn.caps = set(NABU_CAPS)
+    conn.device_type = "NabuVoice"
+
+    async def no_server_aec(*a, **k):
+        raise AssertionError("aec_onboard: niente AEC lato server")
+    monkeypatch.setattr(server, "_create_aec", no_server_aec)
+    return conn
+
+
+@pytest.mark.parametrize("extra_caps,ref_mode", [((), "level"), (("aec_ref",), "pcm"), (("aec_ref",), "level")])
+async def test_aec_onboard_start_without_aec_ref_and_passthrough(nabu, hub_on, monkeypatch, extra_caps, ref_mode):
+    monkeypatch.setattr(server, "AEC_BACKEND", "webrtc")  # ignorato per aec_onboard
+    monkeypatch.setattr(server, "HUB_AEC_REF_MODE", ref_mode)
+    monkeypatch.setattr(server, "HUB_ATOM_MIC_GAIN_DB", "18")
+    nabu.caps |= set(extra_caps)
+    session = await start_session(nabu, hub_on)
+    assert nabu.ws.json == [{"type": "live_session_start", "duplex": True}]
+    assert session.aec.backend_name == "off"
+    assert session.aec._gain == 1.0 and not session.aec.aligned  # nessun guadagno ridato
+    assert nabu.live_session is True and nabu.wakeword.muted_for == 3600
+
+
+async def test_aec_onboard_pcm_uplink_bit_exact_with_vu(nabu, hub_on, monkeypatch):
+    monkeypatch.setattr(livesession, "_VU_INTERVAL_S", 0.0)
+    hub = hub_on
+    await start_session(nabu, hub)
+    rng = np.random.default_rng(11)
+    pcm = tone(440, 0.5, 16000) + (rng.standard_normal(8000) * 30).astype(np.int16)
+    frames = pcm_frames(pcm)
+    # frame che sembrano pacchetti a livelli / allineati dell'Atom: per la Nabu sono PCM
+    frames[3] = bytes([0xA5, 0x03]) + frames[3][2:]
+    frames[4] = bytes([0xA5, 0x01]) + frames[4][2:]
+    sent = b"".join(frames)
+    for f in frames:
+        await server._handle_binary(nabu, f)
+    assert await wait_for(lambda: len(hub.audio) >= len(sent))
+    assert bytes(hub.audio) == sent  # niente Opus, AEC, cancello o AGC: bit per bit
+    assert hub.audio_call_ids == {"c0ffee01"}
+    vus = [m for m in nabu.ws.json if m.get("type") == "vu"]
+    assert vus and all(0 <= m["mic"] <= 255 for m in vus)
+    assert max(m["mic"] for m in vus) > 150
+    assert nabu.relay.sent_bin == []
+    assert nabu.wakeword.processed == 0
+
+
+async def test_aec_onboard_pcm_uplink_any_length_keeps_sample_alignment(nabu, hub_on):
+    hub = hub_on
+    session = await start_session(nabu, hub)
+    raw = tone(300, 0.2, 16000).astype("<i2").tobytes()
+    cuts = [0, 641, 1279, 1280, 2001, 3333, len(raw)]  # spezzature dispari comprese
+    for a, b in zip(cuts, cuts[1:]):
+        await session.uplink_pcm(raw[a:b])
+    assert await wait_for(lambda: len(hub.audio) >= len(raw))
+    assert bytes(hub.audio) == raw
+
+
+async def test_aec_onboard_live_interrupt(nabu, hub_on):
+    hub = hub_on
+    session = await start_session(nabu, hub)
+    hub.send_audio(tone(1000, 2.0, 24000).tobytes())
+    assert await wait_for(lambda: session.queued_frames > 10)
+    await server._handle_text(nabu, json.dumps({"type": "live_interrupt"}))
+    assert session.queued_frames == 0
+    assert nabu.ws.json[-1] == {"type": "audio_clear"}
+    assert await wait_for(lambda: {"type": "interrupt", "call_id": "c0ffee01"} in hub.json)
+    assert nabu.hub_session is session and nabu.relay.ends() == []
+
+
+async def test_aec_onboard_hub_clear_sends_audio_clear(nabu, hub_on):
+    hub = hub_on
+    session = await start_session(nabu, hub)
+    hub.send_audio(tone(1000, 2.0, 24000).tobytes())
+    assert await wait_for(lambda: len(nabu.ws.binary) >= 10)
+    # downlink: Opus 16 kHz da 20 ms come per l'Atom
+    dec = opuslib.Decoder(16000, 1)
+    assert len(dec.decode(nabu.ws.binary[0], 320)) == 640
+    hub.send_json({"type": "clear", "call_id": "c0ffee01"})
+    assert await wait_for(lambda: "audio_clear" in nabu.ws.types())
+    assert session.queued_frames == 0 and nabu.hub_session is session
+
+
+async def test_aec_onboard_pcm_tail_after_end_not_decoded(nabu, hub_on, monkeypatch):
+    await start_session(nabu, hub_on)
+    await server._handle_text(nabu, json.dumps({"type": "live_session_end", "reason": "button"}))
+    assert nabu.hub_session is None and nabu.state == server.DeviceState.IDLE
+    assert nabu.relay.ends() == [{"type": "live_session_end", "call_id": "c0ffee01", "reason": "button"}]
+    decoded = []
+    monkeypatch.setattr(nabu, "decode_opus", lambda d: decoded.append(d))
+    for f in pcm_frames(tone(440, 0.1, 16000)):
+        await server._handle_binary(nabu, f)
+    assert decoded == [] and nabu.wakeword.processed == 0
+    nabu.pcm_tail_until = 0.0  # passata la coda: la wake word lato server torna come oggi
+    await server._handle_binary(nabu, b"\x08opus")
+    assert decoded == [b"\x08opus"]
+
+
+async def test_aec_onboard_hub_hangup_tells_device_and_drops_pcm_tail(nabu, hub_on, monkeypatch):
+    """Fine dal hub: la Nabu riceve live_session_end e il PCM ancora in volo non va alla wake word."""
+    hub = hub_on
+    await start_session(nabu, hub)
+    hub.send_json({"type": "hangup", "call_id": "c0ffee01"})
+    assert await wait_for(lambda: nabu.hub_session is None)
+    assert nabu.ws.json[-1] == {"type": "live_session_end"}
+    assert nabu.relay.ends() == [
+        {"type": "live_session_end", "call_id": "c0ffee01", "reason": "hub_hangup"}]
+    assert nabu.pcm_tail_until > 0
+    decoded = []
+    monkeypatch.setattr(nabu, "decode_opus", lambda d: decoded.append(d))
+    for f in pcm_frames(tone(440, 0.1, 16000)):
+        await server._handle_binary(nabu, f)
+    assert decoded == [] and nabu.wakeword.processed == 0
+
+
+async def test_atom_end_has_no_pcm_tail(conn, hub_on):
+    await start_session(conn, hub_on)
+    await server._handle_text(conn, json.dumps({"type": "live_session_end", "reason": "button"}))
+    assert conn.pcm_tail_until == 0.0
+    for f in opus_frames(tone(440, 0.1, 16000)):
+        await server._handle_binary(conn, f)
+    assert conn.wakeword.processed > 0
+
+
+async def test_nabuvoice_over_websocket(fake_relay, hub_on, monkeypatch):
+    """Endpoint WS vero: hello NabuVoice con caps, handshake hub come l'Atom, PCM al hub."""
+    monkeypatch.setattr(livesession, "_VU_INTERVAL_S", 0.0)
+    hub = hub_on
+    port = free_port()
+    srv, task = await _uvicorn(port)
+    try:
+        ws = await websockets.connect(f"ws://127.0.0.1:{port}/ws/audio?device_id=nabu:01")
+        await ws.send(json.dumps({"type": "hello", "fw": "1.1.0-nabuvoice",
+                                  "caps": ["duplex", "pcm_uplink", "aec_onboard"]}))
+        assert await wait_for(lambda: "NABU:01" in server._connections and fake_relay.instances)
+        conn = server._connections["NABU:01"]
+        assert conn.device_type == "NabuVoice" and conn.caps == NABU_CAPS
+        assert json.loads(await ws.recv())["type"] == "welcome"
+        conn.state = server.DeviceState.BUSY  # fine del turno "avvia una sessione live"
+        await orch_hub_start(conn)
+        assert conn.hub_session is not None
+        assert json.loads(await ws.recv()) == {"type": "live_session_start", "duplex": True}
+        raw = tone(440, 0.2, 16000).astype("<i2").tobytes()
+        for f in pcm_frames(np.frombuffer(raw, dtype="<i2")):
+            await ws.send(f)
+        assert await wait_for(lambda: len(hub.audio) >= len(raw))
+        assert bytes(hub.audio) == raw
+        assert json.loads(await ws.recv())["type"] == "vu"
+        await ws.send(json.dumps({"type": "live_session_end", "reason": "button"}))
+        assert await wait_for(hub.eof.is_set)
+        assert fake_relay.instances[-1].ends() == [
+            {"type": "live_session_end", "call_id": "c0ffee01", "reason": "button"}]
+        await ws.close()
+        assert await wait_for(lambda: "NABU:01" not in server._connections)
+    finally:
+        srv.should_exit = True
+        await task

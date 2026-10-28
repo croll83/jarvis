@@ -87,7 +87,11 @@ class DeviceConnection:
         self.state = DeviceState.IDLE
         self.firmware_version: str = "unknown"
         self.device_type: str = "unknown"  # Determined from hello message fw string
-        self.caps: set[str] = set()      # Dall'hello; "aec_ref" = riferimento AEC dal codec
+        self.caps: set[str] = set()      # Dall'hello; "aec_ref" = riferimento AEC dal codec,
+                                         # "aec_onboard" = AEC gia' fatto sul device (NabuVoice)
+        # Fine sessione hub di un device con PCM in uplink: fino a qui i frame binari fuori
+        # sessione sono PCM ancora in volo, non Opus da decodificare per la wake word
+        self.pcm_tail_until: float = 0.0
         self.live_session: bool = False  # True during live session
         self.tts_prepare_token = None    # avviso asincrono in corso (prepare_tts)
         self._ws_write_lock = asyncio.Lock()  # Serializza write verso device
@@ -303,6 +307,11 @@ async def _handle_binary(conn: DeviceConnection, data: bytes):
     """Handle binary Opus frame from device."""
     if conn.hub_session is not None:
         # --- Sessione hub: mic sempre aperto (anche WAKING/BUSY), AEC e poi al hub ---
+        if _aec_onboard(conn):
+            # NabuVoice: PCM s16le 16 kHz gia' ripulito dall'XMOS. Prima di parse_level/aligned:
+            # un frame PCM puo' iniziare con 0xA5 per caso
+            await conn.hub_session.uplink_pcm(data)
+            return
         level = parse_level(data)
         if level is not None:
             seq, rms, opus, muted = level
@@ -321,6 +330,8 @@ async def _handle_binary(conn: DeviceConnection, data: bytes):
 
     if conn.state == DeviceState.IDLE:
         # --- Wake word detection mode ---
+        if conn.pcm_tail_until and time.monotonic() < conn.pcm_tail_until:
+            return  # coda PCM della sessione hub appena chiusa (il device non ha ancora smesso)
         pcm = conn.decode_opus(data)
         if pcm is None:
             return
@@ -557,10 +568,39 @@ async def _abandon_hub_start(conn: DeviceConnection, orch_reason: Optional[str] 
     return True
 
 
-async def _create_aec(agc: bool = True):
+def _fw_version(fw: str) -> Optional[tuple]:
+    try:
+        return tuple(int(p) for p in fw.split("-", 1)[0].split("."))
+    except ValueError:
+        return None
+
+
+def _duplex_capable(conn: DeviceConnection) -> bool:
+    """Il device sa fare la sessione live full-duplex: NabuVoice solo se lo dichiara (cap duplex),
+    Atom dal 5.1.0-ws (i 5.2+ dichiarano aec_ref). Versione illeggibile = come oggi."""
+    if "duplex" in conn.caps or "aec_ref" in conn.caps:
+        return True
+    if conn.device_type == "NabuVoice":
+        return False
+    version = _fw_version(conn.firmware_version)
+    return version is None or version >= (5, 1)
+
+
+def _aec_onboard(conn: DeviceConnection) -> bool:
+    """Device che fa da se' AEC+NS+AGC (NabuVoice, XMOS XU316): in sessione hub manda PCM
+    16 kHz gia' ripulito e il server non ci mette ne' AEC, ne' cancello, ne' AGC."""
+    return "aec_onboard" in conn.caps
+
+
+# Dopo la fine di una sessione hub con PCM in uplink, per quanto si scartano i frame binari in
+# IDLE: il device smette di mandare PCM solo quando riceve il live_session_end
+_PCM_TAIL_S = 1.5
+
+
+async def _create_aec(agc: bool = True, backend: Optional[str] = None):
     """EchoCanceller fuori dall'event loop: il primo import di livekit e la creazione
     dell'APM costano ~100 ms e bloccherebbero gli altri device."""
-    fut = asyncio.ensure_future(asyncio.to_thread(create_echo_canceller, AEC_BACKEND, agc))
+    fut = asyncio.ensure_future(asyncio.to_thread(create_echo_canceller, backend or AEC_BACKEND, agc))
     try:
         return await asyncio.shield(fut)
     except asyncio.CancelledError:
@@ -586,8 +626,11 @@ def _mic_gain_db() -> Optional[int]:
 
 def _duplex_start_msg(conn: DeviceConnection) -> dict:
     """live_session_start per il device; ai firmware con la cap "aec_ref" si chiede il
-    riferimento AEC dal loopback del codec (ed eventualmente un guadagno mic per il duplex)."""
+    riferimento AEC dal loopback del codec (ed eventualmente un guadagno mic per il duplex).
+    Con "aec_onboard" (NabuVoice) niente riferimento: l'AEC lo fa il device."""
     start = {"type": "live_session_start", "duplex": True}
+    if _aec_onboard(conn):
+        return start
     if "aec_ref" in conn.caps and HUB_AEC_REF_MODE == "level":
         start["aec_ref"] = "level"
     elif "aec_ref" in conn.caps:
@@ -623,6 +666,12 @@ async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
         logger.warning(f"[{conn.device_id}] Hub live_session_start without call_id/profile/name")
         await _hub_fallback(conn, call_id, "error")
         return
+    if not _duplex_capable(conn):
+        # Un firmware che non conosce il duplex ignorerebbe il live_session_start: sessione appesa
+        # e stanza mutata dall'orchestrator. Meglio la sessione live di prima
+        logger.warning(f"[{conn.device_id}] Hub session refused: fw {conn.firmware_version} has no duplex")
+        await _hub_fallback(conn, call_id, "error")
+        return
     host, port = _hub_address()
     if not host or not port:
         await _hub_fallback(conn, call_id, "hub_unreachable")
@@ -635,7 +684,9 @@ async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
     if isinstance(msg.get("deliver"), list) and msg["deliver"]:
         offer["deliver"] = [str(d) for d in msg["deliver"]]
     vad = {}
-    if HUB_VAD_START_SENSITIVITY:
+    # Sensibilita' bassa solo dove c'e' eco residuo (Atom); con l'AEC sul device (XMOS) il
+    # barge-in a voce passa dal VAD di Gemini e va lasciato al default
+    if HUB_VAD_START_SENSITIVITY and not _aec_onboard(conn):
         vad["startOfSpeechSensitivity"] = HUB_VAD_START_SENSITIVITY
     if HUB_VAD_PREFIX_PADDING_MS > 0:
         vad["prefixPaddingMs"] = HUB_VAD_PREFIX_PADDING_MS
@@ -646,7 +697,11 @@ async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
     try:
         await relay.connect(host, port)
         await relay.send_offer(offer)
-        aec = await _create_aec(agc="aec_ref" not in conn.caps)
+        if _aec_onboard(conn):
+            # Passthrough: niente AEC3, AGC, NS ne' cancello sul mic gia' ripulito dall'XMOS
+            aec = create_echo_canceller("off")
+        else:
+            aec = await _create_aec(agc="aec_ref" not in conn.caps)
     except HubRejected as e:
         await relay.close()
         logger.warning(f"[{conn.device_id}] Hub rejected call {call_id}: {e}")
@@ -670,13 +725,15 @@ async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
 
     try:
         session = HubLiveSession(conn.device_id, call_id, relay, conn.send_json,
-                                 conn.send_binary, AEC_BACKEND, aec=aec)
+                                 conn.send_binary, "off" if _aec_onboard(conn) else AEC_BACKEND,
+                                 aec=aec)
     except Exception:
         aec.close()
         await relay.send_json({"type": "ended", "call_id": call_id})
         await relay.close()
         raise
-    gain = _mic_gain_db() if "aec_ref" in conn.caps and HUB_AEC_REF_MODE != "level" else None
+    gain = (_mic_gain_db() if "aec_ref" in conn.caps and HUB_AEC_REF_MODE != "level"
+            and not _aec_onboard(conn) else None)
     if gain is not None:
         # Il guadagno tolto al mic in duplex torna dopo l'AEC, fisso (l'AGC e' spento)
         session.aec.set_aligned_gain_db(_ATOM_MIC_SCALE_DB - gain)
@@ -726,6 +783,8 @@ async def _end_hub_session(conn: DeviceConnection, *, send_ended: bool = False,
     conn.state = DeviceState.IDLE
     conn.wakeword.mute(0)
     conn.wakeword.reset()
+    if _aec_onboard(conn):
+        conn.pcm_tail_until = time.monotonic() + _PCM_TAIL_S
     if tell_device:
         await conn.send_json({"type": "live_session_end"})
     if orch_reason:

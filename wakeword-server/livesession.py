@@ -3,7 +3,8 @@
 Uplink: mic Opus dell'Atom (decodificato da DeviceConnection) -> AEC -> PCM 16 kHz al hub,
 piu' {"type":"vu"} al display ogni ~100 ms. I firmware con la cap "aec_ref" mandano invece
 pacchetti PCM con mic e riferimento (loopback del DAC ES8311) dallo stesso frame del codec, e
-l'AEC li usa cosi' come sono (vedi parse_aligned).
+l'AEC li usa cosi' come sono (vedi parse_aligned). I device con la cap "aec_onboard" (NabuVoice,
+AEC+NS+AGC sull'XMOS) mandano PCM s16le 16 kHz gia' ripulito: va al hub cosi' com'e' (uplink_pcm).
 Downlink: voce del modello dal hub (PCM 24 kHz) -> 16 kHz -> coda -> pacer in tempo reale ->
 render AEC + Opus -> Atom come i frame TTS di oggi. Il pacer serve all'AEC: il riferimento
 deve entrare quando l'audio parte davvero verso l'Atom, non a raffica quando arriva dal hub.
@@ -168,6 +169,8 @@ class HubLiveSession:
         # barge-in: lo speaker arriva al mic ben sopra la voce, nessuna soglia li distingue.
         self._level_gate = _EchoGate(barge_db=None)
         self._level_packets = 0
+        self._pcm_tail = b""          # byte dispari in sospeso del PCM grezzo (uplink_pcm)
+        self._pcm_bytes = 0
         self._closed = False
         logger.info(f"[{device_id}] Hub live media ready (call {call_id}, AEC {self.aec.backend_name})")
 
@@ -218,6 +221,20 @@ class HubLiveSession:
             far_db = -120.0 if muted else _rms_db(rms[k] if k < len(rms) else 0)
             out += self._level_gate.apply_db(far_db, chunk)
         await self._forward(out)
+
+    async def uplink_pcm(self, data: bytes):
+        """PCM s16le 16 kHz gia' ripulito dal device (cap "aec_onboard"): niente decodifica Opus,
+        AEC, cancello o AGC, va al hub com'e'. Frame di lunghezza qualsiasi; un byte dispari
+        resta in sospeso per non sfasare i campioni."""
+        if self._closed:
+            return
+        data = self._pcm_tail + bytes(data)
+        if len(data) % 2:
+            self._pcm_tail, data = data[-1:], data[:-1]
+        else:
+            self._pcm_tail = b""
+        self._pcm_bytes += len(data)
+        await self._forward(data)
 
     async def _forward(self, clean: bytes):
         if clean:
@@ -319,6 +336,8 @@ class HubLiveSession:
             g = self._level_gate
             logger.info(f"[{self.device_id}] Livello speaker: {self._level_packets} pacchetti, persi "
                         f"{self._seq_lost}, cancello chiuso {g.gated} blocchi da 10 ms su {2 * self._level_packets}")
+        if self._pcm_bytes:
+            logger.info(f"[{self.device_id}] Uplink PCM (AEC sul device): {self._pcm_bytes // 32} ms")
         try:
             await asyncio.to_thread(self.aec.write_debug, f"{self.call_id}_{self.device_id}")
         except Exception as e:
