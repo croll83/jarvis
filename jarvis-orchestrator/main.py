@@ -1270,6 +1270,11 @@ def _is_live_session_activation(text: str) -> bool:
     words = _normalize_words(text)
     has_verb = bool(words & _LIVE_SESSION_ACTIVATE_VERBS)
     has_keywords = any(kw_set <= words for kw_set in _LIVE_SESSION_ACTIVATE_KEYWORDS)
+    if has_keywords and not has_verb:
+        # The STT mangles the verb on far-field devices ("Abbiamo una sessione live" for "Avviamo",
+        # NabuVoice 2026-10-29): a short phrase that is little more than the keywords is a request
+        # anyway, as long as it is not asking to close one
+        return len(text.split()) <= 5 and not _is_live_session_deactivation(text)
     return has_verb and has_keywords
 
 
@@ -2026,11 +2031,19 @@ async def wait_for_tts_completion(
     TTS_SAFETY_MARGIN = 1.10      # +10% buffer
     TTS_NOTIFY_LATENCY = 1.982    # notify → speech start (measured)
     MIN_WAIT = 3.0
+    TTS_CAP_FACTOR = 1.5          # cap on polling when the player never stops "playing"
+    TTS_CAP_SLACK_S = 3.0
     if text_length > 0:
         speech_est = (TTS_COEFF_A * text_length + TTS_COEFF_B) * TTS_SAFETY_MARGIN
         estimated = max(MIN_WAIT, speech_est + TTS_NOTIFY_LATENCY)
     else:
         estimated = MIN_WAIT
+    # A player that reports "playing" for something else (the Bose soundbar playing the TV over
+    # ARC) never goes back to idle: every reply waited the full 90 s and the voice device stayed
+    # "thinking", deaf to the wake word (2026-10-29: 11/11 replies on the Bose at ~90 s). With a
+    # known text length the wait is capped well above the calibrated estimate.
+    if text_length > 0:
+        max_wait = min(max_wait, estimated * TTS_CAP_FACTOR + TTS_CAP_SLACK_S)
 
     start = time.time()
     was_playing = False
