@@ -76,6 +76,10 @@ HUB_ATOM_MIC_GAIN_DB = os.getenv("HUB_ATOM_MIC_GAIN_DB", "").strip()
 # PCM per l'AEC, ~512 kbit/s: sul WiFi dell'Atom faceva cadere la sessione). "level" ignora
 # HUB_ATOM_MIC_GAIN_DB: l'eco non arriva comunque a Gemini.
 HUB_AEC_REF_MODE = os.getenv("HUB_AEC_REF_MODE", "level").strip().lower()
+# Guadagno fisso sul mic dei device con l'AEC a bordo (NabuVoice): in sessione live l'XMOS lavora
+# senza AGC, che rialzava il residuo d'eco nei silenzi, e la voce a un metro arriva a ~-60 dBFS.
+# Un guadagno fisso alza voce e residuo insieme, senza pompare nei silenzi. 0 = nessuno.
+HUB_ONBOARD_GAIN_DB = float(os.getenv("HUB_ONBOARD_GAIN_DB", "24") or "0")
 
 # --- Opus ---
 OPUS_SAMPLE_RATE = 16000

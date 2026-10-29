@@ -22,7 +22,7 @@ from config import (
     DEVICE_API_TOKEN, OPUS_SAMPLE_RATE, OPUS_CHANNELS,
     OPUS_FRAME_SAMPLES, WAKEWORD_THRESHOLD, ORCHESTRATOR_URL, LOCATION_ID,
     HUB_HOST, HUB_PORT, AEC_BACKEND, HUB_VAD_START_SENSITIVITY, HUB_VAD_PREFIX_PADDING_MS,
-    HUB_ATOM_MIC_GAIN_DB, HUB_AEC_REF_MODE,
+    HUB_ATOM_MIC_GAIN_DB, HUB_AEC_REF_MODE, HUB_ONBOARD_GAIN_DB,
 )
 from wakeword import DeviceWakeWordEngine
 from multiroom import MultiroomCooldown
@@ -737,6 +737,8 @@ async def _run_hub_handshake(conn: DeviceConnection, msg: dict):
     if gain is not None:
         # Il guadagno tolto al mic in duplex torna dopo l'AEC, fisso (l'AGC e' spento)
         session.aec.set_aligned_gain_db(_ATOM_MIC_SCALE_DB - gain)
+    if _aec_onboard(conn) and HUB_ONBOARD_GAIN_DB:
+        session.set_pcm_gain_db(HUB_ONBOARD_GAIN_DB)
     # Accept ricevuto: da qui la sessione e' di conn e si chiude con _end_hub_session
     _hub_start_done(conn)
     conn.hub_session = session

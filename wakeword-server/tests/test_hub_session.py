@@ -387,6 +387,22 @@ async def test_onboard_aec_device_keeps_gemini_default_vad(conn, hub_on):
     assert hub_on.offer["vad"] == {"prefixPaddingMs": 300}
 
 
+async def test_onboard_aec_pcm_gets_the_fixed_gain_and_never_clips(conn, hub_on, monkeypatch):
+    monkeypatch.setattr(server, "HUB_ONBOARD_GAIN_DB", 24.0)
+    conn.firmware_version, conn.device_type = "1.1.0-nabuvoice", "NabuVoice"
+    conn.caps = {"duplex", "pcm_uplink", "aec_onboard"}
+    await start_session(conn, hub_on)
+    quiet = tone(440, 0.2, 16000, amp=200)       # voce lontana ~ -44 dBFS
+    loud = tone(440, 0.2, 16000, amp=8000)       # voce vicina: col guadagno sarebbe oltre il fondo scala
+    await server._handle_binary(conn, quiet.tobytes())
+    await server._handle_binary(conn, loud.tobytes())
+    assert await wait_for(lambda: len(hub_on.audio) >= 2 * len(quiet) * 2)
+    pcm = np.frombuffer(bytes(hub_on.audio), dtype=np.int16).astype(float)
+    ratio = np.abs(pcm[:3200]).max() / np.abs(quiet).max()
+    assert abs(20 * np.log10(ratio) - 24) < 0.5
+    assert np.abs(pcm[3200:]).max() < 32767
+
+
 async def test_downlink_resampled_paced_opus(conn, hub_on):
     hub = hub_on
     await start_session(conn, hub)

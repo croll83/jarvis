@@ -203,6 +203,7 @@ class HubLiveSession:
         self._level_packets = 0
         self._pcm_tail = b""          # byte dispari in sospeso del PCM grezzo (uplink_pcm)
         self._pcm_bytes = 0
+        self._pcm_gain = 1.0
         self._dump = _TimelineDump() if _AEC_DEBUG_DIR else None
         self._closed = False
         logger.info(f"[{device_id}] Hub live media ready (call {call_id}, AEC {self.aec.backend_name})")
@@ -255,6 +256,10 @@ class HubLiveSession:
             out += self._level_gate.apply_db(far_db, chunk)
         await self._forward(out)
 
+    def set_pcm_gain_db(self, db: float):
+        """Guadagno fisso sul PCM dei device con l'AEC a bordo (uplink_pcm), con limitatore."""
+        self._pcm_gain = 10 ** (db / 20)
+
     async def uplink_pcm(self, data: bytes):
         """PCM s16le 16 kHz gia' ripulito dal device (cap "aec_onboard"): niente decodifica Opus,
         AEC, cancello o AGC, va al hub com'e'. Frame di lunghezza qualsiasi; un byte dispari
@@ -269,6 +274,13 @@ class HubLiveSession:
         self._pcm_bytes += len(data)
         if self._dump is not None:
             self._dump.add("up", data)
+        if self._pcm_gain != 1.0 and data:
+            # Limitatore morbido sopra -3 dBFS: una voce vicina non satura
+            x = np.frombuffer(data, dtype=np.int16).astype(np.float32) * (self._pcm_gain / 32768.0)
+            knee = 0.708
+            over = np.abs(x) > knee
+            x[over] = np.sign(x[over]) * (knee + (0.98 - knee) * np.tanh((np.abs(x[over]) - knee) / (0.98 - knee)))
+            data = np.clip(np.round(x * 32767.0), -32768, 32767).astype(np.int16).tobytes()
         await self._forward(data)
 
     async def _forward(self, clean: bytes):

@@ -243,3 +243,11 @@ async def wait_for(cond, timeout=3.0, step=0.01):
             return True
         await asyncio.sleep(step)
     return cond()
+
+
+@pytest.fixture(autouse=True)
+def _no_onboard_gain(monkeypatch):
+    """I test del PCM dei device con l'AEC a bordo verificano il passthrough bit per bit; il
+    guadagno fisso ha il suo test dedicato."""
+    import server
+    monkeypatch.setattr(server, "HUB_ONBOARD_GAIN_DB", 0.0)
