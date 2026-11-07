@@ -3510,6 +3510,35 @@ async def _process_ws_audio(device_id: str, audio_bytes: bytes):
         await voice_corpus.finish_turn(corpus)
 
 
+def _voice_device_location(device_config: dict) -> str:
+    """La casa a cui va un comando vocale arrivato da questo device.
+
+    Un device fisso (Atom, NabuVoice) sta in una casa, quella della sua scheda.
+    Un device PERSONALE (forced_user_id: telefono, watch) si sposta con il suo
+    proprietario: vale la posizione corrente dell'utente, la stessa che usa il
+    Voice Live Hub. Con la casa fissa, dal 03/11/2026 ogni comando dal watch
+    andava a Milano mentre Marco era a Napoli: gli scenari esistono solo a
+    Napoli, e "avvia lo scenario esco" accendeva la luce della Sala di Milano.
+    La posizione dell'utente si aggiorna quando parla a un device fisso, da
+    Telegram o con "sono a Milano"; se manca o non e' valida resta la casa fissa.
+    """
+    fixed = device_config.get("location_id") or get_default_location_id()
+    uid = device_config.get("forced_user_id")
+    if not uid:
+        return fixed
+    try:
+        ul = get_user_location(uid)
+        loc = get_location(ul.location_id) if ul and ul.location_id else None
+        if loc and getattr(loc, "enabled", True):
+            if ul.location_id != fixed:
+                logger.info(f"Device personale: casa del proprietario '{ul.location_id}' "
+                            f"(scheda del device: '{fixed}')")
+            return ul.location_id
+    except Exception as e:
+        logger.warning(f"Posizione del proprietario non leggibile ({e}), uso '{fixed}'")
+    return fixed
+
+
 async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
     """
     Un turno vocale arrivato dal WebSocket.
@@ -3661,7 +3690,7 @@ async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
     # Recupera configurazione device
     device_config = get_device_speaker_config(device_id)
     if device_config:
-        location = device_config.get("location_id", get_default_location_id())
+        location = _voice_device_location(device_config)
         # La "stanza" del device è il suo friendly_name, e regge solo finché i
         # dispositivi si chiamano come le stanze. Un telefono si chiama
         # "Fold 7 Marco" e si sposta: passare quel nome a valle come stanza fa
@@ -5550,6 +5579,44 @@ async def process_jarvis_logic(text: str, context: dict):
         await _handle_ai_agent_voice(text, context, hint="image_generation")
         return
 
+    # SCENARI deterministici (router_model.SCENARI): esco, rientro a casa,
+    # buongiorno, buonanotte non passano dal router. Sono nomi fissi, e i modelli li
+    # sbagliavano in modo pericoloso: "avvia lo scenario esco" e' diventato "accendi
+    # la luce della Sala" (GLiNER), "esco" da solo "Rientro a casa" (Qwen). La casa e'
+    # quella del contesto, non quella di default: prima "buonanotte" detto a Milano
+    # avviava lo scenario di Napoli. Se lo script li' non esiste lo si dice, invece
+    # di ripiegare su un altro comando. Sta PRIMA del controllo sul router e della
+    # cache: e' una regola, non deve dipendere dal modello, e un "Fatto!" in
+    # cache non deve far saltare l'esecuzione.
+    import router_model as _rm_scen
+    _scen = _rm_scen.scenario_richiesto(text)
+    if _scen:
+        _scr, _label, _ = _rm_scen.SCENARI[_scen]
+        _scen_loc = location or get_default_location_id() or "wagmi"
+        if not await multi_ha.get_state(_scen_loc, _scr):
+            _loc_obj = get_location(_scen_loc)
+            _casa = (_loc_obj.name if _loc_obj else _scen_loc) or _scen_loc
+            logger.info(f"Scenario {_scr} assente in '{_scen_loc}' — non eseguo niente")
+            _msg = f"Lo scenario {_label} non c'è in {_casa}."
+            save_chat_message("assistant", _msg, "JARVIS", None, "Jarvis")
+            await deliver_final_response(_msg, context, sound_type="negative")
+            return
+        _resp = {"buonanotte": "Buonanotte! Avvio lo scenario.",
+                 "buongiorno": "Buongiorno! Avvio lo scenario."}.get(_scen, f"Avvio lo scenario {_label}.")
+        _scen_t0 = time.time()
+        logger.info(f"Scenario deterministico: {_scr} in '{_scen_loc}' (da {text[:60]!r})")
+
+        async def _run_scenario(scr=_scr, loc=_scen_loc, ctx=dict(context),
+                                t0=_scen_t0, lbl=_label):
+            await multi_ha.call_service(loc, "script", "turn_on", {"entity_id": scr})
+            # annuncio differito: se il run fallisce lo dice sul device richiedente
+            await watch_scenario_run(loc, scr, lbl, ctx, deliver_final_response, t0)
+
+        asyncio.create_task(_run_scenario())
+        save_chat_message("assistant", _resp, "JARVIS", None, "Jarvis")
+        await deliver_final_response(_resp, context, sound_type="positive")
+        return
+
     # 0c. CHECK CRITICAL SERVICES
     if not service_status.is_critical_online():
         logger.error("Router model offline - cannot process request")
@@ -5575,31 +5642,6 @@ async def process_jarvis_logic(text: str, context: dict):
     # 1b. QUICK CONTEXTUAL ANSWERS (richiedono contesto, non cache statica)
     _text_lower = text.lower().strip().rstrip("?!.")
 
-    # SCENARI-RITO deterministici: "buonanotte/buongiorno [jarvis]" secchi non
-    # passano dal 7B (varianza: a volte risponde "avvio lo scenario" con intent
-    # SIMPLE_CHAT senza eseguire nulla). Frasi più lunghe ("buongiorno, che
-    # tempo fa?") restano al router.
-    _rite = _text_lower
-    for _w in ("jarvis", "ehi", "ok", "hey", ","):
-        _rite = _rite.replace(_w, " ")
-    _rite = " ".join(_rite.split())
-    _RITES = {"buonanotte": ("script.buonanotte", "Buonanotte! Avvio lo scenario."),
-              "buongiorno": ("script.buongiorno", "Buongiorno! Avvio lo scenario.")}
-    if _rite in _RITES:
-        _scr, _resp = _RITES[_rite]
-        _rite_loc = get_default_location_id() or "wagmi"
-        _rite_t0 = time.time()
-
-        async def _run_rite(scr=_scr, loc=_rite_loc, ctx=dict(context),
-                            t0=_rite_t0, lbl=_rite.capitalize()):
-            await multi_ha.call_service(loc, "script", "turn_on", {"entity_id": scr})
-            # annuncio differito: se il run fallisce lo dice sul device richiedente
-            await watch_scenario_run(loc, scr, lbl, ctx, deliver_final_response, t0)
-
-        asyncio.create_task(_run_rite())
-        save_chat_message("assistant", _resp, "JARVIS", None, "Jarvis")
-        await deliver_final_response(_resp, context, sound_type="positive")
-        return
     _quick = None
     if _text_lower in ("chi sono", "chi sono io", "come mi chiamo", "mi riconosci", "sai chi sono"):
         _quick = f"Sei {speaker_name}!" if speaker_name and speaker_name != "Sconosciuto" else "Non ti ho riconosciuto, chi sei?"

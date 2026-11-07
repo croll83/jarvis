@@ -653,3 +653,53 @@ def chiede_di_spegnere(testo: str) -> bool:
     if not testo:
         return False
     return _somiglia_a(testo, _SPEGNERE, 0.65) and not _somiglia_a(testo, _ACCENDERE, 0.75)
+
+
+# ── Scenari di casa ───────────────────────────────────────────────────────
+# Script di Home Assistant con un nome fisso. Sono pochi e non vanno indovinati
+# da un modello: dal watch, "avvia lo scenario esco" e' diventato "accendi la
+# luce della Sala" (GLiNER) e "esco" da solo e' diventato "Rientro a casa"
+# (Qwen), cioe' lo scenario opposto. Qui si riconoscono con una regola stretta,
+# e chi li esegue verifica che lo script esista nella casa di destinazione.
+#   chiave -> (entity_id, nome parlato, modi di dirlo)
+SCENARI: Dict[str, tuple] = {
+    "esco": ("script.esco", "Esco", ("esco", "sto uscendo", "esco di casa")),
+    "rientro_a_casa": ("script.rientro_a_casa", "Rientro a casa",
+                       ("rientro a casa", "rientro", "sono rientrato", "sono rientrata")),
+    "buongiorno": ("script.buongiorno", "Buongiorno", ("buongiorno", "buon giorno")),
+    "buonanotte": ("script.buonanotte", "Buonanotte", ("buonanotte", "buona notte")),
+}
+
+# Parole che possono stare davanti al nome senza cambiarne il senso
+_SCENARIO_CORNICE = {"ehi", "ok", "hey", "ciao", "lo", "la", "il", "l", "per", "favore",
+                     "scenario", "scena", "script", "routine", "modalita", "modalità",
+                     "programma", "di", "uno", "mi"}
+# Verbi di avvio, compresi quelli che lo STT storpia ("segui" per "esegui",
+# "avia" per "avvia")
+_SCENARIO_AVVIO = re.compile(r"^(avvi|avia|attiv|lanci|esegu|segu|fai|far|part|inizi|mett|start)")
+
+
+def scenario_richiesto(testo: str) -> Optional[str]:
+    """La chiave di SCENARI se il testo chiede di avviare uno scenario, altrimenti None.
+
+    Stretta di proposito: la frase deve FINIRE con il nome dello scenario, e
+    davanti puo' esserci solo un verbo di avvio piu' parole di cornice ("avvia
+    lo scenario esco", "jarvis buonanotte", "esco"). "Domani esco" o
+    "buongiorno, che tempo fa?" non sono richieste di scenario e restano al
+    router. Il nome di Jarvis si toglie anche storpiato (darvis, cervis): lo
+    STT lo rovina spesso, e tutte le varianti finiscono in "rvis".
+    """
+    if not testo:
+        return None
+    t = re.sub(r"[^\wàèéìòù ]", " ", testo.lower())
+    parole = [w for w in t.split() if not w.endswith("rvis")]
+    frase = " ".join(parole)
+    for chiave, (_eid, _nome, modi) in SCENARI.items():
+        for modo in sorted(modi, key=len, reverse=True):
+            if frase != modo and not frase.endswith(" " + modo):
+                continue
+            davanti = [w for w in frase[: len(frase) - len(modo)].split()
+                       if w not in _SCENARIO_CORNICE]
+            if len(davanti) <= 2 and all(_SCENARIO_AVVIO.match(w) for w in davanti):
+                return chiave
+    return None
