@@ -703,3 +703,33 @@ def scenario_richiesto(testo: str) -> Optional[str]:
             if len(davanti) <= 2 and all(_SCENARIO_AVVIO.match(w) for w in davanti):
                 return chiave
     return None
+
+
+# ── Il bersaglio scelto ha appoggio nel testo? ─────────────────────────────
+# GLiNER sceglie sempre un'etichetta, anche quando il testo non ne nomina
+# nessuna: "avvia lo scenario esco" a Milano, dove lo scenario non c'e', e'
+# diventato "accendi la luce della Sala" ed e' stato eseguito. Se nessuna parola
+# caratteristica del bersaglio compare nel testo, la scelta e' un tiro a caso.
+# Le parole di tipo ("luce", "tapparella") non contano: "accendi la luce"
+# sembrerebbe nominare ogni lampada di casa.
+_PAROLE_DI_TIPO = {
+    "luce", "luci", "lampada", "lampade", "faretti", "faretto", "led", "strip", "plafoniera",
+    "tapparella", "tapparelle", "tenda", "tende", "persiana", "persiane", "cover",
+    "tv", "televisore", "presa", "prese", "interruttore", "switch", "ventilatore",
+    "clima", "condizionatore", "termostato", "scenario", "script", "della", "delle", "del",
+    "dello", "dei", "degli", "di", "da", "la", "il", "lo", "le", "gli", "e", "in", "a",
+}
+
+
+def bersaglio_nel_testo(testo: str, nome: str, soglia: float = 0.75) -> bool:
+    """True se almeno una parola caratteristica di `nome` compare nel testo,
+    anche storpiata. Senza parole caratteristiche (es. "Luce") vale True: non
+    c'e' niente su cui giudicare, e nel dubbio non si scarta."""
+    from difflib import SequenceMatcher
+    if not testo or not nome:
+        return True
+    chiave = [w for w in re.findall(r"\w+", nome.lower()) if w not in _PAROLE_DI_TIPO and len(w) >= 3]
+    if not chiave:
+        return True
+    parole = re.findall(r"\w+", testo.lower())
+    return any(SequenceMatcher(None, c, p).ratio() >= soglia for c in chiave for p in parole)

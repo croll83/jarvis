@@ -263,6 +263,14 @@ GLINER_TIMEOUT = float(os.getenv("GLINER_TIMEOUT", "3"))
 # scarsa E la regola sintattica si astiene. Con la sola confidenza non si
 # separa niente (misurato: nessuna soglia da' guadagno netto su RETRY).
 GLINER_MIN_CONFIDENCE = float(os.getenv("GLINER_MIN_CONFIDENCE", "0.45"))
+# Se il bersaglio scelto da GLiNER non ha parole in comune con il testo, passa a
+# Qwen invece di eseguire (incidente del 03/11/2026: "avvia lo scenario esco" →
+# luce della Sala). Vedi router_model.bersaglio_nel_testo. Misurato sui 426 casi
+# (07/11/2026): cambia 18 casi, di cui 16 erano esecuzioni SBAGLIATE evitate
+# ("accendi luce sala de pandanzi" → script Buongiorno, "spegni luci salade
+# bandans" → Luci Piscina) e 2 giuste perse; payload 76,1 → 75,8. Il banco segna
+# −3,7 di intento perche' contava come giusti comandi domotici sul bersaglio sbagliato.
+GLINER_DEFER_ABSENT_TARGET = os.getenv("GLINER_DEFER_ABSENT_TARGET", "true").lower() in ("1", "true", "yes")
 
 # L'ordine effettivo, calcolato una volta e loggato all'avvio. Chi lo legge
 # non deve ricostruire la precedenza da una sequenza di `if`.

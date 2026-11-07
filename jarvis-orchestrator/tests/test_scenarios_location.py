@@ -49,6 +49,24 @@ class ScenarioRecognition(unittest.TestCase):
             self.assertTrue(nome and modi)
 
 
+
+class TargetInText(unittest.TestCase):
+    """Un bersaglio senza parole in comune con il testo e' un tiro a caso."""
+
+    def test_unsupported_targets(self):
+        # i due casi del 03/11/2026
+        self.assertFalse(rm.bersaglio_nel_testo("avvia lo scenario esco", "Sala"))
+        self.assertFalse(rm.bersaglio_nel_testo("avvia rientro", "Casa Ripetere"))
+
+    def test_supported_targets_even_with_stt_damage(self):
+        self.assertTrue(rm.bersaglio_nel_testo("accendi la luce della sala", "Sala"))
+        self.assertTrue(rm.bersaglio_nel_testo("spini la luz del box", "Luce Box"))
+        self.assertTrue(rm.bersaglio_nel_testo("alza la tapparella della camera", "Camera"))
+
+    def test_type_words_do_not_count_and_no_keywords_means_keep(self):
+        self.assertFalse(rm.bersaglio_nel_testo("accendi la luce", "Luce Cucina"))
+        self.assertTrue(rm.bersaglio_nel_testo("spegni la luce", "Luce"))
+
 class PersonalDeviceLocation(unittest.TestCase):
     def setUp(self):
         self._ul, self._loc = main.get_user_location, main.get_location

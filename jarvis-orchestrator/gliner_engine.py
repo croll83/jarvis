@@ -424,6 +424,13 @@ async def route(text: str, context: dict) -> Optional[dict]:
         logger.info("GLiNER: play_music vuole testo libero — fallback su Qwen")
         return None
 
+    # Bersaglio senza appoggio nel testo (vedi rm.bersaglio_nel_testo): meglio
+    # passare la mano che eseguire un tiro a caso. Dietro un interruttore finche'
+    # non e' misurato sul banco.
+    if config.GLINER_DEFER_ABSENT_TARGET and not rm.bersaglio_nel_testo(text, nome):
+        logger.info(f"GLiNER: bersaglio '{nome}' assente dal testo {text[:50]!r} — fallback su Qwen")
+        return None
+
     payload = {"domain": dominio, "action": azione, "entity": nome, tipo: nome,
                "location": location, "via": "gliner"}
     frase = rm.ACTIONS.get(azione)
