@@ -2862,7 +2862,7 @@
                 document.getElementById('enrollmentButton').disabled = false;
                 document.getElementById('enrollmentStatus').innerHTML = '';
                 document.getElementById('recordingIndicator').style.display = 'none';
-                document.getElementById('enrollmentSourceSelect').style.display = 'block';
+                document.getElementById('enrollmentSourceSelect').style.display = 'block'; document.querySelectorAll('.enrollment-source-btn').forEach(b => b.style.display = '');
                 selectEnrollmentSource('browser');
                 loadEnrollmentDevices();
                 openModal('enrollmentModal');
@@ -2890,7 +2890,7 @@
                     document.getElementById('enrollmentButton').disabled = false;
                     document.getElementById('enrollmentStatus').innerHTML = '';
                     document.getElementById('recordingIndicator').style.display = 'none';
-                    document.getElementById('enrollmentSourceSelect').style.display = 'block';
+                    document.getElementById('enrollmentSourceSelect').style.display = 'block'; document.querySelectorAll('.enrollment-source-btn').forEach(b => b.style.display = '');
                     selectEnrollmentSource('browser');
                     loadEnrollmentDevices();
                     openModal('enrollmentModal');
@@ -2945,11 +2945,14 @@
                     select.innerHTML = devices.map(d => {
                         const isOnline = connectedIds.has((d.device_id || '').toUpperCase());
                         const status = isOnline ? '🟢' : '🔴';
-                        return `<option value="${d.device_id}" ${!isOnline ? 'disabled' : ''}>${status} ${d.friendly_name || d.device_id} (${d.location_id || '?'})${!isOnline ? ' — offline' : ''}</option>`;
+                        // Gli Atom (e telefono/orologio) si collegano all'orchestrator solo durante un turno:
+                        // "non collegato ora" non vuol dire spento. Ogni turno detto a un device durante la
+                        // registrazione diventa un campione, qualunque sia il device scelto qui.
+                        return `<option value="${d.device_id}">${status} ${d.friendly_name || d.device_id} (${d.location_id || '?'})${!isOnline ? ' — usa tap o wake word' : ''}</option>`;
                     }).join('');
-                    // Auto-seleziona il primo online
+                    // Auto-seleziona il primo collegato, altrimenti il primo della lista
                     const firstOnline = devices.find(d => connectedIds.has((d.device_id || '').toUpperCase()));
-                    if (firstOnline) select.value = firstOnline.device_id;
+                    select.value = (firstOnline || devices[0]).device_id;
                 }
             } catch (e) {
                 document.getElementById('enrollmentDeviceSelect').innerHTML = '<option value="">Errore caricamento</option>';
@@ -3054,6 +3057,8 @@
 
         // Click "Avanti ▶" = trigger listen + disabilita bottone fino a campione ricevuto
         async function deviceEnrollmentNext() {
+            // Il device scelto puo' cambiare a meta' registrazione
+            enrollmentDeviceId = document.getElementById('enrollmentDeviceSelect').value || enrollmentDeviceId;
             if (!enrollmentDeviceId) return;
             const btn = document.getElementById('enrollmentButton');
             btn.disabled = true;
@@ -3062,20 +3067,20 @@
             document.getElementById('recordingIndicator').style.display = 'block';
             document.getElementById('recordingIndicator').innerHTML =
                 `<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--success); animation: pulse-error 1s infinite; margin-right: 0.5rem;"></span>
-                 Leggi la frase all'AtomS3R`;
+                 Leggi la frase al device`;
 
+            let triggered = false;
             try {
-                await fetch(`/device/${enrollmentDeviceId}/trigger_listen`, {
+                const r = await fetch(`/device/${enrollmentDeviceId}/trigger_listen`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({silent: false})
                 });
-            } catch (e) {
-                document.getElementById('enrollmentStatus').innerHTML =
-                    `<div style="color: var(--error); font-size: 0.85rem;">Errore trigger. Riprova.</div>`;
-                btn.disabled = false;
-                btn.textContent = 'Avanti ▶';
-            }
+                triggered = r.status === 200;
+            } catch (e) { /* trigger non disponibile: si usa tap o wake word */ }
+            document.getElementById('enrollmentStatus').innerHTML = triggered ? '' :
+                `<div style="color: var(--text-secondary); font-size: 0.85rem;">Il device non e' raggiungibile da qui:
+                 fai tap o di' "ciao jarvis" su un device qualsiasi e leggi la frase.</div>`;
             // Il bottone resta disabilitato — il polling lo riabilita quando arriva il campione
         }
 
@@ -3093,33 +3098,11 @@
             btn.disabled = true;
             btn.textContent = 'Connessione...';
 
-            // Verifica connessione WS con un trigger silenzioso
-            try {
-                const testResp = await fetch(`/device/${enrollmentDeviceId}/trigger_listen`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({silent: true})
-                });
-                if (testResp.status !== 200) {
-                    btn.disabled = false;
-                    btn.textContent = 'Inizia';
-                    btn.onclick = startDeviceEnrollment;
-                    document.getElementById('enrollmentStatus').innerHTML =
-                        `<div style="color: var(--error);">Device non connesso via WebSocket.<br>
-                         <span style="font-size: 0.8rem;">Assicurati che l'AtomS3R sia acceso e connesso al WiFi.</span></div>`;
-                    return;
-                }
-            } catch (e) {
-                btn.disabled = false;
-                btn.textContent = 'Inizia';
-                btn.onclick = startDeviceEnrollment;
-                document.getElementById('enrollmentStatus').innerHTML =
-                    `<div style="color: var(--error);">Errore connessione: ${e.message}</div>`;
-                return;
-            }
+            // Niente verifica del collegamento: ogni turno detto a un device durante la registrazione
+            // diventa un campione (tap o wake word). Il trigger remoto di "Avanti" e' solo un aiuto.
 
-            // Connesso — setup stato
-            document.getElementById('enrollmentSourceSelect').style.display = 'none';
+            // Setup stato: restano visibili solo il menu dei device (si puo' cambiare a meta' strada)
+            document.querySelectorAll('.enrollment-source-btn').forEach(b => b.style.display = 'none');
             document.getElementById('enrollmentStatus').innerHTML = '';
             document.getElementById('recordingIndicator').style.display = 'none';
             deviceEnrollmentStep = 0;
