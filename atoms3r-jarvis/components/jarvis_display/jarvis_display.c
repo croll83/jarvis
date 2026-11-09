@@ -685,6 +685,53 @@ static void render_duplex(void) {
     flush_buffer();
 }
 
+// -----------------------------------------------------------------------------
+// Connecting view (live request pending: wake word or tap -> Gemini Live)
+// -----------------------------------------------------------------------------
+
+#define CONNECTING_FLASH_MS     80      // White flash first (the wake cue), non-blocking
+#define CONNECTING_CY           48      // Robot head center
+#define CONNECTING_RING_R       31      // Spinner radius (around the 44 px glyph)
+#define CONNECTING_DOTS         12
+#define CONNECTING_STEP_MS      70      // Spinner advance per dot
+#define CONNECTING_TEXT_Y       100
+
+static bool connecting_mode = false;
+static int64_t connecting_since_ms = 0;
+
+static void render_connecting(void) {
+    if (!frame_buffer) return;
+    int64_t elapsed = esp_timer_get_time() / 1000 - connecting_since_ms;
+    if (elapsed < CONNECTING_FLASH_MS) {
+        fb_clear(COLOR_WHITE);
+        flush_buffer();
+        return;
+    }
+    if (!duplex_assets_ready) {
+        duplex_build_assets();
+        duplex_assets_ready = true;
+    }
+
+    fb_clear(COLOR_BLACK);
+    draw_duplex_glyph(duplex_glyph_robot.big_icon, duplex_glyph_robot.big_halo, DUPLEX_BIG_SIDE,
+                      CONNECTING_CY, DUPLEX_ICON_GREY);
+
+    // Spinner: bright head and a fading tail, clockwise
+    static const uint16_t tail[] = { JARVIS_BLUE, 0x7804, JARVIS_BLUE_DARK, 0x3800 };
+    int head = (int)((elapsed / CONNECTING_STEP_MS) % CONNECTING_DOTS);
+    for (int i = 0; i < CONNECTING_DOTS; i++) {
+        int behind = (head - i + CONNECTING_DOTS) % CONNECTING_DOTS;
+        uint16_t color = behind < (int)(sizeof(tail) / sizeof(tail[0])) ? tail[behind] : COLOR_GREY_DIM;
+        float a = 2.0f * (float)M_PI * i / CONNECTING_DOTS - (float)M_PI / 2;
+        int x = DISPLAY_WIDTH / 2 + (int)lroundf(cosf(a) * CONNECTING_RING_R);
+        int y = CONNECTING_CY + (int)lroundf(sinf(a) * CONNECTING_RING_R);
+        fb_draw_rect(x - 2, y - 2, 4, 4, color);
+    }
+    fb_draw_string_centered(CONNECTING_TEXT_Y, "Connecting...", JARVIS_BLUE_DARK, 1);
+    draw_live_badge();
+    flush_buffer();
+}
+
 static void duplex_wave_step(duplex_wave_t *w, uint8_t level) {
     float target = level / DUPLEX_FULL_LEVEL;
     if (target > 1.0f) target = 1.0f;
@@ -887,6 +934,10 @@ bool jarvis_display_init(void) {
 void jarvis_display_update(void) {
     if (duplex_mode) {
         render_duplex();
+        return;
+    }
+    if (connecting_mode) {
+        render_connecting();
         return;
     }
     switch (current_state) {
@@ -1165,4 +1216,16 @@ void jarvis_display_duplex_push(uint8_t jarvis_level, uint8_t user_level) {
     duplex_wave_step(&duplex_wave_jarvis, jarvis_level);
     duplex_wave_step(&duplex_wave_user, user_level);
     render_duplex();
+}
+
+void jarvis_display_set_connecting(bool active) {
+    if (connecting_mode == active) return;
+    connecting_mode = active;
+    connecting_since_ms = esp_timer_get_time() / 1000;
+    jarvis_display_update();
+    ESP_LOGI(TAG, "Connecting view: %s", active ? "ON" : "OFF");
+}
+
+bool jarvis_display_is_connecting(void) {
+    return connecting_mode;
 }

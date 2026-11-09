@@ -45,12 +45,13 @@ extern "C" {
 #include "jarvis_speaker.h"
 #include "jarvis_ws_audio.h"
 #include "jarvis_duplex_policy.h"
+#include "jarvis_live_wake_policy.h"
 }
 
 static const char *TAG = "JARVIS";
 
 // Firmware version
-#define FIRMWARE_VERSION "5.2.1-ws"
+#define FIRMWARE_VERSION "5.3.0-ws"  // == JARVIS_WS_FW_VERSION (hello)
 
 // =============================================================================
 // GLOBAL STATE
@@ -152,6 +153,11 @@ static bool live_session_display_active = false;
 static bool duplex_display_active = false;
 static int64_t last_duplex_frame = 0;
 
+// Live request pending (wake word or tap -> Gemini Live): "connecting" view
+static bool connecting_display_active = false;
+static int64_t last_connecting_frame = 0;
+#define CONNECTING_DISPLAY_FRAME_MS  50   // ~20 FPS spinner
+
 // Forward declarations
 static void on_wake_word_detected(void);
 static void activate_listening(bool silent);
@@ -166,6 +172,8 @@ static void on_config_update_ws(float wake_word_sensitivity);
 static void on_server_wake_detected(void);
 static void reset_activity_timer(void);
 static void sync_duplex_mode(void);
+static bool handle_live_pending_gesture(live_gesture_t gesture);
+static bool try_live_tap(void);
 
 // Helper: update state and notify server
 static void set_state(device_state_t new_state) {
@@ -195,6 +203,12 @@ static void reset_activity_timer(void) {
         jarvis_display_update();  // Restore IDLE display
         ESP_LOGI(TAG, "Screensaver exited (activity)");
     }
+}
+
+// DND state, mirrored to the WS module (it acks wake_detected{live} with "dnd")
+static void set_dnd(bool enabled) {
+    dnd_mode = enabled;
+    jarvis_ws_audio_set_dnd(enabled);
 }
 
 // =============================================================================
@@ -238,8 +252,12 @@ static void update_local_time(void) {
 //     no more taps within 300ms:
 //       tap_count == 2 → DOUBLE TAP (speaker stop)
 //       tap_count == 1 → SINGLE TAP (activate/stop listening)
-//   During a full-duplex live session: single/double tap end the session,
-//   long press ends it and then toggles DND, triple tap unchanged.
+//   During a full-duplex live session: single tap silences Jarvis, double tap
+//   ends the session, long press ends it and then toggles DND, triple tap unchanged.
+//   Single tap in idle (fw 5.3): asks for the live session (live_start, tap), the
+//   classic activation stays as its fallback (jarvis_live_wake_policy.h).
+//   While a live request is pending ("connecting"): single tap = classic activation,
+//   double tap = cancel + speaker stop, long press = cancel + DND, triple tap unchanged.
 //
 
 #define LONG_PRESS_MS       800
@@ -342,6 +360,9 @@ static void handle_short_press(void) {
     // Full-duplex live session: single tap silences Jarvis (no listening toggle)
     if (handle_duplex_gesture(DUPLEX_GESTURE_SINGLE_TAP)) return;
 
+    // Live request pending: the tap is the classic activation of today
+    if (handle_live_pending_gesture(LIVE_GESTURE_SINGLE_TAP)) return;
+
     // If WS audio session is active, stop it (but only after minimum lifetime)
     if (jarvis_ws_audio_is_active()) {
         int64_t now = esp_timer_get_time() / 1000;
@@ -358,7 +379,7 @@ static void handle_short_press(void) {
 
     // If in DND, exit DND first then activate
     if (dnd_mode) {
-        dnd_mode = false;
+        set_dnd(false);
         save_dnd_to_nvs(false);
         ESP_LOGI(TAG, "DND mode DISABLED (via button activate)");
         jarvis_audio_start_listening();
@@ -369,6 +390,9 @@ static void handle_short_press(void) {
     if (current_state == STATE_IDLE || current_state == STATE_DND ||
         current_state == STATE_BUSY || current_state == STATE_ERROR ||
         (current_state == STATE_LISTENING && !jarvis_ws_audio_is_active())) {
+        // Live session straight away when the server side has it on; otherwise
+        // (older server, live off, WS down) the classic activation of today
+        if (try_live_tap()) return;
         ESP_LOGI(TAG, ">>> MANUAL ACTIVATION (button) <<< (from state=%d)", current_state);
         activate_listening(false);  // Button press = not silent (play wake sound)
     }
@@ -379,6 +403,9 @@ static void handle_long_press(void) {
 
     // Full-duplex live session: end it first, then toggle DND below
     handle_duplex_gesture(DUPLEX_GESTURE_LONG_PRESS);
+
+    // Live request pending: give it up (live_session_end "button"), then DND below
+    handle_live_pending_gesture(LIVE_GESTURE_LONG_PRESS);
 
     if (jarvis_ws_audio_is_active()) {
         int64_t now = esp_timer_get_time() / 1000;
@@ -394,7 +421,7 @@ static void handle_long_press(void) {
     }
 
     // Toggle DND mode
-    dnd_mode = !dnd_mode;
+    set_dnd(!dnd_mode);
     save_dnd_to_nvs(dnd_mode);
     if (dnd_mode) {
         ESP_LOGI(TAG, "DND mode ENABLED");
@@ -420,6 +447,9 @@ static void handle_double_tap(void) {
     // (no speaker_stop: the session end already stops the model speech)
     if (handle_duplex_gesture(DUPLEX_GESTURE_DOUBLE_TAP)) return;
 
+    // Live request pending: drop it; the speaker_stop below tells the server
+    handle_live_pending_gesture(LIVE_GESTURE_DOUBLE_TAP);
+
     // Flash red for visual feedback
     jarvis_display_flash_red();
 
@@ -438,6 +468,142 @@ static void handle_triple_tap(void) {
     bool rotated = !jarvis_display_is_rotated();
     jarvis_display_set_rotation(rotated);
     save_rotation_to_nvs(rotated);
+}
+
+// =============================================================================
+// LIVE FROM THE WAKE WORD / THE TAP (fw 5.3, design 19.3)
+// =============================================================================
+//
+// Pending ("connecting"): wake_detected{live} acked "ok" by the WS module, or a
+// tap that sent live_start. No activate_listening, no /speaker/suppress, no
+// audio_start: the continuous mic stream goes on and the wakeword-server keeps
+// it as the command said in the same breath. Exits:
+//   live_session_start{duplex}  -> duplex session as today (WS module)
+//   wake_detected (plain)       -> classic activation of today
+//   live_declined               -> classic, or rest for duplicate/voice_gate
+//   live_abort, WS lost         -> rest, silently
+//   15 s without an exit        -> wake: live_session_end{"error"} + rest;
+//                                  tap: classic activation
+// current_state stays IDLE meanwhile (no "state" message, the server is in
+// LIVE_PENDING); only the display shows the connecting view.
+
+static void live_connecting_on(void) {
+    reset_activity_timer();  // also leaves the screensaver
+    if (current_state != STATE_IDLE) {
+        set_state(STATE_IDLE);  // e.g. leftover BUSY/ERROR, or DND just left by the tap
+    }
+    connecting_display_active = true;
+    last_connecting_frame = esp_timer_get_time() / 1000;
+    jarvis_display_set_connecting(true);  // white flash first, never blocking
+    jarvis_speaker_play_live_chirp();     // ~110 ms, non-blocking
+}
+
+static void live_connecting_off(void) {
+    if (!connecting_display_active) return;
+    connecting_display_active = false;
+    jarvis_display_set_connecting(false);
+}
+
+static void live_to_rest(void) {
+    live_connecting_off();
+    ESP_LOGI(TAG, "Live request over - back to rest");
+}
+
+static void live_to_classic(void) {
+    live_connecting_off();
+    ESP_LOGI(TAG, ">>> LIVE FALLBACK: classic activation <<<");
+    // A fast decline can land while the chirp still plays: the wake sound would be
+    // skipped (speaker busy), so let the chirp (~110 ms) finish first
+    jarvis_speaker_wait_done(200);
+    activate_listening(false);  // wake sound, suppress, audio_start as today
+}
+
+// Gesture while a live request is pending. Returns true if fully handled.
+static bool handle_live_pending_gesture(live_gesture_t gesture) {
+    live_button_action_t action = live_pending_button_action(gesture, jarvis_ws_audio_live_pending());
+    switch (action) {
+        case LIVE_BTN_CLASSIC:
+            // audio_start: the server sends live_cancel before relaying it
+            if (!jarvis_ws_audio_live_cancel(NULL)) return false;
+            ESP_LOGI(TAG, "Tap while connecting - classic activation");
+            live_to_classic();
+            return true;
+        case LIVE_BTN_DROP_THEN_AS_TODAY:
+            if (jarvis_ws_audio_live_cancel(NULL)) {
+                ESP_LOGI(TAG, "Double tap while connecting - cancel");
+                live_connecting_off();
+            }
+            return false;
+        case LIVE_BTN_CANCEL_THEN_AS_TODAY:
+            if (jarvis_ws_audio_live_cancel("button")) {
+                ESP_LOGI(TAG, "Long press while connecting - cancel");
+                live_connecting_off();
+            }
+            return false;
+        default:
+            return false;
+    }
+}
+
+// Single tap at rest: live_start{trigger:"tap"} if the server side has live on
+static bool try_live_tap(void) {
+    bool at_rest = (current_state == STATE_IDLE || current_state == STATE_DND ||
+                    current_state == STATE_ERROR);
+    if (!jarvis_ws_audio_live_request_tap(at_rest)) return false;
+    ESP_LOGI(TAG, ">>> TAP: LIVE REQUEST <<< (from state=%d)", current_state);
+    error_clear_time = 0;
+    live_connecting_on();
+    return true;
+}
+
+// main_task: exits posted by the WS module, safety timeout, display sync
+static void process_live(int64_t now) {
+    ws_live_event_t ev;
+    while (jarvis_ws_audio_live_next_event(&ev)) {
+        switch (ev.type) {
+            case WS_LIVE_EV_CONNECTING:
+                if (jarvis_ws_audio_live_is_current(ev.gen)) {
+                    ESP_LOGI(TAG, ">>> WAKE WORD: LIVE REQUEST (acked ok) <<<");
+                    error_clear_time = 0;
+                    live_connecting_on();
+                }
+                break;
+            case WS_LIVE_EV_CLASSIC:
+                if (jarvis_ws_audio_live_take(ev.gen)) live_to_classic();
+                break;
+            case WS_LIVE_EV_IDLE:
+                if (jarvis_ws_audio_live_take(ev.gen)) live_to_rest();
+                break;
+            default:
+                break;
+        }
+    }
+
+    uint32_t gen = 0;
+    uint8_t origin = LIVE_ORIGIN_WAKE;
+    if (jarvis_ws_audio_live_expired(LIVE_PENDING_SAFETY_MS, &gen, &origin) &&
+        jarvis_ws_audio_live_is_current(gen)) {
+        ESP_LOGW(TAG, "Live request: no answer in %u ms (origin=%s)",
+                 (unsigned)LIVE_PENDING_SAFETY_MS, origin == LIVE_ORIGIN_TAP ? "tap" : "wake");
+        if (live_timeout_outcome((live_origin_t)origin) == LIVE_OUT_CLASSIC) {
+            // Tap: classic activation; its audio_start makes the server cancel
+            if (jarvis_ws_audio_live_take(gen)) live_to_classic();
+        } else if (jarvis_ws_audio_live_cancel("error")) {
+            live_to_rest();
+        }
+    }
+
+    // Request ended inside the WS module (live_session_start: duplex view takes over)
+    if (connecting_display_active && !jarvis_ws_audio_live_pending()) {
+        live_connecting_off();
+    }
+
+    // Spinner animation
+    if (connecting_display_active && !duplex_display_active &&
+        now - last_connecting_frame >= CONNECTING_DISPLAY_FRAME_MS) {
+        last_connecting_frame = now;
+        jarvis_display_update();
+    }
 }
 
 // =============================================================================
@@ -786,6 +952,10 @@ static void main_task(void* arg) {
         // Sync full-duplex live mode from ws_audio module
         sync_duplex_mode();
 
+        // Live request from the wake word / the tap (after the duplex sync, so a
+        // session that just started replaces the connecting view without a flicker)
+        process_live(now);
+
         // Duplex view: one column of levels per frame (~14 fps)
         if (duplex_display_active && now - last_duplex_frame >= DUPLEX_DISPLAY_FRAME_MS) {
             last_duplex_frame = now;
@@ -809,7 +979,7 @@ static void main_task(void* arg) {
 
         // Screensaver: activate after inactivity (only in IDLE, not DND)
         if (!screensaver_active && current_state == STATE_IDLE && !duplex_display_active &&
-            last_activity_time > 0 && (now - last_activity_time > SCREENSAVER_TIMEOUT_MS)) {
+            !connecting_display_active && last_activity_time > 0 && (now - last_activity_time > SCREENSAVER_TIMEOUT_MS)) {
             screensaver_active = true;
             screensaver_start_time = now;
             jarvis_display_screensaver_start();
@@ -831,7 +1001,7 @@ static void main_task(void* arg) {
         }
 
         // Update display in IDLE/DND (skip if screensaver is running)
-        if (!screensaver_active && !duplex_display_active &&
+        if (!screensaver_active && !duplex_display_active && !connecting_display_active &&
             (current_state == STATE_IDLE || current_state == STATE_DND)) {
             if (now - last_display_update > DISPLAY_UPDATE_IDLE_MS) {
                 last_display_update = now;
@@ -875,6 +1045,7 @@ static void main_task(void* arg) {
         if (now - last_temp_fetch > TEMP_REFRESH_MS) {
             last_temp_fetch = now;
             if (!jarvis_ws_audio_is_active() && !duplex_display_active &&
+                !jarvis_ws_audio_live_pending() &&
                 device_config.friendly_name[0] != '\0') {
                 float new_temp;
                 if (jarvis_network_fetch_temperature(device_config.friendly_name, &new_temp)) {
@@ -1027,7 +1198,7 @@ extern "C" void app_main(void) {
     #endif
 
     // Restore DND mode from NVS (persisted across reboots)
-    dnd_mode = load_dnd_from_nvs();
+    set_dnd(load_dnd_from_nvs());
     if (dnd_mode) {
         ESP_LOGI(TAG, "DND mode RESTORED from NVS — staying silent");
         set_state(STATE_DND);

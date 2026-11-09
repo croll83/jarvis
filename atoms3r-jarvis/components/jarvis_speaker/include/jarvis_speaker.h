@@ -62,6 +62,16 @@ void jarvis_speaker_play_buzz(void);
 void jarvis_speaker_play_listening_beep(void);
 
 /**
+ * @brief Play the short "live" chirp (non-blocking)
+ *
+ * Rising two-note chirp (~110ms, 740 -> 1110 Hz) when a wake word or a tap
+ * opens the live session (design 19.3): the user can speak at once, and the
+ * wakeword-server leaves 250 ms after the ack out of its command VAD.
+ * If playback is already in progress, does nothing.
+ */
+void jarvis_speaker_play_live_chirp(void);
+
+/**
  * @brief Play raw PCM data (blocking)
  * @param pcm_data PCM 16-bit signed mono samples
  * @param num_samples Number of samples

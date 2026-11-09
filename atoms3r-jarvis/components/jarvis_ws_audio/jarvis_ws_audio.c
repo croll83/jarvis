@@ -13,6 +13,8 @@
  * Control channel (always active when connected):
  *   Server -> trigger_listen, ping, speech_end, ready, welcome
  *   Device -> hello, audio_start, audio_end, state, pong
+ *   Live from the wake word / the tap (fw 5.3, cap "live_wake"): see
+ *   jarvis_live_wake_policy.h for the messages and the exits.
  *
  * Connection management:
  *   - Auto-reconnect with exponential backoff (1s -> 2s -> 4s -> ... -> 30s max)
@@ -24,6 +26,7 @@
 #include "jarvis_audio.h"
 #include "jarvis_codec.h"
 #include "jarvis_duplex_policy.h"
+#include "jarvis_live_wake_policy.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -38,6 +41,7 @@
 #include "esp_event.h"
 #include "esp_websocket_client.h"
 #include "esp_wifi.h"
+#include "esp_random.h"
 #include "cJSON.h"
 #include <opus.h>
 
@@ -205,6 +209,26 @@ static int duplex_level_idx = 0;
 // Play task exists only during a duplex session
 static volatile TaskHandle_t duplex_play_task_handle = NULL;
 
+// Live from the wake word / the tap (jarvis_live_wake_policy.h).
+// One request at a time. The WS handler validates the server's exits and posts
+// them to main_task as events tagged with the request generation; main_task
+// "takes" the request (clears it) before acting, so a gesture and a server exit
+// racing each other act once. live_session_start (duplex) clears it right here.
+#define LIVE_EVENT_QUEUE_LEN    8
+static portMUX_TYPE live_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool live_pending = false;
+static volatile uint8_t live_origin = LIVE_ORIGIN_WAKE;
+static volatile uint32_t live_gen = 0;
+static volatile uint32_t live_started_ms = 0;
+static char live_req_id[LIVE_REQ_ID_MAX + 1] = {0};
+static QueueHandle_t live_event_q = NULL;
+static volatile bool live_server_on = false;    // live_on_wake:true seen on this connection
+static volatile bool live_dnd = false;          // DND mirror from main_task (for the ack)
+// Last request dropped by the device (gesture, safety timeout): a duplex
+// live_session_start still in flight for it is ignored (live_start_after_drop)
+static volatile bool live_drop_armed = false;
+static volatile uint32_t live_drop_ms = 0;
+
 // =============================================================================
 // OPUS INIT
 // =============================================================================
@@ -258,16 +282,17 @@ static bool init_opus_decoder(void) {
 // JSON HELPERS
 // =============================================================================
 
-static bool send_json(const char *type, const char *extra_key, const char *extra_val) {
+// {"type":type, k1:v1, k2:v2} (string values; a NULL key or value is left out)
+static bool send_json_kv(const char *type, const char *k1, const char *v1,
+                         const char *k2, const char *v2) {
     if (!ws_client || conn_state < CONN_STATE_CONNECTED) return false;
 
     cJSON *json = cJSON_CreateObject();
     if (!json) return false;
 
     cJSON_AddStringToObject(json, "type", type);
-    if (extra_key && extra_val) {
-        cJSON_AddStringToObject(json, extra_key, extra_val);
-    }
+    if (k1 && v1) cJSON_AddStringToObject(json, k1, v1);
+    if (k2 && v2) cJSON_AddStringToObject(json, k2, v2);
 
     char *str = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
@@ -277,6 +302,10 @@ static bool send_json(const char *type, const char *extra_key, const char *extra
     free(str);
 
     return (ret >= 0);
+}
+
+static bool send_json(const char *type, const char *extra_key, const char *extra_val) {
+    return send_json_kv(type, extra_key, extra_val, NULL, NULL);
 }
 
 static bool send_json_hello(const char *device_id, const char *fw_version) {
@@ -290,8 +319,13 @@ static bool send_json_hello(const char *device_id, const char *fw_version) {
     cJSON_AddStringToObject(json, "fw", fw_version);
 #ifndef USE_LOCAL_WAKEWORD
     // aec_ref: in duplex the uplink can carry the ES8311 DAC loopback next to the mic
+    // live_wake: wake_detected{live,req_id} is acked (live_wake_ack) and the tap
+    // sends live_start{trigger:"tap"} (design 19.3); the server checks this cap
     cJSON *caps = cJSON_AddArrayToObject(json, "caps");
-    if (caps) cJSON_AddItemToArray(caps, cJSON_CreateString("aec_ref"));
+    if (caps) {
+        cJSON_AddItemToArray(caps, cJSON_CreateString("aec_ref"));
+        cJSON_AddItemToArray(caps, cJSON_CreateString("live_wake"));
+    }
 #endif
 
     char *str = cJSON_PrintUnformatted(json);
@@ -758,6 +792,126 @@ static void duplex_stream_mic(void) {
 }
 
 // =============================================================================
+// LIVE FROM THE WAKE WORD / THE TAP (pending request)
+// =============================================================================
+
+static void live_post(uint8_t type, uint32_t gen, uint8_t origin) {
+    if (!live_event_q) return;
+    ws_live_event_t ev = { .type = type, .origin = origin, .gen = gen };
+    if (xQueueSend(live_event_q, &ev, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Live event queue full, event %d dropped", type);
+    }
+}
+
+// New pending request; false if one is already pending
+static bool live_begin(live_origin_t origin, const char *req_id, uint32_t *gen_out) {
+    bool ok = false;
+    portENTER_CRITICAL(&live_mux);
+    if (!live_pending) {
+        strncpy(live_req_id, req_id, LIVE_REQ_ID_MAX);
+        live_req_id[LIVE_REQ_ID_MAX] = '\0';
+        live_origin = (uint8_t)origin;
+        live_started_ms = duplex_now_ms();
+        live_gen++;
+        live_pending = true;
+        live_drop_armed = false;
+        if (gen_out) *gen_out = live_gen;
+        ok = true;
+    }
+    portEXIT_CRITICAL(&live_mux);
+    return ok;
+}
+
+// Clears the pending request if it is still generation gen
+static bool live_take(uint32_t gen) {
+    bool took = false;
+    portENTER_CRITICAL(&live_mux);
+    if (live_pending && live_gen == gen) {
+        live_pending = false;
+        took = true;
+    }
+    portEXIT_CRITICAL(&live_mux);
+    return took;
+}
+
+// Clears whatever request is pending (live_session_start, local cancel)
+static bool live_clear_any(void) {
+    portENTER_CRITICAL(&live_mux);
+    bool was = live_pending;
+    live_pending = false;
+    portEXIT_CRITICAL(&live_mux);
+    return was;
+}
+
+// The device gave the request up (main_task): see live_start_after_drop
+static void live_drop_arm(void) {
+    portENTER_CRITICAL(&live_mux);
+    live_drop_ms = duplex_now_ms();
+    live_drop_armed = true;
+    portEXIT_CRITICAL(&live_mux);
+}
+
+// live_session_start (WS handler): true = the start of a request dropped here, ignore it
+static bool live_drop_guard_hit(bool duplex) {
+    portENTER_CRITICAL(&live_mux);
+    bool hit = live_start_after_drop(live_pending, duplex, live_drop_armed,
+                                     duplex_now_ms(), live_drop_ms);
+    if (hit) live_drop_armed = false;  // one start per request
+    portEXIT_CRITICAL(&live_mux);
+    return hit;
+}
+
+// Snapshot of the pending request matching msg_req_id (see live_req_matches)
+static bool live_match(const char *msg_req_id, uint32_t *gen, uint8_t *origin) {
+    bool match = false;
+    portENTER_CRITICAL(&live_mux);
+    if (live_pending && live_req_matches(live_req_id, msg_req_id)) {
+        *gen = live_gen;
+        *origin = live_origin;
+        match = true;
+    }
+    portEXIT_CRITICAL(&live_mux);
+    return match;
+}
+
+// WS gone: the server side tears the request down (live_cancel); here back to rest.
+// The flag is re-learned from the next welcome (the server may have changed).
+static void live_on_disconnect(void) {
+    uint32_t gen;
+    uint8_t origin;
+    live_server_on = false;
+    if (live_match(NULL, &gen, &origin)) {
+        live_post(WS_LIVE_EV_IDLE, gen, origin);
+    }
+}
+
+static bool live_device_is_busy(void) {
+    return live_device_busy(audio_session_active, audio_session_requested, duplex_active,
+                            live_session_active, live_pending);
+}
+
+// wake_detected{live:true, req_id} (WS handler): ack at once, the server falls back to
+// the classic wake if no ack comes within 1 s. With "ok" the request is pending and
+// main_task plays the cue; the mic stream simply goes on (it is the command buffer).
+static void live_on_server_wake(const char *req_id) {
+    live_ack_t ack = live_wake_ack(live_dnd, live_device_is_busy());
+    uint32_t gen = 0;
+    if (ack == LIVE_ACK_OK && !live_begin(LIVE_ORIGIN_WAKE, req_id, &gen)) {
+        ack = LIVE_ACK_BUSY;  // raced with a tap request
+    }
+    ESP_LOGI(TAG, "Server: wake_detected live (req %s) -> ack %s", req_id, live_ack_status(ack));
+    if (!send_json_kv("live_wake_ack", "req_id", req_id, "status", live_ack_status(ack))) {
+        // No ack: the server goes classic (plain wake_detected), handled as today
+        if (ack == LIVE_ACK_OK) live_take(gen);
+        ESP_LOGW(TAG, "live_wake_ack not sent");
+        return;
+    }
+    if (ack == LIVE_ACK_OK) {
+        live_post(WS_LIVE_EV_CONNECTING, gen, LIVE_ORIGIN_WAKE);
+    }
+}
+
+// =============================================================================
 // WEBSOCKET EVENT HANDLER
 // =============================================================================
 
@@ -786,8 +940,17 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
                             const char *type = cJSON_GetStringValue(
                                 cJSON_GetObjectItem(msg, "type"));
                             if (type) {
-                                if (strcmp(type, "welcome") == 0) {
-                                    ESP_LOGI(TAG, "Server welcome received");
+                                if (strcmp(type, "welcome") == 0 || strcmp(type, "live_on_wake") == 0) {
+                                    // The wakeword-server's own welcome has no flag; the
+                                    // orchestrator's (forwarded on every relay open) and the
+                                    // live_on_wake push (admin toggle) carry live_on_wake
+                                    cJSON *flag = cJSON_GetObjectItem(msg, "live_on_wake");
+                                    if (flag && cJSON_IsBool(flag)) {
+                                        live_server_on = cJSON_IsTrue(flag);
+                                        ESP_LOGI(TAG, "Server %s: live_on_wake=%d", type, live_server_on);
+                                    } else {
+                                        ESP_LOGI(TAG, "Server welcome received");
+                                    }
 
                                 } else if (strcmp(type, "ready") == 0) {
                                     cJSON *sid = cJSON_GetObjectItem(msg, "session_id");
@@ -839,9 +1002,51 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
                                     }
 
                                 } else if (strcmp(type, "wake_detected") == 0) {
-                                    ESP_LOGI(TAG, "Server: wake_detected (server-side wake word)");
-                                    if (wake_detected_cb) {
-                                        wake_detected_cb();
+                                    const char *req_id = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "req_id"));
+                                    bool live = cJSON_IsTrue(cJSON_GetObjectItem(msg, "live"));
+                                    uint32_t gen;
+                                    uint8_t origin;
+                                    // (no event queue: treated as a plain wake, the server
+                                    // cancels the request on our audio_start)
+                                    if (live_event_q && live_wake_is_live(live, req_id)) {
+                                        live_server_on = true;  // the server does live for us
+                                        live_on_server_wake(req_id);
+                                    } else if (live_match(NULL, &gen, &origin)) {
+                                        // Exit of a pending request: classic wake (fallback)
+                                        ESP_LOGI(TAG, "Server: wake_detected while pending -> classic");
+                                        live_post(WS_LIVE_EV_CLASSIC, gen, origin);
+                                    } else {
+                                        ESP_LOGI(TAG, "Server: wake_detected (server-side wake word)");
+                                        if (wake_detected_cb) {
+                                            wake_detected_cb();
+                                        }
+                                    }
+
+                                } else if (strcmp(type, "live_abort") == 0) {
+                                    const char *req_id = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "req_id"));
+                                    uint32_t gen;
+                                    uint8_t origin;
+                                    if (live_match(req_id, &gen, &origin)) {
+                                        ESP_LOGI(TAG, "Server: live_abort (req %s) -> rest", req_id ? req_id : "-");
+                                        live_post(WS_LIVE_EV_IDLE, gen, origin);
+                                    } else {
+                                        ESP_LOGI(TAG, "Server: live_abort (req %s) ignored", req_id ? req_id : "-");
+                                    }
+
+                                } else if (strcmp(type, "live_declined") == 0) {
+                                    const char *req_id = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "req_id"));
+                                    const char *reason = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "reason"));
+                                    uint32_t gen;
+                                    uint8_t origin;
+                                    if (live_match(req_id, &gen, &origin)) {
+                                        live_outcome_t out = live_declined_outcome(reason);
+                                        ESP_LOGI(TAG, "Server: live_declined (req %s, reason %s) -> %s",
+                                                 req_id ? req_id : "-", reason ? reason : "-",
+                                                 out == LIVE_OUT_CLASSIC ? "classic" : "rest");
+                                        live_post(out == LIVE_OUT_CLASSIC ? WS_LIVE_EV_CLASSIC : WS_LIVE_EV_IDLE,
+                                                  gen, origin);
+                                    } else {
+                                        ESP_LOGI(TAG, "Server: live_declined (req %s) ignored", req_id ? req_id : "-");
                                     }
 
                                 } else if (strcmp(type, "live_session_start") == 0) {
@@ -853,11 +1058,30 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
                                     cJSON *gain = cJSON_GetObjectItem(msg, "mic_gain_db");
                                     int mic_scale_db = (gain && cJSON_IsNumber(gain)) ? gain->valueint : -1;
                                     ESP_LOGI(TAG, "Server: live_session_start%s", duplex ? " (duplex)" : "");
-                                    live_session_active = true;
-                                    if (duplex && !duplex_start(aec_ref, ref_level, mic_scale_db)) {
-                                        // Cannot do full-duplex: end it cleanly rather than half-work
-                                        send_json("live_session_end", "reason", "error");
-                                        live_session_active = false;
+                                    // The live request (wake or tap) has its session: no
+                                    // longer pending (main_task leaves the connecting view)
+                                    if (live_drop_guard_hit(duplex)) {
+                                        // Hub accepted a request this device just gave up: the
+                                        // server closes that session on the drop message
+                                        // (audio_start, speaker_stop, live_session_end) and
+                                        // its speech still in flight is not a TTS reply
+                                        ESP_LOGW(TAG, "live_session_start of a dropped live request - ignored");
+                                        uint32_t drop_until = duplex_now_ms() + DUPLEX_LATE_DROP_MS;
+                                        portENTER_CRITICAL(&duplex_mux);
+                                        duplex_late_drop_until_ms = drop_until;
+                                        duplex_late_drop_armed = true;
+                                        portEXIT_CRITICAL(&duplex_mux);
+                                    } else {
+                                        if (live_clear_any()) {
+                                            ESP_LOGI(TAG, "Live request -> session (%u ms)",
+                                                     (unsigned)duplex_ms_diff(duplex_now_ms(), live_started_ms));
+                                        }
+                                        live_session_active = true;
+                                        if (duplex && !duplex_start(aec_ref, ref_level, mic_scale_db)) {
+                                            // Cannot do full-duplex: end it cleanly rather than half-work
+                                            send_json("live_session_end", "reason", "error");
+                                            live_session_active = false;
+                                        }
                                     }
 
                                 } else if (strcmp(type, "live_session_end") == 0) {
@@ -933,6 +1157,7 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
             ESP_LOGI(TAG, "WebSocket disconnected");
             conn_state = CONN_STATE_DISCONNECTED;
             audio_session_active = false;
+            live_on_disconnect();
             if (duplex_active) {
                 // The wakeword-server tears down the hub side when the device drops
                 duplex_stop(true);
@@ -944,6 +1169,7 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
             ESP_LOGE(TAG, "WebSocket error");
             conn_state = CONN_STATE_DISCONNECTED;
             audio_session_active = false;
+            live_on_disconnect();
             if (duplex_active) {
                 duplex_stop(true);
                 live_session_active = false;
@@ -1149,7 +1375,7 @@ static void ws_persistent_task(void *arg) {
 
         // === Phase 2: Connected! Send hello ===
         ESP_LOGI(TAG, "Connected! Sending hello...");
-        send_json_hello(device_id_buf, "5.2.1-ws");
+        send_json_hello(device_id_buf, JARVIS_WS_FW_VERSION);
 
         // === Phase 3: Main loop (idle + audio sessions) ===
         int64_t last_ping_time = esp_timer_get_time() / 1000;
@@ -1285,6 +1511,13 @@ bool jarvis_ws_audio_init(void) {
     if (!init_opus_decoder()) {
         ESP_LOGE(TAG, "Opus decoder init failed");
         return false;
+    }
+
+    if (!live_event_q) {
+        live_event_q = xQueueCreate(LIVE_EVENT_QUEUE_LEN, sizeof(ws_live_event_t));
+        if (!live_event_q) {
+            ESP_LOGW(TAG, "Live event queue alloc failed - live from wake/tap disabled");
+        }
     }
 
     ESP_LOGI(TAG, "WS Audio module initialized");
@@ -1464,4 +1697,84 @@ void jarvis_ws_audio_set_config_update_callback(ws_config_update_callback_t cb) 
 
 void jarvis_ws_audio_set_wake_detected_callback(ws_wake_detected_callback_t cb) {
     wake_detected_cb = cb;
+}
+
+// =============================================================================
+// LIVE FROM THE WAKE WORD / THE TAP - PUBLIC API
+// =============================================================================
+
+void jarvis_ws_audio_set_dnd(bool dnd) {
+    live_dnd = dnd;
+}
+
+bool jarvis_ws_audio_live_request_tap(bool at_rest) {
+#ifdef USE_LOCAL_WAKEWORD
+    // No continuous mic stream and no duplex with the local wake word: classic tap
+    (void)at_rest;
+    return false;
+#endif
+    bool connected = (conn_state == CONN_STATE_CONNECTED);
+    if (!live_event_q ||
+        !live_tap_allowed(live_server_on, connected, live_device_is_busy(), at_rest)) {
+        return false;
+    }
+    char req_id[17];
+    live_make_req_id(esp_random(), esp_random(), req_id);
+    uint32_t gen = 0;
+    if (!live_begin(LIVE_ORIGIN_TAP, req_id, &gen)) return false;
+    if (!send_json_kv("live_start", "req_id", req_id, "trigger", "tap")) {
+        live_take(gen);
+        ESP_LOGW(TAG, "live_start not sent - classic tap");
+        return false;
+    }
+    ESP_LOGI(TAG, "Tap: live_start sent (req %s)", req_id);
+    return true;
+}
+
+bool jarvis_ws_audio_live_pending(void) {
+    return live_pending;
+}
+
+bool jarvis_ws_audio_live_next_event(ws_live_event_t *ev) {
+    if (!live_event_q || !ev) return false;
+    return xQueueReceive(live_event_q, ev, 0) == pdTRUE;
+}
+
+bool jarvis_ws_audio_live_is_current(uint32_t gen) {
+    portENTER_CRITICAL(&live_mux);
+    bool cur = live_pending && live_gen == gen;
+    portEXIT_CRITICAL(&live_mux);
+    return cur;
+}
+
+bool jarvis_ws_audio_live_take(uint32_t gen) {
+    if (!live_take(gen)) return false;
+    // main_task acts on it (classic, rest): a duplex start still in flight is stale
+    live_drop_arm();
+    return true;
+}
+
+bool jarvis_ws_audio_live_expired(uint32_t timeout_ms, uint32_t *gen, uint8_t *origin) {
+    bool expired = false;
+    portENTER_CRITICAL(&live_mux);
+    if (live_pending && live_pending_expired(duplex_now_ms(), live_started_ms, timeout_ms)) {
+        if (gen) *gen = live_gen;
+        if (origin) *origin = live_origin;
+        expired = true;
+    }
+    portEXIT_CRITICAL(&live_mux);
+    return expired;
+}
+
+bool jarvis_ws_audio_live_cancel(const char *end_reason) {
+    if (!live_clear_any()) return false;
+    live_drop_arm();
+    if (end_reason) {
+        const char *why = duplex_end_reason(end_reason);
+        ESP_LOGI(TAG, "Live request given up (live_session_end reason=%s)", why);
+        send_json("live_session_end", "reason", why);
+    } else {
+        ESP_LOGI(TAG, "Live request dropped locally");
+    }
+    return true;
 }

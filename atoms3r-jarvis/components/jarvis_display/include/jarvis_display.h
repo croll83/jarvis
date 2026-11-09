@@ -168,4 +168,17 @@ void jarvis_display_set_duplex(bool active);
  */
 void jarvis_display_duplex_push(uint8_t jarvis_level, uint8_t user_level);
 
+/**
+ * @brief Enter/leave the "connecting" view (live request pending)
+ * @param active true = wake word or tap is opening the live session
+ * Starts with an ~80 ms white flash (the wake cue, drawn by the next updates,
+ * never blocking), then the robot head with a spinner and "Connecting...".
+ * Call jarvis_display_update() periodically (~20 fps) to animate it. The
+ * duplex view, when on, still has priority.
+ */
+void jarvis_display_set_connecting(bool active);
+
+/** @brief The connecting view is on */
+bool jarvis_display_is_connecting(void);
+
 #endif // JARVIS_DISPLAY_H

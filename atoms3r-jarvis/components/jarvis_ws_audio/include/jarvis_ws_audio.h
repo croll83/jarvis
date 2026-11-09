@@ -12,6 +12,9 @@
  *   - Device->Server JSON: hello, audio_start, audio_end, state, pong
  *   - Device->Server Binary: Opus frames (20ms each, ~30-80 bytes)
  *   - Server->Device JSON: welcome, ready, speech_end, trigger_listen, tts_done, config_update, ping, error
+ *   - Live from the wake word / the tap (fw 5.3, cap "live_wake", jarvis_live_wake_policy.h):
+ *     Server->Device wake_detected{live,req_id}, live_abort, live_declined;
+ *     Device->Server live_wake_ack{req_id,status}, live_start{req_id,trigger:"tap"}
  *   - Duplex live session only: live_session_start{duplex}, audio_clear, vu, live_session_end
  *     (Device->Server: live_session_end{reason:"button"|"error"}, no call_id: the
  *      wakeword-server adds it and passes the reason through to the orchestrator)
@@ -35,6 +38,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Firmware version sent in the hello (keep equal to FIRMWARE_VERSION in main.cpp)
+#define JARVIS_WS_FW_VERSION "5.3.0-ws"
 
 /**
  * Callback when a WS audio session ends (speech captured or error).
@@ -199,6 +205,67 @@ bool jarvis_ws_audio_interrupt_duplex(void);
  * @param user_level    post-AEC mic level from the last "vu" message (0 if stale)
  */
 void jarvis_ws_audio_get_duplex_levels(uint8_t *jarvis_level, uint8_t *user_level);
+
+/**
+ * Live from the wake word / the tap (Voice Live Hub, design 19.3).
+ *
+ * A pending request ("connecting") starts either in the WS handler, on
+ * wake_detected{live:true,req_id} acked "ok", or from main_task with
+ * jarvis_ws_audio_live_request_tap(). Its exits arrive as events for main_task,
+ * tagged with the request generation; main_task acts on CLASSIC/IDLE only if
+ * jarvis_ws_audio_live_take(gen) succeeds (the request may already be gone,
+ * e.g. dropped by a gesture). live_session_start clears the request inside the
+ * module (the duplex session starts as today). Nothing here runs unless the
+ * server sends wake_detected{live} or the orchestrator's welcome says
+ * live_on_wake:true, so older servers see the firmware of today.
+ */
+typedef enum {
+    WS_LIVE_EV_CONNECTING = 1,  // server wake acked "ok": cue + connecting view (request goes on)
+    WS_LIVE_EV_CLASSIC,         // fall back to the classic activation of today
+    WS_LIVE_EV_IDLE,            // back to rest (live_abort, silent decline, WS lost)
+} ws_live_event_type_t;
+
+typedef struct {
+    uint8_t type;       // ws_live_event_type_t
+    uint8_t origin;     // live_origin_t (jarvis_live_wake_policy.h)
+    uint32_t gen;       // request generation
+} ws_live_event_t;
+
+/** DND mirror for the live_wake_ack (the ack is sent from the WS handler). */
+void jarvis_ws_audio_set_dnd(bool dnd);
+
+/**
+ * Tap in idle: sends {"type":"live_start","req_id":...,"trigger":"tap"} if the
+ * server side has live on, the WS is up and nothing is running.
+ * @param at_rest device state allows it (IDLE/DND/ERROR)
+ * @return true if the request is now pending (caller plays the cue); false =
+ *         use the classic tap of today
+ */
+bool jarvis_ws_audio_live_request_tap(bool at_rest);
+
+/** A live request is pending (connecting). */
+bool jarvis_ws_audio_live_pending(void);
+
+/** Next live event for main_task (non-blocking). */
+bool jarvis_ws_audio_live_next_event(ws_live_event_t *ev);
+
+/** The pending request is still generation gen. */
+bool jarvis_ws_audio_live_is_current(uint32_t gen);
+
+/** Clears the pending request if it is still generation gen; true = caller acts. */
+bool jarvis_ws_audio_live_take(uint32_t gen);
+
+/** The pending request is older than timeout_ms (gen/origin filled if so). */
+bool jarvis_ws_audio_live_expired(uint32_t timeout_ms, uint32_t *gen, uint8_t *origin);
+
+/**
+ * Drops the pending request from the device side. With end_reason ("button"
+ * or "error") also sends {"type":"live_session_end","reason":end_reason}: the
+ * wakeword-server cancels the request (live_cancel) and rests. Without it the
+ * message that follows (audio_start, speaker_stop) tells the server.
+ * @return true if a request was pending
+ */
+bool jarvis_ws_audio_live_cancel(const char *end_reason);
 
 /**
  * Disconnect and stop the persistent connection task.

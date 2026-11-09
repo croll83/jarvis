@@ -210,6 +210,50 @@ void jarvis_speaker_play_listening_beep(void) {
     );
 }
 
+// =============================================================================
+// LIVE CHIRP (wake word / tap that opens the live session, non-blocking)
+// =============================================================================
+
+#define CHIRP_SAMPLE_RATE   16000
+#define CHIRP_NOTE1_HZ      740
+#define CHIRP_NOTE2_HZ      1110
+#define CHIRP_NOTE1_MS      45
+#define CHIRP_NOTE2_MS      65
+#define CHIRP_SAMPLES       (CHIRP_SAMPLE_RATE * (CHIRP_NOTE1_MS + CHIRP_NOTE2_MS) / 1000)  // 1760
+#define CHIRP_AMPLITUDE     6000   // like the listening beep
+
+static void live_chirp_task(void* arg) {
+    static int16_t chirp_buf[CHIRP_SAMPLES];   // static: not on the task stack
+    const int note1 = CHIRP_SAMPLE_RATE * CHIRP_NOTE1_MS / 1000;
+    const int fade = CHIRP_SAMPLE_RATE / 200;  // 5 ms
+    float phase = 0.0f;                        // continuous phase: no click between notes
+    for (int i = 0; i < CHIRP_SAMPLES; i++) {
+        float f = (i < note1) ? CHIRP_NOTE1_HZ : CHIRP_NOTE2_HZ;
+        phase += 2.0f * 3.14159265f * f / CHIRP_SAMPLE_RATE;
+        float env = 1.0f;
+        if (i < fade) {
+            env = (float)i / fade;
+        } else if (i > CHIRP_SAMPLES - fade) {
+            env = (float)(CHIRP_SAMPLES - i) / fade;
+        }
+        chirp_buf[i] = (int16_t)(sinf(phase) * CHIRP_AMPLITUDE * env);
+    }
+
+    jarvis_speaker_play_pcm(chirp_buf, CHIRP_SAMPLES);
+    playback_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+void jarvis_speaker_play_live_chirp(void) {
+    if (!speaker_initialized) return;
+    if (playing) return;
+
+    xTaskCreatePinnedToCore(
+        live_chirp_task, "chirp", 4096,
+        NULL, 4, &playback_task_handle, 1
+    );
+}
+
 bool jarvis_speaker_is_playing(void) {
     return playing;
 }
