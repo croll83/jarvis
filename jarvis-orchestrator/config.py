@@ -123,9 +123,10 @@ VOICE_LIVE_HUB_MAX_S = float(os.getenv("VOICE_LIVE_HUB_MAX_S", "3600"))
 VOICE_LIVE_HUB_DISCONNECT_GRACE_S = float(os.getenv("VOICE_LIVE_HUB_DISCONNECT_GRACE_S", "15"))
 
 # Fase 3, punto 1 (design-voice-live-hub.md sez. 19): dalla wake word, o dal tap, direttamente
-# alla sessione hub, senza il turno "avvia una sessione live". Tutto spento per default:
-# serve l'interruttore generale E la colonna voice_devices.live_on_wake del device.
-VOICE_LIVE_ON_WAKE = os.getenv("VOICE_LIVE_ON_WAKE", "false").lower() in ("1", "true", "yes")
+# alla sessione hub, senza il turno "avvia una sessione live". Tutti i device idonei all'hub sono
+# abilitati (Marco, 2026-11-09: niente abilitazione per device); questo e' solo l'interruttore di
+# emergenza. La colonna voice_devices.live_on_wake resta nel DB ma non si consulta.
+VOICE_LIVE_ON_WAKE = os.getenv("VOICE_LIVE_ON_WAKE", "true").lower() in ("1", "true", "yes")
 # Sessioni di rete che l'hub accetta insieme (config.py:81 dell'hub): il limite lo applica
 # l'orchestrator, che conosce le sue sessioni hub, con live_declined "busy".
 VOICE_LIVE_HUB_MAX_SESSIONS = int(os.getenv("VOICE_LIVE_HUB_MAX_SESSIONS", "2"))

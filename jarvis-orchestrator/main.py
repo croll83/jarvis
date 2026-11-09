@@ -1907,12 +1907,11 @@ def _spawn_live_bg(coro) -> asyncio.Task:
 
 def live_on_wake_enabled(device_id: str) -> bool:
     """Flag per il welcome: il peer chiede il live alla wake/al tap solo se e' vero.
-    Interruttore generale, colonna del device e idoneita' all'hub. L'orchestrator
-    ricontrolla comunque tutto a ogni live_start."""
+    Interruttore generale e idoneita' all'hub (tutti i device idonei sono abilitati).
+    L'orchestrator ricontrolla comunque tutto a ogni live_start."""
     if not config.VOICE_LIVE_ON_WAKE:
         return False
-    cfg = get_device_speaker_config(device_id)
-    if not cfg or not cfg.get("live_on_wake"):
+    if not get_device_speaker_config(device_id):
         return False
     return _live_session_backend(device_id) == "hub"
 
@@ -2009,7 +2008,7 @@ async def handle_live_start(device_id: str, msg: dict) -> None:
         logger.info(f"🎙️ live_start {device_id} (req={req_id}) gia' annullato dal peer: scartato")
         return
     cfg = get_device_speaker_config(device_id)
-    if not config.VOICE_LIVE_ON_WAKE or not cfg or not cfg.get("live_on_wake"):
+    if not config.VOICE_LIVE_ON_WAKE or not cfg:
         await decline("disabled")
         return
     if not _hub_eligible(device_id):

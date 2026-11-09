@@ -25,7 +25,7 @@ services:
       - WAKE_CLIP_MAX_MB=${WAKE_CLIP_MAX_MB:-200}
       - WAKE_VOICE_GATE=${WAKE_VOICE_GATE:-auto}
       - WAKE_VOICE_GATE_TIMEOUT_S=${WAKE_VOICE_GATE_TIMEOUT_S:-1.0}
-      - LIVE_ON_WAKE=${LIVE_ON_WAKE:-0}
+      - LIVE_ON_WAKE=${LIVE_ON_WAKE:-1}
     volumes:
       - wakeword_data:/app/data
     restart: unless-stopped

@@ -306,10 +306,11 @@ class LiveStartDeclined(_Base):
         self.assertEqual(self.score_calls, [], "refused before any computation")
         self.assertEqual(self.ws.types(), ["live_declined"])
 
-    async def test_device_not_enabled(self):
+    async def test_device_column_is_ignored(self):
+        # Niente abilitazione per device: la colonna live_on_wake non conta piu'
         self.cfg[DEV]["live_on_wake"] = False
         await self.live_start()
-        await self.assert_declined("disabled")
+        self.assertNotEqual(self.ws.types()[:1], ["live_declined"])
 
     async def test_global_switch_off(self):
         config.VOICE_LIVE_ON_WAKE = False
@@ -636,7 +637,7 @@ class ThroughTheWebSocket(_Base):
         config.VOICE_LIVE_ON_WAKE = True
         self.cfg[DEV]["live_on_wake"] = False
         ws = await self.drive()
-        self.assertIs(ws.sent[0]["live_on_wake"], False)
+        self.assertIs(ws.sent[0]["live_on_wake"], True)  # la colonna non conta
 
     async def test_live_start_and_active_through_the_ws(self):
         ws = await self.drive({"type": "live_start", "req_id": "w1", "trigger": "wake",

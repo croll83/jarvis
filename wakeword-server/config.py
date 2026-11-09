@@ -109,10 +109,10 @@ WAKE_VOICE_GATE = os.getenv("WAKE_VOICE_GATE", "auto").strip().lower() or "auto"
 WAKE_VOICE_GATE_TIMEOUT_S = float(os.getenv("WAKE_VOICE_GATE_TIMEOUT_S", "1.0") or "1.0")
 
 # --- Dalla wake word direttamente a Gemini Live (design 19) ---
-# Interruttore generale; per device serve anche live_on_wake nel welcome dell'orchestrator
-# (colonna voice_devices.live_on_wake) e, per le wake rilevate qui, la cap "live_wake" del
-# firmware. Spento = comportamento di oggi.
-LIVE_ON_WAKE = _env_bool("LIVE_ON_WAKE", "0")
+# Interruttore di emergenza (acceso: tutti i device sono abilitati); serve anche live_on_wake
+# nel welcome dell'orchestrator e, per le wake rilevate qui, la cap "live_wake" del firmware.
+# Spento = comportamento di oggi.
+LIVE_ON_WAKE = _env_bool("LIVE_ON_WAKE", "1")
 # Attesa dell'ack del firmware a wake_detected{live} prima di ripiegare sul classico
 LIVE_ACK_TIMEOUT_S = float(os.getenv("LIVE_ACK_TIMEOUT_S", "1.0") or "1.0")
 # Attesa della risposta dell'orchestrator a live_start (poi live_cancel e classico)
