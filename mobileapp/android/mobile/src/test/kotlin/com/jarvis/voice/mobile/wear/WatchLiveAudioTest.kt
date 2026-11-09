@@ -46,6 +46,28 @@ class WatchLiveAudioTest {
         while (tunnel.snapshot().size < n && System.currentTimeMillis() < until) Thread.sleep(5)
     }
 
+    @Test fun captureAtTap_isLiveStartOnce_prepareAndStartDoNotResend() {
+        // Fase 3: al tap lo watch entra in live (mic AEC nel buffer del comando), mai il mic di oggi
+        assertTrue(port.capture())
+        assertEquals(listOf(liveStart), sent)
+        port.prepare()
+        assertTrue(port.start {})
+        assertEquals(listOf(liveStart), sent)
+        port.stop()
+        assertEquals(listOf(liveStart, liveStop), sent)
+    }
+
+    @Test fun captureDeclined_stopReturnsTheWatchToToday() {
+        assertTrue(port.capture())
+        port.stop()   // live_declined: lo watch esce dalla live e riapplica lo stato (classico)
+        assertEquals(listOf(liveStart, liveStop), sent)
+    }
+
+    @Test fun captureWithoutWatch_isFalse() {
+        watchKnown = false
+        assertFalse(port.capture())
+    }
+
     @Test fun prepareThenAccept_sendsStartOnce_thenStop_clearInBand() {
         port.prepare()
         assertEquals(listOf(liveStart), sent)

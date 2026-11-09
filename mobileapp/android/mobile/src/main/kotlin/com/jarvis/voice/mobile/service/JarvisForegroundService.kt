@@ -8,6 +8,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -45,6 +48,9 @@ class JarvisForegroundService : LifecycleService() {
         liveAudio = LocalLiveAudio(this) { frame -> c.feedMicFrame(frame) }
         c.liveAudio = liveAudio
 
+        // Fase 3: il tap che apre direttamente Gemini Live vibra (cue: "parla pure").
+        c.onLiveRequest = { vibrateTap() }
+
         startAsForeground()
     }
 
@@ -64,7 +70,22 @@ class JarvisForegroundService : LifecycleService() {
         liveAudio?.stop()
         JarvisRuntime.controller.onLocalMicStart = null
         JarvisRuntime.controller.onLocalMicStop = null
+        JarvisRuntime.controller.onLiveRequest = null
         super.onDestroy()
+    }
+
+    /** Vibrazione corta al tap con live (il buffer del comando non la conta: primi 200 ms esclusi dal VAD). */
+    private fun vibrateTap() {
+        runCatching {
+            val v: Vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            if (!v.hasVibrator()) return
+            v.vibrate(VibrationEffect.createOneShot(TAP_VIBRATION_MS, VibrationEffect.DEFAULT_AMPLITUDE))
+        }
     }
 
     private fun hasRecordPermission(): Boolean =
@@ -95,6 +116,7 @@ class JarvisForegroundService : LifecycleService() {
     companion object {
         private const val CHANNEL_ID = "jarvis_voice"
         private const val NOTIF_ID = 42
+        private const val TAP_VIBRATION_MS = 40L
 
         fun start(context: Context) {
             val i = Intent(context, JarvisForegroundService::class.java)

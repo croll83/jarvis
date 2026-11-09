@@ -116,8 +116,8 @@ class JarvisControllerHubTest {
         cfg = Cfg("ws://${server.hostName}:${server.port}")
         c = JarvisController(
             cfg,
-            hubClientFactory = { spec, l ->
-                HubClient(spec.host, spec.port, spec.callId, spec.offerJson(), l,
+            hubClientFactory = { spec, offer, l ->
+                JarvisController.defaultHubClient(spec, offer, l,
                     connectTimeoutMs = 2_000, acceptTimeoutMs = 2_000, endGraceMs = 300)
             },
             fallbackWaitMs = 400,

@@ -29,25 +29,52 @@ class LocalLiveAudio(
     private var pump: PlaybackPump? = null
     private var mic: MicRecorder? = null
 
-    @SuppressLint("MissingPermission")
-    override fun start(onPlaybackLevel: (Float) -> Unit): Boolean = synchronized(lock) {
-        if (mic != null) return true
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
+    private fun hasMicPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-        ) return false
 
-        // Ordine: prima il modo comms (AEC di piattaforma), poi player e record.
-        val r = LiveAudioRouting(context).also { it.enter() }
-        val p = TtsPlayer(LiveAudio.MODEL_SAMPLE_RATE, live = true).also { it.start() }
-        val q = PlaybackPump(LiveAudio.MODEL_SAMPLE_RATE, sink = { p.write(it) }, onLevel = onPlaybackLevel)
-            .also { it.start() }
+    /**
+     * Tap con live (Fase 3): modo comms e mic live subito, il player all'accept. Lo stesso mic
+     * resta acceso in sessione, così il comando detto a cavallo dell'accept non perde pezzi.
+     */
+    @SuppressLint("MissingPermission")
+    override fun capture(): Boolean = synchronized(lock) {
+        if (mic != null) return true
+        if (!hasMicPermission()) return false
+        val r = LiveAudioRouting(context).also { it.enter() }   // prima del record (AEC)
         val m = MicRecorder(live = true)
         if (!m.start(onMicFrame)) {
-            Log.w(tag, "mic live non partito")
-            q.stop(); p.stop(); r.exit()
+            Log.w(tag, "mic live (buffer del comando) non partito")
+            r.exit()
             return false
         }
         if (!m.echoCancelerActive) Log.w(tag, "AcousticEchoCanceler non disponibile: barge-in a rischio eco")
+        routing = r; mic = m
+        true
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun start(onPlaybackLevel: (Float) -> Unit): Boolean = synchronized(lock) {
+        if (player != null) return true
+        val captured = mic
+        if (captured == null && !hasMicPermission()) return false
+
+        // Ordine: prima il modo comms (AEC di piattaforma), poi player e record. Dopo capture()
+        // modo comms e mic ci sono già: si aggiunge solo il player.
+        val r = routing ?: LiveAudioRouting(context).also { it.enter() }
+        val p = TtsPlayer(LiveAudio.MODEL_SAMPLE_RATE, live = true).also { it.start() }
+        val q = PlaybackPump(LiveAudio.MODEL_SAMPLE_RATE, sink = { p.write(it) }, onLevel = onPlaybackLevel)
+            .also { it.start() }
+        val m = captured ?: MicRecorder(live = true)
+        if (captured == null && !m.start(onMicFrame)) {
+            Log.w(tag, "mic live non partito")
+            q.stop(); p.stop(); r.exit()
+            routing = null
+            return false
+        }
+        if (captured == null && !m.echoCancelerActive) {
+            Log.w(tag, "AcousticEchoCanceler non disponibile: barge-in a rischio eco")
+        }
         routing = r; player = p; pump = q; mic = m
         true
     }

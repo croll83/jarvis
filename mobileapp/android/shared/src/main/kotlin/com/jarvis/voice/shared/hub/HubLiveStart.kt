@@ -1,6 +1,7 @@
 package com.jarvis.voice.shared.hub
 
 import com.jarvis.voice.shared.protocol.EndReason
+import com.jarvis.voice.shared.protocol.LiveWake
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -29,9 +30,25 @@ sealed class HubLiveStart {
         val port: Int,
         /** Campo `vad` dell'offer (automaticActivityDetection di Gemini). Vuoto = default dell'hub. */
         val vad: Map<String, Any> = emptyMap(),
+        /** Fase 3: req_id del live_start a cui risponde (vuoto = sessione nata altrove). */
+        val reqId: String = "",
+        /** Fase 3: "phrase" | "wake" | "tap" (vuoto = orchestrator senza Fase 3). */
+        val origin: String = "",
+        /**
+         * Fase 3: `offer_extra` dell'orchestrator come testo JSON (oggetto opaco), null se assente.
+         * Va nell'offer così com'è, più le sue chiavi al primo livello, come fa il wakeword-server.
+         */
+        val offerExtra: String? = null,
     ) : HubLiveStart() {
-        /** Primo frame verso l'hub; i campi opzionali vuoti non vengono mandati. */
-        fun offerJson(): String {
+        /** Sessione nata da live_start (tap): accept tardivo dell'hub e ripiego classico in locale. */
+        val fromRequest: Boolean get() = LiveWake.isRequestOrigin(origin)
+
+        /**
+         * Primo frame verso l'hub; i campi opzionali vuoti non vengono mandati.
+         * [command] != null: sovrascrive `offer_extra.command` col VAD del peer sul buffer del
+         * comando (19.12, D1). Con offer_extra assente e [command] null l'offer è quello di oggi.
+         */
+        fun offerJson(command: Boolean? = null): String {
             val o = JSONObject()
                 .put("type", "offer")
                 .put("call_id", callId)
@@ -42,6 +59,19 @@ sealed class HubLiveStart {
             if (room.isNotEmpty()) o.put("room", room)
             if (deliver.isNotEmpty()) o.put("deliver", JSONArray(deliver))
             if (vad.isNotEmpty()) o.put("vad", JSONObject(vad))
+            var extra = offerExtra?.let { runCatching { JSONObject(it) }.getOrNull() }
+            if (extra == null && (command != null || fromRequest)) extra = JSONObject()
+            if (extra != null) {
+                if (fromRequest && !extra.has("origin")) extra.put("origin", origin)
+                if (command != null) extra.put("command", command)
+                // Le chiavi già nell'offer (call_id, profile, name, vad...) non si toccano
+                val keys = extra.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    if (k !in OFFER_PROTECTED_KEYS && !o.has(k)) o.put(k, extra.get(k))
+                }
+                o.put("offer_extra", extra)
+            }
             return o.toString()
         }
     }
@@ -51,6 +81,8 @@ sealed class HubLiveStart {
         const val REASON_ERROR = EndReason.ERROR
         const val REASON_UNREACHABLE = EndReason.HUB_UNREACHABLE
         const val MAX_CALL_ID_BYTES = 255
+        /** Chiavi dell'offer che offer_extra non può sovrascrivere (come _OFFER_PROTECTED_KEYS). */
+        private val OFFER_PROTECTED_KEYS = setOf("type", "call_id", "offer_extra")
 
         /**
          * VAD meno sensibile per lo watch: speaker a pochi cm dal mic e AEC del watch debole,
@@ -87,6 +119,9 @@ sealed class HubLiveStart {
                 deliver = deliver,
                 host = host,
                 port = port,
+                reqId = msg.optString("req_id").trim(),
+                origin = msg.optString("origin").trim(),
+                offerExtra = msg.optJSONObject("offer_extra")?.toString(),
             )
         }
     }

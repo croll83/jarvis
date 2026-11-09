@@ -363,6 +363,7 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
     var wearId by remember { mutableStateOf(config.wearDeviceId) }
     var watchMedia by remember { mutableStateOf(config.watchLiveMediaUsage) }
     var watch24k by remember { mutableStateOf(config.watchLive24k) }
+    var liveOnTap by remember { mutableStateOf(config.liveOnTap) }
 
     Column(
         Modifier.fillMaxSize().statusBarsPadding().padding(20.dp).verticalScroll(rememberScrollState()),
@@ -445,6 +446,16 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
         )
 
         Spacer(Modifier.height(18.dp))
+        Text("Sessione live dal tap", color = JarvisColors.textPrimary,
+            fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        SwitchOption(
+            checked = liveOnTap, onChange = { liveOnTap = it },
+            title = "Il tap apre Gemini Live",
+            subtitle = "Solo sui device abilitati nell'orchestrator (live_on_wake), telefono e watch. " +
+                "Spento = il tap fa sempre il turno classico.",
+        )
+
+        Spacer(Modifier.height(18.dp))
         Text("Watch in sessione live", color = JarvisColors.textPrimary,
             fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
         SwitchOption(
@@ -472,6 +483,7 @@ private fun SettingsScreen(config: JarvisConfig, onDone: () -> Unit) {
                     if (wearId.isNotBlank()) config.wearDeviceId = wearId
                     config.watchLiveMediaUsage = watchMedia
                     config.watchLive24k = watch24k
+                    config.liveOnTap = liveOnTap
                     ttlMin.toLongOrNull()?.let { if (it > 0) config.ttlMillis = it * 60_000L }
                     onDone()
                 },

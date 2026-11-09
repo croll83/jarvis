@@ -16,6 +16,15 @@ interface LiveAudioPort {
      */
     fun prepare() {}
 
+    /**
+     * Fase 3, tap che chiede la sessione hub (live_start): accende SUBITO il mic della
+     * modalità live, prima ancora di sapere se la sessione ci sarà, perché il comando detto
+     * dopo il tap finisce nel buffer che va all'hub all'accept. I frame arrivano al controller
+     * via feedMicFrame() come in sessione. Poi o [start] (accept: il mic resta quello) o [stop]
+     * (rifiuto, guasto, annullo). false = mic non disponibile: si va avanti senza buffer.
+     */
+    fun capture(): Boolean = false
+
     /** Entra in modalità live (mic continuo + AEC). [onPlaybackLevel] = livello 0..1 del parlato del modello. */
     fun start(onPlaybackLevel: (Float) -> Unit): Boolean
 

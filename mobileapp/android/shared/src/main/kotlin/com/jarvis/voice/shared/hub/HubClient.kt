@@ -12,6 +12,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -25,17 +26,32 @@ import kotlin.concurrent.thread
  *
  * Esiste solo tra inizio e fine della sessione live: nessun thread/socket fuori sessione.
  * I callback arrivano dal thread di lettura (onEnded anche da quello di scrittura).
+ *
+ * [offerProvider] gira sul thread di lettura DOPO la connect e prima dell'offer: per le
+ * sessioni dal tap decide `offer_extra.command` sul buffer del comando il più tardi possibile
+ * (può bloccare per poco, vedi CommandBuffer.awaitCommand).
  */
 class HubClient(
     private val host: String,
     private val port: Int,
     val callId: String,
-    private val offerJson: String,
+    private val offerProvider: () -> String,
     private val listener: Listener,
     private val connectTimeoutMs: Int = 5_000,
     private val acceptTimeoutMs: Int = 8_000,
     private val endGraceMs: Long = 1_000,
 ) {
+    constructor(
+        host: String,
+        port: Int,
+        callId: String,
+        offerJson: String,
+        listener: Listener,
+        connectTimeoutMs: Int = 5_000,
+        acceptTimeoutMs: Int = 8_000,
+        endGraceMs: Long = 1_000,
+    ) : this(host, port, callId, { offerJson }, listener, connectTimeoutMs, acceptTimeoutMs, endGraceMs)
+
     interface Listener {
         fun onAccepted()
         /** Parlato del modello, PCM 24 kHz mono. */
@@ -54,6 +70,10 @@ class HubClient(
     private val sendQueue = LinkedBlockingQueue<ByteArray>(MAX_QUEUED)
     @Volatile private var socket: Socket? = null
 
+    /** Motivo del `rejected` dell'hub (provider_unavailable, too many calls, timeout...), vuoto se nessuno. */
+    @Volatile var rejectDetail: String = ""
+        private set
+
     fun start() {
         if (state != State.IDLE) return
         state = State.CONNECTING
@@ -67,6 +87,30 @@ class HubClient(
         val frame = HubIpc.encodeAudio(callId, pcm)
         // Rete lenta: meglio perdere audio vecchio che bloccare il thread del mic.
         while (!sendQueue.offer(frame)) sendQueue.poll()
+    }
+
+    /**
+     * Buffer del comando (19.12, D1): va all'hub dopo l'accept e prima del mic dal vivo, a pezzi
+     * da 100 ms come `prime()` del wakeword-server. Non scarta l'inizio come [sendAudio] a coda
+     * piena: aspetta il writer per poco, poi rinuncia al resto. Ritorna i byte accodati.
+     */
+    fun prime(pcm: ByteArray): Int {
+        if (closed.get() || state != State.ACTIVE) return 0
+        val len = pcm.size - pcm.size % 2
+        var off = 0
+        while (off < len) {
+            val n = minOf(PRIME_CHUNK, len - off)
+            val frame = HubIpc.encodeAudio(callId, pcm, off, n)
+            if (closed.get() || !sendQueue.offer(frame, PRIME_WAIT_MS, TimeUnit.MILLISECONDS)) break
+            off += n
+        }
+        return off
+    }
+
+    /** Frame di controllo JSON verso l'hub a sessione attiva (es. `announce`). false = non inviato. */
+    fun sendControl(json: String): Boolean {
+        if (closed.get() || state != State.ACTIVE) return false
+        return sendQueue.offer(HubIpc.encodeJson(json), PRIME_WAIT_MS, TimeUnit.MILLISECONDS)
     }
 
     /** Fine decisa dal device (tap, fine orchestrator, errore locale): ended + chiusura. */
@@ -108,6 +152,9 @@ class HubClient(
         val input = runCatching { DataInputStream(BufferedInputStream(s.getInputStream())) }.getOrNull()
         if (output == null || input == null) { finish(REASON_UNREACHABLE); return }
 
+        val offerJson = runCatching { offerProvider() }.getOrNull()
+        if (offerJson == null) { finish(REASON_ERROR); return }
+        if (closed.get()) { runCatching { s.close() }; return }   // end() durante la decisione
         sendQueue.offer(HubIpc.encodeJson(offerJson))   // primo frame: l'offer
         if (state == State.CONNECTING) state = State.OFFERED
         thread(name = "jarvis-hub-tx", isDaemon = true) { runWriter(output) }
@@ -144,7 +191,10 @@ class HubClient(
                 listener.onAccepted()
             }
             // Qualsiasi "rejected" è un abort, anche senza call_id.
-            "rejected" -> { finish(REASON_REJECTED); return false }
+            "rejected" -> {
+                rejectDetail = msg.optString("reason", "").take(80)
+                finish(REASON_REJECTED); return false
+            }
             "clear" -> if (ours && state == State.ACTIVE) listener.onClear()
             "hangup" -> if (ours) { finish(REASON_HANGUP); return false }
         }
@@ -186,6 +236,8 @@ class HubClient(
         const val REASON_ERROR = EndReason.ERROR
 
         private const val MAX_QUEUED = 100   // ~2 s di frame da 20 ms
+        private const val PRIME_CHUNK = 3_200  // 100 ms a 16 kHz s16le
+        private const val PRIME_WAIT_MS = 500L
         private val POISON = ByteArray(0)
     }
 }

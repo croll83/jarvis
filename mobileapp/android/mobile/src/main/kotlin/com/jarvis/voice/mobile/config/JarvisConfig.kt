@@ -103,6 +103,20 @@ class JarvisConfig(private val context: Context) : ControllerConfig {
 
     override val isConfigured: Boolean get() = url.isNotBlank()
 
+    /** Interruttore dell'app per il live dal tap (Fase 3); il flag per device lo decide l'orchestrator. */
+    var liveOnTap: Boolean
+        get() = prefs.getBoolean(KEY_LIVE_ON_TAP, true)
+        set(v) = prefs.edit().putBoolean(KEY_LIVE_ON_TAP, v).apply()
+
+    override val liveOnTapAllowed: Boolean get() = liveOnTap
+
+    override fun cachedLiveOnWake(deviceId: String): Boolean =
+        prefs.getBoolean(KEY_LIVE_ON_WAKE_PREFIX + deviceId, false)
+
+    override fun cacheLiveOnWake(deviceId: String, enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_LIVE_ON_WAKE_PREFIX + deviceId, enabled).apply()
+    }
+
     private fun normalizeId(v: String): String = v.trim().uppercase(Locale.ROOT)
 
     companion object {
@@ -118,5 +132,7 @@ class JarvisConfig(private val context: Context) : ControllerConfig {
         private const val KEY_GEN_ID = "gen_device_id"
         private const val KEY_WATCH_LIVE_MEDIA = "watch_live_media_usage"
         private const val KEY_WATCH_LIVE_24K = "watch_live_24k"
+        private const val KEY_LIVE_ON_TAP = "live_on_tap"
+        private const val KEY_LIVE_ON_WAKE_PREFIX = "live_on_wake_"
     }
 }

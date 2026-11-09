@@ -50,6 +50,16 @@ class WatchLiveAudio(
         }
     }
 
+    /**
+     * Tap con live (Fase 3): lo watch entra in live subito (PATH_LIVE start) e il suo mic AEC
+     * risale dal canale fin dal tap, nel buffer del comando. Stessa cosa di [prepare]: lo watch
+     * non apre mai il mic di oggi (x8) per poi cambiarlo all'accept.
+     */
+    override fun capture(): Boolean {
+        prepare()
+        return synchronized(lock) { watchLive }
+    }
+
     override fun start(onPlaybackLevel: (Float) -> Unit): Boolean = synchronized(lock) {
         if (pump != null) return true
         if (!watchLive && !send(DataLayer.PATH_LIVE, DataLayer.LIVE_START)) {

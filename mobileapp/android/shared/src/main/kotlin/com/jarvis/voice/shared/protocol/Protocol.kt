@@ -18,6 +18,10 @@ object MsgType {
     const val VOLUME_CHANGE = "volume_change"
     const val PONG = "pong"
     // live_session_end in ingresso: fine di una sessione hub decisa dal device (vedi EndReason)
+    // Fase 3 (design-voice-live-hub.md sez. 19): tap che apre subito la sessione hub
+    const val LIVE_START = "live_start"                    // {req_id, trigger:"tap"}
+    const val LIVE_CANCEL = "live_cancel"                  // {req_id}: timeout o rinuncia
+    const val LIVE_SESSION_ACTIVE = "live_session_active"  // {call_id, req_id?}: accept dell'hub
 
     // ── server → device ──────────────────────────────────────────────
     const val WELCOME = "welcome"
@@ -34,6 +38,33 @@ object MsgType {
     const val ERROR = "error"
     const val TRANSCRIPT = "transcript"  // testo di ciò che ha detto l'utente (storico)
     const val RESPONSE = "response"      // testo della risposta di JARVIS (storico)
+    // Fase 3
+    const val LIVE_DECLINED = "live_declined"  // {req_id, reason}: niente live, turno classico
+    const val LIVE_ON_WAKE = "live_on_wake"    // {live_on_wake: bool}: flag cambiato in admin
+    const val ANNOUNCE = "announce"            // {call_id, text, urgent}: da inoltrare all'hub
+}
+
+/** Fase 3: richiesta di sessione hub dal tap (live_start / live_declined). */
+object LiveWake {
+    const val TRIGGER_TAP = "tap"
+    const val ORIGIN_TAP = "tap"
+    const val ORIGIN_WAKE = "wake"
+
+    /** Origini con l'accept tardivo dell'hub e il ripiego classico in locale. */
+    fun isRequestOrigin(origin: String?): Boolean = origin == ORIGIN_TAP || origin == ORIGIN_WAKE
+
+    /**
+     * Rifiuti dopo cui il peer torna a riposo SENZA turno classico (main.py LIVE_DECLINE_REASONS:
+     * "duplicate" e "voice_gate"); con tutti gli altri (disabled, hub_off, hub_down, busy,
+     * enrollment, sconosciuti) parte subito il turno classico.
+     */
+    val SILENT_DECLINES = setOf("duplicate", "voice_gate")
+
+    /** Attesa massima della risposta dell'orchestrator al live_start (poi live_cancel e classico). */
+    const val ANSWER_TIMEOUT_MS = 2_500L
+
+    /** Accept tardivo dell'hub per le origini wake/tap (contesto + Gemini aperto, tetto 5 s lato hub). */
+    const val ACCEPT_TIMEOUT_MS = 7_000
 }
 
 /** Motivi di `live_session_end` device → orchestrator per le sessioni sul Voice Live Hub. */
