@@ -81,6 +81,54 @@ HUB_AEC_REF_MODE = os.getenv("HUB_AEC_REF_MODE", "level").strip().lower()
 # Un guadagno fisso alza voce e residuo insieme, senza pompare nei silenzi. 0 = nessuno.
 HUB_ONBOARD_GAIN_DB = float(os.getenv("HUB_ONBOARD_GAIN_DB", "24") or "0")
 
+def _env_bool(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+# --- Pre-roll della wake word (Fase 3, design 19 e 19.12) ---
+# Ring PCM per device, riempito in IDLE subito dopo il decode Opus (anche durante il cooldown
+# multiroom): al rilevamento se ne prende la coda, che finisce sul rilevamento e contiene la
+# wake word. Serve all'archivio delle clip, al voice ID in shadow, al cancello a voce e al
+# live_start.
+WAKE_PREROLL_S = float(os.getenv("WAKE_PREROLL_S", "2.0") or "2.0")
+# Shadow: a ogni rilevamento il pre-roll va all'orchestrator (wake_preroll) che ci calcola il
+# voice ID e logga solo i punteggi. Non cambia niente per il device. Acceso di default.
+WAKE_PREROLL_SHADOW = _env_bool("WAKE_PREROLL_SHADOW", "1")
+# Archivio delle clip di ogni rilevamento (WAV 16 kHz, nome con istante UTC, device e
+# punteggio), per riaddestrare il modello con i falsi positivi. Limitato per numero e byte:
+# oltre si cancellano le piu' vecchie. Acceso di default.
+WAKE_CLIP_ARCHIVE = _env_bool("WAKE_CLIP_ARCHIVE", "1")
+WAKE_CLIP_DIR = os.getenv("WAKE_CLIP_DIR", "/app/data/wakeclips").strip()
+WAKE_CLIP_MAX_FILES = int(os.getenv("WAKE_CLIP_MAX_FILES", "3000") or "0")
+WAKE_CLIP_MAX_MB = float(os.getenv("WAKE_CLIP_MAX_MB", "200") or "0")
+# Cancello a voce: prima del wake_detected si aspetta il verdetto dell'orchestrator (wake_gate)
+# sul voice ID del pre-roll; "drop" = wake ignorata in silenzio. "auto" (default) segue il flag
+# wake_voice_gate del welcome dell'orchestrator (spento di default la'), "1" sempre, "0" mai.
+# Senza verdetto entro il timeout la wake passa (il cancello non deve rendere sordo il device).
+WAKE_VOICE_GATE = os.getenv("WAKE_VOICE_GATE", "auto").strip().lower() or "auto"
+WAKE_VOICE_GATE_TIMEOUT_S = float(os.getenv("WAKE_VOICE_GATE_TIMEOUT_S", "1.0") or "1.0")
+
+# --- Dalla wake word direttamente a Gemini Live (design 19) ---
+# Interruttore generale; per device serve anche live_on_wake nel welcome dell'orchestrator
+# (colonna voice_devices.live_on_wake) e, per le wake rilevate qui, la cap "live_wake" del
+# firmware. Spento = comportamento di oggi.
+LIVE_ON_WAKE = _env_bool("LIVE_ON_WAKE", "0")
+# Attesa dell'ack del firmware a wake_detected{live} prima di ripiegare sul classico
+LIVE_ACK_TIMEOUT_S = float(os.getenv("LIVE_ACK_TIMEOUT_S", "1.0") or "1.0")
+# Attesa della risposta dell'orchestrator a live_start (poi live_cancel e classico)
+LIVE_START_TIMEOUT_S = float(os.getenv("LIVE_START_TIMEOUT_S", "2.5") or "2.5")
+# Accept tardivo del hub per le sessioni con origine wake o tap (contesto + provider.open)
+LIVE_ACCEPT_TIMEOUT_S = float(os.getenv("LIVE_ACCEPT_TIMEOUT_S", "7.0") or "7.0")
+# Buffer del comando detto tutto d'un fiato (dalla fine della wake word, o dal tap, fino
+# all'accept del hub) e VAD a energia che decide offer.command
+LIVE_COMMAND_MAX_S = float(os.getenv("LIVE_COMMAND_MAX_S", "8") or "8")
+LIVE_COMMAND_MIN_SPEECH_MS = int(os.getenv("LIVE_COMMAND_MIN_SPEECH_MS", "300") or "300")
+LIVE_COMMAND_MARGIN_DB = float(os.getenv("LIVE_COMMAND_MARGIN_DB", "10") or "10")
+LIVE_COMMAND_MIN_DBFS = float(os.getenv("LIVE_COMMAND_MIN_DBFS", "-65") or "-65")
+# Il chirp dell'Atom suona subito dopo l'ack "ok": quei ms non contano come parlato nel VAD
+# (l'audio resta nel buffer che va al hub)
+LIVE_COMMAND_CHIRP_SKIP_MS = int(os.getenv("LIVE_COMMAND_CHIRP_SKIP_MS", "250") or "0")
+
 # --- Opus ---
 OPUS_SAMPLE_RATE = 16000
 OPUS_CHANNELS = 1

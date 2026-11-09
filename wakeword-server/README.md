@@ -49,6 +49,17 @@ Variabili d'ambiente (`.env` o Docker environment):
 | `HUB_PORT` | `0` | Porta TCP del Voice Live Hub per le sessioni live full-duplex (Gemini Live). `0` = funzione spenta, comportamento di oggi |
 | `HUB_HOST` | `""` | Host del Voice Live Hub. Vuoto = funzione spenta, come `HUB_PORT=0` (l'host nel `live_session_start` dell'orchestrator non viene usato) |
 | `AEC_BACKEND` | `webrtc` | Cancellazione d'eco dell'Atom in sessione hub: `webrtc` (AEC3 via pacchetto `livekit`), `speex` (libspeexdsp), `off` |
+| `WAKE_PREROLL_S` | `2.0` | Secondi di pre-roll (ring PCM per device riempito in IDLE, anche durante il cooldown multiroom) |
+| `WAKE_PREROLL_SHADOW` | `1` | A ogni rilevamento classico manda `wake_preroll` all'orchestrator (voice ID in shadow, solo punteggi nei log). Non cambia niente per il device |
+| `WAKE_CLIP_ARCHIVE` | `1` | Salva il pre-roll di ogni rilevamento in WAV (`<UTC>_<device>_s<score>.wav`) per riaddestrare il modello con i falsi positivi |
+| `WAKE_CLIP_DIR` | `/app/data/wakeclips` | Cartella dell'archivio clip (volume `wakeword_data`) |
+| `WAKE_CLIP_MAX_FILES` / `WAKE_CLIP_MAX_MB` | `3000` / `200` | Tetti dell'archivio: oltre si cancellano le clip piu' vecchie. `0` = nessun tetto su quella misura |
+| `WAKE_VOICE_GATE` | `auto` | Cancello a voce: `auto` segue il flag `wake_voice_gate` del welcome dell'orchestrator, `1` sempre, `0` mai. Con il cancello attivo la wake aspetta il verdetto `wake_gate`; `drop` = wake ignorata in silenzio |
+| `WAKE_VOICE_GATE_TIMEOUT_S` | `1.0` | Attesa massima del verdetto; senza verdetto la wake passa |
+| `LIVE_ON_WAKE` | `0` | Interruttore generale "dalla wake word (o dal tap) a Gemini Live". Serve anche `live_on_wake` nel welcome dell'orchestrator e, per le wake rilevate qui, la cap `live_wake` del firmware |
+| `LIVE_ACK_TIMEOUT_S` / `LIVE_START_TIMEOUT_S` / `LIVE_ACCEPT_TIMEOUT_S` | `1.0` / `2.5` / `7.0` | Attese di `live_wake_ack` dal device, della risposta a `live_start` e dell'accept tardivo del hub |
+| `LIVE_COMMAND_MAX_S` | `8` | Tetto del buffer del comando detto subito dopo la wake word o il tap |
+| `LIVE_COMMAND_MIN_SPEECH_MS` / `LIVE_COMMAND_MARGIN_DB` / `LIVE_COMMAND_MIN_DBFS` / `LIVE_COMMAND_CHIRP_SKIP_MS` | `300` / `10` / `-65` / `250` | VAD a energia sul buffer: sopra la soglia di parlato l'offer al hub porta `command: true`; i ms dopo l'ack (chirp dell'Atom) non contano |
 
 ## Endpoint
 
@@ -136,6 +147,40 @@ async def test():
 asyncio.run(test())
 "
 ```
+
+## Dalla wake word a Gemini Live (Fase 3, design 19)
+
+Tutto spento di default tranne shadow del pre-roll e archivio clip. Il peer chiede,
+l'orchestrator decide: il server non apre mai il hub senza `call_id` dell'orchestrator.
+Ogni richiesta ha un `req_id` e ogni risposta lo riporta.
+
+**Wake rilevata qui** (Atom con cap `live_wake`, abilitato):
+1. snapshot del pre-roll (finisce sul rilevamento), clip in archivio, stato `LIVE_PENDING`;
+2. con il cancello a voce: `wake_preroll{req_id,gate:true,...}` all'orchestrator e attesa di
+   `wake_gate{req_id,action:"keep"|"drop"}`;
+3. `wake_detected{live:true,req_id}` al device, che risponde `live_wake_ack{req_id,status:"ok"|"dnd"|"busy"}`;
+4. con `ok`: `live_start{req_id,trigger:"wake",preroll:{codec,rate,b64},score}` all'orchestrator;
+   intanto il PCM decodificato va nel buffer del comando (tetto 8 s);
+5. risposta: `live_session_start{backend:"hub",req_id,origin,offer_extra,...}` -> offer al hub
+   con `offer_extra` copiato (oggetto e chiavi al primo livello) piu' `command`, accept fino a 7 s, `live_session_active{call_id,req_id}`
+   all'orchestrator, buffer al hub per primo, poi il duplex di oggi.
+   `live_declined{req_id,reason}` o 2,5 s senza risposta (`live_cancel{req_id}`) o relay giu':
+   `wake_detected` normale (classico). `reason` `duplicate` o `voice_gate`: `live_abort{req_id}`, a riposo.
+6. Hub che rifiuta o non risponde: `live_session_end{call_id,reason,detail?}` e poi `wake_detected` normale.
+7. Tap (`audio_start`), doppio tap (`speaker_stop`), pressione lunga (`audio_end`) in `LIVE_PENDING`:
+   `live_cancel{req_id}` e poi il comportamento di oggi.
+
+**Richiesta dal device**: `live_start{req_id,trigger:"wake"|"tap",preroll_b64?}` (NabuVoice con
+la wake locale, o tap su qualunque device). Dopo il JSON la NabuVoice manda solo PCM, accettato
+in `LIVE_PENDING` come buffer del comando. Uscite: `live_session_start` duplex,
+`live_declined{req_id,reason}` (il device fa il suo classico), `live_abort{req_id}`.
+
+**Flag in cache**: `live_on_wake` e `wake_voice_gate` si leggono dal `welcome` (a ogni apertura del
+relay) e dal messaggio `live_on_wake{live_on_wake}` che l'orchestrator manda quando il toggle cambia
+in admin; entrambi vanno anche al device come oggi.
+
+**Annunci**: `announce{call_id,text,urgent}` dall'orchestrator va al hub come frame di controllo
+sulla sessione attiva, mai al device.
 
 ## AGC software (pre-wakeword)
 

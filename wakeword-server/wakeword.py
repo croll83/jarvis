@@ -25,6 +25,7 @@ class DeviceWakeWordEngine:
         self.threshold = threshold
         self._model: Optional[Model] = None
         self._muted_until: float = 0.0  # timestamp until which detection is suppressed
+        self.last_score: float = 0.0    # punteggio dell'ultimo rilevamento (nome delle clip)
 
     def _model_kwargs(self) -> dict:
         """Argomenti per Model(): un file .onnx custom (es. /app/data/ciao_jarvis.onnx)
@@ -98,6 +99,7 @@ class DeviceWakeWordEngine:
             if score >= self.threshold:
                 logger.info(f"[{self.device_id}] WAKE detected (model={mdl_name}, "
                             f"score={score:.3f}, threshold={self.threshold})")
+                self.last_score = float(score)
                 return True
         return False
 

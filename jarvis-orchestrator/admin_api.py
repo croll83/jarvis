@@ -41,7 +41,7 @@ from database import (
     get_all_voice_devices, get_voice_device, upsert_voice_device,
     delete_voice_device, get_unconfigured_voice_devices,
     get_configured_voice_devices, get_voice_device_stats,
-    get_voice_devices_by_location, set_device_forced_user,
+    get_voice_devices_by_location, set_device_forced_user, set_device_live_on_wake,
     # Access log functions
     get_access_log, get_access_log_stats, get_auth_attempts_log
 )
@@ -105,6 +105,7 @@ class VoiceDeviceCreate(BaseModel):
     speaker_volume: Optional[int] = 80
     volume_speaker: Optional[str] = None  # separate entity for volume control
     forced_user_id: Optional[int] = None  # utente fisso (bypass speaker ID); None = non tocca
+    live_on_wake: Optional[bool] = None  # Fase 3: wake/tap aprono subito il live; None = non tocca
 
 
 class VoiceDeviceUpdate(BaseModel):
@@ -121,6 +122,7 @@ class VoiceDeviceUpdate(BaseModel):
     speaker_volume: Optional[int] = None
     volume_speaker: Optional[str] = None  # separate entity for volume control
     forced_user_id: Optional[int] = None  # utente fisso (bypass speaker ID); None = non tocca
+    live_on_wake: Optional[bool] = None  # Fase 3: wake/tap aprono subito il live; None = non tocca
 
 
 class ForcedUserSet(BaseModel):
@@ -2009,6 +2011,8 @@ async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, An
     # così un salvataggio dalla dashboard che non manda il campo non lo azzera).
     if data.forced_user_id is not None:
         set_device_forced_user(device_id, data.forced_user_id)
+    if data.live_on_wake is not None:
+        await _apply_live_on_wake(device_id, data.live_on_wake)
 
     # Push config update to device via WebSocket
     config_push = {}
@@ -2034,6 +2038,34 @@ async def create_or_update_voice_device(data: VoiceDeviceCreate) -> Dict[str, An
         "status": "saved",
         "device": device.to_dict() if device else None
     }
+
+
+class LiveOnWakeSet(BaseModel):
+    enabled: bool
+
+
+async def _apply_live_on_wake(device_id: str, enabled: bool) -> None:
+    """Salva il flag e lo spinge al peer gia' connesso (telefono, orologio): il flag del
+    welcome arriva solo alla connessione successiva. Messaggio additivo, chi non lo
+    conosce lo ignora."""
+    set_device_live_on_wake(device_id, bool(enabled))
+    try:
+        from main import live_on_wake_enabled
+        from ws_audio_handler import send_device_message
+        await send_device_message(device_id, {"type": "live_on_wake",
+                                              "live_on_wake": bool(live_on_wake_enabled(device_id))})
+    except Exception:
+        pass  # device non connesso
+
+
+@router.post("/voice-devices/{device_id}/live-on-wake")
+async def set_voice_device_live_on_wake(device_id: str, data: LiveOnWakeSet) -> Dict[str, Any]:
+    """Live dalla wake word / dal tap (Fase 3 del Voice Live Hub) per questo device."""
+    device_id = device_id.upper().strip()
+    if not get_voice_device(device_id):
+        raise HTTPException(404, f"Device {device_id} non trovato")
+    await _apply_live_on_wake(device_id, data.enabled)
+    return {"status": "ok", "device_id": device_id, "live_on_wake": bool(data.enabled)}
 
 
 @router.post("/voice-devices/{device_id}/forced-user")
@@ -2096,6 +2128,8 @@ async def update_voice_device_endpoint(
 
     if update_params:
         upsert_voice_device(device_id=device_id, **update_params)
+    if data.live_on_wake is not None:
+        await _apply_live_on_wake(device_id, data.live_on_wake)
 
     # Push config update to device via WebSocket
     config_push = {}

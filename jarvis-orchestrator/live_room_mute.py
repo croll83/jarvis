@@ -78,6 +78,21 @@ def is_entity_held(location_id: str, entity_id: str) -> bool:
     return (location_id, entity_id) in _holds
 
 
+def holders(location_id: Optional[str], entity_id: Optional[str]) -> List[str]:
+    """device_id delle sessioni live che tengono mutata l'entita' (vuoto se nessuna).
+    Serve agli annunci: un Echo mutato da una sessione hub non li farebbe sentire."""
+    if not location_id or not entity_id:
+        return []
+    hold = _holds.get((location_id, entity_id))
+    if hold is None:
+        # location_id puo' arrivare con un'altra capitalizzazione
+        for (loc, eid), h in _holds.items():
+            if loc.lower() == location_id.lower() and eid == entity_id:
+                hold = h
+                break
+    return list(hold["holders"]) if hold else []
+
+
 def is_room_muted(device_id: str) -> bool:
     return _norm(device_id) in _devices
 

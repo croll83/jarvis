@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import re
+import sys
 import time
 from dataclasses import dataclass, replace
 from typing import Dict, List, Tuple, Optional, Any
@@ -187,7 +188,24 @@ async def unmute_speaker_from_stop(location_id: str, entity_id: str):
         logger.info(f"🔊 unmute_speaker_from_stop: {entity_id} restored to vol={original_volume}")
 
 
-async def speak(text: str, media_player_id: str, location_id: str = None) -> Tuple[bool, str]:
+async def _redirect_to_live_session(text: str, media_player_id: Optional[str],
+                                    location_id: Optional[str], urgent: bool) -> bool:
+    """Speaker mutato da una sessione live sull'hub (live_room_mute): l'annuncio va al peer
+    della sessione e lo legge Gemini (design-voice-live-hub.md 19.12 D6), invece di finire
+    su un Echo muto. Solo con l'orchestrator caricato (main:app). True = consegnato li'."""
+    _main = sys.modules.get("main")
+    if _main is None or not text or not media_player_id:
+        return False
+    try:
+        return bool(await _main.redirect_speak_to_live_session(text, media_player_id, location_id,
+                                                               urgent=urgent))
+    except Exception as e:
+        logger.warning(f"speak: inoltro alla sessione live fallito ({e}), uso lo speaker")
+        return False
+
+
+async def speak(text: str, media_player_id: str, location_id: str = None,
+                urgent: bool = False, announce: bool = False) -> Tuple[bool, str]:
     """
     Utilizza l'integrazione Alexa Media Player per il TTS.
 
@@ -195,6 +213,13 @@ async def speak(text: str, media_player_id: str, location_id: str = None) -> Tup
         text: Testo da pronunciare
         media_player_id: Entity ID del media player Alexa/Echo.
         location_id: ID della location HA (None = default da DB)
+        urgent: annuncio urgente (allarme, timer): se lo speaker e' mutato da una sessione
+                live sull'hub, Gemini interrompe quello che sta dicendo per darlo.
+        announce: annuncio non urgente (tool tts di Hermes, benvenuto): con lo speaker mutato
+                da una sessione hub lo legge Gemini. Senza announce ne' urgent (risposte dei
+                turni classici, chunk in streaming) il testo va allo speaker come oggi: non deve
+                entrare nella sessione di un'altra persona ne' far aspettare al post-TTS un
+                audio che non parte (D6 vale per annunci e allarmi).
     """
     location_id = location_id or get_default_location_id()
     # Se non sembra un entity_id valido, prova a risolverlo
@@ -211,6 +236,10 @@ async def speak(text: str, media_player_id: str, location_id: str = None) -> Tup
             # Fallback: costruisci entity_id dal nome
             media_player_id = f"media_player.{media_player_id.lower().replace(' ', '_')}"
             logger.warning(f"Speaker not found in DB, using fallback: {media_player_id}")
+
+    # Annuncio o allarme su uno speaker mutato da una sessione live sull'hub: lo legge Gemini
+    if (urgent or announce) and await _redirect_to_live_session(text, media_player_id, location_id, urgent):
+        return True, "live_session"
 
     # Auto-unmute if speaker was muted by triple-tap stop
     if media_player_id in _stop_muted_speakers:
@@ -296,9 +325,18 @@ async def play_feedback_sound(sound_type: str, media_player_id: str, location_id
     return await play_sound(sound_id, media_player_id, location_id)
 
 
-async def speak_with_sound(text: str, media_player_id: str, sound_type: str = None, location_id: str = None) -> Tuple[bool, str]:
-    """Riproduce un suono introduttivo e poi parla."""
+async def speak_with_sound(text: str, media_player_id: str, sound_type: str = None, location_id: str = None,
+                           announce: bool = False, urgent: bool = False) -> Tuple[bool, str]:
+    """Riproduce un suono introduttivo e poi parla. announce/urgent: come in speak()."""
     location_id = location_id or get_default_location_id()
+    if sound_type and (announce or urgent):
+        # Il ramo col suono non passa da speak(): stesso inoltro alla sessione hub
+        target = media_player_id
+        if target and not target.startswith("media_player."):
+            target = resolve_device_to_entity_id(location_id=location_id, device_name=target,
+                                                 entity_type="media_player") or target
+        if await _redirect_to_live_session(text, target, location_id, urgent):
+            return True, "live_session"
     if sound_type:
         sound_id = get_sound_id(sound_type)
         if sound_id:
@@ -317,7 +355,7 @@ async def speak_with_sound(text: str, media_player_id: str, sound_type: str = No
             return await call_hass_service(location_id, "notify", "alexa_media", service_data)
 
     # Nessun suono, solo TTS
-    return await speak(text, media_player_id, location_id)
+    return await speak(text, media_player_id, location_id, urgent=urgent, announce=announce)
 
 
 async def quick_feedback(success: bool, media_player_id: str, error_msg: str = None, location_id: str = None) -> Tuple[bool, str]:

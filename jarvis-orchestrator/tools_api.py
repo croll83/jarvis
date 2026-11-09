@@ -481,27 +481,36 @@ async def tool_speaker_id(
     req: SpeakerIdRequest,
     _: None = Depends(verify_ai_agent_token)
 ):
-    """Identify a speaker from audio data using Resemblyzer."""
+    """Identify a speaker from audio data using Resemblyzer.
+
+    audio_base64: PCM s16le mono at 16 kHz. Read-only: no session, location or enrollment
+    is touched (to switch a live session's identity the hub uses /api/live/{call_id}/identify).
+    """
     try:
         import base64
-        import numpy as np
         from voice_recognition import voice_recognizer
 
-        # Decode audio
+        if req.sample_rate != 16000:
+            logger.warning(f"speaker_id: sample_rate {req.sample_rate} non supportato (serve 16000)")
+            return SpeakerIdResponse(identified=False)
         audio_bytes = base64.b64decode(req.audio_base64)
-        audio_array = np.frombuffer(audio_bytes, dtype=np.float32)
+        audio_bytes = audio_bytes[: len(audio_bytes) - (len(audio_bytes) % 2)]
+        if not audio_bytes:
+            return SpeakerIdResponse(identified=False)
+        audio_bytes = audio_bytes[-16000 * 2 * 15:]  # al massimo gli ultimi 15 s
 
-        # Identify speaker
-        result = voice_recognizer.identify(audio_array, req.sample_rate)
+        # Resemblyzer is CPU-bound: off the event loop
+        loop = asyncio.get_running_loop()
+        match = await loop.run_in_executor(None, voice_recognizer.identify_speaker, audio_bytes, 16000)
 
-        if result and result.get("user_id"):
+        if match.is_known and match.user_id is not None:
             return SpeakerIdResponse(
                 identified=True,
-                user_id=result["user_id"],
-                user_name=result.get("user_name"),
-                confidence=result.get("confidence", 0.0),
+                user_id=str(match.user_id),
+                user_name=match.user_name,
+                confidence=float(match.confidence),
             )
-        return SpeakerIdResponse(identified=False)
+        return SpeakerIdResponse(identified=False, confidence=float(match.confidence or 0.0))
 
     except Exception as e:
         logger.error(f"speaker_id error: {e}")
@@ -1074,6 +1083,7 @@ async def tool_tts(
             media_player_id=speaker_entity,
             sound_type=sound,
             location_id=req.location_id,
+            announce=True,  # con lo speaker mutato da una sessione hub lo legge Gemini (19.12 D6)
         )
 
         return TtsResponse(success=True, message="TTS inviato")
@@ -2121,10 +2131,26 @@ async def tool_notify_device(
     if blocked:
         return _fail(blocked)
 
-    from main import has_hub_live_session
+    from main import has_hub_live_session, active_hub_session_for, announce_to_live_session
+    # Device, o stanza, con una sessione hub attiva (19.12 D6): l'avviso lo legge Gemini,
+    # il peer della sessione lo inoltra all'hub. Gli speaker della stanza sono mutati.
+    live = active_hub_session_for(device_id=target.device_id, location_id=target.location_id,
+                                  room=target.friendly_name,
+                                  media_player_id=None if target.use_internal_speaker else target.output_speaker)
+    if live is not None:
+        if await announce_to_live_session(live, text, urgent=req.urgent):
+            logger.info(f"notify_device {label} da {source}: consegnato alla sessione live {live.hub_call_id}")
+            try:
+                log_event("NOTIFY", f"{source} → sessione live {live.hub_call_id}: {text[:80]}")
+            except Exception:
+                pass
+            return NotifyDeviceResponse(delivered=True, audio_path="live_session",
+                                        device=target.as_dict())
+        return _fail("sessione live in corso, annuncio non inoltrato")
     if has_hub_live_session(target.device_id):
-        # Il device e' in full-duplex con Gemini via hub: niente TTS sopra la sessione,
-        # Hermes ripiega sul testo.
+        # Il device e' in full-duplex con Gemini via hub ma il suo peer non conosce gli
+        # annunci (niente live_session_active): niente TTS sopra la sessione, Hermes
+        # ripiega sul testo.
         return _fail("sessione live in corso sul device")
 
     async with _notify_lock(target.device_id):

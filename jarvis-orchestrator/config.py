@@ -122,6 +122,50 @@ VOICE_LIVE_HUB_MAX_S = float(os.getenv("VOICE_LIVE_HUB_MAX_S", "3600"))
 # questi secondi la sessione si chiude (e la stanza si smuta). Se torna, l'hello la chiude.
 VOICE_LIVE_HUB_DISCONNECT_GRACE_S = float(os.getenv("VOICE_LIVE_HUB_DISCONNECT_GRACE_S", "15"))
 
+# Fase 3, punto 1 (design-voice-live-hub.md sez. 19): dalla wake word, o dal tap, direttamente
+# alla sessione hub, senza il turno "avvia una sessione live". Tutto spento per default:
+# serve l'interruttore generale E la colonna voice_devices.live_on_wake del device.
+VOICE_LIVE_ON_WAKE = os.getenv("VOICE_LIVE_ON_WAKE", "false").lower() in ("1", "true", "yes")
+# Sessioni di rete che l'hub accetta insieme (config.py:81 dell'hub): il limite lo applica
+# l'orchestrator, che conosce le sue sessioni hub, con live_declined "busy".
+VOICE_LIVE_HUB_MAX_SESSIONS = int(os.getenv("VOICE_LIVE_HUB_MAX_SESSIONS", "2"))
+# Voice ID sul pre-roll (1,5-2 s che finiscono al rilevamento): tetto di tempo, poi
+# "Famiglia"; soglia piu' alta e distacco minimo dal secondo candidato per le clip corte.
+LIVE_WAKE_ID_CAP_MS = int(os.getenv("LIVE_WAKE_ID_CAP_MS", "600"))
+LIVE_WAKE_ID_THRESHOLD = float(os.getenv("LIVE_WAKE_ID_THRESHOLD", "0.75"))
+LIVE_WAKE_ID_MARGIN = float(os.getenv("LIVE_WAKE_ID_MARGIN", "0.05"))
+# Due device della stessa casa che chiedono il live entro questi secondi: vince il primo,
+# l'altro riceve "duplicate" e torna a riposo.
+LIVE_WAKE_DEDUPE_S = float(os.getenv("LIVE_WAKE_DEDUPE_S", "1.5"))
+# Circuit breaker su hub_unreachable e provider_unavailable: niente live per questi secondi,
+# poi un tentativo di prova.
+LIVE_HUB_BREAKER_S = float(os.getenv("LIVE_HUB_BREAKER_S", "60"))
+# Dopo un ripiego da wake/tap fallita il device non riprova il live per questi secondi.
+LIVE_FALLBACK_BLOCK_S = float(os.getenv("LIVE_FALLBACK_BLOCK_S", "60"))
+# Sessione wake/tap mai accettata (niente live_session_active ne' live_session_end dal peer):
+# oltre questi secondi si toglie in silenzio, altrimenti terrebbe occupato il device e un posto
+# dell'hub fino al tetto di sicurezza. Piu' lungo del timeout di 15 s del firmware.
+LIVE_ACTIVE_TIMEOUT_S = float(os.getenv("LIVE_ACTIVE_TIMEOUT_S", "30"))
+# Sessione rapida (19.12 D3): con offer_extra.command=true l'hub puo' chiudere dopo 4 s di
+# silenzio dalla risposta. Vale solo per le origini wake e tap.
+VOICE_LIVE_QUICK_SESSION = os.getenv("VOICE_LIVE_QUICK_SESSION", "true").lower() in ("1", "true", "yes")
+# POST /api/live/{call_id}/identify: token DEDICATO dell'hub, mai AI_AGENT_TOKEN (lo ha anche
+# Hermes). Vuoto = endpoint spento (503). Soglia e distacco non scendono mai, nemmeno col nome.
+VOICE_LIVE_IDENTIFY_TOKEN = os.getenv("VOICE_LIVE_IDENTIFY_TOKEN", "")
+LIVE_IDENTIFY_THRESHOLD = float(os.getenv("LIVE_IDENTIFY_THRESHOLD", "0.75"))
+LIVE_IDENTIFY_MARGIN = float(os.getenv("LIVE_IDENTIFY_MARGIN", "0.05"))
+LIVE_IDENTIFY_MAX_ATTEMPTS = int(os.getenv("LIVE_IDENTIFY_MAX_ATTEMPTS", "2"))
+# Shadow del pre-roll (wake_preroll dal wakeword-server): solo i punteggi del voice ID nei
+# log, nessun cambio di comportamento. L'audio non si salva, salvo VOICE_CORPUS_ENABLED.
+WAKE_PREROLL_SHADOW = os.getenv("WAKE_PREROLL_SHADOW", "true").lower() in ("1", "true", "yes")
+# Cancello vocale sulle wake (contro le false wake della TV): con WAKE_VOICE_GATE acceso una
+# wake il cui pre-roll non somiglia ad alcun iscritto oltre la soglia si scarta in silenzio.
+# Spento per default: la soglia si fissa dai dati dello shadow. Nel dubbio (timeout, nessun
+# modello, audio illeggibile) la wake passa sempre.
+WAKE_VOICE_GATE = os.getenv("WAKE_VOICE_GATE", "false").lower() in ("1", "true", "yes")
+WAKE_VOICE_GATE_THRESHOLD = float(os.getenv("WAKE_VOICE_GATE_THRESHOLD", "0.65"))
+WAKE_VOICE_GATE_CAP_MS = int(os.getenv("WAKE_VOICE_GATE_CAP_MS", "700"))
+
 # Stanza muta durante la sessione hub (live_room_mute.py): ogni media_player della stanza
 # del device (entity_maps, come speaker_suppress) si muta all'apertura e torna allo stato
 # esatto di prima alla chiusura. SCOPE=location muta tutti i media_player della location.

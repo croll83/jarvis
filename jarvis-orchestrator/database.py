@@ -404,6 +404,13 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Migration: add live_on_wake (Fase 3 del Voice Live Hub): la wake word (o il tap) apre
+    # subito la sessione Gemini Live. Spento per default; vale solo per i device idonei all'hub.
+    try:
+        c.execute("ALTER TABLE voice_devices ADD COLUMN live_on_wake BOOLEAN DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # 19. USER MEMORY HOURLY (warm layer - summaries orari per utente)
     c.execute('''CREATE TABLE IF NOT EXISTS user_memory_hourly (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3337,6 +3344,7 @@ class VoiceDevice:
     device_type: str = "AtomS3R"
     volume_speaker: Optional[str] = None  # separate entity for volume control (e.g. Bose native vs Echo)
     forced_user_id: Optional[int] = None  # se impostato: bypassa speaker ID, forza questo utente
+    live_on_wake: bool = False  # Fase 3: wake/tap aprono subito la sessione hub (Gemini Live)
 
     @property
     def is_configured(self) -> bool:
@@ -3370,6 +3378,7 @@ class VoiceDevice:
             "speaker_volume": self.speaker_volume,
             "volume_speaker": self.volume_speaker,
             "forced_user_id": self.forced_user_id,
+            "live_on_wake": self.live_on_wake,
             "is_configured": self.is_configured,
             "is_online": self.is_online
         }
@@ -3396,7 +3405,8 @@ def _row_to_voice_device(row) -> VoiceDevice:
         speaker_volume=row['speaker_volume'] if 'speaker_volume' in row.keys() else 80,
         device_type=row['device_type'] if 'device_type' in row.keys() else "AtomS3R",
         volume_speaker=row['volume_speaker'] if 'volume_speaker' in row.keys() else None,
-        forced_user_id=row['forced_user_id'] if 'forced_user_id' in row.keys() else None
+        forced_user_id=row['forced_user_id'] if 'forced_user_id' in row.keys() else None,
+        live_on_wake=bool(row['live_on_wake']) if 'live_on_wake' in row.keys() and row['live_on_wake'] is not None else False
     )
 
 
@@ -3418,6 +3428,18 @@ def set_device_forced_user(device_id: str, user_id: Optional[int]) -> bool:
     c = conn.cursor()
     c.execute("UPDATE voice_devices SET forced_user_id = ? WHERE device_id = ?",
               (user_id, device_id.upper()))
+    changed = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def set_device_live_on_wake(device_id: str, enabled: bool) -> bool:
+    """Abilita (o spegne) il live dalla wake word / dal tap per il device."""
+    conn = _get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE voice_devices SET live_on_wake = ? WHERE device_id = ?",
+              (1 if enabled else 0, device_id.upper()))
     changed = c.rowcount > 0
     conn.commit()
     conn.close()

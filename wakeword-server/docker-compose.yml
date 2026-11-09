@@ -17,6 +17,15 @@ services:
       - AEC_DEBUG_DIR=${AEC_DEBUG_DIR:-}
       - AEC_RENDER_DELAY_MS=${AEC_RENDER_DELAY_MS:-0}
       - HUB_ATOM_MIC_GAIN_DB=${HUB_ATOM_MIC_GAIN_DB:-}
+      # Fase 3 (wake -> Gemini Live): shadow del pre-roll e archivio clip accesi, il resto spento
+      - WAKE_PREROLL_SHADOW=${WAKE_PREROLL_SHADOW:-1}
+      - WAKE_CLIP_ARCHIVE=${WAKE_CLIP_ARCHIVE:-1}
+      - WAKE_CLIP_DIR=${WAKE_CLIP_DIR:-/app/data/wakeclips}
+      - WAKE_CLIP_MAX_FILES=${WAKE_CLIP_MAX_FILES:-3000}
+      - WAKE_CLIP_MAX_MB=${WAKE_CLIP_MAX_MB:-200}
+      - WAKE_VOICE_GATE=${WAKE_VOICE_GATE:-auto}
+      - WAKE_VOICE_GATE_TIMEOUT_S=${WAKE_VOICE_GATE_TIMEOUT_S:-1.0}
+      - LIVE_ON_WAKE=${LIVE_ON_WAKE:-0}
     volumes:
       - wakeword_data:/app/data
     restart: unless-stopped

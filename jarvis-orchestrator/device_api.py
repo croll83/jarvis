@@ -32,6 +32,21 @@ class DeviceConfigResponse(BaseModel):
     status: str  # "configured" o "unknown"
     friendly_name: Optional[str] = None
     location_id: Optional[str] = None
+    # Fase 3 del Voice Live Hub: wake word e tap aprono subito la sessione hub. Valore
+    # effettivo (interruttore generale, colonna del device, idoneita' all'hub), lo stesso
+    # del welcome sulla WS: il peer lo tiene in cache.
+    live_on_wake: bool = False
+
+
+def _live_on_wake_effective(device_id: str) -> bool:
+    import sys
+    _main = sys.modules.get("main")
+    try:
+        if _main is not None:
+            return bool(_main.live_on_wake_enabled(device_id))
+    except Exception as e:
+        logger.debug(f"live_on_wake per {device_id} non calcolabile: {e}")
+    return False
 
 
 class HeartbeatResponse(BaseModel):
@@ -93,7 +108,8 @@ async def get_device_config(device_id: str, request: Request):
         return DeviceConfigResponse(
             status="configured",
             friendly_name=device.friendly_name,
-            location_id=device.location_id
+            location_id=device.location_id,
+            live_on_wake=_live_on_wake_effective(device_id)
         )
     else:
         logger.debug(f"Device {device_id} known but not configured")
@@ -199,5 +215,6 @@ def get_device_speaker_config(device_id: str) -> Optional[dict]:
         "enabled": device.enabled,
         "friendly_name": device.friendly_name,
         "device_type": device.device_type,
-        "forced_user_id": device.forced_user_id
+        "forced_user_id": device.forced_user_id,
+        "live_on_wake": device.live_on_wake
     }

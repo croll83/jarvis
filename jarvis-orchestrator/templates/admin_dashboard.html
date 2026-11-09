@@ -2278,6 +2278,18 @@
                 </div>
 
                 <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" id="vdLiveOnWake">
+                        Live dalla wake word / dal tap
+                    </label>
+                    <small style="color: var(--text-secondary);">
+                        La wake word (o il tap su telefono, orologio, Atom, NabuVoice) apre subito la sessione
+                        Gemini Live, senza dire "avvia una sessione live". Serve anche l'interruttore generale
+                        VOICE_LIVE_ON_WAKE e un firmware/app che lo supporti; vale solo per i device idonei all'hub.
+                    </small>
+                </div>
+
+                <div class="form-group">
                     <label>Utente associato</label>
                     <select id="vdForcedUser">
                         <option value="">Nessuno — usa riconoscimento vocale</option>
@@ -3718,6 +3730,7 @@
             document.getElementById('vdVolumeValue').textContent = '80';
             document.getElementById('vdNotes').value = '';
             document.getElementById('vdForcedUser').value = '';
+            document.getElementById('vdLiveOnWake').checked = false;
             toggleInternalSpeaker();
 
             // If editing, load device data
@@ -3740,6 +3753,7 @@
                     document.getElementById('vdNotes').value = device.notes || '';
                     document.getElementById('vdForcedUser').value =
                         device.forced_user_id != null ? String(device.forced_user_id) : '';
+                    document.getElementById('vdLiveOnWake').checked = !!device.live_on_wake;
 
                     // Load media players for this location
                     if (device.location_id) {
@@ -3828,6 +3842,7 @@
                 enabled: document.getElementById('vdEnabled').checked,
                 wake_word_sensitivity: parseFloat(document.getElementById('vdWakeWordSensitivity').value),
                 speaker_volume: parseInt(document.getElementById('vdSpeakerVolume').value),
+                live_on_wake: document.getElementById('vdLiveOnWake').checked,
                 notes: document.getElementById('vdNotes').value || null
             };
 

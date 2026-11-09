@@ -528,8 +528,20 @@ async def ws_audio_endpoint(
 
     logger.info(f"Persistent WS connection established for device {device_id}")
 
-    # 4. Send welcome
-    await conn.send_command({"type": "welcome", "server_time": time.time()})
+    # 4. Send welcome. live_on_wake (Fase 3): il peer (wakeword-server, app) lo tiene in
+    # cache e chiede il live alla wake/al tap solo se e' vero; l'orchestrator ricontrolla
+    # comunque a ogni live_start.
+    # wake_voice_gate: il wakeword-server (in modalita' auto) manda il pre-roll e aspetta il
+    # verdetto wake_gate prima di ogni wake solo se e' vero.
+    welcome = {"type": "welcome", "server_time": time.time(),
+               "wake_voice_gate": bool(config.WAKE_VOICE_GATE)}
+    try:
+        from main import live_on_wake_enabled
+        welcome["live_on_wake"] = bool(live_on_wake_enabled(device_id))
+    except Exception as e:
+        logger.debug(f"Device {device_id}: live_on_wake per il welcome non calcolabile: {e}")
+        welcome["live_on_wake"] = False
+    await conn.send_command(welcome)
 
     # 5. Main receive loop (persistent — stays open until device disconnects)
     is_persistent = False  # Will be set to True when we receive "hello" or "audio_start"
@@ -765,10 +777,11 @@ async def ws_audio_endpoint(
                         # Device wants to start an audio session
                         is_persistent = True  # Confirm persistent mode
                         # Un turno durante una sessione hub vuol dire che il device ne e' uscito:
-                        # chiusa in silenzio, il turno prosegue normale (D2, prima che arrivi il parlato)
-                        from main import has_hub_live_session, end_live_session
+                        # chiusa in silenzio, il turno prosegue normale (D2, prima che arrivi il parlato).
+                        # Origine wake/tap: niente live_session_end e smute in background.
+                        from main import has_hub_live_session, end_hub_session_for_turn
                         if has_hub_live_session(device_id):
-                            await end_live_session(device_id, reason="turn_during_hub", close_turn=False)
+                            await end_hub_session_for_turn(device_id)
                         if conn.audio_session and not conn.audio_session._closed:
                             logger.warning(f"Device {device_id}: audio_start while session active — ending previous")
                             # Don't send tts_done here — device is already starting a new session
@@ -870,12 +883,43 @@ async def ws_audio_endpoint(
                         # Sessione live sull'hub chiusa dal device o dal suo wakeword-server
                         # (tap, hangup dell'hub, hub che rifiuta o non risponde).
                         reason = str(ctrl.get("reason") or "unknown")
-                        logger.info(f"Device {device_id}: live_session_end ({reason}, call_id={ctrl.get('call_id')})")
+                        detail = str(ctrl.get("detail") or "")[:80] or None
+                        logger.info(f"Device {device_id}: live_session_end ({reason}"
+                                    f"{'/' + detail if detail else ''}, call_id={ctrl.get('call_id')})")
                         try:
                             from main import handle_device_live_session_end
-                            await handle_device_live_session_end(device_id, ctrl.get("call_id"), reason)
+                            await handle_device_live_session_end(device_id, ctrl.get("call_id"), reason,
+                                                                 detail=detail)
                         except Exception as e:
                             logger.error(f"live_session_end failed for device {device_id}: {e}")
+
+                    elif msg_type == "live_start":
+                        # Fase 3: wake o tap che chiede subito la sessione hub. In un task: il voice
+                        # ID sul pre-roll (fino a 600 ms) non deve fermare questo loop, che intanto
+                        # deve poter ricevere il live_cancel.
+                        is_persistent = True
+                        from main import handle_live_start
+                        _spawn_live_task(handle_live_start(device_id, ctrl), device_id, "live_start")
+
+                    elif msg_type == "live_cancel":
+                        try:
+                            from main import handle_live_cancel
+                            await handle_live_cancel(device_id, ctrl.get("req_id"))
+                        except Exception as e:
+                            logger.error(f"live_cancel failed for device {device_id}: {e}")
+
+                    elif msg_type == "live_session_active":
+                        try:
+                            from main import handle_live_session_active
+                            await handle_live_session_active(device_id, ctrl.get("call_id"))
+                        except Exception as e:
+                            logger.error(f"live_session_active failed for device {device_id}: {e}")
+
+                    elif msg_type == "wake_preroll":
+                        # Shadow / cancello vocale sul pre-roll di una wake classica (wakeword-server)
+                        is_persistent = True
+                        from main import handle_wake_preroll
+                        _spawn_live_task(handle_wake_preroll(device_id, ctrl), device_id, "wake_preroll")
 
                     elif msg_type == "state":
                         state = ctrl.get("state", "unknown")
@@ -960,9 +1004,38 @@ async def ws_audio_endpoint(
                     f"(was connected {duration:.0f}s, persistent={is_persistent})")
 
 
+# Task delle richieste live (live_start, wake_preroll): riferimento forte finche' girano
+_live_tasks: set = set()
+
+
+def _spawn_live_task(coro, device_id: str, what: str) -> asyncio.Task:
+    async def _run():
+        try:
+            await coro
+        except Exception as e:
+            logger.error(f"{what} failed for device {device_id}: {e}", exc_info=True)
+    task = asyncio.create_task(_run())
+    _live_tasks.add(task)
+    task.add_done_callback(_live_tasks.discard)
+    return task
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+async def send_device_message(device_id: str, msg: dict) -> bool:
+    """Manda un messaggio JSON al device (o al relay del suo wakeword-server).
+    False se non e' connesso. Usato dai messaggi live della Fase 3 (live_declined,
+    wake_gate, announce)."""
+    device_id = (device_id or "").upper().strip()
+    async with _connections_lock:
+        conn = _persistent_connections.get(device_id)
+    if not conn:
+        logger.info(f"send_device_message({device_id}, {msg.get('type')}): device non connesso")
+        return False
+    return await conn.send_command(msg)
+
+
 async def trigger_device_listen(device_id: str, silent: bool = True) -> bool:
     """
     Trigger a device to start listening via persistent WS.

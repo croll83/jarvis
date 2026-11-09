@@ -16,6 +16,8 @@ os.environ["ORCHESTRATOR_URL"] = ""
 os.environ["DEVICE_API_TOKEN"] = ""
 os.environ["HUB_HOST"] = ""
 os.environ["HUB_PORT"] = "0"
+# Niente clip su /app/data nei test: l'archivio ha i suoi test con una cartella temporanea
+os.environ["WAKE_CLIP_ARCHIVE"] = "0"
 
 
 class FakeWakeWordEngine:

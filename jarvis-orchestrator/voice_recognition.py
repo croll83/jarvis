@@ -222,6 +222,25 @@ class VoiceRecognizer:
             is_known=False
         )
     
+    def score_speakers(self, audio_bytes: bytes, sample_rate: int = 16000) -> Optional[dict]:
+        """Similarita' della clip con OGNI iscritto: {user_id: score}.
+
+        Per le decisioni con soglia E distacco dal secondo candidato (clip corte del
+        pre-roll, tool di identificazione in sessione): identify_speaker da' solo il
+        migliore. None se l'encoder o i modelli mancano o l'embedding fallisce.
+        Sola lettura: non tocca enrollment ne' modelli.
+        """
+        if self.encoder is None or not self.speaker_embeddings:
+            return None
+        audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
+        if len(audio_data) == 0:
+            return None
+        query = self._audio_to_embedding(audio_data, sample_rate, max_duration_s=8.0)
+        if query is None:
+            return None
+        return {uid: round(self._cosine_similarity(query, emb), 4)
+                for uid, emb in list(self.speaker_embeddings.items())}
+
     def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
         """Calcola la similarità coseno tra due vettori."""
         return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))

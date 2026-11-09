@@ -37,3 +37,10 @@ class MultiroomCooldown:
         if device_id == self._last_wake_device:
             return False
         return time.monotonic() < (self._last_wake_time + self.cooldown_s)
+
+    def cancel(self, device_id: str):
+        """Wake scartata (cancello a voce): se il cooldown l'aveva fatto partire questo device,
+        gli altri device tornano subito in ascolto."""
+        if device_id == self._last_wake_device:
+            self._last_wake_time = 0.0
+            logger.info(f"Multi-room cooldown cancelled (wake from {device_id} dropped)")

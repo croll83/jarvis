@@ -509,7 +509,8 @@ async def test_audio_start_in_hub_session_is_desync(conn, hub_on):
     assert await wait_for(hub.eof.is_set)
     assert hub.json == [{"type": "ended", "call_id": "c0ffee01"}]
     assert conn.relay.ends() == []
-    assert conn.relay.sent == [{"type": "audio_start"}]
+    assert conn.relay.sent == [{"type": "live_session_active", "call_id": "c0ffee01"},
+                               {"type": "audio_start"}]
     assert conn.state == server.DeviceState.STREAMING
     assert "live_session_end" not in conn.ws.types()
 
@@ -574,6 +575,7 @@ async def test_speaker_stop_in_hub_session_ends_it(conn, hub_on):
     assert hub.json == [{"type": "ended", "call_id": "c0ffee01"}]
     assert conn.ws.json[-1] == {"type": "live_session_end"}
     assert conn.relay.sent == [
+        {"type": "live_session_active", "call_id": "c0ffee01"},
         {"type": "live_session_end", "call_id": "c0ffee01", "reason": "button"}]
     assert conn.relay.connected
     assert conn.state == server.DeviceState.IDLE

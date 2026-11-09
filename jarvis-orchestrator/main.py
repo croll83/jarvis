@@ -59,6 +59,7 @@ from security import SecurityManager, should_require_approval, get_approval_prio
 from security_levels import check_security, needs_approval as needs_l3_approval, SecurityLevel, get_security_summary
 from tools_api import router as tools_router
 from voice_recognition import voice_recognizer, get_speaker_context
+import live_wake
 from user_api import router as user_router, web_router
 from admin_api import router as admin_router, metrics as admin_metrics
 from log_collector import router as log_router, init_log_db, haos_log_puller, log_prune_task
@@ -1194,6 +1195,18 @@ class LiveSession:
     # (l'audio non passa di qui, vedi _live_session_backend)
     backend: str = "orchestrator"
     hub_call_id: Optional[str] = None
+    # Fase 3 (sez. 19): da dove nasce la sessione hub. "phrase" = "avvia una sessione live"
+    # (la stanza si muta al live_session_start, come in Fase 2); "wake" | "tap" = live_start
+    # dal peer (la stanza si muta solo al live_session_active, un tentativo fallito non
+    # lascia tracce).
+    origin: str = "phrase"
+    req_id: Optional[str] = None          # correlazione coniata dal peer (live_start)
+    identified: bool = False              # speaker riconosciuto (o forzato) all'apertura
+    command: bool = False                 # il peer ha gia' sentito una richiesta (19.12 D1)
+    active: bool = False                  # live_session_active ricevuto (l'hub ha accettato)
+    muted: bool = False                   # il mute della stanza e' partito per questa sessione
+    identify_attempts: int = 0            # POST /api/live/{call_id}/identify gia' fatti
+    requested_at: Optional[float] = None  # monotonic del live_start, per la latenza di apertura
 
 
 _live_sessions: Dict[str, LiveSession] = {}
@@ -1507,13 +1520,24 @@ def _live_session_backend(device_id: str, use_internal_speaker: bool = False) ->
     sessione gli speaker della stanza restano muti (live_room_mute). use_internal_speaker
     continua a decidere l'uscita dei turni normali e del ripiego sul turn-loop di oggi.
     """
+    if not _hub_eligible(device_id):
+        return "orchestrator"
+    if live_wake.fallback_blocked(device_id):
+        # Turno classico di ripiego da una wake/tap fallita: per un minuto niente hub
+        # per questo device (19.7), "avvia una sessione live" va sulla sessione di oggi.
+        return "orchestrator"
+    return "hub"
+
+
+def _hub_eligible(device_id: str) -> bool:
+    """Hub configurato (porta != 0) e device di un tipo abilitato e non escluso."""
     if not config.VOICE_LIVE_HUB_PORT or not config.VOICE_LIVE_HUB_HOST:
-        return "orchestrator"
+        return False
     if (device_id or "").upper().strip() in config.VOICE_LIVE_HUB_EXCLUDE_DEVICES:
-        return "orchestrator"
+        return False
     device_cfg = get_device_speaker_config(device_id)
     device_type = device_cfg.get("device_type") if device_cfg else None
-    return "hub" if device_type in config.VOICE_LIVE_HUB_DEVICE_TYPES else "orchestrator"
+    return device_type in config.VOICE_LIVE_HUB_DEVICE_TYPES
 
 
 # Nomi segnaposto di uno speaker non riconosciuto (build_speaker_context, sessione
@@ -1540,7 +1564,7 @@ def _hub_identity(speaker_id: Optional[str], speaker_name: str) -> Tuple[str, st
 def _hub_live_session_payload(session: LiveSession) -> dict:
     """live_session_start arricchito per il backend hub (contratto Fase 2)."""
     profile, name = _hub_identity(session.user_id, session.speaker_name)
-    return {
+    payload = {
         "type": "live_session_start",
         "backend": "hub",
         "call_id": session.hub_call_id,
@@ -1551,6 +1575,31 @@ def _hub_live_session_payload(session: LiveSession) -> dict:
         "room": session.room or "",
         "deliver": ["orchestrator"],  # come il default dell'hub per i peer di rete
         "hub": {"host": config.VOICE_LIVE_HUB_HOST, "port": config.VOICE_LIVE_HUB_PORT},
+        # Fase 3 (19.2): origine e identita' anche al peer, e offer_extra che il peer copia
+        # COSI' COM'E' nell'offer all'hub (oggi l'offer si costruisce campo per campo e
+        # senza questo identified e origin non arriverebbero mai all'hub).
+        "origin": session.origin,
+        "identified": session.identified,
+        "offer_extra": _hub_offer_extra(session),
+    }
+    if session.req_id:
+        payload["req_id"] = session.req_id
+    return payload
+
+
+def _hub_offer_extra(session: LiveSession) -> dict:
+    """Campi opachi per l'offer all'hub.
+
+    origin: phrase | wake | tap. identified: false = l'hub offre il tool identifica_chi_parla.
+    command: il peer ha gia' sentito una richiesta dopo la wake (lo sovrascrive il peer col
+    suo VAD sul buffer del comando, prima dell'offer). quick: l'hub puo' chiudere la
+    sessione rapida (19.12 D3) se command e' vero; solo per wake e tap.
+    """
+    return {
+        "origin": session.origin,
+        "identified": session.identified,
+        "command": session.command,
+        "quick": bool(config.VOICE_LIVE_QUICK_SESSION and session.origin in _LIVE_REQUEST_TRIGGERS),
     }
 
 
@@ -1564,11 +1613,17 @@ async def start_live_session(
     use_internal_speaker: bool = False,
     greeting: Optional[str] = None,
     backend: Optional[str] = None,
+    origin: str = "phrase",
+    req_id: Optional[str] = None,
+    command: bool = False,
+    requested_at: Optional[float] = None,
 ) -> LiveSession:
     """Create and register a new live session for a device.
 
     backend=None decide qui (_live_session_backend); "orchestrator" forza il turn-loop
     di oggi (ripiego quando l'hub rifiuta o non e' raggiungibile).
+    origin "wake" | "tap" (live_start, Fase 3): la stanza NON si muta qui ma al
+    live_session_active del peer, cosi' un tentativo fallito non muta e smuta niente.
     """
     # Clean up any pending session for this device
     _pending_live_sessions.pop(device_id, None)
@@ -1589,6 +1644,11 @@ async def start_live_session(
         media_player_id=media_player_id,
         use_internal_speaker=use_internal_speaker,
         ai_agent_session_user=session_user,
+        origin=origin,
+        req_id=req_id,
+        identified=_speaker_known(speaker_id, speaker_name),
+        command=bool(command),
+        requested_at=requested_at,
     )
     if backend is None:
         backend = _live_session_backend(device_id, use_internal_speaker)
@@ -1617,6 +1677,9 @@ async def start_live_session(
             if _prev is not None and _prev.backend == "hub":
                 # La sessione hub sostituita teneva la stanza muta: senza sessione si smuta
                 await _end_room_mute(device_id, "session_replaced")
+            return session
+        if session.origin in _LIVE_REQUEST_TRIGGERS:
+            # Wake/tap: la stanza si muta solo quando l'hub ha accettato (live_session_active)
             return session
         # Gli speaker della stanza restano muti per tutta la sessione (in background:
         # l'apertura non aspetta Home Assistant).
@@ -1718,10 +1781,12 @@ async def end_live_session(device_id: str, reason: str = "unknown", close_turn: 
 _HUB_FALLBACK_REASONS = {"hub_rejected", "hub_unreachable", "error"}
 
 
-async def handle_device_live_session_end(device_id: str, call_id: Optional[str], reason: str):
+async def handle_device_live_session_end(device_id: str, call_id: Optional[str], reason: str,
+                                         detail: Optional[str] = None):
     """live_session_end in ingresso dal device: chiude una sessione hub.
 
     reason: "button" | "hub_hangup" | "hub_rejected" | "hub_unreachable" | "error".
+    detail: motivo del rifiuto dell'hub (provider_unavailable, too many calls, timeout).
     Vale solo per le sessioni hub (le altre si chiudono come oggi, speaker_stop o voce);
     un call_id diverso da quello della sessione in corso e' un residuo e si ignora.
 
@@ -1729,6 +1794,11 @@ async def handle_device_live_session_end(device_id: str, call_id: Optional[str],
     qui sul posto: niente live_session_end, subito il live_session_start di oggi con
     saluto e trigger_listen. Senza ripiego (device sparito, altri motivi) la sessione
     si chiude con live_session_end + tts_done.
+
+    Origine wake o tap (Fase 3): nessuna conversione. Il peer fa gia' il turno classico in
+    locale, quindi qui si toglie la sessione, si smuta in background solo se si era mutato
+    e non si manda NE' live_session_end NE' tts_done (il tts_done chiuderebbe il relay
+    del turno classico che il peer sta aprendo).
     """
     session = _live_sessions.get(device_id)
     if not session or session.backend != "hub":
@@ -1740,6 +1810,13 @@ async def handle_device_live_session_end(device_id: str, call_id: Optional[str],
         return
 
     fallback = reason in _HUB_FALLBACK_REASONS
+    if fallback:
+        live_wake.breaker.record_failure(reason, detail)
+    if fallback and session.origin in _LIVE_REQUEST_TRIGGERS:
+        live_wake.block_after_fallback(device_id)
+        _drop_hub_session_silently(device_id, session, f"fallback_{reason}"
+                                   + (f"/{detail}" if detail else ""))
+        return
     if fallback and device_id.upper().strip() not in await get_connected_devices():
         logger.warning(f"🎙️ Hub non disponibile ({reason}) e {device_id} disconnesso: niente ripiego")
         fallback = False
@@ -1780,6 +1857,395 @@ def has_hub_live_session(device_id: str) -> bool:
     return session is not None and session.backend == "hub"
 
 
+# ---------------------------------------------------------------------------
+# Fase 3, punto 1 (design-voice-live-hub.md sez. 19): live dalla wake word o dal tap
+# ---------------------------------------------------------------------------
+# Il peer chiede, l'orchestrator decide. Messaggi (sulla WS del device o del relay):
+#   peer -> orch  live_start{req_id, trigger:"wake"|"tap", preroll?{codec,rate,b64},
+#                            postroll?{...}, command?}
+#                 live_cancel{req_id}
+#                 live_session_active{call_id}   (all'accept dell'hub: da qui la stanza si muta)
+#                 wake_preroll{req_id?, preroll{...} | b64, score?, model?}   (shadow / cancello)
+#   orch -> peer  live_session_start{..., req_id, origin, identified, offer_extra}
+#                 live_declined{req_id, reason}
+#                 wake_gate{req_id, action:"keep"|"drop", reason, best}
+#                 announce{call_id, text, urgent}
+_LIVE_REQUEST_TRIGGERS = ("wake", "tap")
+# Motivi di live_declined. Con "duplicate" e "voice_gate" il peer torna a riposo senza turno
+# classico; con gli altri parte il turno classico in locale.
+LIVE_DECLINE_REASONS = ("disabled", "hub_off", "hub_down", "busy", "duplicate", "enrollment",
+                        "voice_gate")
+
+
+@dataclass
+class LiveRequest:
+    """live_start in elaborazione (voice ID sul pre-roll): un live_cancel la scarta."""
+    device_id: str
+    req_id: str
+    trigger: str
+    started_at: float = field(default_factory=time.monotonic)
+    cancelled: bool = False
+
+
+_live_requests: Dict[str, LiveRequest] = {}
+# live_cancel arrivato prima che il task del suo live_start partisse (o per un req_id mai
+# visto): device_id -> (req_id, monotonic). Il live_start che arriva dopo si scarta, invece
+# di aprire una sessione che il peer ignora e che terrebbe il device e un posto dell'hub
+# occupati fino al monitor delle sessioni mai accettate.
+_early_cancels: Dict[str, Tuple[str, float]] = {}
+_EARLY_CANCEL_TTL_S = 10.0
+# Task in background (smute dopo un tentativo fallito): riferimento forte
+_live_bg_tasks: set = set()
+
+
+def _spawn_live_bg(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _live_bg_tasks.add(task)
+    task.add_done_callback(_live_bg_tasks.discard)
+    return task
+
+
+def live_on_wake_enabled(device_id: str) -> bool:
+    """Flag per il welcome: il peer chiede il live alla wake/al tap solo se e' vero.
+    Interruttore generale, colonna del device e idoneita' all'hub. L'orchestrator
+    ricontrolla comunque tutto a ogni live_start."""
+    if not config.VOICE_LIVE_ON_WAKE:
+        return False
+    cfg = get_device_speaker_config(device_id)
+    if not cfg or not cfg.get("live_on_wake"):
+        return False
+    return _live_session_backend(device_id) == "hub"
+
+
+def _hub_session_count() -> int:
+    """Sessioni hub aperte piu' le richieste in volo: l'hub ne regge VOICE_LIVE_HUB_MAX_SESSIONS."""
+    return sum(1 for s in _live_sessions.values() if s.backend == "hub") + len(_live_requests)
+
+
+def _active_enrollments() -> list:
+    try:
+        return voice_recognizer.get_all_active_enrollments()
+    except Exception:
+        return []
+
+
+async def _send_live_message(device_id: str, msg: dict) -> bool:
+    from ws_audio_handler import send_device_message
+    return await send_device_message(device_id, msg)
+
+
+def _drop_hub_session_silently(device_id: str, session: "LiveSession", reason: str) -> None:
+    """Toglie una sessione hub nata da wake/tap senza dire niente al peer (niente
+    live_session_end, niente tts_done: il peer sta gia' facendo il classico o e' tornato
+    a riposo) e smuta in background, solo se la stanza era stata mutata."""
+    if _live_sessions.get(device_id) is session:
+        _live_sessions.pop(device_id, None)
+    logger.info(f"🎙️ Sessione hub {session.hub_call_id} ({session.origin}) di {device_id} tolta "
+                f"in silenzio: {reason}")
+    if session.muted or device_id in _room_mute_tasks:
+        _spawn_live_bg(_end_room_mute(device_id, reason))
+
+
+async def end_hub_session_for_turn(device_id: str) -> None:
+    """Turno audio (audio_start o parlato) durante una sessione hub: il device ne e' uscito.
+    Origine phrase: come in Fase 2 (live_session_end senza chiudere il turno, smute atteso).
+    Origine wake/tap: tolta in silenzio con lo smute in background, per non ritardare il
+    ready del turno classico."""
+    session = _live_sessions.get(device_id)
+    if not session or session.backend != "hub":
+        return
+    if session.origin in _LIVE_REQUEST_TRIGGERS:
+        _drop_hub_session_silently(device_id, session, "turn_during_hub")
+        return
+    await end_live_session(device_id, reason="turn_during_hub", close_turn=False)
+
+
+def find_hub_session_by_call_id(call_id: Optional[str]) -> Optional["LiveSession"]:
+    if not call_id:
+        return None
+    for s in list(_live_sessions.values()):
+        if s.backend == "hub" and s.hub_call_id == call_id:
+            return s
+    return None
+
+
+def _voice_device_room(device_config: Optional[dict], location: str) -> str:
+    """La stanza di un device per i comandi: il friendly_name, solo se e' davvero una
+    stanza della casa (un telefono si chiama "Fold 7 Marco"), altrimenti "Unknown"."""
+    if not device_config:
+        return "Unknown"
+    nome = device_config.get("friendly_name", "Unknown")
+    try:
+        import router_model as _rm
+        return _rm.stanza_valida(location, nome) or "Unknown"
+    except Exception:
+        return nome or "Unknown"
+
+
+async def handle_live_start(device_id: str, msg: dict) -> None:
+    """live_start dal peer: apre subito la sessione hub, oppure live_declined.
+
+    Rifiuta prima di qualunque calcolo (device non abilitato o non idoneo, doppione in
+    casa, sessione o richiesta gia' in corso, hub pieno, enrollment attivo, hub giu').
+    Poi l'identita': forzata (telefono, orologio) oppure voice ID sul pre-roll con tetto di
+    600 ms e soglie per clip corte; senza identita' si parte come "Famiglia" (identified
+    false: l'hub offre il tool di identificazione). Ogni risposta riporta il req_id.
+    """
+    t0 = time.monotonic()
+    msg = msg if isinstance(msg, dict) else {}
+    req_id = str(msg.get("req_id") or "").strip()[:64]
+    trigger = str(msg.get("trigger") or "").strip().lower()
+
+    async def decline(reason: str) -> None:
+        logger.info(f"🎙️ live_start {device_id} ({trigger or '?'}, req={req_id}) rifiutato: {reason}")
+        await _send_live_message(device_id, {"type": "live_declined", "req_id": req_id, "reason": reason})
+
+    if not req_id or trigger not in _LIVE_REQUEST_TRIGGERS:
+        logger.warning(f"🎙️ live_start {device_id} malformato (req_id={req_id!r}, trigger={trigger!r})")
+        await decline("disabled")
+        return
+    early = _early_cancels.pop(device_id, None)
+    if early and early[0] == req_id and t0 - early[1] < _EARLY_CANCEL_TTL_S:
+        logger.info(f"🎙️ live_start {device_id} (req={req_id}) gia' annullato dal peer: scartato")
+        return
+    cfg = get_device_speaker_config(device_id)
+    if not config.VOICE_LIVE_ON_WAKE or not cfg or not cfg.get("live_on_wake"):
+        await decline("disabled")
+        return
+    if not _hub_eligible(device_id):
+        await decline("hub_off")
+        return
+    location = _voice_device_location(cfg)
+    # Il primo della casa vince anche se poi viene rifiutato per un altro motivo: cosi' una
+    # wake sentita da due device produce un solo turno, live o classico.
+    # Solo le wake: un tap e' un gesto voluto su UN device, non la stessa wake sentita due
+    # volte. Con "duplicate" il peer torna a riposo senza classico, quindi un tap (o una wake
+    # vera subito dopo il tap di qualcun altro) andrebbe perso in silenzio.
+    if trigger == "wake" and not live_wake.claim_home(location, device_id):
+        await decline("duplicate")
+        return
+    if device_id in _live_sessions or device_id in _live_requests or device_id in _pending_live_sessions:
+        await decline("busy")
+        return
+    if _hub_session_count() >= config.VOICE_LIVE_HUB_MAX_SESSIONS:
+        await decline("busy")
+        return
+    if _active_enrollments():
+        await decline("enrollment")
+        return
+    if live_wake.fallback_blocked(device_id) or not live_wake.breaker.allow():
+        await decline("hub_down")
+        return
+
+    req = LiveRequest(device_id=device_id, req_id=req_id, trigger=trigger, started_at=t0)
+    _live_requests[device_id] = req
+    try:
+        room = _voice_device_room(cfg, location)
+        speaker_id, speaker_name, strong = None, "Sconosciuto", False
+        forced = cfg.get("forced_user_id")
+        if forced:
+            user = get_user_by_id(forced)
+            if user:
+                speaker_id, speaker_name, strong = user.id, user.name, True
+            logger.info(f"🎯 live_start {device_id}: identita' forzata {speaker_name} (uid={forced})")
+        else:
+            pre = live_wake.decode_pcm(msg.get("preroll"))
+            post = live_wake.decode_pcm(msg.get("postroll"))
+            clip = (pre or b"") + (post or b"")
+            if len(clip) > int(live_wake.MAX_START_CLIP_S * live_wake.BYTES_PER_S):
+                clip = clip[-int(live_wake.MAX_START_CLIP_S * live_wake.BYTES_PER_S):]
+            verdict = await live_wake.score_clip(clip or None, config.LIVE_WAKE_ID_CAP_MS / 1000.0)
+            logger.info(f"🎯 live_start {device_id} voice ID sul pre-roll: {verdict.summary()}")
+            if clip:
+                import voice_corpus
+                voice_corpus.save_clip(device_id, "live_start", clip, {
+                    "trigger": trigger, "req_id": req_id, "voice_id": verdict.summary()})
+            if trigger == "wake":
+                keep, why = live_wake.gate_decision(verdict)
+                if not keep:
+                    if _live_requests.get(device_id) is req and not req.cancelled:
+                        await decline("voice_gate")
+                    return
+            uid = live_wake.decide(verdict, config.LIVE_WAKE_ID_THRESHOLD, config.LIVE_WAKE_ID_MARGIN)
+            user = get_user_by_id(uid) if uid is not None else None
+            if user:
+                speaker_id, speaker_name, strong = user.id, user.name, True
+
+        if _live_requests.get(device_id) is not req or req.cancelled:
+            logger.info(f"🎙️ live_start {device_id} (req={req_id}) annullato dal peer durante il voice ID")
+            return
+        _live_requests.pop(device_id, None)
+        if device_id in _live_sessions:
+            await decline("busy")
+            return
+        if strong and speaker_id is not None:
+            # Solo identita' forzata o match con soglia e distacco: un match sbagliato
+            # sposterebbe in un'altra casa i comandi del telefono di quella persona.
+            set_user_location(speaker_id, location, "voice")
+
+        use_internal = bool(cfg.get("use_internal_speaker", False))
+        session = await start_live_session(
+            device_id=device_id, speaker_id=speaker_id, speaker_name=speaker_name,
+            location_id=location, room=room,
+            media_player_id=None if use_internal else cfg.get("output_speaker"),
+            use_internal_speaker=use_internal, backend="hub", origin=trigger, req_id=req_id,
+            command=bool(msg.get("command")), requested_at=t0)
+        if _live_sessions.get(device_id) is session:
+            logger.info(f"🎙️ live_start {device_id} ({trigger}, req={req_id}) -> live_session_start "
+                        f"call_id={session.hub_call_id} speaker={speaker_name} "
+                        f"identified={session.identified} in {int((time.monotonic() - t0) * 1000)}ms")
+    except Exception as e:
+        logger.error(f"🎙️ live_start {device_id} fallito: {e}", exc_info=True)
+        if _live_requests.get(device_id) is req and not req.cancelled:
+            await decline("hub_down")
+    finally:
+        if _live_requests.get(device_id) is req:
+            _live_requests.pop(device_id, None)
+
+
+async def handle_live_cancel(device_id: str, req_id: Optional[str]) -> None:
+    """live_cancel dal peer (timeout di 2,5 s, tap, doppio tap, pressione lunga): scarta la
+    richiesta in volo o toglie in silenzio la sessione nata da quel req_id."""
+    req_id = str(req_id or "").strip()
+    if not req_id:
+        return
+    req = _live_requests.get(device_id)
+    if req is not None and req.req_id == req_id:
+        req.cancelled = True
+        _live_requests.pop(device_id, None)
+        logger.info(f"🎙️ live_cancel {device_id} (req={req_id}): richiesta scartata")
+        return
+    session = _live_sessions.get(device_id)
+    if session is not None and session.backend == "hub" and session.req_id == req_id:
+        _drop_hub_session_silently(device_id, session, "live_cancel")
+        return
+    _early_cancels[device_id] = (req_id[:64], time.monotonic())
+    logger.info(f"🎙️ live_cancel {device_id} (req={req_id}) senza richiesta ne' sessione: ignorato")
+
+
+async def handle_live_session_active(device_id: str, call_id: Optional[str]) -> None:
+    """L'hub ha accettato (accept tardivo: contesto e Gemini pronti). Per le origini wake e
+    tap la stanza si muta da qui; chiude anche il circuit breaker."""
+    session = _live_sessions.get(device_id)
+    if not session or session.backend != "hub":
+        logger.info(f"🎙️ live_session_active da {device_id} senza sessione hub: ignorato")
+        return
+    if call_id and call_id != session.hub_call_id:
+        logger.info(f"🎙️ live_session_active da {device_id} per call_id={call_id} "
+                    f"(in corso {session.hub_call_id}): ignorato")
+        return
+    if session.active:
+        return
+    session.active = True
+    session.last_activity = time.time()
+    live_wake.breaker.record_success()
+    took = (f", {time.monotonic() - session.requested_at:.2f}s dal live_start"
+            if session.requested_at else "")
+    logger.info(f"🎙️ live_session_active {device_id} call_id={session.hub_call_id} "
+                f"origin={session.origin}{took}")
+    if session.origin in _LIVE_REQUEST_TRIGGERS and not session.muted:
+        _start_room_mute(session)
+
+
+async def handle_wake_preroll(device_id: str, msg: dict) -> None:
+    """wake_preroll dal wakeword-server: voice ID sul pre-roll di una wake.
+
+    Shadow (WAKE_PREROLL_SHADOW): solo i punteggi nei log e il confronto col voice ID sulla
+    frase che segue; l'audio non si salva (salvo VOICE_CORPUS_ENABLED). Cancello
+    (WAKE_VOICE_GATE): risposta wake_gate keep/drop; spento, la risposta e' subito "keep".
+    Con "gate": false il wakeword-server non aspetta un verdetto (solo shadow): nessuna
+    risposta. Scartare richiede entrambi gli interruttori accesi.
+    """
+    msg = msg if isinstance(msg, dict) else {}
+    req_id = msg.get("req_id")
+    wants_answer = msg.get("gate", True) is not False
+    raw = msg.get("preroll") or ({"b64": msg.get("b64"), "codec": msg.get("codec"),
+                                  "rate": msg.get("rate")} if msg.get("b64") else None)
+    pcm = live_wake.decode_pcm(raw)
+    meta = {"score": msg.get("score"), "model": msg.get("model")}
+
+    async def answer(keep: bool, reason: str, best: float = 0.0) -> None:
+        if not wants_answer:
+            return
+        await _send_live_message(device_id, {"type": "wake_gate", "req_id": req_id,
+                                             "action": "keep" if keep else "drop",
+                                             "reason": reason, "best": round(best, 3)})
+
+    gate_on = config.WAKE_VOICE_GATE and wants_answer
+    if not gate_on:
+        await answer(True, "gate_off")
+        if not config.WAKE_PREROLL_SHADOW:
+            return
+    cap_s = config.WAKE_VOICE_GATE_CAP_MS / 1000.0 if gate_on else 2.0
+    verdict = await live_wake.score_clip(pcm, cap_s)
+    keep, why = live_wake.gate_decision(verdict)
+    logger.info(f"🎯 Wake pre-roll {device_id} (score wake={meta['score']}, {meta['model'] or '-'}): "
+                f"{verdict.summary()} -> {'tenuta' if keep else 'SCARTATA'} ({why}"
+                f"{', cancello acceso' if gate_on else ', shadow'})")
+    if config.WAKE_PREROLL_SHADOW:
+        live_wake.remember_shadow(device_id, verdict, meta)
+        if pcm:
+            import voice_corpus
+            voice_corpus.save_clip(device_id, "wake_preroll", pcm, {
+                **meta, "voice_id": verdict.summary(), "gate": why})
+    if gate_on:
+        await answer(keep, why, verdict.best)
+
+
+# Annunci durante una sessione hub (19.12 D6): un annuncio o un allarme per un device, o
+# per una stanza, con una sessione hub attiva non va sugli speaker (mutati) ma al peer, che
+# lo inoltra all'hub: lo legge Gemini. Solo sessioni "active": il live_session_active lo
+# mandano solo i peer che conoscono anche il messaggio announce; con gli altri resta il
+# comportamento di oggi (annuncio rifiutato, il chiamante ripiega sul testo).
+
+def active_hub_session_for(device_id: Optional[str] = None, location_id: Optional[str] = None,
+                           room: Optional[str] = None,
+                           media_player_id: Optional[str] = None) -> Optional["LiveSession"]:
+    sessions = [s for s in list(_live_sessions.values()) if s.backend == "hub" and s.active]
+    if not sessions:
+        return None
+    norm = lambda d: (d or "").upper().strip()  # noqa: E731
+    if device_id:
+        for s in sessions:
+            if norm(s.device_id) == norm(device_id):
+                return s
+    loc = (location_id or "").lower()
+    if media_player_id and loc:
+        try:
+            import live_room_mute
+            holders = {norm(h) for h in live_room_mute.holders(location_id, media_player_id)}
+        except Exception:
+            holders = set()
+        for s in sessions:
+            if norm(s.device_id) in holders:
+                return s
+    if room and loc and room.strip().lower() not in ("unknown", "sconosciuto", ""):
+        for s in sessions:
+            if (s.location_id or "").lower() == loc and (s.room or "").lower() == room.lower():
+                return s
+    return None
+
+
+async def announce_to_live_session(session: "LiveSession", text: str, urgent: bool = False) -> bool:
+    ok = await _send_live_message(session.device_id, {
+        "type": "announce", "call_id": session.hub_call_id, "text": text, "urgent": bool(urgent)})
+    logger.info(f"📣 Annuncio {'urgente ' if urgent else ''}alla sessione hub {session.hub_call_id} "
+                f"({session.device_id}): {'inoltrato' if ok else 'NON inoltrato'} - {text[:80]!r}")
+    return ok
+
+
+async def redirect_speak_to_live_session(text: str, media_player_id: Optional[str],
+                                         location_id: Optional[str], urgent: bool = False) -> bool:
+    """Chiamata da integrations.speak: True se il media_player e' mutato da una sessione hub
+    attiva e il testo e' andato al peer della sessione invece che all'Echo muto."""
+    if not text or not media_player_id:
+        return False
+    session = active_hub_session_for(location_id=location_id, media_player_id=media_player_id)
+    if session is None:
+        return False
+    return await announce_to_live_session(session, text, urgent)
+
+
 # Stanza muta durante la sessione hub (live_room_mute): il mute parte in background
 # all'apertura; ogni chiusura aspetta il mute in volo e poi ripristina.
 _room_mute_tasks: Dict[str, asyncio.Task] = {}
@@ -1788,6 +2254,7 @@ _room_mute_tasks: Dict[str, asyncio.Task] = {}
 def _start_room_mute(session: "LiveSession") -> None:
     import live_room_mute
     device_id = session.device_id
+    session.muted = True
 
     async def _run():
         try:
@@ -1973,6 +2440,12 @@ async def live_session_monitor():
             # Sessioni hub: i turni non passano di qui (last_activity resta ferma),
             # silenzio e durata li gestisce l'hub. Qui solo il tetto di sicurezza.
             if session.backend == "hub":
+                if (session.origin in _LIVE_REQUEST_TRIGGERS and not session.active
+                        and now - session.started_at > config.LIVE_ACTIVE_TIMEOUT_S):
+                    logger.warning(f"🎙️ Sessione hub {session.hub_call_id} ({session.origin}) di "
+                                   f"{device_id} mai accettata dopo {now - session.started_at:.0f}s")
+                    _drop_hub_session_silently(device_id, session, "never_active")
+                    continue
                 if now - session.started_at > session.max_duration_s:
                     logger.info(f"🎙️ Live session hub timeout (tetto di sicurezza): {device_id}")
                     await end_live_session(device_id, reason="max_duration")
@@ -2748,7 +3221,10 @@ from tools_api import verify_ai_agent_token  # noqa: E402
 
 class VoiceCommandRequest(_BaseModel):
     text: str
-    speaker: str  # user name as in the users table, e.g. "Marco"
+    speaker: Optional[str] = None  # user name as in the users table, e.g. "Marco"
+    # Hub session the command comes from (Phase 3): home, room and speaker come from the
+    # orchestrator's LiveSession, and an unknown speaker is allowed like an anonymous voice turn.
+    call_id: Optional[str] = None
     location_id: Optional[str] = None
     confirmed: bool = False  # the caller heard a spoken yes for this exact command
     # The needs_confirmation the yes was given for: the orchestrator executes only that (A2).
@@ -2766,16 +3242,32 @@ async def tool_voice_command(req: VoiceCommandRequest, _: None = Depends(verify_
     HOME_CONTROL is handled; anything else comes back `handled: false` and the caller asks
     Hermes. An L3 action without `confirmed` comes back as `needs_confirmation`, not executed.
     """
-    speaker_ctx = build_speaker_context(None, "voice_live", explicit_speaker=req.speaker)
-    if not speaker_ctx.get("speaker_identified"):
-        return {"handled": False, "not_handled": f"utente sconosciuto: {req.speaker}"}
-    location = req.location_id
-    if not location:
-        user_loc = get_user_location(speaker_ctx["speaker_id"])
-        location = user_loc.location_id if user_loc else get_default_location_id()
+    room, mic_id = "Unknown", "voice-live-hub"
+    if req.call_id:
+        # With call_id the LiveSession is the authority: the hub never picks the speaker, and
+        # the room the session was opened in is where "accendi la luce" goes.
+        live = find_hub_session_by_call_id(req.call_id)
+        if live is None:
+            return {"handled": False, "not_handled": f"sessione live sconosciuta: {req.call_id}"}
+        speaker_ctx = _live_session_speaker_ctx(live)
+        if req.speaker and speaker_ctx.get("speaker_identified") \
+                and req.speaker.strip().lower() != str(speaker_ctx.get("speaker_name", "")).lower():
+            logger.warning(f"voice_command {req.call_id}: speaker {req.speaker!r} dall'hub, "
+                           f"nella sessione {speaker_ctx.get('speaker_name')!r}: vale la sessione")
+        location = live.location_id or get_default_location_id()
+        room, mic_id = live.room or "Unknown", live.device_id
+        live.last_activity = time.time()
+    else:
+        speaker_ctx = build_speaker_context(None, "voice_live", explicit_speaker=req.speaker)
+        if not speaker_ctx.get("speaker_identified"):
+            return {"handled": False, "not_handled": f"utente sconosciuto: {req.speaker}"}
+        location = req.location_id
+        if not location:
+            user_loc = get_user_location(speaker_ctx["speaker_id"])
+            location = user_loc.location_id if user_loc else get_default_location_id()
     capture = {"responses": [], "closed": False}
     context = {
-        "source": "voice_live", "room": "Unknown", "mic_id": "voice-live-hub", "chat_id": "voice_live",
+        "source": "voice_live", "room": room, "mic_id": mic_id, "chat_id": "voice_live",
         "location": location, "_capture": capture, "_confirmed": bool(req.confirmed),
         "_confirm_target": req.confirm_target if isinstance(req.confirm_target, dict) else None, **speaker_ctx,
     }
@@ -2808,9 +3300,111 @@ async def tool_voice_command(req: VoiceCommandRequest, _: None = Depends(verify_
         "location_id": location,
         "elapsed_ms": int((time.time() - t0) * 1000),
     }
-    logger.info(f"voice_command {req.speaker}: {req.text[:60]!r} -> handled={result['handled']} "
+    logger.info(f"voice_command {speaker_ctx.get('speaker_name')}"
+                + (f" ({req.call_id}, {room})" if req.call_id else "")
+                + f": {req.text[:60]!r} -> handled={result['handled']} "
                 f"confirm={bool(result['needs_confirmation'])} {result['elapsed_ms']}ms")
     return result
+
+
+def _live_session_speaker_ctx(session: "LiveSession") -> dict:
+    """Speaker context of a hub session: the identified user, or anonymous like a voice
+    turn whose speaker was not recognised (same security levels)."""
+    if _speaker_known(session.user_id, session.speaker_name):
+        user = get_user_by_id(session.user_id)
+        if user:
+            return {"speaker_id": user.id, "speaker_name": user.name, "is_admin": user.is_admin,
+                    "speaker_identified": True, "identification_method": "live_session"}
+    return {"speaker_id": None, "speaker_name": "Sconosciuto", "is_admin": False,
+            "speaker_identified": False, "identification_method": "none"}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/live/{call_id}/identify (Phase 3, design 19.4): Gemini's identifica_chi_parla
+# ---------------------------------------------------------------------------
+# Dedicated hub token, never AI_AGENT_TOKEN: Hermes holds that one too, and a shared run or a
+# prompt injection could send a recording of Marco and switch the session's profile.
+
+from fastapi import Header, HTTPException  # noqa: E402
+
+
+async def verify_live_identify_token(authorization: Optional[str] = Header(None)):
+    token = config.VOICE_LIVE_IDENTIFY_TOKEN
+    if not token or token == config.AI_AGENT_TOKEN:
+        # Off, or misconfigured with the AI Agent token: refuse rather than trust it
+        raise HTTPException(status_code=503, detail="live identify not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Bearer token required")
+    import hmac
+    # bytes: compare_digest on a str with non-ASCII characters raises TypeError (a 500)
+    if not hmac.compare_digest(authorization[7:].encode("utf-8"), token.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+
+class LiveIdentifyRequest(_BaseModel):
+    audio_b64: str  # pcm_s16le mono 16 kHz, the speaker's last phrase
+    claimed_name: Optional[str] = None  # a hint, never a proof
+
+
+@app.post("/api/live/{call_id}/identify")
+async def live_identify(call_id: str, req: LiveIdentifyRequest,
+                        _: None = Depends(verify_live_identify_token)):
+    """Identify who is speaking in a hub session opened as "Famiglia" (identified false).
+
+    At most LIVE_IDENTIFY_MAX_ATTEMPTS per session, counted here. Resemblyzer is the gate:
+    the best match among ALL enrolled users must pass threshold and margin; a claimed name only
+    picks who must come first, the threshold never drops. On success the LiveSession's speaker
+    changes (and the user's location); the profile comes from AI_AGENT_SPEAKER_PROFILES.
+    """
+    session = find_hub_session_by_call_id(call_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="unknown call_id")
+    if session.identified:
+        raise HTTPException(status_code=409, detail="session already identified")
+    max_attempts = max(0, config.LIVE_IDENTIFY_MAX_ATTEMPTS)
+    if session.identify_attempts >= max_attempts:
+        raise HTTPException(status_code=429, detail="no attempts left")
+    pcm = live_wake.decode_pcm(req.audio_b64, max_s=live_wake.MAX_IDENTIFY_CLIP_S)
+    if pcm is None:
+        raise HTTPException(status_code=400, detail="audio_b64: pcm_s16le 16 kHz, at least 0.3 s")
+    session.identify_attempts += 1
+    attempts_left = max(0, max_attempts - session.identify_attempts)
+
+    claimed_uid = None
+    claimed = (req.claimed_name or "").strip()
+    if claimed:
+        claimed_user = get_user_by_name(claimed)
+        # An unknown claimed name cannot be confirmed by any voice
+        claimed_uid = claimed_user.id if claimed_user else -1
+
+    verdict = await live_wake.score_clip(pcm, cap_s=5.0)
+    uid = live_wake.decide(verdict, config.LIVE_IDENTIFY_THRESHOLD, config.LIVE_IDENTIFY_MARGIN,
+                           claimed_uid=claimed_uid)
+    user = get_user_by_id(uid) if uid is not None else None
+    logger.info(f"🎯 live identify {call_id} ({session.device_id}) tentativo {session.identify_attempts}"
+                f"/{max_attempts}, nome dichiarato {claimed or '-'}: {verdict.summary()} -> "
+                f"{user.name if user else 'non confermato'}")
+    # The session may have ended while resemblyzer ran
+    if find_hub_session_by_call_id(call_id) is not session:
+        raise HTTPException(status_code=404, detail="session ended")
+    if session.identified:
+        # A concurrent attempt identified the session while this one ran: never switch from one
+        # person to another (design 19.4), only from unknown to identified.
+        raise HTTPException(status_code=409, detail="session already identified")
+    if user is None:
+        profile, name = _hub_identity(None, "")
+        return {"identified": False, "user_id": None, "name": name, "profile": profile,
+                "confidence": round(verdict.best, 4), "attempts_left": attempts_left}
+
+    session.user_id = user.id
+    session.speaker_name = user.name
+    session.identified = True
+    session.ai_agent_session_user = user.name.lower()
+    session.last_activity = time.time()
+    set_user_location(user.id, session.location_id, "voice")
+    profile, name = _hub_identity(user.id, user.name)
+    return {"identified": True, "user_id": user.id, "name": name, "profile": profile,
+            "confidence": round(verdict.best, 4), "attempts_left": attempts_left}
 
 
 @app.post("/voice_command")
@@ -3567,7 +4161,7 @@ async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
         # il turno, e il turno prosegue sulla pipeline normale ("apri la porta del box").
         logger.warning(f"🎙️ Turno audio da {device_id} durante una sessione hub: "
                        f"il device ne e' uscito, chiudo la sessione e proseguo")
-        await end_live_session(device_id, reason="turn_during_hub", close_turn=False)
+        await end_hub_session_for_turn(device_id)
 
     if device_id in _live_sessions:
         voice_corpus.note(path="live_session")
@@ -3697,11 +4291,7 @@ async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
         # cercare in una stanza che non esiste, e in resolve_entity_id il filtro
         # è HARD, quindi scarta l'entità giusta. Si valida contro la mappa vera.
         _nome_device = device_config.get("friendly_name", "Unknown")
-        try:
-            import router_model as _rm
-            room_value = _rm.stanza_valida(location, _nome_device) or "Unknown"
-        except Exception:
-            room_value = _nome_device
+        room_value = _voice_device_room(device_config, location)
         if room_value == "Unknown" and _nome_device not in (None, "Unknown"):
             logger.info(f"WS device {device_id}: '{_nome_device}' non è una stanza di "
                         f"'{location}' — nessun indizio di stanza per questo comando")
@@ -3834,6 +4424,10 @@ async def _process_ws_audio_turn(device_id: str, audio_bytes: bytes):
             logger.info(f"Speaker fisso per {device_id}: {speaker_ctx['speaker_name']} (uid={_forced_uid})")
         else:
             speaker_ctx = await speaker_task
+            # Shadow (19.8, passo 1): voice ID sul pre-roll della wake contro quello sulla frase
+            _shadow_cmp = live_wake.compare_with_phrase(device_id, speaker_ctx)
+            if _shadow_cmp:
+                voice_corpus.note(wake_preroll=_shadow_cmp)
         speaker_elapsed = (time.time() - stt_start) * 1000  # tempo totale dall'inizio
         admin_metrics.record_speaker_id(speaker_elapsed)
         voice_corpus.note(path="command", device_type=_ws_device_type, room=room_value,

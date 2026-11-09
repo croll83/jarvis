@@ -87,6 +87,39 @@ async def finish_turn(token: Optional[contextvars.Token]) -> None:
         logger.warning(f"Voice corpus: turno {rec.get('id')} non salvato: {e}")
 
 
+def save_clip(device_id: str, kind: str, audio: bytes, meta: Optional[dict] = None) -> None:
+    """Salva una clip fuori turno (pre-roll di una wake: kind "wake_preroll" o "live_start").
+
+    Solo con VOICE_CORPUS_ENABLED: il pre-roll contiene fino a 2 s di audio della stanza
+    PRIMA della wake word. Scrittura in un thread, mai un errore verso il chiamante.
+    """
+    if not config.VOICE_CORPUS_ENABLED or not audio:
+        return
+    rec = {
+        "id": uuid.uuid4().hex[:12],
+        "ts": datetime.now().isoformat(timespec="milliseconds"),
+        "device_id": f"{device_id}_{kind}",
+        "kind": kind,
+        "duration_s": round(len(audio) / 32000, 2),
+        **(meta or {}),
+    }
+
+    async def _go():
+        try:
+            await asyncio.to_thread(_write, rec, audio)
+        except Exception as e:  # la registrazione non deve MAI disturbare la wake
+            logger.warning(f"Voice corpus: clip {kind} di {device_id} non salvata: {e}")
+    try:
+        task = asyncio.get_running_loop().create_task(_go())
+    except RuntimeError:
+        return
+    _clip_tasks.add(task)
+    task.add_done_callback(_clip_tasks.discard)
+
+
+_clip_tasks: set = set()
+
+
 def _write(rec: dict, audio: bytes) -> None:
     global _last_cleanup
     day = rec["ts"][:10]

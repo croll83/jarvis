@@ -274,14 +274,34 @@ class HubLiveSession:
         self._pcm_bytes += len(data)
         if self._dump is not None:
             self._dump.add("up", data)
-        if self._pcm_gain != 1.0 and data:
-            # Limitatore morbido sopra -3 dBFS: una voce vicina non satura
-            x = np.frombuffer(data, dtype=np.int16).astype(np.float32) * (self._pcm_gain / 32768.0)
-            knee = 0.708
-            over = np.abs(x) > knee
-            x[over] = np.sign(x[over]) * (knee + (0.98 - knee) * np.tanh((np.abs(x[over]) - knee) / (0.98 - knee)))
-            data = np.clip(np.round(x * 32767.0), -32768, 32767).astype(np.int16).tobytes()
-        await self._forward(data)
+        await self._forward(self._apply_pcm_gain(data))
+
+    def _apply_pcm_gain(self, data: bytes) -> bytes:
+        if self._pcm_gain == 1.0 or not data:
+            return data
+        # Limitatore morbido sopra -3 dBFS: una voce vicina non satura
+        x = np.frombuffer(data, dtype=np.int16).astype(np.float32) * (self._pcm_gain / 32768.0)
+        knee = 0.708
+        over = np.abs(x) > knee
+        x[over] = np.sign(x[over]) * (knee + (0.98 - knee) * np.tanh((np.abs(x[over]) - knee) / (0.98 - knee)))
+        return np.clip(np.round(x * 32767.0), -32768, 32767).astype(np.int16).tobytes()
+
+    # Pezzi del buffer del comando verso il hub: 100 ms, come un mic che arriva in ritardo
+    _PRIME_CHUNK = 3200
+
+    def prime(self, pcm: bytes, pcm_device: bool = False) -> int:
+        """Buffer del comando detto subito dopo la wake word o il tap (design 19.12, D1): va al
+        hub prima del mic dal vivo, quindi si chiama dopo l'accept e prima di qualunque uplink.
+        Senza AEC ne' cancello (lo speaker taceva, a parte il chirp); per i device con l'AEC a
+        bordo (pcm_device) lo stesso guadagno fisso del mic dal vivo. Ritorna i byte mandati."""
+        if self._closed or not pcm:
+            return 0
+        data = bytes(pcm[:len(pcm) - len(pcm) % 2])
+        if pcm_device:
+            data = self._apply_pcm_gain(data)
+        for i in range(0, len(data), self._PRIME_CHUNK):
+            self.relay.send_audio(data[i:i + self._PRIME_CHUNK])
+        return len(data)
 
     async def _forward(self, clean: bytes):
         if clean:

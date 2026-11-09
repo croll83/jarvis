@@ -156,8 +156,14 @@ class HubSessionStart(_Base):
         self.assertEqual(session.backend, "hub")
         self.assertEqual(self.ws.types(), ["live_session_start"])
         msg = self.ws.sent[0]
+        # Phase 3 adds origin, identified and offer_extra (additive: old peers ignore them);
+        # req_id only for wake/tap requests (tests.test_live_wake)
         self.assertEqual(set(msg), {"type", "backend", "call_id", "profile", "name", "voice",
-                                    "location_id", "room", "deliver", "hub"})
+                                    "location_id", "room", "deliver", "hub",
+                                    "origin", "identified", "offer_extra"})
+        self.assertEqual((msg["origin"], msg["identified"]), ("phrase", True))
+        self.assertEqual(msg["offer_extra"], {"origin": "phrase", "identified": True,
+                                              "command": False, "quick": False})
         self.assertEqual(msg["backend"], "hub")
         self.assertRegex(msg["call_id"], r"^[0-9a-f]{8}$")
         self.assertEqual(msg["call_id"], session.hub_call_id)

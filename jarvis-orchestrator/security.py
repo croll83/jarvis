@@ -111,7 +111,8 @@ class SecurityManager:
                 await send_telegram(f"🛡️ Privacy attivata automaticamente: Benvenuto {label}!")
                 await speak(
                     f"Bentornato {label}. Ho attivato la modalità privacy.", 
-                    get_global_preference("security_announcement_speaker", config.SECURITY_ANNOUNCEMENT_SPEAKER)
+                    get_global_preference("security_announcement_speaker", config.SECURITY_ANNOUNCEMENT_SPEAKER),
+                    announce=True,  # con una sessione live nella stanza lo legge Gemini
                 )
             return
 
@@ -161,7 +162,8 @@ class SecurityManager:
             # Avviso vocale deterrente sulla Soundbar
             await speak(
                 f"Attenzione. Identificata persona sconosciuta in zona {zone}.",
-                get_global_preference("security_announcement_speaker", config.SECURITY_ANNOUNCEMENT_SPEAKER)
+                get_global_preference("security_announcement_speaker", config.SECURITY_ANNOUNCEMENT_SPEAKER),
+                urgent=True,  # con una sessione live nella stanza, Gemini lo dice subito
             )
 
 
